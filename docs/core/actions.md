@@ -22,7 +22,7 @@ Perform one HTTP request per iteration. Timing feeds the run's metrics.
 **Output** (available via `outputs` / `__last__`):
 
 ```json
-{ "status": 200, "body": "...", "duration_ms": 42 }
+{ "status": 200, "body": "...", "duration_ms": 42.37 }
 ```
 
 Statuses ≥ 400, transport errors, and timeouts count as failed requests in

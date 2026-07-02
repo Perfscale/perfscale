@@ -35,7 +35,7 @@ impl From<LogTag> for LogSource {
 
 #[derive(Debug, Default)]
 struct Metrics {
-    durations: Vec<u64>, // ms per HTTP request
+    durations: Vec<f64>, // ms per HTTP request, sub-millisecond precision
     failures: u64,
     total: u64,
 }
@@ -52,7 +52,7 @@ impl Metrics {
     /// Emit k6-compatible summary lines.
     ///
     /// ```text
-    /// http_req_duration: avg=42.00ms p(50)=40ms p(90)=60ms p(95)=68ms p(99)=85ms min=12ms max=120ms
+    /// http_req_duration: avg=0.42ms p(50)=0.31ms p(90)=0.88ms p(95)=1.02ms p(99)=1.90ms min=0.09ms max=3.10ms
     /// http_req_failed: 0.00%
     /// http_reqs: 120 2.00/s
     /// ```
@@ -72,11 +72,11 @@ impl Metrics {
         }
 
         let mut sorted = self.durations.clone();
-        sorted.sort_unstable();
+        sorted.sort_by(f64::total_cmp);
         let n = sorted.len();
 
-        let avg = sorted.iter().sum::<u64>() as f64 / n as f64;
-        let pct = |p: f64| -> u64 {
+        let avg = sorted.iter().sum::<f64>() / n as f64;
+        let pct = |p: f64| -> f64 {
             let idx = ((p / 100.0) * n as f64).floor() as usize;
             sorted[idx.min(n - 1)]
         };
@@ -86,7 +86,7 @@ impl Metrics {
 
         lines.extend([
             format!(
-                "http_req_duration......: avg={avg:.2}ms p(50)={p50}ms p(90)={p90}ms p(95)={p95}ms p(99)={p99}ms min={min}ms max={max}ms",
+                "http_req_duration......: avg={avg:.2}ms p(50)={p50:.2}ms p(90)={p90:.2}ms p(95)={p95:.2}ms p(99)={p99:.2}ms min={min:.2}ms max={max:.2}ms",
                 avg = avg,
                 p50 = pct(50.0),
                 p90 = pct(90.0),

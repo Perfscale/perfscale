@@ -39,9 +39,14 @@ pub enum LogTag {
 }
 
 /// Raw timing from one HTTP request.
+///
+/// Sub-millisecond precision matters here: against a fast local/loopback
+/// target (as in `perfscale bench`), most requests complete in well under
+/// 1ms — truncating to whole milliseconds would round essentially every
+/// sample down to 0 and flatten every percentile to "0.00ms".
 #[derive(Debug, Clone)]
 pub struct HttpSample {
-    pub duration_ms: u64,
+    pub duration_ms: f64,
     pub status: u16,
     pub failed: bool,
 }
@@ -88,7 +93,7 @@ pub async fn execute_action(
 //   timeout  – optional timeout in ms, default 10000
 //
 // Output:
-//   { "status": <u16>, "body": <string>, "duration_ms": <u64> }
+//   { "status": <u16>, "body": <string>, "duration_ms": <f64> }
 
 /// Process-wide HTTP client: connection pooling / keep-alive across
 /// iterations and VUs. A fresh client per request would open a new TCP
@@ -139,7 +144,7 @@ async fn http_action(params: &Value, step_name: &str) -> ActionOutput {
     let t0 = Instant::now();
     match req.send().await {
         Ok(resp) => {
-            let duration_ms = t0.elapsed().as_millis() as u64;
+            let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let status = resp.status().as_u16();
             let reason = resp.status().canonical_reason().unwrap_or("");
             let body = resp.text().await.unwrap_or_default();
@@ -149,7 +154,7 @@ async fn http_action(params: &Value, step_name: &str) -> ActionOutput {
                 value: json!({ "status": status, "body": body, "duration_ms": duration_ms }),
                 logs: vec![(
                     if failed { LogTag::Err } else { LogTag::Out },
-                    format!("{method} {url} → {status} {reason} ({duration_ms}ms)"),
+                    format!("{method} {url} → {status} {reason} ({duration_ms:.2}ms)"),
                 )],
                 success: !failed,
                 http_sample: Some(HttpSample {
@@ -160,10 +165,10 @@ async fn http_action(params: &Value, step_name: &str) -> ActionOutput {
             }
         }
         Err(e) => {
-            let duration_ms = t0.elapsed().as_millis() as u64;
+            let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let detail = error_chain(&e);
             let msg = if e.is_timeout() {
-                format!("{method} {url} → TIMEOUT after {duration_ms}ms")
+                format!("{method} {url} → TIMEOUT after {duration_ms:.2}ms")
             } else {
                 format!("{method} {url} → ERROR: {detail}")
             };
@@ -235,13 +240,13 @@ fn check_action(params: &Value, ctx: &Context, step_name: &str) -> ActionOutput 
                 )
             }
             "duration_ms_lt" => {
-                let got = target["duration_ms"].as_u64().unwrap_or(u64::MAX);
-                let want = expected.as_u64().unwrap_or(0);
+                let got = target["duration_ms"].as_f64().unwrap_or(f64::MAX);
+                let want = expected.as_f64().unwrap_or(0.0);
                 let ok = got < want;
                 (
                     ok,
                     format!(
-                        "duration<{want}ms → {} ({got}ms)",
+                        "duration<{want}ms → {} ({got:.2}ms)",
                         if ok { "PASS" } else { "FAIL" }
                     ),
                 )
@@ -365,6 +370,37 @@ mod tests {
         let sample = out.http_sample.unwrap();
         assert_eq!(sample.status, 200);
         assert!(!sample.failed);
+    }
+
+    /// Regression: `duration_ms` used to be truncated to whole milliseconds
+    /// via `Duration::as_millis() as u64`, so a fast in-process/loopback
+    /// target (like `perfscale bench`'s target) would round every sample
+    /// down to exactly 0, flattening avg/p50/p90/p95 to "0.00ms". A real
+    /// round trip always takes a strictly positive amount of wall time —
+    /// with the bug, that could still surface as an integer 0.
+    #[tokio::test]
+    async fn http_action_records_submillisecond_duration() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/fast"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let ctx = Context::new();
+        let params = json!({ "url": format!("{}/fast", server.uri()) });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+
+        let sample = out.http_sample.unwrap();
+        assert!(
+            sample.duration_ms > 0.0,
+            "expected a positive sub-ms-precision duration, got {}",
+            sample.duration_ms
+        );
+        assert_eq!(
+            out.value["duration_ms"].as_f64().unwrap(),
+            sample.duration_ms
+        );
     }
 
     #[tokio::test]
@@ -542,6 +578,30 @@ mod tests {
         let fail = execute_action(
             "std/check@v1",
             &json!({ "duration_ms_lt": 10 }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!fail.success);
+    }
+
+    #[tokio::test]
+    async fn check_action_duration_ms_lt_handles_fractional_values() {
+        let mut ctx = Context::new();
+        ctx.set("__last__", json!({ "duration_ms": 0.4 }));
+
+        let pass = execute_action(
+            "std/check@v1",
+            &json!({ "duration_ms_lt": 1.0 }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(pass.success);
+
+        let fail = execute_action(
+            "std/check@v1",
+            &json!({ "duration_ms_lt": 0.2 }),
             &ctx,
             "step",
         )
