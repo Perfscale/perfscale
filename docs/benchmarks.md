@@ -33,6 +33,10 @@ Same pairing for `locust (native)` / `perfscale (locust)`.
   of a single noisy sample.
 - Scenarios whose engine (`k6`/`locust`) isn't on `PATH` are skipped, not
   failed.
+- **Resource usage**: one extra run per scenario under `/usr/bin/time`
+  (`-v` on Linux, `-l` on macOS) — hyperfine only measures wall time, so
+  peak RSS and IO ops come from this separate pass instead. Skipped (with a
+  warning) if `/usr/bin/time` isn't installed.
 
 ## Reading the numbers
 
@@ -86,10 +90,23 @@ so numbers are never read without knowing what produced them. The
 | `k6 (native)` | 2.751 ± 0.060 | 2.709 | 2.794 | 1.37 ± 0.03 |
 | `perfscale (k6)` | 2.695 ± 0.097 | 2.626 | 2.764 | 1.34 ± 0.05 |
 | `perfscale (yaml)` | 2.014 ± 0.007 | 2.009 | 2.019 | 1.00 |
+
+| Scenario | Wall | User | Sys | Peak RSS | IO ops |
+|---|---|---|---|---|---|
+| locust (native) | 2.32s | 1.97s | 0.18s | 52.3 MiB | 0 in / 0 out |
+| perfscale (locust) | 2.23s | 2.02s | 0.16s | 53.3 MiB | 0 in / 0 out |
+| k6 (native) | 2.57s | 2.33s | 1.74s | 70.9 MiB | 0 in / 0 out |
+| perfscale (k6) | 2.58s | 2.29s | 1.70s | 69.6 MiB | 0 in / 0 out |
+| perfscale (yaml) | 2.01s | 1.17s | 1.09s | 14.7 MiB | 0 in / 0 out |
 ```
 
-`k6 (native)` vs `perfscale (k6)` above are close (perfscale's k6 wrapper is
-thin — just temp-file writing and log piping), which is exactly what you
-want to see: wrapping k6 doesn't cost you much extra. Watch the
-`locust (native)` / `perfscale (locust)` pair the same way for locust's
-wrapping cost.
+`k6 (native)` vs `perfscale (k6)` above are close on both tables (perfscale's
+k6 wrapper is thin — just temp-file writing and log piping), which is
+exactly what you want to see: wrapping k6 doesn't cost you much extra.
+Watch the `locust (native)` / `perfscale (locust)` pair the same way for
+locust's wrapping cost.
+
+The Resource usage row is a single `/usr/bin/time` run per scenario, not
+averaged like the hyperfine table above it — treat it as directional, not
+statistically tight. IO ops units differ by OS (GNU time's fs-block counts
+vs BSD time's block-operation counts), so only compare within one report.

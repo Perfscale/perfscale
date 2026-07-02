@@ -114,4 +114,51 @@ done
 
 hyperfine "${hyperfine_args[@]}"
 
+# Resource usage: one extra run per scenario under `/usr/bin/time`, since
+# hyperfine only measures wall time. GNU time (-v, Linux) and BSD time (-l,
+# macOS) report different fields/units, so both are normalized to MiB (RSS)
+# and a single "IO ops" count (GNU's block-based fs inputs/outputs; BSD's
+# block input/output operations) — comparable within a run, not across OSes.
+if /usr/bin/time -v true >/dev/null 2>&1; then
+  TIME_STYLE="gnu"
+elif /usr/bin/time -l true >/dev/null 2>&1; then
+  TIME_STYLE="bsd"
+else
+  TIME_STYLE=""
+  echo "skipping resource usage: /usr/bin/time not available" >&2
+fi
+
+if [[ -n "$TIME_STYLE" ]]; then
+  {
+    echo
+    echo "| Scenario | Wall | User | Sys | Peak RSS | IO ops |"
+    echo "|---|---|---|---|---|---|"
+  } >>"$OUTPUT"
+
+  for i in "${!commands[@]}"; do
+    if [[ "$TIME_STYLE" == "gnu" ]]; then
+      time_out="$(/usr/bin/time -v bash -c "${commands[$i]}" 2>&1 >/dev/null)" || true
+      wall=$(grep 'Elapsed (wall clock)' <<<"$time_out" | awk -F': ' '{print $2}')
+      user=$(grep -m1 '^	User time' <<<"$time_out" | awk -F': ' '{print $2"s"}')
+      sys=$(grep -m1 '^	System time' <<<"$time_out" | awk -F': ' '{print $2"s"}')
+      rss_kb=$(grep 'Maximum resident set size' <<<"$time_out" | awk -F': ' '{print $2}')
+      rss=$(awk "BEGIN{printf \"%.1f MiB\", ${rss_kb:-0}/1024}")
+      io_in=$(grep 'File system inputs' <<<"$time_out" | awk -F': ' '{print $2}')
+      io_out=$(grep 'File system outputs' <<<"$time_out" | awk -F': ' '{print $2}')
+      io="${io_in:-0} in / ${io_out:-0} out"
+    else
+      time_out="$(/usr/bin/time -l bash -c "${commands[$i]}" 2>&1 >/dev/null)" || true
+      wall=$(grep ' real' <<<"$time_out" | awk '{print $1"s"}')
+      user=$(grep ' real' <<<"$time_out" | awk '{print $3"s"}')
+      sys=$(grep ' real' <<<"$time_out" | awk '{print $5"s"}')
+      rss_bytes=$(grep 'maximum resident set size' <<<"$time_out" | awk '{print $1}')
+      rss=$(awk "BEGIN{printf \"%.1f MiB\", ${rss_bytes:-0}/1048576}")
+      io_in=$(grep 'block input operations' <<<"$time_out" | awk '{print $1}')
+      io_out=$(grep 'block output operations' <<<"$time_out" | awk '{print $1}')
+      io="${io_in:-0} in / ${io_out:-0} out"
+    fi
+    echo "| ${names[$i]} | ${wall:-?} | ${user:-?} | ${sys:-?} | $rss | $io |" >>"$OUTPUT"
+  done
+fi
+
 echo "report written to $OUTPUT"

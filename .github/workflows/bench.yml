@@ -43,6 +43,9 @@ jobs:
       - name: Install hyperfine
         run: cargo install hyperfine --locked
 
+      - name: Install GNU time
+        run: sudo apt-get install -y --no-install-recommends time
+
       - name: Build perfscale (release)
         run: cargo build --release
 
