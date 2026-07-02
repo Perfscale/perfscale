@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema/test.schema.json
+#
+# Run with: perfscale run -f examples/hello.test.yaml -c examples/hello.config.yaml
+steps:
+  - name: homepage
+    use: std/http@v1
+    with:
+      method: GET
+      url: https://httpbin.org/get
+    check:
+      status: 200
+    outputs: resp
+
+  - name: log status
+    use: std/log@v1
+    with:
+      message: "got status ${{ resp.status }}"
+
+  - use: std/sleep@v1
+    with:
+      ms: 200

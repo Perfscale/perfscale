@@ -1,0 +1,102 @@
+name: Build & Release perfscale
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  # ── Build ────────────────────────────────────────────────────────────────────
+  build:
+    name: Build (${{ matrix.artifact }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux — static musl binaries, native runners per arch (no QEMU).
+          - artifact: perfscale-linux-amd64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            setup: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+          - artifact: perfscale-linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            setup: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+          # macOS — arm64 native, x86_64 cross-compiled on the same runner
+          # (same SDK, works out of the box).
+          - artifact: perfscale-darwin-arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+          - artifact: perfscale-darwin-amd64
+            runner: macos-latest
+            target: x86_64-apple-darwin
+          # Windows — x86_64 native, arm64 cross-compiled via the MSVC toolchain.
+          - artifact: perfscale-windows-amd64.exe
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - artifact: perfscale-windows-arm64.exe
+            runner: windows-latest
+            target: aarch64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Setup
+        if: matrix.setup != ''
+        run: ${{ matrix.setup }}
+
+      - name: Build
+        run: cargo build --release -p perfscale-cli --target ${{ matrix.target }}
+
+      - name: Stage artifact (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/perfscale" "dist/${{ matrix.artifact }}"
+      - name: Stage artifact (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/perfscale.exe" "dist/${{ matrix.artifact }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          retention-days: 7
+
+  # ── Publish to GitHub Releases ──────────────────────────────────────────────
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum perfscale-* > sha256sums.txt
+          ls -lh
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/perfscale-*
+            dist/sha256sums.txt
+          generate_release_notes: true

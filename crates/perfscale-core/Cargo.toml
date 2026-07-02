@@ -1,0 +1,34 @@
+[package]
+name = "perfscale-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Generic load-testing engine for perfscale: k6/locust runners, native step engine, YAML test/config parsing"
+
+[dependencies]
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+uuid       = { version = "1", features = ["serde", "v4"] }
+
+# Async runtime + subprocess management (k6, locust)
+tokio = { version = "1", features = ["time", "sync", "rt", "macros", "process", "io-util", "fs"] }
+
+# HTTP client for std/http@v1
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# CSV parsing for locust's --csv stats output
+csv = "1"
+
+# YAML/JSON schema generation + validation
+schemars   = "0.8"
+jsonschema = "0.18"
+
+tracing = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile   = "3"
+wiremock   = "0.6"
+serial_test = { version = "3", features = ["file_locks"] }

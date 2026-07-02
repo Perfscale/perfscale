@@ -1,0 +1,55 @@
+name: bench
+
+# Engine benchmark on a fixed CI runner class, so numbers are comparable
+# between runs (local machines vary too much). Results land in the job
+# summary and as a downloadable artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      vus:
+        description: "Virtual users per engine"
+        default: "10"
+      duration:
+        description: "Run duration per engine (e.g. 30s, 1m)"
+        default: "30s"
+  schedule:
+    # Weekly drift check (Mondays 04:00 UTC) — catches perf regressions
+    # between releases without burning CI minutes on every push.
+    - cron: "0 4 * * 1"
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install k6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl gnupg ca-certificates
+          curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends k6
+
+      - name: Install locust
+        run: pip install --no-cache-dir locust
+
+      - name: Build perfscale (release)
+        run: cargo build --release
+
+      - name: Run benchmark
+        run: |
+          ./target/release/perfscale bench \
+            --vus "${{ github.event.inputs.vus || '10' }}" \
+            --duration "${{ github.event.inputs.duration || '30s' }}" \
+            --output bench-report.md
+          cat bench-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-report
+          path: bench-report.md
+          retention-days: 90

@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=../schema/config.schema.json
+vus: 5
+duration: 30s
+
+# Optional — forward the run summary to `perfscale serve`:
+# report:
+#   url: http://localhost:7999

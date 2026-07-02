@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ReportConfig": {
+      "description": "Where to forward the aggregated run summary after `perfscale run` finishes.",
+      "properties": {
+        "url": {
+          "description": "Base URL of a running `perfscale serve` instance, e.g. `http://localhost:7999`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Top-level `-c config.yaml` document.",
+  "properties": {
+    "duration": {
+      "default": "1m",
+      "description": "Duration string: `\"30s\"`, `\"1m\"`, `\"5m30s\"`, `\"1h\"`.",
+      "type": "string"
+    },
+    "report": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ReportConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "vus": {
+      "default": 1,
+      "description": "Number of virtual users (concurrent workers).",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "title": "ConfigFile",
+  "type": "object"
+}
