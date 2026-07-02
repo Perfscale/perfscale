@@ -27,7 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends k6
       - name: Install locust
-        run: pip install --no-cache-dir locust
+        run: pipx install locust
 
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings

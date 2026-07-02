@@ -35,7 +35,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends k6
 
       - name: Install locust
-        run: pip install --no-cache-dir locust
+        run: pipx install locust
 
       - name: Build perfscale (release)
         run: cargo build --release
