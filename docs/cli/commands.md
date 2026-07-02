@@ -1,10 +1,11 @@
 # CLI commands
 
 ```text
-perfscale run    Run a load test with k6, locust, or the native step engine
-perfscale serve  Start a local dev server that receives metrics from `run --report`
-perfscale bench  Benchmark the engines against each other, markdown report
-perfscale lint   Validate test/config YAML files without running them
+perfscale run          Run a load test with k6, locust, or the native step engine
+perfscale serve        Start a local dev server that receives metrics from `run --report`
+perfscale bench        Benchmark the engines against each other, markdown report
+perfscale lint         Validate test/config YAML files without running them
+perfscale self-update  Update perfscale to the latest release for this platform
 ```
 
 ## `perfscale run`
@@ -113,8 +114,49 @@ gate:
 - run: perfscale lint tests/*.yaml
 ```
 
+## `perfscale self-update`
+
+Replaces the running binary with the latest
+[GitHub release](https://github.com/Perfscale/perfscale/releases) for this
+platform. The download's sha256 is verified against the release's
+`sha256sums.txt` before the swap, and the swap itself is atomic (staged next
+to the executable, then renamed) — a failed update never leaves a broken
+binary behind.
+
+```sh
+perfscale self-update              # update to the latest release
+perfscale self-update --check      # only check; exit 10 = update available
+perfscale self-update --force      # reinstall even if already up to date
+```
+
+| Flag | Description |
+|---|---|
+| `--check` | Report whether an update exists without installing. Exit codes: `0` up to date, `10` update available — scriptable in cron/CI |
+| `--force` | Reinstall the latest release even when versions match |
+
+### The passive "update available" hint
+
+Other commands (`run`, `serve`, `bench`, `lint`) print a one-line stderr hint
+when a newer release is known:
+
+```text
+perfscale v0.2.0 is available (you have 0.1.0) — run `perfscale self-update`
+```
+
+The check is deliberately unobtrusive: at most one network call per 24h
+(cached in the user cache dir), only in interactive terminals (never in CI
+logs or pipes), never delays a command by more than ~2s, and silent when
+offline.
+
+| Variable | Effect |
+|---|---|
+| `PERFSCALE_NO_UPDATE_CHECK=1` | Disable the passive check and hint entirely |
+| `PERFSCALE_UPDATE_API_BASE` | Override the release API host (default `https://api.github.com`) — for mirrors/proxies |
+| `PERFSCALE_UPDATE_DOWNLOAD_BASE` | Override the asset download host (default `https://github.com`) |
+
 ## Environment variables
 
 | Name | Description |
 |---|---|
 | `RUST_LOG` | `tracing` filter, e.g. `RUST_LOG=debug perfscale run ...` |
+| `PERFSCALE_NO_UPDATE_CHECK` | `1` disables the update-available hint |

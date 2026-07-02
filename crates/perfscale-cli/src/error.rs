@@ -13,6 +13,7 @@ use std::fmt;
 
 pub const DOCS_BASE: &str = "https://github.com/Perfscale/perfscale/blob/main/docs";
 
+#[derive(Debug)]
 pub struct CliError {
     message: String,
     cause: Option<String>,

@@ -20,7 +20,14 @@ curl -fsSL -o perfscale https://github.com/Perfscale/perfscale/releases/latest/d
 chmod +x perfscale
 ```
 
-Verify with `sha256sums.txt` from the same release. Or build from source:
+Verify with `sha256sums.txt` from the same release. Once installed, staying
+current is one command — it verifies checksums and swaps the binary in place:
+
+```sh
+perfscale self-update
+```
+
+Or build from source:
 
 ```sh
 cargo build --release -p perfscale-cli

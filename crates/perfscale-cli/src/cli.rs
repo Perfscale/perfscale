@@ -65,6 +65,37 @@ pub enum Commands {
     Bench(BenchArgs),
     /// Validate test/config YAML files without running them.
     Lint(LintArgs),
+    /// Update perfscale to the latest release for this platform.
+    #[command(name = "self-update")]
+    SelfUpdate(SelfUpdateArgs),
+}
+
+fn self_update_after_help() -> String {
+    format!(
+        "Downloads the release asset for this platform from GitHub Releases, verifies its\n\
+         sha256 against the release's sha256sums.txt, and atomically replaces the current\n\
+         executable.\n\n\
+         Examples:\n  \
+         perfscale self-update              update to the latest release\n  \
+         perfscale self-update --check      only check; exit 10 if an update exists\n  \
+         perfscale self-update --force      reinstall even if already up to date\n\n\
+         The passive \"update available\" hint printed by other commands checks at most\n\
+         once per 24h, only in interactive terminals, and can be disabled with\n\
+         PERFSCALE_NO_UPDATE_CHECK=1.\n\n\
+         Documentation: {DOCS_BASE}/cli/commands.md#perfscale-self-update"
+    )
+}
+
+#[derive(Args)]
+#[command(after_help = self_update_after_help())]
+pub struct SelfUpdateArgs {
+    /// Only check whether an update exists (exit code 10 = update available).
+    #[arg(long)]
+    pub check: bool,
+
+    /// Reinstall the latest release even if this binary is already up to date.
+    #[arg(long, conflicts_with = "check")]
+    pub force: bool,
 }
 
 #[derive(Args)]
