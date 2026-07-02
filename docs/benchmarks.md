@@ -106,12 +106,17 @@ cargo build --release
 
 ## Resource usage
 | Engine | CPU avg | CPU max | Peak memory | Disk read | Disk written |
-| locust (native) | 35.4% | 99.3% | 54 MiB | 264 KiB | 4 KiB |
-| k6 (native) | 3.7% | 5.0% | 68 MiB | 6 MiB | 0 B |
-| perfscale (k6) | 3.9% | 5.1% | 72 MiB | 224 KiB | 0 B |
-| perfscale (locust) | 35.6% | 98.6% | 54 MiB | 264 KiB | 8 KiB |
-| perfscale (yaml) | 5.5% | 6.5% | 22 MiB | 52 KiB | 16 KiB |
+| locust (native) | 35.4% (8.9% of 4 cores) | 99.3% (24.8% of 4 cores) | 54 MiB | 264 KiB | 4 KiB |
+| k6 (native) | 3.7% (0.9% of 4 cores) | 5.0% (1.3% of 4 cores) | 68 MiB | 6 MiB | 0 B |
+| perfscale (k6) | 3.9% (1.0% of 4 cores) | 5.1% (1.3% of 4 cores) | 72 MiB | 224 KiB | 0 B |
+| perfscale (locust) | 35.6% (8.9% of 4 cores) | 98.6% (24.7% of 4 cores) | 54 MiB | 264 KiB | 8 KiB |
+| perfscale (yaml) | 5.5% (1.4% of 4 cores) | 6.5% (1.6% of 4 cores) | 22 MiB | 52 KiB | 16 KiB |
 ```
+
+The first CPU figure is the raw per-core percentage `sysinfo`/`top` report (a
+multi-threaded process can exceed 100%); the parenthetical normalizes it
+against every logical core on the host, for an at-a-glance "how much of the
+whole machine" reading.
 
 The `Version` column makes each row self-contained — no need to cross-reference
 the Software section above to know exactly which k6/locust/perfscale build

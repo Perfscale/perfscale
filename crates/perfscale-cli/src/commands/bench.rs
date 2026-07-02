@@ -825,8 +825,8 @@ pub fn render_report(input: &ReportInput) -> String {
                     out,
                     "| {} | {} | {} | {} | {} | {} |",
                     r.engine,
-                    fmt_pct(res.and_then(|x| x.cpu_avg_pct)),
-                    fmt_pct(res.and_then(|x| x.cpu_max_pct)),
+                    fmt_cpu_pct(res.and_then(|x| x.cpu_avg_pct), input.env.threads),
+                    fmt_cpu_pct(res.and_then(|x| x.cpu_max_pct), input.env.threads),
                     fmt_bytes_opt(res.and_then(|x| x.mem_peak_bytes)),
                     fmt_bytes_opt(res.and_then(|x| x.disk_read_bytes)),
                     fmt_bytes_opt(res.and_then(|x| x.disk_write_bytes)),
@@ -840,20 +840,28 @@ pub fn render_report(input: &ReportInput) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Notes: CPU is % of one core (a multi-threaded process can exceed 100%), sampled every \
+        "Notes: the first CPU figure is % of one core (matches `top`), a multi-threaded process \
+         can exceed 100%; the parenthetical is the same number normalized against all {} logical \
+         cores on this host, for an at-a-glance \"how much of the machine\" reading. Sampled every \
          ~{}ms — a scenario shorter than that may show no data. Peak memory and disk IO come \
          from the same polling, so brief spikes between samples can be missed. `perfscale (yaml)` \
          measures perfscale's own process (there's no child to attribute it to), which also \
          includes the in-process bench target serving its requests — a cost every other scenario's \
          requests pass through too, just not counted against them since it lives in a separate process there.",
+        input.env.threads,
         sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis()
     );
 
     out
 }
 
-fn fmt_pct(v: Option<f32>) -> String {
+/// `sysinfo` reports CPU as % of one core (matching `top`), so a
+/// multi-threaded process on a multi-core box routinely shows >100%. Append
+/// the whole-machine-normalized figure alongside it so the number is
+/// intuitive without needing to know the core count separately.
+fn fmt_cpu_pct(v: Option<f32>, cores: usize) -> String {
     match v {
+        Some(v) if cores > 1 => format!("{v:.1}% ({:.1}% of {cores} cores)", v / cores as f32),
         Some(v) => format!("{v:.1}%"),
         None => "—".into(),
     }
@@ -958,6 +966,22 @@ mod tests {
         assert_eq!(parse_duration_ms("890µs"), Some(0.89));
         assert_eq!(parse_duration_ms("42"), Some(42.0));
         assert_eq!(parse_duration_ms("n/a"), None);
+    }
+
+    #[test]
+    fn fmt_cpu_pct_adds_machine_normalized_figure_on_multicore() {
+        assert_eq!(fmt_cpu_pct(Some(273.1), 4), "273.1% (68.3% of 4 cores)");
+    }
+
+    #[test]
+    fn fmt_cpu_pct_skips_parenthetical_on_single_core() {
+        assert_eq!(fmt_cpu_pct(Some(87.0), 1), "87.0%");
+        assert_eq!(fmt_cpu_pct(Some(87.0), 0), "87.0%");
+    }
+
+    #[test]
+    fn fmt_cpu_pct_none_is_dash() {
+        assert_eq!(fmt_cpu_pct(None, 8), "—");
     }
 
     #[test]
@@ -1088,7 +1112,7 @@ mod tests {
             "| locust | not installed |",
             "| perfscale (yaml) | 0.1.0 | 1000 | 66.60/s |",
             "| locust (native) | — | — | — | — | — | — | — | — | locust not installed |",
-            "| perfscale (yaml) | 12.5% | 48.0% | 38 MiB | 0 B | 4 KiB |",
+            "| perfscale (yaml) | 12.5% (1.0% of 12 cores) | 48.0% (4.0% of 12 cores) | 38 MiB | 0 B | 4 KiB |",
             "| locust (native) | — | — | — | — | locust not installed |",
         ] {
             assert!(
