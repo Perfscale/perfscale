@@ -25,9 +25,13 @@ Exactly one engine flag is required: `--k6`, `--locust`, or `-f`.
 
 - `0` — the run completed, **even if requests or checks failed**. Failed
   checks are load-test feedback (visible in `http_req_failed` and stderr),
-  not a CLI error — mirroring k6's default behaviour without thresholds.
+  not a CLI error — mirroring k6's default behaviour without thresholds. This
+  also covers engines that exit non-zero on failed *requests* (k6 with
+  thresholds, locust) as long as they produced a results summary.
 - `1` — the run could not execute: missing file, invalid YAML, engine binary
-  not found, engine crashed.
+  not found, or the engine crashed before producing any results (non-zero
+  exit with zero metrics — a script error or broken install, not test
+  feedback): `error: engine exited with code 1 before producing any results`.
 - `2` — invalid command-line arguments.
 
 ### Output streams
@@ -61,22 +65,32 @@ replace it.
 
 ## `perfscale bench`
 
-Runs the same tight `GET` loop through each selected engine — sequentially,
-against an in-process loopback target — and prints a markdown report with the
-host environment (OS, CPU, threads, RAM, swap), software versions (perfscale,
-k6, locust), and per-engine results (requests, RPS, avg/p50/p90/p95/max,
+Runs the same tight `GET` loop through five scenarios — sequentially, against
+an in-process loopback target — and prints a markdown report with the host
+environment (OS, CPU, threads, RAM, swap), software versions (perfscale, k6,
+locust), and per-scenario results (requests, RPS, avg/p50/p90/p95/max,
 failure rate). See [Benchmarks](../benchmarks.md) for methodology.
+
+| Scenario | What it runs |
+|---|---|
+| `locust-native` | `locust` invoked directly — baseline |
+| `k6-native` | `k6` invoked directly — baseline |
+| `perfscale-k6` | the same k6 script, via `perfscale run --k6` |
+| `perfscale-locust` | the same locustfile, via `perfscale run --locust` |
+| `perfscale-yaml` | perfscale's own step engine (no external binary) |
 
 | Flag | Default | Description |
 |---|---|---|
-| `--vus <N>` | `10` | Virtual users per engine |
-| `--duration <D>` | `15s` | Run length per engine (`"30s"`, `"1m"`, ...) |
-| `--engines <LIST>` | `native,k6,locust` | Comma-separated subset to run |
+| `--vus <N>` | `10` | Virtual users per scenario |
+| `--duration <D>` | `15s` | Run length per scenario (`"30s"`, `"1m"`, ...) |
+| `--engines <LIST>` | all five above | Comma-separated subset to run |
 | `--output <FILE>` | — | Also write the report to a file |
 
-Engines missing from `PATH` are reported as skipped, not errors. The
-canonical comparison runs on CI (`bench` workflow) to remove local-machine
-variance.
+Compare a `perfscale-*` row against its `*-native` counterpart to see
+perfscale's wrapping overhead in isolation from the underlying tool's own
+performance. Scenarios whose engine is missing from `PATH` are reported as
+skipped, not errors. The canonical comparison runs on CI (`bench` workflow)
+to remove local-machine variance.
 
 ## `perfscale lint`
 

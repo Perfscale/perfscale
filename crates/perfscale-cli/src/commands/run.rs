@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use perfscale_core::runner::locust::LocustOpts;
-use perfscale_core::runner::{self, ExecutionPlan, LogLine, LogSource};
+use perfscale_core::runner::{self, ExecutionPlan, LogLine, LogSource, RunOutput};
 use perfscale_core::step::TestDef;
 use perfscale_core::yaml::{self, ConfigFile};
 
@@ -19,13 +19,27 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
     let plan = resolve_plan(&args, native_test, config.as_ref());
     let report_url = resolve_report_url(&args, config.as_ref());
 
-    let mut rx = runner::execute(plan).await.map_err(CliError::from_engine)?;
+    let RunOutput { mut lines, exit } =
+        runner::execute(plan).await.map_err(CliError::from_engine)?;
     let mut summary_lines: Vec<String> = Vec::new();
 
-    while let Some(line) = rx.recv().await {
+    while let Some(line) = lines.recv().await {
         print_line(&line);
         if matches!(line.source, LogSource::Stdout) && is_summary_line(&line.text) {
             summary_lines.push(line.text.clone());
+        }
+    }
+
+    // Crash detection: a non-zero exit code by itself is test feedback (k6
+    // exits non-zero on failed thresholds, locust on failed requests). But a
+    // non-zero exit with NO metrics produced means the engine died before it
+    // ever ran the test — that's a CLI error, not a result.
+    let exit_code = exit.await.ok().flatten();
+    if let Some(code) = exit_code {
+        if code != 0 && summary_lines.is_empty() {
+            return Err(CliError::new(format!("engine exited with code {code} before producing any results"))
+                .hint("the engine crashed at startup — its output above usually names the cause (script error, broken installation, bad flags)")
+                .docs("cli/commands.md#exit-code-semantics"));
         }
     }
 

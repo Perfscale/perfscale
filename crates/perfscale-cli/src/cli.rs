@@ -147,15 +147,23 @@ pub struct ServeArgs {
 
 fn bench_after_help() -> String {
     format!(
-        "Runs the same GET workload through each engine sequentially against an\n\
+        "Runs the same GET workload through each scenario sequentially against an\n\
          in-process HTTP target, then prints a markdown report with environment\n\
-         info (OS/CPU/RAM/swap), software versions, and per-engine metrics.\n\
-         Engines that aren't installed are reported as skipped, not errors.\n\n\
+         info (OS/CPU/RAM/swap), software versions, and per-scenario metrics.\n\
+         Scenarios whose engine isn't installed are reported as skipped, not errors.\n\n\
+         Scenarios:\n  \
+         locust-native      locust invoked directly (baseline)\n  \
+         k6-native          k6 invoked directly (baseline)\n  \
+         perfscale-k6       same k6 script, run via `perfscale run --k6`\n  \
+         perfscale-locust   same locustfile, run via `perfscale run --locust`\n  \
+         perfscale-yaml     perfscale's own step engine (no external binary)\n\n\
+         Compare a `perfscale-*` row against its `*-native` counterpart to see\n\
+         perfscale's wrapping overhead, not the underlying tool's performance.\n\n\
          Examples:\n  \
-         perfscale bench                                 all engines, 10 VUs, 15s each\n  \
+         perfscale bench                                        all 5 scenarios, 10 VUs, 15s each\n  \
          perfscale bench --vus 50 --duration 30s\n  \
-         perfscale bench --engines native,k6             skip locust\n  \
-         perfscale bench --output bench-report.md        also write the report to a file\n\n\
+         perfscale bench --engines k6-native,perfscale-k6       just the k6 comparison\n  \
+         perfscale bench --output bench-report.md               also write the report to a file\n\n\
          Documentation: {DOCS_BASE}/cli/commands.md#perfscale-bench"
     )
 }
@@ -163,19 +171,20 @@ fn bench_after_help() -> String {
 #[derive(Args)]
 #[command(after_help = bench_after_help())]
 pub struct BenchArgs {
-    /// Virtual users per engine.
+    /// Virtual users per scenario.
     #[arg(long, default_value_t = 10, value_name = "N")]
     pub vus: u32,
 
-    /// Run length per engine: "15s", "1m", ...
+    /// Run length per scenario: "15s", "1m", ...
     #[arg(long, default_value = "15s", value_name = "DURATION")]
     pub duration: String,
 
-    /// Engines to benchmark, comma-separated: native, k6, locust.
+    /// Scenarios to run, comma-separated: locust-native, k6-native,
+    /// perfscale-k6, perfscale-locust, perfscale-yaml.
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "native,k6,locust",
+        default_value = "locust-native,k6-native,perfscale-k6,perfscale-locust,perfscale-yaml",
         value_name = "LIST"
     )]
     pub engines: Vec<String>,

@@ -336,7 +336,7 @@ fn locust_headless_run_produces_unified_summary() {
 
 #[test]
 #[file_serial(heavy_io)]
-fn bench_native_only_prints_full_report() {
+fn bench_perfscale_yaml_only_prints_full_report() {
     let assert = assert_cmd::Command::new(cargo_bin("perfscale"))
         .args([
             "bench",
@@ -345,7 +345,7 @@ fn bench_native_only_prints_full_report() {
             "--duration",
             "2s",
             "--engines",
-            "native",
+            "perfscale-yaml",
         ])
         .timeout(Duration::from_secs(60))
         .assert()
@@ -365,7 +365,7 @@ fn bench_native_only_prints_full_report() {
         "| k6 |",
         "| locust |",
         "## Results",
-        "| perfscale (native) |",
+        "| perfscale (yaml) |",
     ] {
         assert!(
             stdout.contains(required),
@@ -388,7 +388,7 @@ fn bench_writes_report_file_with_output_flag() {
             "--duration",
             "1s",
             "--engines",
-            "native",
+            "perfscale-yaml",
             "--output",
             report_path.to_str().unwrap(),
         ])
@@ -409,12 +409,69 @@ fn bench_unknown_engine_fails_with_hint() {
         .failure()
         .stderr(predicate::str::contains("unknown engine 'wrk'"))
         .stderr(predicate::str::contains("hint:"))
-        .stderr(predicate::str::contains("native, k6, locust"));
+        .stderr(predicate::str::contains("perfscale-yaml"));
 }
 
 #[test]
 #[file_serial(heavy_io)]
-fn bench_all_engines_when_installed() {
+fn bench_k6_native_vs_perfscale_k6() {
+    if !k6_available() {
+        eprintln!("skipping: k6 not installed");
+        return;
+    }
+    let assert = assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args([
+            "bench",
+            "--vus",
+            "2",
+            "--duration",
+            "2s",
+            "--engines",
+            "k6-native,perfscale-k6",
+        ])
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    assert!(stdout.contains("| k6 (native) |"), "report:\n{stdout}");
+    assert!(stdout.contains("| perfscale (k6) |"), "report:\n{stdout}");
+    assert!(!stdout.contains("not installed |"), "report:\n{stdout}");
+}
+
+#[test]
+#[file_serial(heavy_io)]
+fn bench_locust_native_vs_perfscale_locust() {
+    if !locust_available() {
+        eprintln!("skipping: locust not installed");
+        return;
+    }
+    let assert = assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args([
+            "bench",
+            "--vus",
+            "2",
+            "--duration",
+            "2s",
+            "--engines",
+            "locust-native,perfscale-locust",
+        ])
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    assert!(stdout.contains("| locust (native) |"), "report:\n{stdout}");
+    assert!(
+        stdout.contains("| perfscale (locust) |"),
+        "report:\n{stdout}"
+    );
+    assert!(!stdout.contains("not installed |"), "report:\n{stdout}");
+}
+
+#[test]
+#[file_serial(heavy_io)]
+fn bench_all_five_scenarios_when_installed() {
     if !k6_available() || !locust_available() {
         eprintln!("skipping: k6 and/or locust not installed");
         return;
@@ -426,12 +483,38 @@ fn bench_all_engines_when_installed() {
         .success();
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
-    assert!(
-        stdout.contains("| perfscale (native) |"),
-        "report:\n{stdout}"
-    );
-    assert!(stdout.contains("| k6 |"), "report:\n{stdout}");
-    assert!(stdout.contains("| locust |"), "report:\n{stdout}");
-    // All three completed → no "not installed" skips in the results table.
+    for required in [
+        "| locust (native) |",
+        "| k6 (native) |",
+        "| perfscale (k6) |",
+        "| perfscale (locust) |",
+        "| perfscale (yaml) |",
+    ] {
+        assert!(stdout.contains(required), "report:\n{stdout}");
+    }
+    // All five completed → no "not installed" skips in the results table.
     assert!(!stdout.contains("not installed |"), "report:\n{stdout}");
+}
+
+// ---------------------------------------------------------------------------
+// Engine crash detection (regression: a startup crash must exit 1, not 0)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[file_serial(heavy_io)]
+fn run_k6_broken_script_exits_nonzero_with_no_metrics() {
+    if !k6_available() {
+        eprintln!("skipping: k6 not installed");
+        return;
+    }
+    // Invalid JS: k6 fails before ever running an iteration, so no
+    // http_req_* summary line is ever produced.
+    let script = write_temp(".js", "this is not valid javascript {{{");
+
+    assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args(["run", "--k6", script.path().to_str().unwrap()])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("before producing any results"));
 }

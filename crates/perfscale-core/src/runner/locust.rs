@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::runner::{LogLine, LogSource};
+use crate::runner::{LogLine, LogSource, RunOutput};
 use crate::step::RunConfig;
 
 /// Load options for a locust run — mirrors [`RunConfig`] but uses locust's
@@ -50,15 +50,14 @@ impl LocustOpts {
     }
 }
 
-/// Spawn locust in headless mode and return a channel of log lines.
+/// Spawn locust in headless mode and return its live output plus final
+/// exit code.
 ///
 /// Streams raw stdout/stderr while the run is in progress, then appends a
 /// k6-compatible summary parsed from locust's `--csv` stats file once the
-/// process exits.
-pub async fn run_streaming(
-    script: PathBuf,
-    opts: LocustOpts,
-) -> Result<mpsc::Receiver<LogLine>, String> {
+/// process exits. Note locust exits non-zero when any request failed — a
+/// non-zero code with a summary present is test feedback, not a crash.
+pub async fn run_streaming(script: PathBuf, opts: LocustOpts) -> Result<RunOutput, String> {
     let run_id = Uuid::new_v4().to_string();
     let csv_prefix = std::env::temp_dir().join(format!("perfscale-locust-{run_id}"));
 
@@ -103,13 +102,20 @@ pub async fn run_streaming(
         }
     });
 
+    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        match child.wait().await {
-            Ok(status) => debug!(%run_id, ?status, "locust exited"),
-            Err(e) => warn!(%run_id, error = %e, "locust wait error"),
-        }
+        let code = match child.wait().await {
+            Ok(status) => {
+                debug!(%run_id, ?status, "locust exited");
+                status.code()
+            }
+            Err(e) => {
+                warn!(%run_id, error = %e, "locust wait error");
+                None
+            }
+        };
 
-        match summary_from_csv(&csv_prefix).await {
+        match parse_csv_summary(&csv_prefix).await {
             Ok(lines) => {
                 for line in lines {
                     let _ = tx
@@ -132,9 +138,13 @@ pub async fn run_streaming(
 
         cleanup_csv(&csv_prefix).await;
         // tx dropped here → channel closes
+        let _ = exit_tx.send(code);
     });
 
-    Ok(rx)
+    Ok(RunOutput {
+        lines: rx,
+        exit: exit_rx,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -178,9 +188,12 @@ fn locust_exec_error(e: &std::io::Error) -> String {
     }
 }
 
-/// Read `{prefix}_stats.csv` and build a k6-compatible summary from the
-/// `Aggregated` row locust always writes last.
-async fn summary_from_csv(csv_prefix: &Path) -> Result<Vec<String>, String> {
+/// Read `{prefix}_stats.csv` (as written by locust's `--csv` flag) and build
+/// a k6-compatible summary from the `Aggregated` row locust always writes
+/// last. Public so callers driving locust directly (e.g. `perfscale bench`'s
+/// bare-engine baseline) can reuse the exact same parsing this runner uses,
+/// for an apples-to-apples comparison.
+pub async fn parse_csv_summary(csv_prefix: &Path) -> Result<Vec<String>, String> {
     let stats_path = PathBuf::from(format!("{}_stats.csv", csv_prefix.display()));
     let content = tokio::fs::read_to_string(&stats_path)
         .await
@@ -252,7 +265,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn summary_from_csv_parses_aggregated_row() {
+    async fn parse_csv_summary_parses_aggregated_row() {
         let dir = std::env::temp_dir().join(format!("perfscale-locust-test-{}", Uuid::new_v4()));
         let csv_content = "Type,Name,Request Count,Failure Count,Median Response Time,Average Response Time,Min Response Time,Max Response Time,Average Content Size,Requests/s,Failures/s,50%,66%,75%,80%,90%,95%,98%,99%,99.9%,99.99%,100%\n\
 GET,/,100,2,40,42.5,10,120,512,10.5,0.2,40,45,50,55,60,68,75,85,110,118,120\n\
@@ -261,7 +274,7 @@ None,Aggregated,100,2,40,42.5,10,120,512,10.5,0.2,40,45,50,55,60,68,75,85,110,11
             .await
             .unwrap();
 
-        let lines = summary_from_csv(&dir).await.unwrap();
+        let lines = parse_csv_summary(&dir).await.unwrap();
         assert!(lines[0].contains("avg=42.50ms"));
         assert!(lines[0].contains("p(95)=68ms"));
         assert!(lines[1].contains("2.00%"));
@@ -271,14 +284,14 @@ None,Aggregated,100,2,40,42.5,10,120,512,10.5,0.2,40,45,50,55,60,68,75,85,110,11
     }
 
     #[tokio::test]
-    async fn summary_from_csv_missing_file_errors() {
+    async fn parse_csv_summary_missing_file_errors() {
         let dir = std::env::temp_dir().join(format!("perfscale-locust-missing-{}", Uuid::new_v4()));
-        let err = summary_from_csv(&dir).await.unwrap_err();
+        let err = parse_csv_summary(&dir).await.unwrap_err();
         assert!(err.contains("_stats.csv"));
     }
 
     #[tokio::test]
-    async fn summary_from_csv_without_aggregated_row_errors() {
+    async fn parse_csv_summary_without_aggregated_row_errors() {
         let dir = std::env::temp_dir().join(format!("perfscale-locust-noagg-{}", Uuid::new_v4()));
         let csv_content = "Type,Name,Request Count,Failure Count,Median Response Time,Average Response Time,Min Response Time,Max Response Time,Average Content Size,Requests/s,Failures/s,50%,66%,75%,80%,90%,95%,98%,99%,99.9%,99.99%,100%\n\
 GET,/,100,2,40,42.5,10,120,512,10.5,0.2,40,45,50,55,60,68,75,85,110,118,120\n";
@@ -286,14 +299,14 @@ GET,/,100,2,40,42.5,10,120,512,10.5,0.2,40,45,50,55,60,68,75,85,110,118,120\n";
             .await
             .unwrap();
 
-        let err = summary_from_csv(&dir).await.unwrap_err();
+        let err = parse_csv_summary(&dir).await.unwrap_err();
         assert!(err.contains("Aggregated"));
 
         cleanup_csv(&dir).await;
     }
 
     #[tokio::test]
-    async fn summary_from_csv_zero_requests_has_zero_error_rate() {
+    async fn parse_csv_summary_zero_requests_has_zero_error_rate() {
         let dir = std::env::temp_dir().join(format!("perfscale-locust-zero-{}", Uuid::new_v4()));
         let csv_content = "Type,Name,Request Count,Failure Count,Median Response Time,Average Response Time,Min Response Time,Max Response Time,Average Content Size,Requests/s,Failures/s,50%,66%,75%,80%,90%,95%,98%,99%,99.9%,99.99%,100%\n\
 None,Aggregated,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
@@ -301,7 +314,7 @@ None,Aggregated,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
             .await
             .unwrap();
 
-        let lines = summary_from_csv(&dir).await.unwrap();
+        let lines = parse_csv_summary(&dir).await.unwrap();
         assert!(lines[1].contains("0.00%"));
 
         cleanup_csv(&dir).await;
@@ -383,12 +396,15 @@ None,Aggregated,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
             duration: "1s".into(),
             host: Some("http://localhost:1".into()),
         };
-        let mut rx = run_streaming(script_path, opts).await.unwrap();
+        let RunOutput { mut lines, exit } = run_streaming(script_path, opts).await.unwrap();
 
         let mut saw_any_line = false;
-        while rx.recv().await.is_some() {
+        while lines.recv().await.is_some() {
             saw_any_line = true;
         }
         assert!(saw_any_line, "expected at least one log line from locust");
+        // Requests all failed (host unreachable) → locust exits non-zero, but
+        // the run itself completed and the exit code must be reported.
+        assert!(exit.await.unwrap().is_some());
     }
 }

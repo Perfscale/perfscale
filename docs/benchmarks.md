@@ -1,34 +1,49 @@
 # Benchmarks
 
-perfscale ships a built-in benchmark comparing its three engines — the native
-step engine, k6, and locust — under an identical scenario:
+perfscale ships a built-in benchmark comparing five scenarios under an
+identical workload:
 
 ```sh
 perfscale bench
 ```
 
+| Scenario | What it runs |
+|---|---|
+| `locust-native` | `locust` invoked directly — baseline |
+| `k6-native` | `k6` invoked directly — baseline |
+| `perfscale-k6` | the same k6 script, via `perfscale run --k6` |
+| `perfscale-locust` | the same locustfile, via `perfscale run --locust` |
+| `perfscale-yaml` | perfscale's own step engine (no external binary) |
+
+The `*-native` rows exist specifically to isolate **perfscale's wrapping
+overhead** from **the underlying tool's own performance**: `perfscale-k6` and
+`k6-native` run the byte-identical generated script, so any gap between them
+is temp-file handling, log piping, and summary translation — not k6. Same
+pairing for `locust-native` / `perfscale-locust`.
+
 ## Methodology
 
 - **Scenario**: `GET /` in a tight loop (no sleeps/wait_time), same VU count
-  and duration for every engine. Scenarios are generated in code
+  and duration for every scenario. Generated in code
   ([`commands/bench.rs`](../crates/perfscale-cli/src/commands/bench.rs)) so
-  they cannot drift apart between engines.
+  the native and perfscale-wrapped variants of each engine can't drift apart.
 - **Target**: an in-process axum server on loopback — no network noise, the
-  same target for every engine within a run.
-- **Sequential runs**: engines never compete with each other for CPU.
+  same target for every scenario within a run.
+- **Sequential runs**: scenarios never compete with each other for CPU.
 - **Report**: one markdown document per run with the host environment (OS,
   CPU, threads, RAM, swap) and software versions (perfscale, k6, locust) — so
   numbers are never compared blindly across machines.
 
 ## Reading the numbers
 
-The benchmark measures **engine overhead against a shared trivial target**,
-not absolute engine limits: at loopback speeds the differentiator is how much
-CPU the load generator itself burns per request. Compare engines within a
-single report; never compare across machines or runs.
+The benchmark measures **overhead against a shared trivial target**, not
+absolute engine limits: at loopback speeds the differentiator is how much CPU
+the load generator (and perfscale's wrapper, where applicable) burns per
+request. Compare scenarios within a single report; never compare across
+machines or runs.
 
-Engines missing from `PATH` are reported as skipped rather than failing the
-run.
+Scenarios whose engine is missing from `PATH` are reported as skipped rather
+than failing the run.
 
 ## Running on CI (canonical)
 
@@ -46,10 +61,10 @@ Results appear in the workflow's job summary and as a `bench-report` artifact
 
 ```sh
 cargo build --release
-./target/release/perfscale bench                          # all engines, 10 VUs, 15s each
+./target/release/perfscale bench                                    # all 5 scenarios, 10 VUs, 15s each
 ./target/release/perfscale bench --vus 50 --duration 30s
-./target/release/perfscale bench --engines native,k6      # skip locust
-./target/release/perfscale bench --output report.md       # also write to a file
+./target/release/perfscale bench --engines k6-native,perfscale-k6   # just the k6 comparison
+./target/release/perfscale bench --output report.md                 # also write to a file
 ```
 
 ## Example report shape
@@ -69,7 +84,15 @@ cargo build --release
 
 ## Results
 | Engine | Requests | RPS | avg | p50 | p90 | p95 | max | Failed |
-| perfscale (native) | 377287 | 37728.05/s | 0.04ms | 0.00ms | 0.00ms | 0.00ms | 9.00ms | 0.00% |
-| k6 | 477025 | 47701.58/s | 0.18ms | 0.15ms | 0.28ms | 0.37ms | 27.90ms | 0.00% |
-| locust | 34674 | 3849.21/s | 1.86ms | 1.00ms | 3.00ms | 3.00ms | 40.00ms | 0.00% |
+| locust (native) | 3961 | 3961.17/s | 0.60ms | 1.00ms | 1.00ms | 1.00ms | 6.00ms | 0.00% |
+| k6 (native) | 42428 | 21211.51/s | 0.12ms | 0.10ms | 0.18ms | 0.23ms | 5.90ms | 0.00% |
+| perfscale (k6) | 42435 | 21214.94/s | 0.12ms | 0.10ms | 0.17ms | 0.23ms | 18.18ms | 0.00% |
+| perfscale (locust) | 1252 | 1251.96/s | 1.79ms | 1.00ms | 2.00ms | 3.00ms | 275.00ms | 0.00% |
+| perfscale (yaml) | 17709 | 8853.47/s | 0.04ms | 0.00ms | 0.00ms | 0.00ms | 58.00ms | 0.00% |
 ```
+
+`k6-native` vs `perfscale-k6` above are near-identical (perfscale's k6 wrapper
+is thin — just temp-file writing and log piping). `locust-native` vs
+`perfscale-locust` show a real gap — that's the cost of piping locust's
+stdout/stderr through an internal channel and re-parsing its CSV output; a
+genuine, useful signal for anyone deciding between the two invocation paths.

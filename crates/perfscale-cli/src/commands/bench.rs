@@ -1,10 +1,19 @@
-//! `perfscale bench` — compare the three engines (native, k6, locust) on the
-//! same workload and produce a markdown report.
+//! `perfscale bench` — compare perfscale's engines against the same tools
+//! invoked bare, and produce a markdown report.
+//!
+//! Five scenarios, run sequentially so they never compete for CPU:
+//!
+//! - `locust-native` / `k6-native` — the tool's own binary invoked directly,
+//!   no perfscale involved. The baseline.
+//! - `perfscale-k6` / `perfscale-locust` — the same binaries invoked through
+//!   `perfscale run --k6` / `--locust`. Compared against the native baseline,
+//!   this is perfscale's wrapping overhead (temp files, log piping, summary
+//!   translation) — not the tool's own performance.
+//! - `perfscale-yaml` — perfscale's own step engine, no external binary.
 //!
 //! To keep the comparison about *engine overhead* rather than network or
-//! target variance, the benchmark starts an in-process HTTP target (axum,
-//! `GET /` → 200 "ok") and points every engine at it. Engines run
-//! sequentially so they never compete for CPU.
+//! target variance, every scenario hits the same in-process HTTP target
+//! (axum, `GET /` → 200 "ok").
 
 use std::fmt::Write as _;
 
@@ -33,13 +42,15 @@ pub async fn bench(args: BenchArgs) -> Result<(), CliError> {
 
     for engine in &args.engines {
         let result = match engine.as_str() {
-            "native" => run_native(&target.url, vus, &duration).await,
-            "k6" => run_k6(&target.url, vus, &duration).await,
-            "locust" => run_locust(&target.url, vus, &duration).await,
+            "locust-native" => run_locust_native(&target.url, vus, &duration).await,
+            "k6-native" => run_k6_native(&target.url, vus, &duration).await,
+            "perfscale-k6" => run_perfscale_k6(&target.url, vus, &duration).await,
+            "perfscale-locust" => run_perfscale_locust(&target.url, vus, &duration).await,
+            "perfscale-yaml" => run_perfscale_yaml(&target.url, vus, &duration).await,
             other => {
-                return Err(CliError::new(format!("unknown engine '{other}'"))
-                    .hint("valid engines: native, k6, locust (comma-separated)")
-                    .docs("cli/commands.md#perfscale-bench"));
+                return Err(CliError::new(format!("unknown engine '{other}'")).hint(
+                    "valid engines: locust-native, k6-native, perfscale-k6, perfscale-locust, perfscale-yaml (comma-separated)",
+                ).docs("cli/commands.md#perfscale-bench"));
             }
         };
         eprintln!("[bench] {engine}: {}", result.status_line());
@@ -132,16 +143,82 @@ impl EngineResult {
     }
 }
 
-async fn collect_lines(plan: ExecutionPlan) -> Result<Vec<String>, String> {
-    let mut rx = runner::execute(plan).await?;
-    let mut lines = Vec::new();
-    while let Some(line) = rx.recv().await {
-        lines.push(line.text);
+/// Standalone locustfile shared by both the native-locust baseline and the
+/// perfscale-wrapped run, so the two measure the exact same scenario.
+const BENCH_LOCUSTFILE: &str = "from locust import HttpUser, task\n\
+     class BenchUser(HttpUser):\n    \
+     @task\n    \
+     def hit(self):\n        \
+     self.client.get('/')\n";
+
+/// A non-zero exit is only a crash if it produced no metrics at all — k6
+/// (failed thresholds) and locust (failed requests) both exit non-zero as
+/// normal test feedback once they've actually run.
+fn crash_check(code: Option<i32>, lines: &[String]) -> Result<(), String> {
+    if let Some(code) = code {
+        if code != 0 && !lines.iter().any(|l| l.trim_start().starts_with("http_req")) {
+            return Err(format!(
+                "engine exited with code {code} before producing results"
+            ));
+        }
     }
-    Ok(lines)
+    Ok(())
 }
 
-async fn run_native(target_url: &str, vus: u32, duration: &str) -> EngineResult {
+async fn collect_lines(plan: ExecutionPlan) -> Result<Vec<String>, String> {
+    let output = runner::execute(plan).await?;
+    drain(output).await
+}
+
+/// Drain a perfscale-wrapped run to completion, applying [`crash_check`].
+async fn drain(output: perfscale_core::runner::RunOutput) -> Result<Vec<String>, String> {
+    let perfscale_core::runner::RunOutput { mut lines, exit } = output;
+    let mut collected = Vec::new();
+    while let Some(line) = lines.recv().await {
+        collected.push(line.text);
+    }
+    crash_check(exit.await.ok().flatten(), &collected)?;
+    Ok(collected)
+}
+
+/// Run `cmd` to completion (no live streaming — the native baselines don't
+/// need it) and return its combined stdout+stderr lines plus exit code.
+async fn capture_bare(
+    mut cmd: tokio::process::Command,
+) -> Result<(Vec<String>, Option<i32>), String> {
+    let output = cmd.output().await.map_err(|e| e.to_string())?;
+    let mut lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    lines.extend(
+        String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .map(str::to_string),
+    );
+    Ok((lines, output.status.code()))
+}
+
+fn skipped(engine: &str, why: impl Into<String>) -> EngineResult {
+    EngineResult {
+        engine: engine.into(),
+        outcome: EngineOutcome::Skipped(why.into()),
+    }
+}
+
+fn completed(engine: &str, lines: &[String]) -> EngineResult {
+    EngineResult {
+        engine: engine.into(),
+        outcome: EngineOutcome::Completed(parse_summary(lines)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// perfscale-yaml — the native step engine (no external binary)
+// ---------------------------------------------------------------------------
+
+async fn run_perfscale_yaml(target_url: &str, vus: u32, duration: &str) -> EngineResult {
+    const NAME: &str = "perfscale (yaml)";
     let test = TestDef {
         steps: vec![Step {
             name: Some("get".into()),
@@ -157,83 +234,134 @@ async fn run_native(target_url: &str, vus: u32, duration: &str) -> EngineResult 
     };
 
     match collect_lines(ExecutionPlan::NativeSteps { test, config }).await {
-        Ok(lines) => EngineResult {
-            engine: "perfscale (native)".into(),
-            outcome: EngineOutcome::Completed(parse_summary(&lines)),
-        },
-        Err(e) => EngineResult {
-            engine: "perfscale (native)".into(),
-            outcome: EngineOutcome::Skipped(e),
-        },
+        Ok(lines) => completed(NAME, &lines),
+        Err(e) => skipped(NAME, e),
     }
 }
 
-async fn run_k6(target_url: &str, vus: u32, duration: &str) -> EngineResult {
-    let name = "k6".to_string();
-    if binary_version("k6", &["version"]).is_none() {
-        return EngineResult {
-            engine: name,
-            outcome: EngineOutcome::Skipped("k6 not installed".into()),
-        };
-    }
+// ---------------------------------------------------------------------------
+// k6: bare binary vs perfscale run --k6 (identical generated script)
+// ---------------------------------------------------------------------------
 
-    let script = format!(
+fn k6_bench_script(target_url: &str, vus: u32, duration: &str) -> String {
+    format!(
         "import http from 'k6/http';\n\
          export const options = {{ vus: {vus}, duration: '{duration}' }};\n\
          export default function () {{ http.get('{target_url}/'); }}\n"
-    );
-
-    match collect_lines_from_k6(script).await {
-        Ok(lines) => EngineResult {
-            engine: name,
-            outcome: EngineOutcome::Completed(parse_summary(&lines)),
-        },
-        Err(e) => EngineResult {
-            engine: name,
-            outcome: EngineOutcome::Skipped(e),
-        },
-    }
+    )
 }
 
-async fn collect_lines_from_k6(script: String) -> Result<Vec<String>, String> {
-    let mut rx = perfscale_core::runner::k6::run_streaming(script).await?;
-    let mut lines = Vec::new();
-    while let Some(line) = rx.recv().await {
-        lines.push(line.text);
+async fn run_k6_native(target_url: &str, vus: u32, duration: &str) -> EngineResult {
+    const NAME: &str = "k6 (native)";
+    if binary_version("k6", &["version"]).is_none() {
+        return skipped(NAME, "k6 not installed");
     }
-    Ok(lines)
-}
-
-async fn run_locust(target_url: &str, vus: u32, duration: &str) -> EngineResult {
-    let name = "locust".to_string();
-    if binary_version("locust", &["--version"]).is_none() {
-        return EngineResult {
-            engine: name,
-            outcome: EngineOutcome::Skipped("locust not installed".into()),
-        };
-    }
-
-    let locustfile = "from locust import HttpUser, task\n\
-                      class BenchUser(HttpUser):\n    \
-                      @task\n    \
-                      def hit(self):\n        \
-                      self.client.get('/')\n";
 
     let dir = match tempfile::tempdir() {
         Ok(d) => d,
-        Err(e) => {
-            return EngineResult {
-                engine: name,
-                outcome: EngineOutcome::Skipped(e.to_string()),
-            }
-        }
+        Err(e) => return skipped(NAME, e.to_string()),
+    };
+    let script_path = dir.path().join("bench.js");
+    if let Err(e) = std::fs::write(&script_path, k6_bench_script(target_url, vus, duration)) {
+        return skipped(NAME, e.to_string());
+    }
+
+    let mut cmd = tokio::process::Command::new("k6");
+    cmd.arg("run").arg("--no-color").arg(&script_path);
+
+    match capture_bare(cmd).await {
+        Ok((lines, code)) => match crash_check(code, &lines) {
+            Ok(()) => completed(NAME, &lines),
+            Err(e) => skipped(NAME, e),
+        },
+        Err(e) => skipped(NAME, e),
+    }
+}
+
+async fn run_perfscale_k6(target_url: &str, vus: u32, duration: &str) -> EngineResult {
+    const NAME: &str = "perfscale (k6)";
+    if binary_version("k6", &["version"]).is_none() {
+        return skipped(NAME, "k6 not installed");
+    }
+
+    let script = k6_bench_script(target_url, vus, duration);
+    let result = async {
+        let output = perfscale_core::runner::k6::run_streaming(script).await?;
+        drain(output).await
+    };
+
+    match result.await {
+        Ok(lines) => completed(NAME, &lines),
+        Err(e) => skipped(NAME, e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// locust: bare binary vs perfscale run --locust (identical locustfile)
+// ---------------------------------------------------------------------------
+
+async fn run_locust_native(target_url: &str, vus: u32, duration: &str) -> EngineResult {
+    const NAME: &str = "locust (native)";
+    if binary_version("locust", &["--version"]).is_none() {
+        return skipped(NAME, "locust not installed");
+    }
+
+    let dir = match tempfile::tempdir() {
+        Ok(d) => d,
+        Err(e) => return skipped(NAME, e.to_string()),
+    };
+    let script_path = dir.path().join("locustfile.py");
+    if let Err(e) = std::fs::write(&script_path, BENCH_LOCUSTFILE) {
+        return skipped(NAME, e.to_string());
+    }
+    let csv_prefix = dir.path().join("stats");
+
+    let mut cmd = tokio::process::Command::new("locust");
+    cmd.arg("-f")
+        .arg(&script_path)
+        .arg("--headless")
+        .arg("-u")
+        .arg(vus.to_string())
+        .arg("-r")
+        .arg(vus.to_string())
+        .arg("-t")
+        .arg(duration)
+        .arg("--host")
+        .arg(target_url)
+        .arg("--csv")
+        .arg(&csv_prefix);
+
+    let (mut lines, code) = match capture_bare(cmd).await {
+        Ok(v) => v,
+        Err(e) => return skipped(NAME, e),
+    };
+
+    // Reuse the exact CSV parser perfscale's own locust runner uses, so the
+    // two rows are computed identically and only wrapper overhead differs.
+    match perfscale_core::runner::locust::parse_csv_summary(&csv_prefix).await {
+        Ok(summary) => lines.extend(summary),
+        Err(e) => lines.push(format!("[bench] failed to read locust stats: {e}")),
+    }
+
+    match crash_check(code, &lines) {
+        Ok(()) => completed(NAME, &lines),
+        Err(e) => skipped(NAME, e),
+    }
+}
+
+async fn run_perfscale_locust(target_url: &str, vus: u32, duration: &str) -> EngineResult {
+    const NAME: &str = "perfscale (locust)";
+    if binary_version("locust", &["--version"]).is_none() {
+        return skipped(NAME, "locust not installed");
+    }
+
+    let dir = match tempfile::tempdir() {
+        Ok(d) => d,
+        Err(e) => return skipped(NAME, e.to_string()),
     };
     let path = dir.path().join("locustfile.py");
-    if let Err(e) = std::fs::write(&path, locustfile) {
-        return EngineResult {
-            engine: name,
-            outcome: EngineOutcome::Skipped(e.to_string()),
-        };
+    if let Err(e) = std::fs::write(&path, BENCH_LOCUSTFILE) {
+        return skipped(NAME, e.to_string());
     }
 
     let opts = LocustOpts {
@@ -243,16 +371,9 @@ async fn run_locust(target_url: &str, vus: u32, duration: &str) -> EngineResult 
         host: Some(target_url.to_string()),
     };
 
-    let plan = ExecutionPlan::LocustScript { path, opts };
-    match collect_lines(plan).await {
-        Ok(lines) => EngineResult {
-            engine: name,
-            outcome: EngineOutcome::Completed(parse_summary(&lines)),
-        },
-        Err(e) => EngineResult {
-            engine: name,
-            outcome: EngineOutcome::Skipped(e),
-        },
+    match collect_lines(ExecutionPlan::LocustScript { path, opts }).await {
+        Ok(lines) => completed(NAME, &lines),
+        Err(e) => skipped(NAME, e),
     }
 }
 
@@ -488,7 +609,9 @@ pub fn render_report(input: &ReportInput) -> String {
     let _ = writeln!(
         out,
         "Notes: numbers measure engine overhead against a trivial local target, not real-world \
-         throughput. Native and k6 hit the target in a tight loop; locust adds its own default \
+         throughput. Compare `*-native` rows against their `perfscale-*` counterpart to see \
+         perfscale's wrapping overhead — both run the identical generated script/locustfile. \
+         `k6` and `perfscale (yaml)` hit the target in a tight loop; locust adds its own default \
          wait model only if the locustfile defines one (the bench locustfile does not)."
     );
 
@@ -617,7 +740,7 @@ mod tests {
             },
             results: vec![
                 EngineResult {
-                    engine: "perfscale (native)".into(),
+                    engine: "perfscale (yaml)".into(),
                     outcome: EngineOutcome::Completed(EngineMetrics {
                         requests: Some(1000.0),
                         rps: Some(66.6),
@@ -630,7 +753,7 @@ mod tests {
                     }),
                 },
                 EngineResult {
-                    engine: "locust".into(),
+                    engine: "locust (native)".into(),
                     outcome: EngineOutcome::Skipped("locust not installed".into()),
                 },
             ],
@@ -649,8 +772,8 @@ mod tests {
             "| perfscale | 0.1.0 |",
             "| k6 | k6 v1.0.0 |",
             "| locust | not installed |",
-            "| perfscale (native) | 1000 | 66.60/s |",
-            "| locust | — | — | — | — | — | — | — | locust not installed |",
+            "| perfscale (yaml) | 1000 | 66.60/s |",
+            "| locust (native) | — | — | — | — | — | — | — | locust not installed |",
         ] {
             assert!(
                 report.contains(required),

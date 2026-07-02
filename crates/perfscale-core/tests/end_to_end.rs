@@ -3,19 +3,20 @@
 //! the public API only: parse YAML → build an ExecutionPlan → execute →
 //! consume the LogLine stream.
 
-use perfscale_core::runner::{self, ExecutionPlan, LogLine, LogSource};
+use perfscale_core::runner::{self, ExecutionPlan, LogLine, LogSource, RunOutput};
 use perfscale_core::step::RunConfig;
 use perfscale_core::yaml;
 use serial_test::file_serial;
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-async fn collect(mut rx: tokio::sync::mpsc::Receiver<LogLine>) -> Vec<LogLine> {
-    let mut lines = Vec::new();
-    while let Some(line) = rx.recv().await {
-        lines.push(line);
+async fn collect(output: RunOutput) -> Vec<LogLine> {
+    let RunOutput { mut lines, exit: _ } = output;
+    let mut collected = Vec::new();
+    while let Some(line) = lines.recv().await {
+        collected.push(line);
     }
-    lines
+    collected
 }
 
 fn stdout_text(lines: &[LogLine]) -> String {

@@ -29,6 +29,22 @@ pub enum LogSource {
     System,
 }
 
+/// A running engine: its live output plus, once it finishes, the process
+/// exit code.
+///
+/// `exit` resolves after `lines` closes. `Some(0)` means a clean exit; a
+/// non-zero code by itself is NOT necessarily a crash — k6 exits non-zero on
+/// failed thresholds and locust on failed requests, both of which are test
+/// feedback. Combine the code with whether any metrics arrived to tell a
+/// startup crash apart from a completed-but-failing run.
+#[derive(Debug)]
+pub struct RunOutput {
+    pub lines: mpsc::Receiver<LogLine>,
+    /// Engine process exit code. `None` if the process was killed by a
+    /// signal; the native engine always reports `Some(0)`.
+    pub exit: tokio::sync::oneshot::Receiver<Option<i32>>,
+}
+
 /// What to run and with which engine, resolved from CLI flags.
 pub enum ExecutionPlan {
     /// `perfscale run --k6 <file.js>`
@@ -42,8 +58,8 @@ pub enum ExecutionPlan {
     NativeSteps { test: TestDef, config: RunConfig },
 }
 
-/// Run `plan` and return a channel streaming its output as it happens.
-pub async fn execute(plan: ExecutionPlan) -> Result<mpsc::Receiver<LogLine>, String> {
+/// Run `plan` and return its live output stream plus final exit code.
+pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
     match plan {
         ExecutionPlan::K6Script(path) => {
             let script = tokio::fs::read_to_string(&path)
@@ -54,8 +70,15 @@ pub async fn execute(plan: ExecutionPlan) -> Result<mpsc::Receiver<LogLine>, Str
         ExecutionPlan::LocustScript { path, opts } => locust::run_streaming(path, opts).await,
         ExecutionPlan::NativeSteps { test, config } => {
             let (tx, rx) = mpsc::channel(512);
-            tokio::spawn(crate::step::runner::run_steps(test.steps, config, tx));
-            Ok(rx)
+            let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                crate::step::runner::run_steps(test.steps, config, tx).await;
+                let _ = exit_tx.send(Some(0));
+            });
+            Ok(RunOutput {
+                lines: rx,
+                exit: exit_rx,
+            })
         }
     }
 }
@@ -111,14 +134,15 @@ mod tests {
             duration: "1s".into(),
         };
 
-        let mut rx = execute(ExecutionPlan::NativeSteps { test, config })
+        let RunOutput { mut lines, exit } = execute(ExecutionPlan::NativeSteps { test, config })
             .await
             .unwrap();
-        let mut lines = Vec::new();
-        while let Some(line) = rx.recv().await {
-            lines.push(line.text);
+        let mut collected = Vec::new();
+        while let Some(line) = lines.recv().await {
+            collected.push(line.text);
         }
-        assert!(lines.iter().any(|l| l == "via dispatcher"));
+        assert!(collected.iter().any(|l| l == "via dispatcher"));
+        assert_eq!(exit.await.unwrap(), Some(0), "native engine always exits 0");
     }
 
     #[tokio::test]
@@ -137,12 +161,40 @@ mod tests {
             .await
             .unwrap();
 
-        let mut rx = execute(ExecutionPlan::K6Script(script_path)).await.unwrap();
+        let RunOutput { mut lines, exit } =
+            execute(ExecutionPlan::K6Script(script_path)).await.unwrap();
         let mut saw_any_line = false;
-        while rx.recv().await.is_some() {
+        while lines.recv().await.is_some() {
             saw_any_line = true;
         }
         assert!(saw_any_line);
+        assert_eq!(exit.await.unwrap(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn execute_k6_invalid_script_reports_nonzero_exit() {
+        if std::process::Command::new("k6")
+            .arg("version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping: k6 not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("broken.js");
+        tokio::fs::write(&script_path, "this is not javascript {{{")
+            .await
+            .unwrap();
+
+        let RunOutput { mut lines, exit } =
+            execute(ExecutionPlan::K6Script(script_path)).await.unwrap();
+        while lines.recv().await.is_some() {}
+        let code = exit.await.unwrap();
+        assert!(
+            matches!(code, Some(c) if c != 0),
+            "expected non-zero exit, got {code:?}"
+        );
     }
 
     #[tokio::test]

@@ -3,10 +3,10 @@
 //! Writes the given script to a temp file, spawns `k6 run`, and delivers
 //! output via one of two delivery modes:
 //!
-//! | Function         | Returns                    | Use for      |
-//! |------------------|-----------------------------|--------------|
-//! | `run_streaming`  | `mpsc::Receiver<LogLine>`   | live logs    |
-//! | `run_oneshot`    | `RunResult`                 | final result |
+//! | Function         | Returns       | Use for      |
+//! |------------------|---------------|--------------|
+//! | `run_streaming`  | [`RunOutput`] | live logs    |
+//! | `run_oneshot`    | `RunResult`   | final result |
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -18,16 +18,17 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::models::RunResult;
-use crate::runner::{LogLine, LogSource};
+use crate::runner::{LogLine, LogSource, RunOutput};
 
 // ---------------------------------------------------------------------------
 // Streaming run
 // ---------------------------------------------------------------------------
 
-/// Spawn k6 and return a channel of log lines.
+/// Spawn k6 and return its live output plus final exit code.
 ///
-/// The channel closes when the k6 process exits.
-pub async fn run_streaming(script: String) -> Result<mpsc::Receiver<LogLine>, String> {
+/// The line channel closes when the k6 process exits; `exit` resolves right
+/// after with the process status code.
+pub async fn run_streaming(script: String) -> Result<RunOutput, String> {
     let (script_path, run_id) = write_script(&script)?;
 
     let mut child = spawn_k6(&script_path)?;
@@ -73,18 +74,29 @@ pub async fn run_streaming(script: String) -> Result<mpsc::Receiver<LogLine>, St
         }
     });
 
-    // Wait for process, then clean up the script file.
+    // Wait for process, forward its exit code, then clean up the script file.
+    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
     let path_clone = script_path.clone();
     tokio::spawn(async move {
-        match child.wait().await {
-            Ok(status) => debug!(%run_id, ?status, "k6 exited"),
-            Err(e) => warn!(%run_id, error = %e, "k6 wait error"),
-        }
+        let code = match child.wait().await {
+            Ok(status) => {
+                debug!(%run_id, ?status, "k6 exited");
+                status.code()
+            }
+            Err(e) => {
+                warn!(%run_id, error = %e, "k6 wait error");
+                None
+            }
+        };
         // tx is dropped here → channel closes → stream ends.
         let _ = tokio::fs::remove_file(&path_clone).await;
+        let _ = exit_tx.send(code);
     });
 
-    Ok(rx)
+    Ok(RunOutput {
+        lines: rx,
+        exit: exit_rx,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -222,18 +234,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_streaming_success_yields_lines_and_closes() {
+    async fn run_streaming_success_yields_lines_and_clean_exit() {
         if !k6_available() {
             eprintln!("skipping: k6 not installed");
             return;
         }
-        let mut rx = run_streaming("export default function() {}".to_string())
-            .await
-            .unwrap();
+        let RunOutput { mut lines, exit } =
+            run_streaming("export default function() {}".to_string())
+                .await
+                .unwrap();
         let mut saw_any_line = false;
-        while rx.recv().await.is_some() {
+        while lines.recv().await.is_some() {
             saw_any_line = true;
         }
         assert!(saw_any_line, "expected at least one log line from k6");
+        assert_eq!(exit.await.unwrap(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn run_streaming_broken_script_reports_nonzero_exit() {
+        if !k6_available() {
+            eprintln!("skipping: k6 not installed");
+            return;
+        }
+        let RunOutput { mut lines, exit } = run_streaming("not javascript {{{".to_string())
+            .await
+            .unwrap();
+        while lines.recv().await.is_some() {}
+        let code = exit.await.unwrap();
+        assert!(
+            matches!(code, Some(c) if c != 0),
+            "expected non-zero exit, got {code:?}"
+        );
     }
 }
