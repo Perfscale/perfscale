@@ -83,13 +83,17 @@ cargo build --release
 | locust | locust 2.32 |
 
 ## Results
-| Engine | Requests | RPS | avg | p50 | p90 | p95 | max | Failed |
-| locust (native) | 3961 | 3961.17/s | 0.60ms | 1.00ms | 1.00ms | 1.00ms | 6.00ms | 0.00% |
-| k6 (native) | 42428 | 21211.51/s | 0.12ms | 0.10ms | 0.18ms | 0.23ms | 5.90ms | 0.00% |
-| perfscale (k6) | 42435 | 21214.94/s | 0.12ms | 0.10ms | 0.17ms | 0.23ms | 18.18ms | 0.00% |
-| perfscale (locust) | 1252 | 1251.96/s | 1.79ms | 1.00ms | 2.00ms | 3.00ms | 275.00ms | 0.00% |
-| perfscale (yaml) | 17709 | 8853.47/s | 0.04ms | 0.00ms | 0.00ms | 0.00ms | 58.00ms | 0.00% |
+| Engine | Version | Requests | RPS | avg | p50 | p90 | p95 | max | Failed |
+| locust (native) | locust 2.44.4 | 3961 | 3961.17/s | 0.60ms | 1.00ms | 1.00ms | 1.00ms | 6.00ms | 0.00% |
+| k6 (native) | k6 v1.5.0 | 42428 | 21211.51/s | 0.12ms | 0.10ms | 0.18ms | 0.23ms | 5.90ms | 0.00% |
+| perfscale (k6) | k6 v1.5.0 | 42435 | 21214.94/s | 0.12ms | 0.10ms | 0.17ms | 0.23ms | 18.18ms | 0.00% |
+| perfscale (locust) | locust 2.44.4 | 1252 | 1251.96/s | 1.79ms | 1.00ms | 2.00ms | 3.00ms | 275.00ms | 0.00% |
+| perfscale (yaml) | 0.2.0 | 17709 | 8853.47/s | 0.04ms | 0.00ms | 0.00ms | 0.00ms | 58.00ms | 0.00% |
 ```
+
+The `Version` column makes each row self-contained — no need to cross-reference
+the Software section above to know exactly which k6/locust/perfscale build
+produced a given number.
 
 `k6-native` vs `perfscale-k6` above are near-identical (perfscale's k6 wrapper
 is thin — just temp-file writing and log piping). `locust-native` vs

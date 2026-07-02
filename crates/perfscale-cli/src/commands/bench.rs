@@ -123,6 +123,11 @@ impl TargetServer {
 
 pub struct EngineResult {
     pub engine: String,
+    /// Short version string of the software that actually ran (perfscale's
+    /// own version for `perfscale-yaml`, k6's/locust's for the rest) — shown
+    /// next to the numbers so a report is self-contained without having to
+    /// cross-reference the Software section above it.
+    pub version: Option<String>,
     pub outcome: EngineOutcome,
 }
 
@@ -202,15 +207,31 @@ async fn capture_bare(
 fn skipped(engine: &str, why: impl Into<String>) -> EngineResult {
     EngineResult {
         engine: engine.into(),
+        version: None,
         outcome: EngineOutcome::Skipped(why.into()),
     }
 }
 
-fn completed(engine: &str, lines: &[String]) -> EngineResult {
+fn completed(engine: &str, version: Option<String>, lines: &[String]) -> EngineResult {
     EngineResult {
         engine: engine.into(),
+        version,
         outcome: EngineOutcome::Completed(parse_summary(lines)),
     }
+}
+
+/// Trim a `<bin> --version`-style banner down to `"name x.y.z"` — k6 and
+/// locust both tack on build/interpreter details we don't need in a table
+/// cell (they're still visible in full in the Software section above).
+fn short_version(full: &str) -> String {
+    let mut s = full;
+    if let Some(idx) = s.find(" from ") {
+        s = &s[..idx];
+    }
+    if let Some(idx) = s.find(" (") {
+        s = &s[..idx];
+    }
+    s.trim().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +255,7 @@ async fn run_perfscale_yaml(target_url: &str, vus: u32, duration: &str) -> Engin
     };
 
     match collect_lines(ExecutionPlan::NativeSteps { test, config }).await {
-        Ok(lines) => completed(NAME, &lines),
+        Ok(lines) => completed(NAME, Some(env!("CARGO_PKG_VERSION").to_string()), &lines),
         Err(e) => skipped(NAME, e),
     }
 }
@@ -253,9 +274,9 @@ fn k6_bench_script(target_url: &str, vus: u32, duration: &str) -> String {
 
 async fn run_k6_native(target_url: &str, vus: u32, duration: &str) -> EngineResult {
     const NAME: &str = "k6 (native)";
-    if binary_version("k6", &["version"]).is_none() {
+    let Some(version) = binary_version("k6", &["version"]) else {
         return skipped(NAME, "k6 not installed");
-    }
+    };
 
     let dir = match tempfile::tempdir() {
         Ok(d) => d,
@@ -271,7 +292,7 @@ async fn run_k6_native(target_url: &str, vus: u32, duration: &str) -> EngineResu
 
     match capture_bare(cmd).await {
         Ok((lines, code)) => match crash_check(code, &lines) {
-            Ok(()) => completed(NAME, &lines),
+            Ok(()) => completed(NAME, Some(short_version(&version)), &lines),
             Err(e) => skipped(NAME, e),
         },
         Err(e) => skipped(NAME, e),
@@ -280,9 +301,9 @@ async fn run_k6_native(target_url: &str, vus: u32, duration: &str) -> EngineResu
 
 async fn run_perfscale_k6(target_url: &str, vus: u32, duration: &str) -> EngineResult {
     const NAME: &str = "perfscale (k6)";
-    if binary_version("k6", &["version"]).is_none() {
+    let Some(version) = binary_version("k6", &["version"]) else {
         return skipped(NAME, "k6 not installed");
-    }
+    };
 
     let script = k6_bench_script(target_url, vus, duration);
     let result = async {
@@ -291,7 +312,7 @@ async fn run_perfscale_k6(target_url: &str, vus: u32, duration: &str) -> EngineR
     };
 
     match result.await {
-        Ok(lines) => completed(NAME, &lines),
+        Ok(lines) => completed(NAME, Some(short_version(&version)), &lines),
         Err(e) => skipped(NAME, e),
     }
 }
@@ -302,9 +323,9 @@ async fn run_perfscale_k6(target_url: &str, vus: u32, duration: &str) -> EngineR
 
 async fn run_locust_native(target_url: &str, vus: u32, duration: &str) -> EngineResult {
     const NAME: &str = "locust (native)";
-    if binary_version("locust", &["--version"]).is_none() {
+    let Some(version) = binary_version("locust", &["--version"]) else {
         return skipped(NAME, "locust not installed");
-    }
+    };
 
     let dir = match tempfile::tempdir() {
         Ok(d) => d,
@@ -344,16 +365,16 @@ async fn run_locust_native(target_url: &str, vus: u32, duration: &str) -> Engine
     }
 
     match crash_check(code, &lines) {
-        Ok(()) => completed(NAME, &lines),
+        Ok(()) => completed(NAME, Some(short_version(&version)), &lines),
         Err(e) => skipped(NAME, e),
     }
 }
 
 async fn run_perfscale_locust(target_url: &str, vus: u32, duration: &str) -> EngineResult {
     const NAME: &str = "perfscale (locust)";
-    if binary_version("locust", &["--version"]).is_none() {
+    let Some(version) = binary_version("locust", &["--version"]) else {
         return skipped(NAME, "locust not installed");
-    }
+    };
 
     let dir = match tempfile::tempdir() {
         Ok(d) => d,
@@ -372,7 +393,7 @@ async fn run_perfscale_locust(target_url: &str, vus: u32, duration: &str) -> Eng
     };
 
     match collect_lines(ExecutionPlan::LocustScript { path, opts }).await {
-        Ok(lines) => completed(NAME, &lines),
+        Ok(lines) => completed(NAME, Some(short_version(&version)), &lines),
         Err(e) => skipped(NAME, e),
     }
 }
@@ -580,16 +601,18 @@ pub fn render_report(input: &ReportInput) -> String {
     let _ = writeln!(out, "## Results\n");
     let _ = writeln!(
         out,
-        "| Engine | Requests | RPS | avg | p50 | p90 | p95 | max | Failed |"
+        "| Engine | Version | Requests | RPS | avg | p50 | p90 | p95 | max | Failed |"
     );
-    let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|");
+    let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|---|");
     for r in &input.results {
+        let version = r.version.as_deref().unwrap_or("—");
         match &r.outcome {
             EngineOutcome::Completed(m) => {
                 let _ = writeln!(
                     out,
-                    "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                    "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                     r.engine,
+                    version,
                     fmt_count(m.requests),
                     fmt_num(m.rps, "/s"),
                     fmt_num(m.avg_ms, "ms"),
@@ -601,7 +624,11 @@ pub fn render_report(input: &ReportInput) -> String {
                 );
             }
             EngineOutcome::Skipped(why) => {
-                let _ = writeln!(out, "| {} | — | — | — | — | — | — | — | {why} |", r.engine);
+                let _ = writeln!(
+                    out,
+                    "| {} | {} | — | — | — | — | — | — | — | {why} |",
+                    r.engine, version
+                );
             }
         }
     }
@@ -720,6 +747,29 @@ mod tests {
     }
 
     #[test]
+    fn short_version_trims_k6_build_details() {
+        assert_eq!(
+            short_version("k6 v1.5.0 (commit/devel, go1.25.5, darwin/arm64)"),
+            "k6 v1.5.0"
+        );
+    }
+
+    #[test]
+    fn short_version_trims_locust_interpreter_path() {
+        assert_eq!(
+            short_version(
+                "locust 2.44.4 from /Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/locust (Python 3.12.3)"
+            ),
+            "locust 2.44.4"
+        );
+    }
+
+    #[test]
+    fn short_version_leaves_plain_strings_unchanged() {
+        assert_eq!(short_version("k6 v1.5.0"), "k6 v1.5.0");
+    }
+
+    #[test]
     fn render_report_contains_required_sections() {
         let input = ReportInput {
             vus: 10,
@@ -741,6 +791,7 @@ mod tests {
             results: vec![
                 EngineResult {
                     engine: "perfscale (yaml)".into(),
+                    version: Some("0.1.0".into()),
                     outcome: EngineOutcome::Completed(EngineMetrics {
                         requests: Some(1000.0),
                         rps: Some(66.6),
@@ -754,6 +805,7 @@ mod tests {
                 },
                 EngineResult {
                     engine: "locust (native)".into(),
+                    version: None,
                     outcome: EngineOutcome::Skipped("locust not installed".into()),
                 },
             ],
@@ -772,8 +824,8 @@ mod tests {
             "| perfscale | 0.1.0 |",
             "| k6 | k6 v1.0.0 |",
             "| locust | not installed |",
-            "| perfscale (yaml) | 1000 | 66.60/s |",
-            "| locust (native) | — | — | — | — | — | — | — | locust not installed |",
+            "| perfscale (yaml) | 0.1.0 | 1000 | 66.60/s |",
+            "| locust (native) | — | — | — | — | — | — | — | — | locust not installed |",
         ] {
             assert!(
                 report.contains(required),
