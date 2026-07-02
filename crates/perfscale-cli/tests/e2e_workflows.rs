@@ -366,12 +366,30 @@ fn bench_perfscale_yaml_only_prints_full_report() {
         "| locust |",
         "## Results",
         "| perfscale (yaml) |",
+        "## Resource usage",
+        "| Engine | CPU avg | CPU max | Peak memory | Disk read | Disk written |",
     ] {
         assert!(
             stdout.contains(required),
             "missing {required:?} in report:\n{stdout}"
         );
     }
+
+    // A 2s run comfortably clears the ~200ms sampling interval, so the
+    // resource row must carry real numbers, not all-dashes. Search only
+    // after the "## Resource usage" heading — the Results table above it has
+    // its own "| perfscale (yaml) | ..." row with an unrelated Failed-% column.
+    let (_, resource_section) = stdout
+        .split_once("## Resource usage")
+        .unwrap_or_else(|| panic!("no Resource usage section in:\n{stdout}"));
+    let resource_row = resource_section
+        .lines()
+        .find(|l| l.starts_with("| perfscale (yaml) |"))
+        .unwrap_or_else(|| panic!("no resource-usage row for perfscale (yaml) in:\n{stdout}"));
+    assert_ne!(
+        resource_row, "| perfscale (yaml) | — | — | — | — | — |",
+        "expected real resource numbers, got all dashes"
+    );
 }
 
 #[test]

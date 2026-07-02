@@ -11,7 +11,11 @@ use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn collect(output: RunOutput) -> Vec<LogLine> {
-    let RunOutput { mut lines, exit: _ } = output;
+    let RunOutput {
+        mut lines,
+        exit: _,
+        pid: _,
+    } = output;
     let mut collected = Vec::new();
     while let Some(line) = lines.recv().await {
         collected.push(line);

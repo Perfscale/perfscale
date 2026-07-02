@@ -66,10 +66,12 @@ replace it.
 ## `perfscale bench`
 
 Runs the same tight `GET` loop through five scenarios — sequentially, against
-an in-process loopback target — and prints a markdown report with the host
+an in-process loopback target — and prints a markdown report: host
 environment (OS, CPU, threads, RAM, swap), software versions (perfscale, k6,
-locust), and per-scenario results (requests, RPS, avg/p50/p90/p95/max,
-failure rate). See [Benchmarks](../benchmarks.md) for methodology.
+locust), a **Results** table (requests, RPS, avg/p50/p90/p95/max, failure
+rate), and a separate **Resource usage** table (CPU avg/max, peak memory,
+disk read/written) — throughput alone doesn't tell you what an engine costs
+to run. See [Benchmarks](../benchmarks.md) for methodology.
 
 | Scenario | What it runs |
 |---|---|

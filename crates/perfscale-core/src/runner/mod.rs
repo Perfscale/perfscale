@@ -43,6 +43,11 @@ pub struct RunOutput {
     /// Engine process exit code. `None` if the process was killed by a
     /// signal; the native engine always reports `Some(0)`.
     pub exit: tokio::sync::oneshot::Receiver<Option<i32>>,
+    /// OS process ID of the spawned engine binary, while it's running — lets
+    /// callers (e.g. `perfscale bench`) sample its CPU/memory/IO usage.
+    /// `None` for the native step engine, which runs in-process rather than
+    /// as a subprocess.
+    pub pid: Option<u32>,
 }
 
 /// What to run and with which engine, resolved from CLI flags.
@@ -78,6 +83,7 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
             Ok(RunOutput {
                 lines: rx,
                 exit: exit_rx,
+                pid: None,
             })
         }
     }
@@ -134,7 +140,9 @@ mod tests {
             duration: "1s".into(),
         };
 
-        let RunOutput { mut lines, exit } = execute(ExecutionPlan::NativeSteps { test, config })
+        let RunOutput {
+            mut lines, exit, ..
+        } = execute(ExecutionPlan::NativeSteps { test, config })
             .await
             .unwrap();
         let mut collected = Vec::new();
@@ -161,8 +169,12 @@ mod tests {
             .await
             .unwrap();
 
-        let RunOutput { mut lines, exit } =
-            execute(ExecutionPlan::K6Script(script_path)).await.unwrap();
+        let RunOutput {
+            mut lines,
+            exit,
+            pid,
+        } = execute(ExecutionPlan::K6Script(script_path)).await.unwrap();
+        assert!(pid.is_some(), "k6 runner must report a pid");
         let mut saw_any_line = false;
         while lines.recv().await.is_some() {
             saw_any_line = true;
@@ -187,8 +199,9 @@ mod tests {
             .await
             .unwrap();
 
-        let RunOutput { mut lines, exit } =
-            execute(ExecutionPlan::K6Script(script_path)).await.unwrap();
+        let RunOutput {
+            mut lines, exit, ..
+        } = execute(ExecutionPlan::K6Script(script_path)).await.unwrap();
         while lines.recv().await.is_some() {}
         let code = exit.await.unwrap();
         assert!(

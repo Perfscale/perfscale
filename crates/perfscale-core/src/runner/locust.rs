@@ -62,6 +62,7 @@ pub async fn run_streaming(script: PathBuf, opts: LocustOpts) -> Result<RunOutpu
     let csv_prefix = std::env::temp_dir().join(format!("perfscale-locust-{run_id}"));
 
     let mut child = spawn_locust(&script, &opts, &csv_prefix)?;
+    let pid = child.id();
 
     let (tx, rx) = mpsc::channel::<LogLine>(512);
     let tx_stdout = tx.clone();
@@ -144,6 +145,7 @@ pub async fn run_streaming(script: PathBuf, opts: LocustOpts) -> Result<RunOutpu
     Ok(RunOutput {
         lines: rx,
         exit: exit_rx,
+        pid,
     })
 }
 
@@ -396,7 +398,15 @@ None,Aggregated,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
             duration: "1s".into(),
             host: Some("http://localhost:1".into()),
         };
-        let RunOutput { mut lines, exit } = run_streaming(script_path, opts).await.unwrap();
+        let RunOutput {
+            mut lines,
+            exit,
+            pid,
+        } = run_streaming(script_path, opts).await.unwrap();
+        assert!(
+            pid.is_some(),
+            "expected a pid for the spawned locust process"
+        );
 
         let mut saw_any_line = false;
         while lines.recv().await.is_some() {

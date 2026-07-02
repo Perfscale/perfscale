@@ -19,8 +19,9 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
     let plan = resolve_plan(&args, native_test, config.as_ref());
     let report_url = resolve_report_url(&args, config.as_ref());
 
-    let RunOutput { mut lines, exit } =
-        runner::execute(plan).await.map_err(CliError::from_engine)?;
+    let RunOutput {
+        mut lines, exit, ..
+    } = runner::execute(plan).await.map_err(CliError::from_engine)?;
     let mut summary_lines: Vec<String> = Vec::new();
 
     while let Some(line) = lines.recv().await {

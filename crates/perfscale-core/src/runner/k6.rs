@@ -32,6 +32,7 @@ pub async fn run_streaming(script: String) -> Result<RunOutput, String> {
     let (script_path, run_id) = write_script(&script)?;
 
     let mut child = spawn_k6(&script_path)?;
+    let pid = child.id();
 
     let (tx, rx) = mpsc::channel::<LogLine>(512);
     let tx_stdout = tx.clone();
@@ -96,6 +97,7 @@ pub async fn run_streaming(script: String) -> Result<RunOutput, String> {
     Ok(RunOutput {
         lines: rx,
         exit: exit_rx,
+        pid,
     })
 }
 
@@ -239,10 +241,14 @@ mod tests {
             eprintln!("skipping: k6 not installed");
             return;
         }
-        let RunOutput { mut lines, exit } =
-            run_streaming("export default function() {}".to_string())
-                .await
-                .unwrap();
+        let RunOutput {
+            mut lines,
+            exit,
+            pid,
+        } = run_streaming("export default function() {}".to_string())
+            .await
+            .unwrap();
+        assert!(pid.is_some(), "expected a pid for the spawned k6 process");
         let mut saw_any_line = false;
         while lines.recv().await.is_some() {
             saw_any_line = true;
@@ -257,7 +263,9 @@ mod tests {
             eprintln!("skipping: k6 not installed");
             return;
         }
-        let RunOutput { mut lines, exit } = run_streaming("not javascript {{{".to_string())
+        let RunOutput {
+            mut lines, exit, ..
+        } = run_streaming("not javascript {{{".to_string())
             .await
             .unwrap();
         while lines.recv().await.is_some() {}

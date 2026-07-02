@@ -34,6 +34,10 @@ pairing for `locust-native` / `perfscale-locust`.
   CPU, threads, RAM, swap) and software versions (perfscale, k6, locust) — so
   numbers are never compared blindly across machines.
 
+The report has two tables: **Results** (throughput/latency) and **Resource
+usage** (CPU/memory/disk IO) — speed alone doesn't tell you what a load
+generator costs to run, and the two don't always agree (see below).
+
 ## Reading the numbers
 
 The benchmark measures **overhead against a shared trivial target**, not
@@ -41,6 +45,16 @@ absolute engine limits: at loopback speeds the differentiator is how much CPU
 the load generator (and perfscale's wrapper, where applicable) burns per
 request. Compare scenarios within a single report; never compare across
 machines or runs.
+
+Resource usage is sampled by polling the engine's process every
+~[`MINIMUM_CPU_UPDATE_INTERVAL`](https://docs.rs/sysinfo) (currently 200ms) —
+CPU avg/max are computed from those samples, and peak memory / disk IO are
+read from the same poll, so brief spikes between samples can be missed. A
+scenario shorter than one interval shows no data. `perfscale-yaml` has no
+child process to attribute cost to, so it measures perfscale's own process —
+which also includes the in-process bench target serving its requests, a cost
+every other scenario's requests pass through too, just paid by a separate
+process there and so not counted against them.
 
 Scenarios whose engine is missing from `PATH` are reported as skipped rather
 than failing the run.
@@ -89,14 +103,29 @@ cargo build --release
 | perfscale (k6) | k6 v1.5.0 | 42435 | 21214.94/s | 0.12ms | 0.10ms | 0.17ms | 0.23ms | 18.18ms | 0.00% |
 | perfscale (locust) | locust 2.44.4 | 1252 | 1251.96/s | 1.79ms | 1.00ms | 2.00ms | 3.00ms | 275.00ms | 0.00% |
 | perfscale (yaml) | 0.2.0 | 17709 | 8853.47/s | 0.04ms | 0.00ms | 0.00ms | 0.00ms | 58.00ms | 0.00% |
+
+## Resource usage
+| Engine | CPU avg | CPU max | Peak memory | Disk read | Disk written |
+| locust (native) | 35.4% | 99.3% | 54 MiB | 264 KiB | 4 KiB |
+| k6 (native) | 3.7% | 5.0% | 68 MiB | 6 MiB | 0 B |
+| perfscale (k6) | 3.9% | 5.1% | 72 MiB | 224 KiB | 0 B |
+| perfscale (locust) | 35.6% | 98.6% | 54 MiB | 264 KiB | 8 KiB |
+| perfscale (yaml) | 5.5% | 6.5% | 22 MiB | 52 KiB | 16 KiB |
 ```
 
 The `Version` column makes each row self-contained — no need to cross-reference
 the Software section above to know exactly which k6/locust/perfscale build
 produced a given number.
 
-`k6-native` vs `perfscale-k6` above are near-identical (perfscale's k6 wrapper
-is thin — just temp-file writing and log piping). `locust-native` vs
-`perfscale-locust` show a real gap — that's the cost of piping locust's
-stdout/stderr through an internal channel and re-parsing its CSV output; a
-genuine, useful signal for anyone deciding between the two invocation paths.
+`k6-native` vs `perfscale-k6` above are near-identical on both tables
+(perfscale's k6 wrapper is thin — just temp-file writing and log piping),
+which is exactly what you want to see: wrapping k6 doesn't cost you anything
+extra. `locust-native` vs `perfscale-locust` show a real throughput gap —
+that's the cost of piping locust's stdout/stderr through an internal channel
+and re-parsing its CSV output — but their resource cost is nearly identical,
+so the gap is latency/overhead in the pipe, not extra CPU/memory burned.
+
+Independent of the perfscale-vs-native comparison, the Resource usage table
+also answers a different question: locust costs roughly **10x the CPU** of k6
+for the same workload here (35% vs 3.7%) — a genuinely useful signal when
+choosing an engine, that the Results table's RPS numbers alone don't surface.

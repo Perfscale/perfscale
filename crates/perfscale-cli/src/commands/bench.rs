@@ -16,11 +16,13 @@
 //! (axum, `GET /` → 200 "ok").
 
 use std::fmt::Write as _;
+use std::sync::{Arc, Mutex};
 
 use axum::{routing::get, Router};
 use perfscale_core::runner::locust::LocustOpts;
 use perfscale_core::runner::{self, ExecutionPlan};
 use perfscale_core::step::{parse_duration_secs, RunConfig, Step, TestDef};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use crate::cli::BenchArgs;
 use crate::error::CliError;
@@ -128,6 +130,9 @@ pub struct EngineResult {
     /// next to the numbers so a report is self-contained without having to
     /// cross-reference the Software section above it.
     pub version: Option<String>,
+    /// CPU/memory/disk-IO sampled while this scenario ran — `None` when the
+    /// scenario was skipped or sampling never got a single data point.
+    pub resource: Option<ResourceUsage>,
     pub outcome: EngineOutcome,
 }
 
@@ -170,28 +175,60 @@ fn crash_check(code: Option<i32>, lines: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-async fn collect_lines(plan: ExecutionPlan) -> Result<Vec<String>, String> {
+async fn collect_lines(
+    plan: ExecutionPlan,
+) -> Result<(Vec<String>, Option<ResourceUsage>), String> {
     let output = runner::execute(plan).await?;
     drain(output).await
 }
 
-/// Drain a perfscale-wrapped run to completion, applying [`crash_check`].
-async fn drain(output: perfscale_core::runner::RunOutput) -> Result<Vec<String>, String> {
-    let perfscale_core::runner::RunOutput { mut lines, exit } = output;
+/// Drain a perfscale-wrapped run to completion, sampling the underlying
+/// engine's resource usage (if any — the native engine has no child pid) and
+/// applying [`crash_check`].
+async fn drain(
+    output: perfscale_core::runner::RunOutput,
+) -> Result<(Vec<String>, Option<ResourceUsage>), String> {
+    let perfscale_core::runner::RunOutput {
+        mut lines,
+        exit,
+        pid,
+    } = output;
+    let sampler = pid.map(spawn_sampler);
+
     let mut collected = Vec::new();
     while let Some(line) = lines.recv().await {
         collected.push(line.text);
     }
-    crash_check(exit.await.ok().flatten(), &collected)?;
-    Ok(collected)
+    let code = exit.await.ok().flatten();
+
+    let resource = match sampler {
+        Some((handle, state)) => stop_sampler(handle, state).await,
+        None => None,
+    };
+
+    crash_check(code, &collected)?;
+    Ok((collected, resource))
 }
 
-/// Run `cmd` to completion (no live streaming — the native baselines don't
-/// need it) and return its combined stdout+stderr lines plus exit code.
+/// Run `cmd` to completion, sampling its resource usage while it's alive, and
+/// return its combined stdout+stderr lines, exit code, and resource usage.
+/// No live streaming — the native baselines don't need it, only the final
+/// output and how much CPU/memory/IO getting there cost.
 async fn capture_bare(
     mut cmd: tokio::process::Command,
-) -> Result<(Vec<String>, Option<i32>), String> {
-    let output = cmd.output().await.map_err(|e| e.to_string())?;
+) -> Result<(Vec<String>, Option<i32>, Option<ResourceUsage>), String> {
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let child = cmd.spawn().map_err(|e| e.to_string())?;
+    let sampler = child.id().map(spawn_sampler);
+
+    let output = child.wait_with_output().await.map_err(|e| e.to_string())?;
+
+    let resource = match sampler {
+        Some((handle, state)) => stop_sampler(handle, state).await,
+        None => None,
+    };
+
     let mut lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::to_string)
@@ -201,23 +238,137 @@ async fn capture_bare(
             .lines()
             .map(str::to_string),
     );
-    Ok((lines, output.status.code()))
+    Ok((lines, output.status.code(), resource))
 }
 
 fn skipped(engine: &str, why: impl Into<String>) -> EngineResult {
     EngineResult {
         engine: engine.into(),
         version: None,
+        resource: None,
         outcome: EngineOutcome::Skipped(why.into()),
     }
 }
 
-fn completed(engine: &str, version: Option<String>, lines: &[String]) -> EngineResult {
+fn completed(
+    engine: &str,
+    version: Option<String>,
+    resource: Option<ResourceUsage>,
+    lines: &[String],
+) -> EngineResult {
     EngineResult {
         engine: engine.into(),
         version,
+        resource,
         outcome: EngineOutcome::Completed(parse_summary(lines)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Resource sampling (CPU / memory / disk IO)
+// ---------------------------------------------------------------------------
+
+/// CPU/memory/disk-IO usage sampled over a scenario's lifetime.
+///
+/// CPU is a percentage of one core (matching `sysinfo`, and `top`'s
+/// convention) — a multi-threaded process can exceed 100%.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct ResourceUsage {
+    pub cpu_avg_pct: Option<f32>,
+    pub cpu_max_pct: Option<f32>,
+    pub mem_peak_bytes: Option<u64>,
+    pub disk_read_bytes: Option<u64>,
+    pub disk_write_bytes: Option<u64>,
+}
+
+#[derive(Default)]
+struct SamplerState {
+    cpu_samples: Vec<f32>,
+    mem_peak: u64,
+    disk: sysinfo::DiskUsage,
+    saw_any: bool,
+}
+
+/// Record one sample. A plain sync function so the `MutexGuard` it takes can
+/// never end up part of an async task's saved state across an `.await` —
+/// `tokio::spawn` requires that state to be `Send`, and `MutexGuard` isn't.
+fn record_sample(state: &Mutex<SamplerState>, proc_: &sysinfo::Process) {
+    let mut s = state.lock().unwrap();
+    s.cpu_samples.push(proc_.cpu_usage());
+    s.mem_peak = s.mem_peak.max(proc_.memory());
+    s.disk = proc_.disk_usage();
+    s.saw_any = true;
+}
+
+/// Start polling `pid`'s CPU/memory/disk usage roughly every
+/// [`sysinfo::MINIMUM_CPU_UPDATE_INTERVAL`] until [`stop_sampler`] aborts it
+/// (or the process exits on its own, e.g. if the caller forgets to stop —
+/// the loop notices the pid disappearing and returns).
+///
+/// Sampling rather than a single before/after snapshot is required because
+/// `sysinfo`'s per-process memory/disk-usage accessors are current-value
+/// snapshots, not running peaks — only polling captures a peak. Likewise
+/// `sysinfo` exposes CPU as a point-in-time percentage, not cumulative
+/// seconds, so `cpu_avg_pct`/`cpu_max_pct` are derived from the samples here
+/// rather than read directly.
+///
+/// Used both for external engine binaries (via their PID) and, for
+/// `perfscale-yaml`, for perfscale's own process (there's no child to
+/// measure — the native engine runs in-process).
+fn spawn_sampler(pid: u32) -> (tokio::task::JoinHandle<()>, Arc<Mutex<SamplerState>>) {
+    let state = Arc::new(Mutex::new(SamplerState::default()));
+    let state_task = Arc::clone(&state);
+
+    let handle = tokio::spawn(async move {
+        let pid = Pid::from(pid as usize);
+        let mut sys = System::new();
+        let refresh = ProcessRefreshKind::nothing()
+            .with_cpu()
+            .with_memory()
+            .with_disk_usage();
+
+        loop {
+            sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, refresh);
+            match sys.process(pid) {
+                Some(proc_) => record_sample(&state_task, proc_),
+                None => break,
+            }
+            tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
+        }
+    });
+
+    (handle, state)
+}
+
+/// Stop a sampler started with [`spawn_sampler`] and summarise what it saw.
+/// `None` if the process disappeared (or exited) before a single sample.
+async fn stop_sampler(
+    handle: tokio::task::JoinHandle<()>,
+    state: Arc<Mutex<SamplerState>>,
+) -> Option<ResourceUsage> {
+    handle.abort();
+    let s = state.lock().unwrap();
+    if !s.saw_any {
+        return None;
+    }
+
+    let cpu_avg = (!s.cpu_samples.is_empty())
+        .then(|| s.cpu_samples.iter().sum::<f32>() / s.cpu_samples.len() as f32);
+    let cpu_max = s
+        .cpu_samples
+        .iter()
+        .copied()
+        .fold(None, |acc: Option<f32>, v| {
+            Some(acc.map_or(v, |a| a.max(v)))
+        });
+
+    Some(ResourceUsage {
+        cpu_avg_pct: cpu_avg,
+        cpu_max_pct: cpu_max,
+        mem_peak_bytes: Some(s.mem_peak),
+        disk_read_bytes: Some(s.disk.total_read_bytes),
+        disk_write_bytes: Some(s.disk.total_written_bytes),
+    })
 }
 
 /// Trim a `<bin> --version`-style banner down to `"name x.y.z"` — k6 and
@@ -254,8 +405,22 @@ async fn run_perfscale_yaml(target_url: &str, vus: u32, duration: &str) -> Engin
         duration: duration.to_string(),
     };
 
-    match collect_lines(ExecutionPlan::NativeSteps { test, config }).await {
-        Ok(lines) => completed(NAME, Some(env!("CARGO_PKG_VERSION").to_string()), &lines),
+    // The native engine runs in-process, so there's no child pid to sample —
+    // measure perfscale's own process instead. This necessarily also counts
+    // the in-process bench target's overhead, which every other scenario's
+    // requests pass through too, so it's a shared baseline, not noise unique
+    // to this row.
+    let (handle, state) = spawn_sampler(std::process::id());
+    let result = collect_lines(ExecutionPlan::NativeSteps { test, config }).await;
+    let resource = stop_sampler(handle, state).await;
+
+    match result {
+        Ok((lines, _)) => completed(
+            NAME,
+            Some(env!("CARGO_PKG_VERSION").to_string()),
+            resource,
+            &lines,
+        ),
         Err(e) => skipped(NAME, e),
     }
 }
@@ -291,8 +456,8 @@ async fn run_k6_native(target_url: &str, vus: u32, duration: &str) -> EngineResu
     cmd.arg("run").arg("--no-color").arg(&script_path);
 
     match capture_bare(cmd).await {
-        Ok((lines, code)) => match crash_check(code, &lines) {
-            Ok(()) => completed(NAME, Some(short_version(&version)), &lines),
+        Ok((lines, code, resource)) => match crash_check(code, &lines) {
+            Ok(()) => completed(NAME, Some(short_version(&version)), resource, &lines),
             Err(e) => skipped(NAME, e),
         },
         Err(e) => skipped(NAME, e),
@@ -312,7 +477,7 @@ async fn run_perfscale_k6(target_url: &str, vus: u32, duration: &str) -> EngineR
     };
 
     match result.await {
-        Ok(lines) => completed(NAME, Some(short_version(&version)), &lines),
+        Ok((lines, resource)) => completed(NAME, Some(short_version(&version)), resource, &lines),
         Err(e) => skipped(NAME, e),
     }
 }
@@ -352,7 +517,7 @@ async fn run_locust_native(target_url: &str, vus: u32, duration: &str) -> Engine
         .arg("--csv")
         .arg(&csv_prefix);
 
-    let (mut lines, code) = match capture_bare(cmd).await {
+    let (mut lines, code, resource) = match capture_bare(cmd).await {
         Ok(v) => v,
         Err(e) => return skipped(NAME, e),
     };
@@ -365,7 +530,7 @@ async fn run_locust_native(target_url: &str, vus: u32, duration: &str) -> Engine
     }
 
     match crash_check(code, &lines) {
-        Ok(()) => completed(NAME, Some(short_version(&version)), &lines),
+        Ok(()) => completed(NAME, Some(short_version(&version)), resource, &lines),
         Err(e) => skipped(NAME, e),
     }
 }
@@ -393,7 +558,7 @@ async fn run_perfscale_locust(target_url: &str, vus: u32, duration: &str) -> Eng
     };
 
     match collect_lines(ExecutionPlan::LocustScript { path, opts }).await {
-        Ok(lines) => completed(NAME, Some(short_version(&version)), &lines),
+        Ok((lines, resource)) => completed(NAME, Some(short_version(&version)), resource, &lines),
         Err(e) => skipped(NAME, e),
     }
 }
@@ -511,11 +676,14 @@ fn collect_env_info() -> EnvInfo {
 pub fn format_bytes(bytes: u64) -> String {
     const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
     const MIB: f64 = 1024.0 * 1024.0;
+    const KIB: f64 = 1024.0;
     let b = bytes as f64;
     if b >= GIB {
         format!("{:.1} GiB", b / GIB)
     } else if b >= MIB {
         format!("{:.0} MiB", b / MIB)
+    } else if b >= KIB {
+        format!("{:.0} KiB", b / KIB)
     } else {
         format!("{bytes} B")
     }
@@ -641,8 +809,61 @@ pub fn render_report(input: &ReportInput) -> String {
          `k6` and `perfscale (yaml)` hit the target in a tight loop; locust adds its own default \
          wait model only if the locustfile defines one (the bench locustfile does not)."
     );
+    let _ = writeln!(out);
+
+    let _ = writeln!(out, "## Resource usage\n");
+    let _ = writeln!(
+        out,
+        "| Engine | CPU avg | CPU max | Peak memory | Disk read | Disk written |"
+    );
+    let _ = writeln!(out, "|---|---|---|---|---|---|");
+    for r in &input.results {
+        match &r.outcome {
+            EngineOutcome::Completed(_) => {
+                let res = r.resource.as_ref();
+                let _ = writeln!(
+                    out,
+                    "| {} | {} | {} | {} | {} | {} |",
+                    r.engine,
+                    fmt_pct(res.and_then(|x| x.cpu_avg_pct)),
+                    fmt_pct(res.and_then(|x| x.cpu_max_pct)),
+                    fmt_bytes_opt(res.and_then(|x| x.mem_peak_bytes)),
+                    fmt_bytes_opt(res.and_then(|x| x.disk_read_bytes)),
+                    fmt_bytes_opt(res.and_then(|x| x.disk_write_bytes)),
+                );
+            }
+            EngineOutcome::Skipped(why) => {
+                let _ = writeln!(out, "| {} | — | — | — | — | {why} |", r.engine);
+            }
+        }
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Notes: CPU is % of one core (a multi-threaded process can exceed 100%), sampled every \
+         ~{}ms — a scenario shorter than that may show no data. Peak memory and disk IO come \
+         from the same polling, so brief spikes between samples can be missed. `perfscale (yaml)` \
+         measures perfscale's own process (there's no child to attribute it to), which also \
+         includes the in-process bench target serving its requests — a cost every other scenario's \
+         requests pass through too, just not counted against them since it lives in a separate process there.",
+        sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis()
+    );
 
     out
+}
+
+fn fmt_pct(v: Option<f32>) -> String {
+    match v {
+        Some(v) => format!("{v:.1}%"),
+        None => "—".into(),
+    }
+}
+
+fn fmt_bytes_opt(v: Option<u64>) -> String {
+    match v {
+        Some(b) => format_bytes(b),
+        None => "—".into(),
+    }
 }
 
 fn fmt_num(v: Option<f64>, unit: &str) -> String {
@@ -742,6 +963,7 @@ mod tests {
     #[test]
     fn format_bytes_scales() {
         assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(4096), "4 KiB");
         assert_eq!(format_bytes(8 * 1024 * 1024), "8 MiB");
         assert_eq!(format_bytes(16 * 1024 * 1024 * 1024), "16.0 GiB");
     }
@@ -769,6 +991,37 @@ mod tests {
         assert_eq!(short_version("k6 v1.5.0"), "k6 v1.5.0");
     }
 
+    #[tokio::test]
+    async fn stop_sampler_computes_avg_and_max_from_samples() {
+        let state = Arc::new(Mutex::new(SamplerState {
+            cpu_samples: vec![10.0, 20.0, 30.0],
+            mem_peak: 1024,
+            disk: sysinfo::DiskUsage {
+                total_read_bytes: 100,
+                total_written_bytes: 200,
+                ..Default::default()
+            },
+            saw_any: true,
+        }));
+        let handle = tokio::spawn(async {});
+        let resource = stop_sampler(handle, state).await.unwrap();
+
+        assert_eq!(resource.cpu_avg_pct, Some(20.0));
+        assert_eq!(resource.cpu_max_pct, Some(30.0));
+        assert_eq!(resource.mem_peak_bytes, Some(1024));
+        assert_eq!(resource.disk_read_bytes, Some(100));
+        assert_eq!(resource.disk_write_bytes, Some(200));
+    }
+
+    #[tokio::test]
+    async fn stop_sampler_none_when_no_samples_were_taken() {
+        // Simulates a scenario shorter than one sampling interval, or a pid
+        // that had already exited before the sampler's first refresh.
+        let state = Arc::new(Mutex::new(SamplerState::default()));
+        let handle = tokio::spawn(async {});
+        assert!(stop_sampler(handle, state).await.is_none());
+    }
+
     #[test]
     fn render_report_contains_required_sections() {
         let input = ReportInput {
@@ -792,6 +1045,13 @@ mod tests {
                 EngineResult {
                     engine: "perfscale (yaml)".into(),
                     version: Some("0.1.0".into()),
+                    resource: Some(ResourceUsage {
+                        cpu_avg_pct: Some(12.5),
+                        cpu_max_pct: Some(48.0),
+                        mem_peak_bytes: Some(38 * 1024 * 1024),
+                        disk_read_bytes: Some(0),
+                        disk_write_bytes: Some(4096),
+                    }),
                     outcome: EngineOutcome::Completed(EngineMetrics {
                         requests: Some(1000.0),
                         rps: Some(66.6),
@@ -806,6 +1066,7 @@ mod tests {
                 EngineResult {
                     engine: "locust (native)".into(),
                     version: None,
+                    resource: None,
                     outcome: EngineOutcome::Skipped("locust not installed".into()),
                 },
             ],
@@ -816,6 +1077,7 @@ mod tests {
             "## Environment",
             "## Software",
             "## Results",
+            "## Resource usage",
             "| OS | macOS 15.5 (arm64) |",
             "| CPU | Apple M3 Pro |",
             "| Threads | 12 |",
@@ -826,6 +1088,8 @@ mod tests {
             "| locust | not installed |",
             "| perfscale (yaml) | 0.1.0 | 1000 | 66.60/s |",
             "| locust (native) | — | — | — | — | — | — | — | — | locust not installed |",
+            "| perfscale (yaml) | 12.5% | 48.0% | 38 MiB | 0 B | 4 KiB |",
+            "| locust (native) | — | — | — | — | locust not installed |",
         ] {
             assert!(
                 report.contains(required),
