@@ -41,9 +41,9 @@ pub enum LogTag {
 /// Raw timing from one HTTP request.
 ///
 /// Sub-millisecond precision matters here: against a fast local/loopback
-/// target (as in `perfscale bench`), most requests complete in well under
-/// 1ms — truncating to whole milliseconds would round essentially every
-/// sample down to 0 and flatten every percentile to "0.00ms".
+/// target, most requests complete in well under 1ms — truncating to whole
+/// milliseconds would round essentially every sample down to 0 and flatten
+/// every percentile to "0.00ms".
 #[derive(Debug, Clone)]
 pub struct HttpSample {
     pub duration_ms: f64,
@@ -374,10 +374,10 @@ mod tests {
 
     /// Regression: `duration_ms` used to be truncated to whole milliseconds
     /// via `Duration::as_millis() as u64`, so a fast in-process/loopback
-    /// target (like `perfscale bench`'s target) would round every sample
-    /// down to exactly 0, flattening avg/p50/p90/p95 to "0.00ms". A real
-    /// round trip always takes a strictly positive amount of wall time —
-    /// with the bug, that could still surface as an integer 0.
+    /// target would round every sample down to exactly 0, flattening
+    /// avg/p50/p90/p95 to "0.00ms". A real round trip always takes a
+    /// strictly positive amount of wall time — with the bug, that could
+    /// still surface as an integer 0.
     #[tokio::test]
     async fn http_action_records_submillisecond_duration() {
         let server = MockServer::start().await;

@@ -44,9 +44,8 @@ pub struct RunOutput {
     /// signal; the native engine always reports `Some(0)`.
     pub exit: tokio::sync::oneshot::Receiver<Option<i32>>,
     /// OS process ID of the spawned engine binary, while it's running — lets
-    /// callers (e.g. `perfscale bench`) sample its CPU/memory/IO usage.
-    /// `None` for the native step engine, which runs in-process rather than
-    /// as a subprocess.
+    /// callers sample its CPU/memory/IO usage. `None` for the native step
+    /// engine, which runs in-process rather than as a subprocess.
     pub pid: Option<u32>,
 }
 

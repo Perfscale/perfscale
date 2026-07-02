@@ -3,7 +3,6 @@
 ```text
 perfscale run          Run a load test with k6, locust, or the native step engine
 perfscale serve        Start a local dev server that receives metrics from `run --report`
-perfscale bench        Benchmark the engines against each other, markdown report
 perfscale lint         Validate test/config YAML files without running them
 perfscale self-update  Update perfscale to the latest release for this platform
 ```
@@ -63,36 +62,11 @@ This is a development stand-in, not a control-plane: no persistence, no auth,
 no aggregation across runs. Anything that speaks these two endpoints can
 replace it.
 
-## `perfscale bench`
+## Benchmarking
 
-Runs the same tight `GET` loop through five scenarios — sequentially, against
-an in-process loopback target — and prints a markdown report: host
-environment (OS, CPU, threads, RAM, swap), software versions (perfscale, k6,
-locust), a **Results** table (requests, RPS, avg/p50/p90/p95/max, failure
-rate), and a separate **Resource usage** table (CPU avg/max, peak memory,
-disk read/written) — throughput alone doesn't tell you what an engine costs
-to run. See [Benchmarks](../benchmarks.md) for methodology.
-
-| Scenario | What it runs |
-|---|---|
-| `locust-native` | `locust` invoked directly — baseline |
-| `k6-native` | `k6` invoked directly — baseline |
-| `perfscale-k6` | the same k6 script, via `perfscale run --k6` |
-| `perfscale-locust` | the same locustfile, via `perfscale run --locust` |
-| `perfscale-yaml` | perfscale's own step engine (no external binary) |
-
-| Flag | Default | Description |
-|---|---|---|
-| `--vus <N>` | `10` | Virtual users per scenario |
-| `--duration <D>` | `15s` | Run length per scenario (`"30s"`, `"1m"`, ...) |
-| `--engines <LIST>` | all five above | Comma-separated subset to run |
-| `--output <FILE>` | — | Also write the report to a file |
-
-Compare a `perfscale-*` row against its `*-native` counterpart to see
-perfscale's wrapping overhead in isolation from the underlying tool's own
-performance. Scenarios whose engine is missing from `PATH` are reported as
-skipped, not errors. The canonical comparison runs on CI (`bench` workflow)
-to remove local-machine variance.
+perfscale doesn't ship a `bench` subcommand — engine comparisons run through
+[`scripts/bench.sh`](../../scripts/bench.sh), a [hyperfine](https://github.com/sharkdp/hyperfine)-based
+script. See [Benchmarks](../benchmarks.md) for methodology and usage.
 
 ## `perfscale lint`
 
@@ -152,7 +126,7 @@ perfscale self-update --force      # reinstall even if already up to date
 
 ### The passive "update available" hint
 
-Other commands (`run`, `serve`, `bench`, `lint`) print a one-line stderr hint
+Other commands (`run`, `serve`, `lint`) print a one-line stderr hint
 when a newer release is known:
 
 ```text

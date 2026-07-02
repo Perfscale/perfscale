@@ -12,6 +12,9 @@ on:
       duration:
         description: "Run duration per engine (e.g. 30s, 1m)"
         default: "30s"
+      runs:
+        description: "hyperfine runs per scenario"
+        default: "5"
   schedule:
     # Weekly drift check (Mondays 04:00 UTC) — catches perf regressions
     # between releases without burning CI minutes on every push.
@@ -37,16 +40,24 @@ jobs:
       - name: Install locust
         run: pipx install locust
 
+      - name: Install hyperfine
+        run: cargo install hyperfine --locked
+
       - name: Build perfscale (release)
         run: cargo build --release
 
       - name: Run benchmark
+        env:
+          VUS: ${{ github.event.inputs.vus || '10' }}
+          DURATION: ${{ github.event.inputs.duration || '30s' }}
+          RUNS: ${{ github.event.inputs.runs || '5' }}
         run: |
-          ./target/release/perfscale bench \
-            --vus "${{ github.event.inputs.vus || '10' }}" \
-            --duration "${{ github.event.inputs.duration || '30s' }}" \
-            --output bench-report.md
-          cat bench-report.md >> "$GITHUB_STEP_SUMMARY"
+          ./scripts/bench.sh
+          {
+            echo '## Benchmark results'
+            echo
+            cat bench-report.md
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:

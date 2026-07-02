@@ -192,9 +192,8 @@ fn locust_exec_error(e: &std::io::Error) -> String {
 
 /// Read `{prefix}_stats.csv` (as written by locust's `--csv` flag) and build
 /// a k6-compatible summary from the `Aggregated` row locust always writes
-/// last. Public so callers driving locust directly (e.g. `perfscale bench`'s
-/// bare-engine baseline) can reuse the exact same parsing this runner uses,
-/// for an apples-to-apples comparison.
+/// last. Public so callers driving locust directly can reuse the exact same
+/// parsing this runner uses, for an apples-to-apples comparison.
 pub async fn parse_csv_summary(csv_prefix: &Path) -> Result<Vec<String>, String> {
     let stats_path = PathBuf::from(format!("{}_stats.csv", csv_prefix.display()));
     let content = tokio::fs::read_to_string(&stats_path)

@@ -21,7 +21,6 @@ async fn main() {
     let result = match cli.command {
         Commands::Run(args) => commands::run::run(args).await,
         Commands::Serve(args) => commands::serve::serve(args).await,
-        Commands::Bench(args) => commands::bench::bench(args).await,
         Commands::Lint(args) => commands::lint::run(args).await,
         Commands::SelfUpdate(args) => commands::self_update::self_update(args).await,
     };

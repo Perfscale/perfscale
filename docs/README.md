@@ -11,7 +11,7 @@ tiny local dev server for collecting results.
 
 ## CLI (`perfscale` binary)
 
-- [Commands](cli/commands.md) — `run`, `serve`, and `bench` reference
+- [Commands](cli/commands.md) — `run`, `serve`, and `lint` reference
 - [Recipes](cli/examples.md) — copy-paste examples for common workflows
 - [Benchmarks](benchmarks.md) — engine comparison methodology & CI runs
 
