@@ -71,8 +71,10 @@ The [`bench` workflow](../.github/workflows/bench.yml) runs on
   `duration`, `runs`)
 - **weekly**: scheduled Monday 04:00 UTC as a perf-regression drift check
 
-Results appear in the workflow's job summary and as a `bench-report` artifact
-(kept 90 days).
+The job summary carries an Environment table (OS/CPU/threads/RAM/swap) and a
+Software table (perfscale/k6/locust/hyperfine versions) ahead of the results,
+so numbers are never read without knowing what produced them. The
+`bench-report` artifact (kept 90 days) holds just the hyperfine table.
 
 ## Example report shape
 

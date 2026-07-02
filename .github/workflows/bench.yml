@@ -46,6 +46,28 @@ jobs:
       - name: Build perfscale (release)
         run: cargo build --release
 
+      - name: Write environment summary
+        run: |
+          {
+            echo '## Environment'
+            echo '| | |'
+            echo '|---|---|'
+            echo "| OS | $(lsb_release -ds 2>/dev/null || uname -sr) ($(uname -m)) |"
+            echo "| CPU | $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | sed 's/^ *//') |"
+            echo "| Threads | $(nproc) |"
+            echo "| RAM | $(free -h | awk '/^Mem:/ {print $2}') |"
+            echo "| Swap | $(free -h | awk '/^Swap:/ {print $2}') |"
+            echo
+            echo '## Software'
+            echo '| | |'
+            echo '|---|---|'
+            echo "| perfscale | $(./target/release/perfscale --version) |"
+            echo "| k6 | $(k6 version 2>/dev/null || echo 'not installed') |"
+            echo "| locust | $(locust --version 2>/dev/null || echo 'not installed') |"
+            echo "| hyperfine | $(hyperfine --version) |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run benchmark
         env:
           VUS: ${{ github.event.inputs.vus || '10' }}
