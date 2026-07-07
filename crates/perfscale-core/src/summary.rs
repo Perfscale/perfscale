@@ -128,9 +128,7 @@ fn metric_value<'a>(line: &'a str, name: &str) -> Option<&'a str> {
 fn extract_ms(line: &str, prefix: &str) -> Option<f64> {
     let start = line.find(prefix)? + prefix.len();
     let rest = &line[start..];
-    let end = rest
-        .find(|c: char| c.is_whitespace())
-        .unwrap_or(rest.len());
+    let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
     let token = &rest[..end];
 
     if let Some(v) = token.strip_suffix("ms") {
@@ -234,7 +232,10 @@ http_reqs..............: 120 2.00/s
     #[test]
     fn http_reqs_prefix_variants_do_not_collide() {
         let out = "http_reqs_custom.......: 999 9.99/s\n";
-        assert!(parse_summary(out).is_none(), "http_reqs_custom must not match http_reqs");
+        assert!(
+            parse_summary(out).is_none(),
+            "http_reqs_custom must not match http_reqs"
+        );
     }
 
     #[test]
