@@ -86,7 +86,9 @@ pub async fn execute_action(
 // ---------------------------------------------------------------------------
 //
 // Parameters:
-//   method   – HTTP method, default "GET"
+//   method   – HTTP method, default "GET". Any valid token is accepted,
+//              including extension methods like QUERY (safe method with a
+//              body, draft-ietf-httpbis-safe-method-w-body)
 //   url      – required
 //   headers  – optional JSON object { "Name": "Value" }
 //   body     – optional: JSON object → application/json, string → text/plain
@@ -514,6 +516,35 @@ mod tests {
         });
         let out = execute_action("std/http@v1", &params, &ctx, "step").await;
         assert!(out.success);
+    }
+
+    /// QUERY (draft-ietf-httpbis-safe-method-w-body) is an extension method:
+    /// safe like GET, but carries a request body. `Method::from_bytes`
+    /// accepts any valid token, so this pins that QUERY — and by extension
+    /// other non-registered methods — keeps working end to end with a body.
+    #[tokio::test]
+    async fn http_action_supports_query_method_with_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("QUERY"))
+            .and(path("/search"))
+            .and(header("content-type", "application/json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"hits":3}"#))
+            .mount(&server)
+            .await;
+
+        let ctx = Context::new();
+        let params = json!({
+            "method": "QUERY",
+            "url": format!("{}/search", server.uri()),
+            "body": { "q": "load testing" },
+        });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+
+        assert!(out.success);
+        assert_eq!(out.value["status"], 200);
+        assert_eq!(out.value["body"], r#"{"hits":3}"#);
+        let sample = out.http_sample.unwrap();
+        assert!(!sample.failed);
     }
 
     #[tokio::test]

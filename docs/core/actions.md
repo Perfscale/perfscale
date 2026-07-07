@@ -14,7 +14,7 @@ Perform one HTTP request per iteration. Timing feeds the run's metrics.
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `url` | string | **required** | Absolute URL |
-| `method` | string | `GET` | Any HTTP method |
+| `method` | string | `GET` | Any HTTP method, including extension methods like `QUERY` (safe method with a body, [draft-ietf-httpbis-safe-method-w-body](https://datatracker.ietf.org/doc/draft-ietf-httpbis-safe-method-w-body/)) |
 | `headers` | object | — | `{ "Name": "Value" }`, string values only |
 | `body` | string \| object | — | String → `text/plain`; object → serialized JSON with `application/json` |
 | `timeout` | integer (ms) | `10000` | Per-request timeout |
