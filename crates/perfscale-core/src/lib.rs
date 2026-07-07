@@ -13,4 +13,5 @@ pub mod models;
 pub mod runner;
 pub mod schema;
 pub mod step;
+pub mod summary;
 pub mod yaml;
