@@ -19,6 +19,7 @@ Exactly one engine flag is required: `--k6`, `--locust`, or `-f`.
 | `-c, --config <FILE>` | `config.yaml` | Load config: `vus`, `duration`, optional `report.url`. Required with `-f`, optional load hint for `--locust`, ignored by `--k6` |
 | `--host <URL>` | base URL | Target host for `--locust` (locust's `--host`) |
 | `--report <URL>` | base URL | POST the summary to a `perfscale serve` instance after the run; overrides `report.url` from the config file |
+| `-q, --quiet` | — | Suppress per-request output; errors and the final metric summary still print. The native engine drops the lines at the source, which also removes their formatting/IO cost under high load |
 
 ### Exit code semantics
 

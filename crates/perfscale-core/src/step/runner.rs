@@ -115,7 +115,17 @@ impl Metrics {
 ///
 /// Returns once the configured duration has elapsed and all VUs have finished
 /// their current iteration.
-pub async fn run_steps(steps: Vec<Step>, config: RunConfig, tx: mpsc::Sender<LogLine>) {
+///
+/// With `quiet`, per-iteration success output (request lines, sleep markers,
+/// passing checks) is dropped at the source — not just filtered at print time
+/// — so a busy loop skips the formatting and channel traffic too. Errors,
+/// failing checks, and the final metric summary always come through.
+pub async fn run_steps(
+    steps: Vec<Step>,
+    config: RunConfig,
+    quiet: bool,
+    tx: mpsc::Sender<LogLine>,
+) {
     let duration_secs = config.duration_secs();
     let vus = config.vus.max(1);
     let deadline = Instant::now() + Duration::from_secs(duration_secs);
@@ -149,7 +159,7 @@ pub async fn run_steps(steps: Vec<Step>, config: RunConfig, tx: mpsc::Sender<Log
             while Instant::now() < deadline {
                 iter_count.fetch_add(1, Ordering::Relaxed);
                 for step in steps_ref.iter() {
-                    execute_step(step, &mut ctx, &tx, &metrics, vu_id).await;
+                    execute_step(step, &mut ctx, &tx, &metrics, quiet, vu_id).await;
                     if Instant::now() >= deadline {
                         break;
                     }
@@ -188,6 +198,7 @@ async fn execute_step(
     ctx: &mut Context,
     tx: &mpsc::Sender<LogLine>,
     metrics: &Arc<Mutex<Metrics>>,
+    quiet: bool,
     _vu_id: u32,
 ) {
     let action = &step.action;
@@ -202,8 +213,11 @@ async fn execute_step(
         metrics.lock().unwrap().record(sample);
     }
 
-    // Stream log lines
+    // Stream log lines (quiet drops everything except errors)
     for (tag, text) in &output.logs {
+        if quiet && *tag != LogTag::Err {
+            continue;
+        }
         emit(tx, LogSource::from(*tag), text).await;
     }
 
@@ -218,6 +232,9 @@ async fn execute_step(
     if let Some(checks) = &step.check {
         let check_out = execute_action("std/check@v1", checks, ctx, step_name).await;
         for (tag, text) in &check_out.logs {
+            if quiet && *tag != LogTag::Err {
+                continue;
+            }
             emit(tx, LogSource::from(*tag), text).await;
         }
     }
@@ -261,9 +278,9 @@ mod tests {
     /// `run_steps` to completion would deadlock (producer blocks on a full
     /// channel with nobody consuming). `runner::execute` avoids this the same
     /// way: spawn the producer, consume from the caller.
-    async fn run_and_collect(steps: Vec<Step>, config: RunConfig) -> Vec<LogLine> {
+    async fn run_and_collect(steps: Vec<Step>, config: RunConfig, quiet: bool) -> Vec<LogLine> {
         let (tx, mut rx) = mpsc::channel(512);
-        let handle = tokio::spawn(run_steps(steps, config, tx));
+        let handle = tokio::spawn(run_steps(steps, config, quiet, tx));
 
         let mut lines = Vec::new();
         while let Some(line) = rx.recv().await {
@@ -279,7 +296,7 @@ mod tests {
             vus: 1,
             duration: "1s".into(),
         };
-        let lines = run_and_collect(vec![sleep_step(10)], config).await;
+        let lines = run_and_collect(vec![sleep_step(10)], config, false).await;
 
         assert!(lines.first().unwrap().text.starts_with("Starting 1 VU"));
         assert!(lines.last().unwrap().text.starts_with("Done"));
@@ -312,7 +329,7 @@ mod tests {
             vus: 1,
             duration: "1s".into(),
         };
-        let lines = run_and_collect(steps, config).await;
+        let lines = run_and_collect(steps, config, false).await;
 
         // The exact error rate is deliberately not asserted: under full-suite
         // load a single loopback request can spuriously fail. What matters is
@@ -344,7 +361,7 @@ mod tests {
             vus: 1,
             duration: "1s".into(),
         };
-        let lines = run_and_collect(steps, config).await;
+        let lines = run_and_collect(steps, config, false).await;
 
         let check_line = lines
             .iter()
@@ -355,12 +372,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_steps_quiet_drops_request_lines_but_keeps_summary() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ok"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let steps = vec![
+            Step {
+                name: Some("hit".into()),
+                action: "std/http@v1".into(),
+                with: Some(json!({ "url": format!("{}/ok", server.uri()) })),
+                check: None,
+                outputs: None,
+            },
+            sleep_step(50),
+        ];
+        let config = RunConfig {
+            vus: 1,
+            duration: "1s".into(),
+        };
+        let lines = run_and_collect(steps, config, true).await;
+
+        assert!(
+            !lines.iter().any(|l| l.text.contains("→ 200")),
+            "per-request lines must be suppressed under quiet"
+        );
+        assert!(
+            !lines.iter().any(|l| l.text.contains("sleep 50ms")),
+            "sleep markers must be suppressed under quiet"
+        );
+        assert!(lines
+            .iter()
+            .any(|l| l.text.starts_with("http_req_duration")));
+        assert!(lines.iter().any(|l| l.text.starts_with("http_reqs")));
+    }
+
+    #[tokio::test]
+    async fn run_steps_quiet_still_reports_check_failures() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/fail"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let steps = vec![Step {
+            name: Some("hit".into()),
+            action: "std/http@v1".into(),
+            with: Some(json!({ "url": format!("{}/fail", server.uri()) })),
+            check: Some(json!({ "status": 200 })),
+            outputs: None,
+        }];
+        let config = RunConfig {
+            vus: 1,
+            duration: "1s".into(),
+        };
+        let lines = run_and_collect(steps, config, true).await;
+
+        let check_line = lines
+            .iter()
+            .find(|l| l.text.contains("[check]"))
+            .expect("failing check must survive quiet mode");
+        assert_eq!(check_line.source, LogSource::Stderr);
+        assert!(check_line.text.contains("FAIL"));
+    }
+
+    #[tokio::test]
     async fn run_steps_multiple_vus_reports_correct_count() {
         let config = RunConfig {
             vus: 3,
             duration: "1s".into(),
         };
-        let lines = run_and_collect(vec![sleep_step(5)], config).await;
+        let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
         assert!(lines
             .iter()
             .any(|l| l.text == "vus....................: 3 min=1 max=3"));
@@ -395,7 +481,7 @@ mod tests {
             vus: 1,
             duration: "1s".into(),
         };
-        let lines = run_and_collect(steps, config).await;
+        let lines = run_and_collect(steps, config, false).await;
         assert!(lines.iter().any(|l| l.text == "status was 200"));
     }
 
@@ -405,7 +491,7 @@ mod tests {
             vus: 0,
             duration: "1s".into(),
         };
-        let lines = run_and_collect(vec![sleep_step(5)], config).await;
+        let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
         assert!(lines.iter().any(|l| l.text.starts_with("Starting 1 VU")));
     }
 }

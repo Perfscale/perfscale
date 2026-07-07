@@ -19,6 +19,7 @@ wrapping overhead — not the underlying tool.
 | `perfscale (k6)` | the same k6 script, via `perfscale run --k6` |
 | `perfscale (locust)` | the same locustfile, via `perfscale run --locust` |
 | `perfscale (yaml)` | perfscale's own step engine (no external binary) |
+| `perfscale (yaml quiet)` | the step engine with `--quiet` — per-request logging suppressed; the delta against `perfscale (yaml)` is the logging cost |
 
 ## Suites
 
@@ -29,7 +30,7 @@ wrapping overhead — not the underlying tool.
 | `startup` | What does the wrapper cost at startup? (1s runs, where startup isn't drowned by the test duration) |
 | `scaling` | How do RPS / p95 / RSS grow with VUs? (default sweep: 10, 50, 200) |
 | `saturation` | Approximate max RPS per engine at high VUs (default 256) |
-| `yaml` | What does each native-engine feature cost? (GET baseline vs +check vs POST body vs multi-step interpolation) |
+| `yaml` | What does each native-engine feature cost? (GET baseline vs `--quiet` vs +check vs POST body vs multi-step interpolation) |
 | `tls` | The TLS tax: same workload against `perfscale serve --tls` (self-signed HTTPS, verification skipped) |
 
 Select suites with `SUITES="..."`. Scenarios whose engine (`k6`/`locust`)

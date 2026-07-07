@@ -25,7 +25,9 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
     let mut summary_lines: Vec<String> = Vec::new();
 
     while let Some(line) = lines.recv().await {
-        print_line(&line);
+        if should_print(&line, args.quiet) {
+            print_line(&line);
+        }
         if matches!(line.source, LogSource::Stdout) && is_summary_line(&line.text) {
             summary_lines.push(line.text.clone());
         }
@@ -143,6 +145,7 @@ fn resolve_plan(
         return ExecutionPlan::NativeSteps {
             test,
             config: run_config,
+            quiet: args.quiet,
         };
     }
 
@@ -154,6 +157,17 @@ fn resolve_report_url(args: &RunArgs, config: Option<&ConfigFile>) -> Option<Str
     args.report
         .clone()
         .or_else(|| config.and_then(|c| c.report.as_ref().map(|r| r.url.clone())))
+}
+
+/// `--quiet` print policy, applied uniformly to every engine: keep errors,
+/// system markers, and the metric summary; drop the per-request firehose.
+/// The native engine additionally suppresses these lines at the source (see
+/// `run_steps`); for k6/locust this filter is the only layer.
+fn should_print(line: &LogLine, quiet: bool) -> bool {
+    if !quiet {
+        return true;
+    }
+    !matches!(line.source, LogSource::Stdout) || is_summary_line(&line.text)
 }
 
 fn print_line(line: &LogLine) {
@@ -199,6 +213,7 @@ mod tests {
             config: None,
             host: None,
             report: None,
+            quiet: false,
         }
     }
 
@@ -315,6 +330,49 @@ mod tests {
     fn resolve_report_url_none_when_neither_set() {
         let args = base_args();
         assert_eq!(resolve_report_url(&args, None), None);
+    }
+
+    #[test]
+    fn resolve_plan_native_passes_quiet_flag() {
+        let args = RunArgs {
+            file: Some(PathBuf::from("t.yaml")),
+            quiet: true,
+            ..base_args()
+        };
+        let config = sample_config(None);
+        let plan = resolve_plan(&args, Some(sample_test()), Some(&config));
+        match plan {
+            ExecutionPlan::NativeSteps { quiet, .. } => assert!(quiet),
+            _ => panic!("expected NativeSteps plan"),
+        }
+    }
+
+    #[test]
+    fn should_print_quiet_keeps_summary_errors_and_system_lines() {
+        let quiet = true;
+        let line = |source, text: &str| LogLine {
+            source,
+            text: text.into(),
+        };
+
+        // Per-request stdout noise → dropped.
+        assert!(!should_print(
+            &line(LogSource::Stdout, "GET http://x/health → 200 OK (0.2ms)"),
+            quiet
+        ));
+        // Metric summary → kept.
+        assert!(should_print(
+            &line(LogSource::Stdout, "http_reqs..............: 120 2.00/s"),
+            quiet
+        ));
+        // Errors and system markers → kept.
+        assert!(should_print(&line(LogSource::Stderr, "boom"), quiet));
+        assert!(should_print(
+            &line(LogSource::System, "Starting 10 VUs for 30s (30s)"),
+            quiet
+        ));
+        // Non-quiet prints everything.
+        assert!(should_print(&line(LogSource::Stdout, "anything"), false));
     }
 
     #[test]

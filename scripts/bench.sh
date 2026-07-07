@@ -232,8 +232,8 @@ cmd_locust_native() { # $5 csv prefix
 cmd_locust_wrapped() {
   echo "BENCH_INSECURE=$4 $BIN run --locust $WORKDIR/locustfile.py --host $3 -c $(cfg "$1" "$2")"
 }
-cmd_yaml() { # $1 vus, $2 duration, $3 test file
-  echo "$BIN run -f $3 -c $(cfg "$1" "$2")"
+cmd_yaml() { # $1 vus, $2 duration, $3 test file, $4 extra flags (optional)
+  echo "$BIN run -f $3 -c $(cfg "$1" "$2")${4:+ $4}"
 }
 
 # ---------------------------------------------------------------------------
@@ -328,6 +328,19 @@ fi
 scenario_names+=("perfscale (yaml)")
 scenario_builders+=("cmd_yaml_get")
 cmd_yaml_get() { cmd_yaml "$1" "$2" "$WORKDIR/yaml-get.yaml"; }
+cmd_yaml_get_quiet() { cmd_yaml "$1" "$2" "$WORKDIR/yaml-get.yaml" "--quiet"; }
+
+# The yaml engine logs one line per request by default, which costs real CPU
+# and syscalls under load — the quiet row shows the engine's price without
+# that logging, side by side with the logged one so the comparison is honest.
+HAS_QUIET=0
+if "$BIN" run --help 2>/dev/null | grep -q -- '--quiet'; then
+  HAS_QUIET=1
+  scenario_names+=("perfscale (yaml quiet)")
+  scenario_builders+=("cmd_yaml_get_quiet")
+else
+  echo "skipping quiet scenarios: this perfscale binary has no 'run --quiet'" >&2
+fi
 
 build_cmd() { # $1 builder, $2 vus, $3 duration, $4 csv prefix (locust native)
   case "$1" in
@@ -336,6 +349,7 @@ build_cmd() { # $1 builder, $2 vus, $3 duration, $4 csv prefix (locust native)
     cmd_k6_native) cmd_k6_native "$2" "$3" "$TARGET" 0 ;;
     cmd_k6_wrapped) cmd_k6_wrapped "$2" "$3" "$TARGET" 0 ;;
     cmd_yaml_get) cmd_yaml_get "$2" "$3" ;;
+    cmd_yaml_get_quiet) cmd_yaml_get_quiet "$2" "$3" ;;
   esac
 }
 
@@ -450,9 +464,10 @@ if has_suite scaling; then
     echo "| Engine | VUs | Requests | RPS | p95 ms | Err | CPU (u+s) | Peak RSS |"
     echo "|---|---:|---:|---:|---:|---:|---:|---|"
   } >>"$OUTPUT"
-  for engine in k6 locust yaml; do
+  for engine in k6 locust yaml yaml-quiet; do
     [[ "$engine" == k6 && "$HAS_K6" != 1 ]] && continue
     [[ "$engine" == locust && "$HAS_LOCUST" != 1 ]] && continue
+    [[ "$engine" == yaml-quiet && "$HAS_QUIET" != 1 ]] && continue
     for v in $SCALING_VUS; do
       echo "  $engine @ $v VUs" >&2
       case "$engine" in
@@ -462,6 +477,7 @@ if has_suite scaling; then
             "$(cmd_locust_native "$v" "$SCALING_DURATION" "$TARGET" 0 "$WORKDIR/loc-scale")" \
             locust-csv "$WORKDIR/loc-scale_stats.csv" ;;
         yaml) measure "yaml@$v" "$(cmd_yaml "$v" "$SCALING_DURATION" "$WORKDIR/yaml-get.yaml")" ;;
+        yaml-quiet) measure "yaml-quiet@$v" "$(cmd_yaml "$v" "$SCALING_DURATION" "$WORKDIR/yaml-get.yaml" --quiet)" ;;
       esac
       json_row scaling.json "$engine@$v"
       cpu_total=$(awk "BEGIN{printf \"%.1fs\", ${T_USER_S:-0}+${T_SYS_S:-0}}")
@@ -479,9 +495,10 @@ if has_suite saturation; then
     echo "| Engine | Requests | RPS | p95 ms | p99 ms | Err | CPU (u+s) |"
     echo "|---|---:|---:|---:|---:|---:|---:|"
   } >>"$OUTPUT"
-  for engine in k6 locust yaml; do
+  for engine in k6 locust yaml yaml-quiet; do
     [[ "$engine" == k6 && "$HAS_K6" != 1 ]] && continue
     [[ "$engine" == locust && "$HAS_LOCUST" != 1 ]] && continue
+    [[ "$engine" == yaml-quiet && "$HAS_QUIET" != 1 ]] && continue
     echo "  $engine" >&2
     case "$engine" in
       k6) measure "k6-sat" "$(cmd_k6_native "$SAT_VUS" "$SAT_DURATION" "$TARGET" 0)" ;;
@@ -490,6 +507,7 @@ if has_suite saturation; then
           "$(cmd_locust_native "$SAT_VUS" "$SAT_DURATION" "$TARGET" 0 "$WORKDIR/loc-sat")" \
           locust-csv "$WORKDIR/loc-sat_stats.csv" ;;
       yaml) measure "yaml-sat" "$(cmd_yaml "$SAT_VUS" "$SAT_DURATION" "$WORKDIR/yaml-get.yaml")" ;;
+      yaml-quiet) measure "yaml-quiet-sat" "$(cmd_yaml "$SAT_VUS" "$SAT_DURATION" "$WORKDIR/yaml-get.yaml" --quiet)" ;;
     esac
     json_row saturation.json "$engine"
     cpu_total=$(awk "BEGIN{printf \"%.1fs\", ${T_USER_S:-0}+${T_SYS_S:-0}}")
@@ -512,16 +530,25 @@ if has_suite yaml; then
     echo "| Scenario | Requests | RPS | p95 ms | Err | CPU per req | Peak RSS |"
     echo "|---|---:|---:|---:|---:|---:|---|"
   } >>"$OUTPUT"
-  yaml_scenarios="get check post multi"
+  yaml_scenarios="get get-quiet check post multi"
   for sc in $yaml_scenarios; do
+    file="$WORKDIR/yaml-$sc.yaml"
+    flags=""
+    if [[ "$sc" == "get-quiet" ]]; then
+      [[ "$HAS_QUIET" == 1 ]] || continue
+      file="$WORKDIR/yaml-get.yaml"
+      flags="--quiet"
+    fi
     echo "  $sc" >&2
-    measure "yaml-$sc" "$(cmd_yaml "$VUS" "$YAML_DURATION" "$WORKDIR/yaml-$sc.yaml")"
+    measure "yaml-$sc" "$(cmd_yaml "$VUS" "$YAML_DURATION" "$file" "$flags")"
     json_row yaml.json "$sc"
     echo "| $sc | $requests | $rps | $p95_ms | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
   done
   {
     echo
-    echo "_get = single GET; check = GET + inline \`status: 200\` check; post = POST"
+    echo "_get = single GET; get-quiet = the same GET with \`--quiet\` (per-request"
+    echo "logging suppressed — the delta against \`get\` is the logging cost);"
+    echo "check = GET + inline \`status: 200\` check; post = POST"
     echo "with a JSON body (the serve target logs each metrics batch, so this row"
     echo "includes some target-side cost); multi = two steps with \`outputs\` +"
     echo "\`\${{ ... }}\` interpolation + check. Deltas against \`get\` price each"

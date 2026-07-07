@@ -59,7 +59,13 @@ pub enum ExecutionPlan {
         opts: locust::LocustOpts,
     },
     /// `perfscale run -f <test.yaml> -c <config.yaml>`
-    NativeSteps { test: TestDef, config: RunConfig },
+    NativeSteps {
+        test: TestDef,
+        config: RunConfig,
+        /// Drop per-iteration success output at the source (`--quiet`);
+        /// errors and the final metric summary still stream.
+        quiet: bool,
+    },
 }
 
 /// Run `plan` and return its live output stream plus final exit code.
@@ -72,11 +78,15 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
             k6::run_streaming(script).await
         }
         ExecutionPlan::LocustScript { path, opts } => locust::run_streaming(path, opts).await,
-        ExecutionPlan::NativeSteps { test, config } => {
+        ExecutionPlan::NativeSteps {
+            test,
+            config,
+            quiet,
+        } => {
             let (tx, rx) = mpsc::channel(512);
             let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
-                crate::step::runner::run_steps(test.steps, config, tx).await;
+                crate::step::runner::run_steps(test.steps, config, quiet, tx).await;
                 let _ = exit_tx.send(Some(0));
             });
             Ok(RunOutput {
@@ -141,9 +151,13 @@ mod tests {
 
         let RunOutput {
             mut lines, exit, ..
-        } = execute(ExecutionPlan::NativeSteps { test, config })
-            .await
-            .unwrap();
+        } = execute(ExecutionPlan::NativeSteps {
+            test,
+            config,
+            quiet: false,
+        })
+        .await
+        .unwrap();
         let mut collected = Vec::new();
         while let Some(line) = lines.recv().await {
             collected.push(line.text);

@@ -22,6 +22,7 @@ fn run_after_help() -> String {
          perfscale run --k6 script.js\n  \
          perfscale run --locust locustfile.py --host https://target.example.com -c load.yaml\n  \
          perfscale run -f test.yaml -c config.yaml\n  \
+         perfscale run -f test.yaml -c config.yaml --quiet\n  \
          perfscale run -f test.yaml -c config.yaml --report http://localhost:7999\n\n\
          The run exits 0 even when checks fail (that's load-test feedback, not a CLI error);\n\
          it exits 1 when the run itself can't execute (bad file, engine missing, invalid YAML).\n\n\
@@ -134,6 +135,12 @@ pub struct RunArgs {
     /// e.g. http://localhost:7999. Overrides `report.url` from the config file.
     #[arg(long, value_name = "URL")]
     pub report: Option<String>,
+
+    /// Suppress per-request output; errors and the final metric summary still
+    /// print. For the native engine the lines are dropped at the source, which
+    /// also removes their formatting/IO cost under high load.
+    #[arg(short = 'q', long)]
+    pub quiet: bool,
 }
 
 #[derive(Args)]
@@ -276,6 +283,29 @@ mod tests {
             Commands::Run(args) => {
                 assert_eq!(args.report.as_deref(), Some("http://localhost:7999"))
             }
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn run_quiet_flag_parses_long_and_short() {
+        for flags in [
+            &["run", "--k6", "a.js", "--quiet"],
+            &["run", "--k6", "a.js", "-q"],
+        ] {
+            let cli = parse(flags).unwrap();
+            match cli.command {
+                Commands::Run(args) => assert!(args.quiet),
+                _ => panic!("expected Run"),
+            }
+        }
+    }
+
+    #[test]
+    fn run_quiet_defaults_to_false() {
+        let cli = parse(&["run", "--k6", "a.js"]).unwrap();
+        match cli.command {
+            Commands::Run(args) => assert!(!args.quiet),
             _ => panic!("expected Run"),
         }
     }

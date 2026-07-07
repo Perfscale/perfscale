@@ -76,6 +76,7 @@ steps:
     let rx = runner::execute(ExecutionPlan::NativeSteps {
         test,
         config: config.run,
+        quiet: false,
     })
     .await
     .unwrap();
@@ -146,9 +147,13 @@ steps:
         duration: "1s".into(),
     };
 
-    let rx = runner::execute(ExecutionPlan::NativeSteps { test, config })
-        .await
-        .unwrap();
+    let rx = runner::execute(ExecutionPlan::NativeSteps {
+        test,
+        config,
+        quiet: false,
+    })
+    .await
+    .unwrap();
     let lines = collect(rx).await;
     let out = stdout_text(&lines);
 
@@ -192,9 +197,13 @@ steps:
         duration: "1s".into(),
     };
 
-    let rx = runner::execute(ExecutionPlan::NativeSteps { test, config })
-        .await
-        .unwrap();
+    let rx = runner::execute(ExecutionPlan::NativeSteps {
+        test,
+        config,
+        quiet: false,
+    })
+    .await
+    .unwrap();
     let lines = collect(rx).await;
 
     // 503s are recorded as failures in the summary...
