@@ -91,6 +91,8 @@ pub async fn execute_action(
 //   headers  – optional JSON object { "Name": "Value" }
 //   body     – optional: JSON object → application/json, string → text/plain
 //   timeout  – optional timeout in ms, default 10000
+//   insecure – optional bool: skip TLS certificate verification (self-signed
+//              targets like `perfscale serve --tls`), default false
 //
 // Output:
 //   { "status": <u16>, "body": <string>, "duration_ms": <f64> }
@@ -105,6 +107,19 @@ fn shared_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(reqwest::Client::new)
 }
 
+/// Like [`shared_client`], but skips TLS certificate verification — used only
+/// when a step opts in with `insecure: true`. A separate client so secure
+/// requests never share a connection pool with unverified ones.
+fn shared_insecure_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .expect("insecure client construction cannot fail")
+    })
+}
+
 async fn http_action(params: &Value, step_name: &str) -> ActionOutput {
     let method = params["method"].as_str().unwrap_or("GET").to_uppercase();
     let url = match params["url"].as_str() {
@@ -112,13 +127,19 @@ async fn http_action(params: &Value, step_name: &str) -> ActionOutput {
         None => return err(step_name, "'url' is required"),
     };
     let timeout_ms = params["timeout"].as_u64().unwrap_or(10_000);
+    let insecure = params["insecure"].as_bool().unwrap_or(false);
 
     let reqwest_method = match reqwest::Method::from_bytes(method.as_bytes()) {
         Ok(m) => m,
         Err(_) => return err(step_name, &format!("invalid HTTP method '{method}'")),
     };
 
-    let mut req = shared_client()
+    let client = if insecure {
+        shared_insecure_client()
+    } else {
+        shared_client()
+    };
+    let mut req = client
         .request(reqwest_method, &url)
         .timeout(Duration::from_millis(timeout_ms));
 
@@ -493,6 +514,24 @@ mod tests {
         });
         let out = execute_action("std/http@v1", &params, &ctx, "step").await;
         assert!(out.success);
+    }
+
+    #[tokio::test]
+    async fn http_action_insecure_flag_uses_dedicated_client() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/insecure"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        // Plain-HTTP target: `insecure` only relaxes TLS verification, so the
+        // request must behave identically — this pins the param wiring.
+        let ctx = Context::new();
+        let params = json!({ "url": format!("{}/insecure", server.uri()), "insecure": true });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+        assert!(out.success);
+        assert_eq!(out.value["status"], 200);
     }
 
     #[tokio::test]

@@ -38,7 +38,8 @@ fn serve_after_help() -> String {
          Examples:\n  \
          perfscale serve                 listen on the default port 7999\n  \
          perfscale serve --port 9000     listen on a specific port\n  \
-         perfscale serve --port 0        let the OS pick a free port (printed at startup)\n\n\
+         perfscale serve --port 0        let the OS pick a free port (printed at startup)\n  \
+         perfscale serve --tls           serve HTTPS with a self-signed certificate\n\n\
          Documentation: {DOCS_BASE}/cli/commands.md#perfscale-serve"
     )
 }
@@ -141,6 +142,12 @@ pub struct ServeArgs {
     /// Port to listen on (0 = let the OS pick a free port).
     #[arg(long, default_value_t = 7999, value_name = "PORT")]
     pub port: u16,
+
+    /// Serve over HTTPS with a self-signed certificate generated at startup.
+    /// Clients must skip verification (`insecure: true` in std/http@v1,
+    /// k6's `insecureSkipTLSVerify`, locust's `verify=False`).
+    #[arg(long)]
+    pub tls: bool,
 }
 
 fn lint_after_help() -> String {

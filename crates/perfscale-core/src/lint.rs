@@ -120,7 +120,7 @@ const STEP_FIELDS: [&str; 5] = ["name", "use", "with", "check", "outputs"];
 const CONFIG_TOP_FIELDS: [&str; 3] = ["vus", "duration", "report"];
 const REPORT_FIELDS: [&str; 1] = ["url"];
 const CHECK_FIELDS: [&str; 4] = ["on", "status", "duration_ms_lt", "body_contains"];
-const HTTP_WITH_FIELDS: [&str; 5] = ["method", "url", "headers", "body", "timeout"];
+const HTTP_WITH_FIELDS: [&str; 6] = ["method", "url", "headers", "body", "timeout", "insecure"];
 const SLEEP_WITH_FIELDS: [&str; 2] = ["ms", "seconds"];
 const LOG_WITH_FIELDS: [&str; 1] = ["message"];
 

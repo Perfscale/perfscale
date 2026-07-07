@@ -17,6 +17,13 @@ clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "process"] }
 axum = "0.7"
 
+# `perfscale serve --tls`: HTTPS with a self-signed certificate generated at
+# startup. The no-provider feature + explicit ring keeps the process on a
+# single rustls crypto provider (reqwest's rustls-tls is ring-based too).
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest    = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }

@@ -50,6 +50,7 @@ error: locust not found in PATH — install with `pip install locust` (...)
 | Flag | Default | Description |
 |---|---|---|
 | `--port <PORT>` | `7999` | Port to listen on; `0` picks a free port (printed at startup) |
+| `--tls` | off | Serve HTTPS with a self-signed certificate generated at startup — a local TLS target for load tests. Clients must skip verification (`insecure: true` in `std/http@v1`, k6's `insecureSkipTLSVerify`, locust's `verify=False`) |
 
 Endpoints:
 

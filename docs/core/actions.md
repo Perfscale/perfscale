@@ -18,6 +18,7 @@ Perform one HTTP request per iteration. Timing feeds the run's metrics.
 | `headers` | object | — | `{ "Name": "Value" }`, string values only |
 | `body` | string \| object | — | String → `text/plain`; object → serialized JSON with `application/json` |
 | `timeout` | integer (ms) | `10000` | Per-request timeout |
+| `insecure` | boolean | `false` | Skip TLS certificate verification — for self-signed targets like `perfscale serve --tls`. Never use against hosts you don't control |
 
 **Output** (available via `outputs` / `__last__`):
 
