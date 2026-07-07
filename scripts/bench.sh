@@ -159,6 +159,14 @@ if [[ -n "$TIME_STYLE" ]]; then
     fi
     echo "| ${names[$i]} | ${wall:-?} | ${user:-?} | ${sys:-?} | $rss | $io |" >>"$OUTPUT"
   done
+
+  {
+    echo
+    echo "_IO ops \`N in / M out\`: filesystem read (\`in\`) / write (\`out\`) operation counts"
+    echo "from \`/usr/bin/time\` — GNU fs-block inputs/outputs on Linux, BSD block"
+    echo "input/output operations on macOS. \`0 in\` usually means a warm page cache."
+    echo "Units differ by OS; compare within this report only._"
+  } >>"$OUTPUT"
 fi
 
 echo "report written to $OUTPUT"

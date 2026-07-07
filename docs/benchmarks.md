@@ -93,11 +93,11 @@ so numbers are never read without knowing what produced them. The
 
 | Scenario | Wall | User | Sys | Peak RSS | IO ops |
 |---|---|---|---|---|---|
-| locust (native) | 2.32s | 1.97s | 0.18s | 52.3 MiB | 0 in / 0 out |
-| perfscale (locust) | 2.23s | 2.02s | 0.16s | 53.3 MiB | 0 in / 0 out |
-| k6 (native) | 2.57s | 2.33s | 1.74s | 70.9 MiB | 0 in / 0 out |
-| perfscale (k6) | 2.58s | 2.29s | 1.70s | 69.6 MiB | 0 in / 0 out |
-| perfscale (yaml) | 2.01s | 1.17s | 1.09s | 14.7 MiB | 0 in / 0 out |
+| locust (native) | 2.32s | 1.97s | 0.18s | 52.3 MiB | 0 in / 1224 out |
+| perfscale (locust) | 2.23s | 2.02s | 0.16s | 53.3 MiB | 0 in / 1240 out |
+| k6 (native) | 2.57s | 2.33s | 1.74s | 70.9 MiB | 128 in / 3288 out |
+| perfscale (k6) | 2.58s | 2.29s | 1.70s | 69.6 MiB | 0 in / 3296 out |
+| perfscale (yaml) | 2.01s | 1.17s | 1.09s | 14.7 MiB | 0 in / 16 out |
 ```
 
 `k6 (native)` vs `perfscale (k6)` above are close on both tables (perfscale's
@@ -106,7 +106,26 @@ exactly what you want to see: wrapping k6 doesn't cost you much extra.
 Watch the `locust (native)` / `perfscale (locust)` pair the same way for
 locust's wrapping cost.
 
-The Resource usage row is a single `/usr/bin/time` run per scenario, not
+### Reading `IO ops` (`in` / `out`)
+
+`N in / M out` is the filesystem operation count from the `/usr/bin/time`
+pass:
+
+- **`in`** — read operations: blocks fetched *from* the filesystem (loading
+  scripts/configs, paging in binaries). `0 in` is normal on a warm run —
+  everything is already in the page cache. A cold first run shows non-zero
+  `in` (e.g. `128 in` for `k6 (native)` above is k6 paging its binary in).
+- **`out`** — write operations: blocks written *to* the filesystem (temp
+  scripts, locust's `--csv` stats, logs). Engines that persist stats write
+  more: locust's `~1224 out` above is its CSV output; the yaml engine writes
+  almost nothing (`16 out`).
+
+Example: `128 in / 3288 out` = 128 filesystem reads and 3288 filesystem
+writes over the whole scenario run.
+
+The Resource usage table is a single `/usr/bin/time` run per scenario, not
 averaged like the hyperfine table above it — treat it as directional, not
-statistically tight. IO ops units differ by OS (GNU time's fs-block counts
-vs BSD time's block-operation counts), so only compare within one report.
+statistically tight. IO ops units also differ by OS (GNU time counts fs
+blocks on Linux; BSD time counts block operations on macOS), so the same
+number does **not** mean the same bytes across systems — only compare within
+one report.
