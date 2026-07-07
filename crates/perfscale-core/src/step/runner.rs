@@ -33,15 +33,20 @@ impl From<LogTag> for LogSource {
 // Shared metrics
 // ---------------------------------------------------------------------------
 
+/// Per-run HTTP metrics accumulator.
+///
+/// Public only so `benches/` can exercise the hot paths (`record`, percentile
+/// computation in `summary_lines`) — not part of the supported API surface.
+#[doc(hidden)]
 #[derive(Debug, Default)]
-struct Metrics {
+pub struct Metrics {
     durations: Vec<f64>, // ms per HTTP request, sub-millisecond precision
     failures: u64,
     total: u64,
 }
 
 impl Metrics {
-    fn record(&mut self, s: &HttpSample) {
+    pub fn record(&mut self, s: &HttpSample) {
         self.total += 1;
         if s.failed {
             self.failures += 1;
@@ -56,7 +61,7 @@ impl Metrics {
     /// http_req_failed: 0.00%
     /// http_reqs: 120 2.00/s
     /// ```
-    fn summary_lines(&self, wall_secs: f64, total_iters: u64, vus: u32) -> Vec<String> {
+    pub fn summary_lines(&self, wall_secs: f64, total_iters: u64, vus: u32) -> Vec<String> {
         let mut lines = Vec::new();
 
         // Always emit iteration stats (even with no HTTP requests) so

@@ -1,11 +1,16 @@
 # Benchmarks
 
-perfscale ships a [hyperfine](https://github.com/sharkdp/hyperfine)-based
-benchmark script comparing up to five scenarios under an identical workload:
+perfscale ships a suite-based benchmark script comparing engines under an
+identical workload:
 
 ```sh
-./scripts/bench.sh
+./scripts/bench.sh                       # all suites
+SUITES="throughput startup" ./scripts/bench.sh
 ```
+
+Every scenario hits the same `perfscale serve` instance on loopback, so any
+gap between a `perfscale (*)` row and its native counterpart is perfscale's
+wrapping overhead — not the underlying tool.
 
 | Scenario | What it runs |
 |---|---|
@@ -15,55 +20,71 @@ benchmark script comparing up to five scenarios under an identical workload:
 | `perfscale (locust)` | the same locustfile, via `perfscale run --locust` |
 | `perfscale (yaml)` | perfscale's own step engine (no external binary) |
 
-The `*-native` scenarios exist specifically to isolate **perfscale's wrapping
-overhead** from **the underlying tool's own performance**: `perfscale (k6)`
-and `k6 (native)` run the byte-identical generated script, so any gap between
-them is temp-file handling, log piping, and summary translation — not k6.
-Same pairing for `locust (native)` / `perfscale (locust)`.
+## Suites
+
+| Suite | Question it answers |
+|---|---|
+| `overhead` | Does wrapping add wall time at a fixed duration? (hyperfine, statistically averaged) |
+| `throughput` | How many requests / what latency does each scenario actually deliver? Plus CPU, CPU-per-request, peak RSS, IO ops from the same instrumented run |
+| `startup` | What does the wrapper cost at startup? (1s runs, where startup isn't drowned by the test duration) |
+| `scaling` | How do RPS / p95 / RSS grow with VUs? (default sweep: 10, 50, 200) |
+| `saturation` | Approximate max RPS per engine at high VUs (default 256) |
+| `yaml` | What does each native-engine feature cost? (GET baseline vs +check vs POST body vs multi-step interpolation) |
+| `tls` | The TLS tax: same workload against `perfscale serve --tls` (self-signed HTTPS, verification skipped) |
+
+Select suites with `SUITES="..."`. Scenarios whose engine (`k6`/`locust`)
+isn't on `PATH` are skipped, not failed; `overhead`/`startup` need
+[hyperfine](https://github.com/sharkdp/hyperfine), the rest don't.
+
+Micro-benchmarks for the native engine's hot paths (YAML parse, `${{ ... }}`
+interpolation, metrics recording / percentile summary) live in
+`crates/perfscale-core/benches/` and run with `cargo bench -p perfscale-core`.
 
 ## Methodology
 
 - **Target**: a `perfscale serve` instance on loopback (`GET /health`) — no
-  network noise, the same target for every scenario within a run.
-- **Workload**: each scenario runs the configured VUs for the configured
-  duration, same for every scenario.
-- **Measurement**: [hyperfine](https://github.com/sharkdp/hyperfine) repeats
-  each scenario (`--runs`, with a `--warmup`) and reports wall-time mean,
-  min/max, and standard deviation — a statistically sound comparison instead
-  of a single noisy sample.
-- Scenarios whose engine (`k6`/`locust`) isn't on `PATH` are skipped, not
-  failed.
-- **Resource usage**: one extra run per scenario under `/usr/bin/time`
-  (`-v` on Linux, `-l` on macOS) — hyperfine only measures wall time, so
-  peak RSS and IO ops come from this separate pass instead. Skipped (with a
-  warning) if `/usr/bin/time` isn't installed.
-
-## Reading the numbers
-
-Since every scenario runs the same fixed-duration workload, the wall time is
-mostly that duration plus fixed overhead — process startup, engine
-initialization, and (for the `perfscale (*)` rows) perfscale's wrapping.
-Compare scenarios within a single report; never compare across machines or
-CI runs.
+  network noise, the same target for every scenario within a run. The `tls`
+  suite adds a second `serve --tls` instance.
+- **Wall-time comparison** (`overhead`, `startup`): hyperfine repeats each
+  scenario (`--runs`, with a `--warmup`) and reports mean, min/max, and
+  standard deviation.
+- **Throughput/latency/resources**: one instrumented run per scenario under
+  `/usr/bin/time` (`-v` on Linux, `-l` on macOS), with requests, RPS, and
+  latency percentiles parsed from the engine's own summary (k6 text summary,
+  locust `--csv` stats, perfscale's uniform summary lines). Single-run:
+  directional, not statistically tight.
+- **Beware fixed-duration wall time**: every scenario runs the same
+  duration, so overhead-suite wall times are all ≈ the duration itself.
+  Relative numbers near 1.00 prove the wrapper adds nothing; *throughput*
+  numbers are where engines actually differ.
+- **Shared CPU**: the load generator and `perfscale serve` share one
+  machine. Saturation ceilings include the target's cost; if two engines
+  plateau at similar RPS, suspect the target/CPU, not the engine.
 
 ## Running locally
 
 ```sh
 cargo build --release
-./scripts/bench.sh                                   # all available scenarios, 10 VUs, 15s each, 5 runs
+./scripts/bench.sh                                   # all suites, 10 VUs, 15s, 5 runs
 VUS=50 DURATION=30s ./scripts/bench.sh
-RUNS=10 WARMUP=2 ./scripts/bench.sh                   # more hyperfine samples
-OUTPUT=report.md ./scripts/bench.sh                   # write to a specific file
+SUITES="yaml" YAML_DURATION=5s ./scripts/bench.sh     # just the native-engine suite
+OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 ```
 
 | Variable | Default | Description |
 |---|---|---|
+| `SUITES` | all | Space-separated suite list (see table above) |
 | `VUS` | `10` | Virtual users per scenario |
-| `DURATION` | `15s` | Run length per scenario (`k6`/`locust` duration syntax) |
+| `DURATION` | `15s` | Run length for `overhead`/`throughput` |
 | `WARMUP` | `1` | hyperfine warmup runs (discarded, not shown) |
 | `RUNS` | `5` | hyperfine measured runs per scenario |
-| `PORT` | `18999` | Port for the throwaway `perfscale serve` target |
+| `STARTUP_DURATION` / `STARTUP_RUNS` | `1s` / `5` | Startup-suite run length / samples |
+| `SCALING_VUS` / `SCALING_DURATION` | `10 50 200` / `10s` | VU sweep points / per-point length |
+| `SAT_VUS` / `SAT_DURATION` | `256` / `15s` | Saturation VUs / run length |
+| `YAML_DURATION` / `TLS_DURATION` | `10s` / `10s` | Per-scenario length in those suites |
+| `PORT` / `TLS_PORT` | `18999` / `18998` | Ports for the throwaway serve targets |
 | `OUTPUT` | `bench-report.md` | Markdown report path |
+| `RESULTS` | `bench-results.json` | Machine-readable results (regression tracking input) |
 | `PERFSCALE_BIN` | `target/release/perfscale` | Binary under test; builds it if missing |
 
 ## Running on CI (canonical)
@@ -72,39 +93,34 @@ The [`bench` workflow](../.github/workflows/bench.yml) runs on
 `ubuntu-latest` — a fixed runner class, which removes local-machine variance:
 
 - **manually**: GitHub → Actions → `bench` → *Run workflow* (inputs: `vus`,
-  `duration`, `runs`)
+  `duration`, `runs`, `suites`)
 - **weekly**: scheduled Monday 04:00 UTC as a perf-regression drift check
 
 The job summary carries an Environment table (OS/CPU/threads/RAM/swap) and a
-Software table (perfscale/k6/locust/hyperfine versions) ahead of the results,
-so numbers are never read without knowing what produced them. The
-`bench-report` artifact (kept 90 days) holds just the hyperfine table.
+Software table (perfscale/k6/locust/hyperfine versions) ahead of the results.
+The `bench-report` artifact (kept 90 days) holds the markdown report plus
+`bench-results.json`.
 
-## Example report shape
+### Regression tracking
 
-```markdown
-| Command | Mean [s] | Min [s] | Max [s] | Relative |
-|:---|---:|---:|---:|---:|
-| `locust (native)` | 2.358 ± 0.019 | 2.344 | 2.372 | 1.17 ± 0.01 |
-| `perfscale (locust)` | 2.310 ± 0.031 | 2.288 | 2.332 | 1.15 ± 0.02 |
-| `k6 (native)` | 2.751 ± 0.060 | 2.709 | 2.794 | 1.37 ± 0.03 |
-| `perfscale (k6)` | 2.695 ± 0.097 | 2.626 | 2.764 | 1.34 ± 0.05 |
-| `perfscale (yaml)` | 2.014 ± 0.007 | 2.009 | 2.019 | 1.00 |
+Each CI run downloads the previous successful run's `bench-results.json` and
+appends a delta table (`scripts/bench_compare.py`) to the summary: RPS,
+latency, RSS, startup overhead, and criterion means, with changes beyond
+±15% flagged. Runners are shared hardware, so regressions **warn** rather
+than fail the job — treat a flag as "look here", confirmed by re-running.
 
-| Scenario | Wall | User | Sys | Peak RSS | IO ops |
-|---|---|---|---|---|---|
-| locust (native) | 2.32s | 1.97s | 0.18s | 52.3 MiB | 0 in / 1224 out |
-| perfscale (locust) | 2.23s | 2.02s | 0.16s | 53.3 MiB | 0 in / 1240 out |
-| k6 (native) | 2.57s | 2.33s | 1.74s | 70.9 MiB | 128 in / 3288 out |
-| perfscale (k6) | 2.58s | 2.29s | 1.70s | 69.6 MiB | 0 in / 3296 out |
-| perfscale (yaml) | 2.01s | 1.17s | 1.09s | 14.7 MiB | 0 in / 16 out |
-```
+## Reading the numbers
 
-`k6 (native)` vs `perfscale (k6)` above are close on both tables (perfscale's
-k6 wrapper is thin — just temp-file writing and log piping), which is
-exactly what you want to see: wrapping k6 doesn't cost you much extra.
-Watch the `locust (native)` / `perfscale (locust)` pair the same way for
-locust's wrapping cost.
+- `overhead`: near-1.00 relative wall time = the wrapper is free at that
+  duration. Real engine differences are in `throughput`.
+- `throughput`: compare RPS and percentiles; `CPU per req` normalizes CPU
+  cost by work actually done (an engine using 2× CPU while serving 10× RPS
+  is *more* efficient, not less).
+- `startup`: `vs native` is the wrapper's own cost; `vs ideal` includes the
+  engine's startup too.
+- Never compare across machines or CI runs — only within one report (the
+  delta table compares across runs *on the same runner class*, which is as
+  close as it gets).
 
 ### Reading `IO ops` (`in` / `out`)
 
@@ -114,18 +130,10 @@ pass:
 - **`in`** — read operations: blocks fetched *from* the filesystem (loading
   scripts/configs, paging in binaries). `0 in` is normal on a warm run —
   everything is already in the page cache. A cold first run shows non-zero
-  `in` (e.g. `128 in` for `k6 (native)` above is k6 paging its binary in).
+  `in` (k6 paging its binary in, for example).
 - **`out`** — write operations: blocks written *to* the filesystem (temp
-  scripts, locust's `--csv` stats, logs). Engines that persist stats write
-  more: locust's `~1224 out` above is its CSV output; the yaml engine writes
-  almost nothing (`16 out`).
+  scripts, locust's `--csv` stats, logs).
 
-Example: `128 in / 3288 out` = 128 filesystem reads and 3288 filesystem
-writes over the whole scenario run.
-
-The Resource usage table is a single `/usr/bin/time` run per scenario, not
-averaged like the hyperfine table above it — treat it as directional, not
-statistically tight. IO ops units also differ by OS (GNU time counts fs
-blocks on Linux; BSD time counts block operations on macOS), so the same
-number does **not** mean the same bytes across systems — only compare within
-one report.
+IO ops units differ by OS (GNU time counts fs blocks on Linux; BSD time
+counts block operations on macOS), so the same number does **not** mean the
+same bytes across systems — only compare within one report.

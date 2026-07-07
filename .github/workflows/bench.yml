@@ -2,7 +2,8 @@ name: bench
 
 # Engine benchmark on a fixed CI runner class, so numbers are comparable
 # between runs (local machines vary too much). Results land in the job
-# summary and as a downloadable artifact.
+# summary and as a downloadable artifact, and each run is compared against
+# the previous successful run's bench-results.json (regression tracking).
 on:
   workflow_dispatch:
     inputs:
@@ -15,10 +16,18 @@ on:
       runs:
         description: "hyperfine runs per scenario"
         default: "5"
+      suites:
+        description: "Suites to run (see scripts/bench.sh)"
+        default: "overhead throughput startup scaling saturation yaml tls"
   schedule:
     # Weekly drift check (Mondays 04:00 UTC) — catches perf regressions
     # between releases without burning CI minutes on every push.
     - cron: "0 4 * * 1"
+
+permissions:
+  contents: read
+  # Download the previous run's bench-results artifact for the delta table.
+  actions: read
 
 jobs:
   bench:
@@ -71,21 +80,52 @@ jobs:
             echo
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run benchmark
+      - name: Run benchmark suites
         env:
           VUS: ${{ github.event.inputs.vus || '10' }}
           DURATION: ${{ github.event.inputs.duration || '30s' }}
           RUNS: ${{ github.event.inputs.runs || '5' }}
+          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml tls' }}
+        run: ./scripts/bench.sh
+
+      - name: Micro-benchmarks (criterion)
+        # Short measurement windows: precise enough for a drift check, and the
+        # weekly job shouldn't spend more time on micro-benches than on the
+        # end-to-end suites.
         run: |
-          ./scripts/bench.sh
+          cargo bench -p perfscale-core --bench engine -- --warm-up-time 1 --measurement-time 3
+          python3 scripts/bench_metrics.py criterion target/criterion bench-results.json bench-report.md
+
+      - name: Publish report to job summary
+        run: |
           {
             echo '## Benchmark results'
             echo
             cat bench-report.md
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Compare with previous run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/bench.yml/runs?status=success&per_page=1" \
+            --jq '.workflow_runs[0].id' 2>/dev/null || true)
+          if [ -z "$prev" ]; then
+            echo "no previous successful run — skipping comparison"
+            exit 0
+          fi
+          gh run download "$prev" --repo "$GITHUB_REPOSITORY" --name bench-report --dir prev-bench || true
+          if [ ! -f prev-bench/bench-results.json ]; then
+            echo "previous run has no bench-results.json — skipping comparison"
+            exit 0
+          fi
+          python3 scripts/bench_compare.py prev-bench/bench-results.json bench-results.json \
+            | tee -a bench-report.md >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v5
         with:
           name: bench-report
-          path: bench-report.md
+          path: |
+            bench-report.md
+            bench-results.json
           retention-days: 90
