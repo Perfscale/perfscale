@@ -145,13 +145,15 @@ pub struct RunArgs {
     pub quiet: bool,
 
     /// After the run, write the parsed metric summary plus run metadata
-    /// (engine, VUs, duration, timestamp) to this file. Format defaults to
-    /// JSON; a `.md` extension or `--summary-format md` selects Markdown.
+    /// (engine, VUs, duration, timestamp) to this file. Repeatable — one run
+    /// can produce several exports. A `.md`/`.json` extension picks the
+    /// format per file; otherwise `--summary-format` (default: JSON).
     #[arg(long, value_name = "FILE")]
-    pub summary_export: Option<PathBuf>,
+    pub summary_export: Vec<PathBuf>,
 
-    /// Format for --summary-export. `md` renders a Markdown table — handy for
-    /// CI job summaries (e.g. `--summary-export "$GITHUB_STEP_SUMMARY"`).
+    /// Format for --summary-export files without a recognized extension.
+    /// `md` renders a Markdown table — handy for CI job summaries
+    /// (e.g. `--summary-export "$GITHUB_STEP_SUMMARY" --summary-format md`).
     #[arg(long, value_enum, requires = "summary_export")]
     pub summary_format: Option<SummaryFormat>,
 }
@@ -334,7 +336,7 @@ mod tests {
         let cli = parse(&["run", "--k6", "a.js", "--summary-export", "out.json"]).unwrap();
         match cli.command {
             Commands::Run(args) => {
-                assert_eq!(args.summary_export, Some(PathBuf::from("out.json")));
+                assert_eq!(args.summary_export, vec![PathBuf::from("out.json")]);
                 assert!(args.summary_format.is_none());
             }
             _ => panic!("expected Run"),

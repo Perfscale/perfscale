@@ -52,9 +52,11 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
         report_summary(&url, &summary_lines).await;
     }
 
-    if let Some(ref path) = args.summary_export {
+    if !args.summary_export.is_empty() {
         let export = build_export(engine, vus, duration, &summary_lines);
-        write_summary_export(path, args.summary_format, &export)?;
+        for path in &args.summary_export {
+            write_summary_export(path, args.summary_format, &export)?;
+        }
     }
 
     Ok(())
@@ -97,19 +99,17 @@ fn build_export(
     }
 }
 
-/// Format precedence: explicit `--summary-format`, else a `.md` file
-/// extension, else JSON.
+/// Format precedence per file: a recognized `.md`/`.json` extension wins,
+/// then the `--summary-format` flag, then JSON. Extension-first keeps mixed
+/// multi-exports intuitive: `--summary-export a.json --summary-export
+/// "$GITHUB_STEP_SUMMARY" --summary-format md` writes JSON to `a.json` and
+/// Markdown to the extension-less CI summary file.
 fn export_format(path: &Path, flag: Option<SummaryFormat>) -> SummaryFormat {
-    flag.unwrap_or_else(|| {
-        if path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("md"))
-        {
-            SummaryFormat::Md
-        } else {
-            SummaryFormat::Json
-        }
-    })
+    match path.extension() {
+        Some(e) if e.eq_ignore_ascii_case("md") => SummaryFormat::Md,
+        Some(e) if e.eq_ignore_ascii_case("json") => SummaryFormat::Json,
+        _ => flag.unwrap_or(SummaryFormat::Json),
+    }
 }
 
 fn write_summary_export(
@@ -295,7 +295,7 @@ mod tests {
             host: None,
             report: None,
             quiet: false,
-            summary_export: None,
+            summary_export: Vec::new(),
             summary_format: None,
         }
     }
@@ -486,21 +486,23 @@ mod tests {
     }
 
     #[test]
-    fn export_format_flag_beats_extension_beats_json_default() {
+    fn export_format_extension_wins_then_flag_then_json() {
         use std::path::PathBuf;
         let md_path = PathBuf::from("out.md");
         let json_path = PathBuf::from("out.json");
-        let bare_path = PathBuf::from("summary");
+        let bare_path = PathBuf::from("step_summary_a1b2c3");
 
+        // Recognized extensions always win — mixed multi-exports stay sane.
         assert_eq!(export_format(&md_path, None), SummaryFormat::Md);
         assert_eq!(export_format(&json_path, None), SummaryFormat::Json);
-        assert_eq!(export_format(&bare_path, None), SummaryFormat::Json);
-        assert_eq!(
-            export_format(&md_path, Some(SummaryFormat::Json)),
-            SummaryFormat::Json
-        );
         assert_eq!(
             export_format(&json_path, Some(SummaryFormat::Md)),
+            SummaryFormat::Json
+        );
+        // No recognized extension → flag, then JSON default.
+        assert_eq!(export_format(&bare_path, None), SummaryFormat::Json);
+        assert_eq!(
+            export_format(&bare_path, Some(SummaryFormat::Md)),
             SummaryFormat::Md
         );
     }

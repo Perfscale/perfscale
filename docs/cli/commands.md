@@ -20,8 +20,8 @@ Exactly one engine flag is required: `--k6`, `--locust`, or `-f`.
 | `--host <URL>` | base URL | Target host for `--locust` (locust's `--host`) |
 | `--report <URL>` | base URL | POST the summary to a `perfscale serve` instance after the run; overrides `report.url` from the config file |
 | `-q, --quiet` | — | Suppress per-request output; errors and the final metric summary still print. The native engine drops the lines at the source, which also removes their formatting/IO cost under high load |
-| `--summary-export <FILE>` | path | After the run, write the parsed metric summary (requests, RPS, latency percentiles, error rate) plus run metadata (engine, VUs, duration, timestamp, perfscale version) to this file. JSON by default; a `.md` extension selects Markdown |
-| `--summary-format <json\|md>` | with `--summary-export` | Explicit export format, overriding the extension. `md` renders a table for CI job summaries: `--summary-export "$GITHUB_STEP_SUMMARY" --summary-format md` |
+| `--summary-export <FILE>` | path, repeatable | After the run, write the parsed metric summary (requests, RPS, latency percentiles, error rate) plus run metadata (engine, VUs, duration, timestamp, perfscale version) to this file. Repeat the flag to write several exports from one run. A `.md`/`.json` extension picks the format per file (default JSON) |
+| `--summary-format <json\|md>` | with `--summary-export` | Format for export files without a recognized extension. `md` renders a table for CI job summaries: `--summary-export "$GITHUB_STEP_SUMMARY" --summary-format md` |
 
 ### Exit code semantics
 
