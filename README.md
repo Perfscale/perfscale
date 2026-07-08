@@ -39,7 +39,10 @@ results.
 | `perfscale run --locust <file.py> [--host <url>]` | Run a locust file headless |
 | `perfscale run -f <test.yaml> -c <config.yaml>` | Run a native step-engine test |
 | `perfscale run ... --report <url>` | Also forward the summary to `perfscale serve` |
+| `perfscale run ... --quiet` | Drop per-request output (errors and the final summary still print) |
+| `perfscale run ... --summary-export <file>` | Write the parsed summary + run metadata as JSON or Markdown (repeatable) |
 | `perfscale serve [--port 7999]` | Start the local metrics receiver |
+| `perfscale serve --tls` | Same, over self-signed HTTPS — a local TLS load-test target |
 
 See [`examples/`](examples/) for a working test/config pair per engine, and
 [`schema/`](schema/) for the generated JSON Schemas (used for editor

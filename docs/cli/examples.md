@@ -89,15 +89,30 @@ report:
 
 ## CI (GitHub Actions)
 
+The [`Perfscale/github-action`](https://github.com/Perfscale/github-action)
+installs perfscale, runs the test, renders the metric table into the job
+summary, and writes a machine-readable JSON summary:
+
 ```yaml
-- name: Load smoke test
+- uses: Perfscale/github-action@v1
+  id: loadtest
+  with:
+    file: smoke.test.yaml
+    config: smoke.config.yaml
+
+- name: Gate on error rate and p95
   run: |
-    curl -fsSL -o perfscale https://github.com/Perfscale/perfscale/releases/latest/download/perfscale-linux-amd64
-    chmod +x perfscale
-    ./perfscale run -f smoke.test.yaml -c smoke.config.yaml | tee load-report.txt
-    ! grep -q 'http_req_failed........: 100.00%' load-report.txt
+    jq -e '.summary.error_rate < 0.01 and .summary.p95_ms < 500' \
+      "${{ steps.loadtest.outputs.summary-json }}"
 ```
 
-The run exits `0` even when checks fail (see
-[exit code semantics](commands.md#exit-code-semantics)) — gate on the summary
-content, as above, when you want failures to break the build.
+Without the action, the same gate works from any CI via `--summary-export`:
+
+```sh
+perfscale run -f smoke.test.yaml -c smoke.config.yaml --summary-export result.json
+jq -e '.summary.error_rate < 0.01' result.json
+```
+
+The run itself exits `0` even when checks fail (see
+[exit code semantics](commands.md#exit-code-semantics)) — gate on the exported
+summary, as above, when you want failures to break the build.
