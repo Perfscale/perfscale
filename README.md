@@ -82,7 +82,10 @@ cargo run -p perfscale-core --example gen_schema
 
 Tagged pushes (`vX.Y.Z`) build binaries for every desktop platform and
 publish them to GitHub Releases (with `sha256sums.txt`) via
-`.github/workflows/release.yml`:
+`.github/workflows/release.yml`. Release notes come from
+[`UPCOMING.md`](UPCOMING.md) — append user-facing entries there as you merge
+changes; the workflow publishes them as the release body (auto-generated
+changelog appended) and resets the file afterwards:
 
 | Artifact | Platform |
 |---|---|

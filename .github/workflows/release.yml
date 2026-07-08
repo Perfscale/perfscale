@@ -83,6 +83,8 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v5
+
       - uses: actions/download-artifact@v5
         with:
           path: dist/
@@ -94,9 +96,66 @@ jobs:
           sha256sum perfscale-* > sha256sums.txt
           ls -lh
 
+      # Human-written notes from UPCOMING.md become the release body; the
+      # auto-generated changelog is appended below them. An empty file falls
+      # back to generated notes only (with a warning) — a release should
+      # never be blocked on prose.
+      - name: Prepare release notes from UPCOMING.md
+        run: |
+          sed '/^<!--/,/^-->/d; /^# Upcoming release/d' UPCOMING.md > release-notes.md
+          if grep -q '[^[:space:]]' release-notes.md; then
+            echo "release notes from UPCOMING.md:"
+            cat release-notes.md
+          else
+            echo "::warning::UPCOMING.md has no entries — release body falls back to auto-generated notes"
+            : > release-notes.md
+          fi
+
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: release-notes.md
           files: |
             dist/perfscale-*
             dist/sha256sums.txt
           generate_release_notes: true
+
+  # ── Reset UPCOMING.md for the next cycle ────────────────────────────────────
+  reset-upcoming:
+    name: Reset UPCOMING.md
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Clear released notes
+        run: |
+          cat > UPCOMING.md <<'EOF'
+          # Upcoming release
+
+          <!--
+          Release notes for the next release, written as features land.
+
+          - Append short, user-facing entries below this comment as you merge changes
+            (what changed and why a user cares — not commit messages).
+          - On a `v*` tag, the release workflow publishes everything below the comment
+            as the release body (with the auto-generated changelog appended), then
+            resets this file back to the template.
+          - If this file has no entries at tag time, the release falls back to
+            auto-generated notes and the workflow prints a warning.
+          -->
+          EOF
+
+          if git diff --quiet UPCOMING.md; then
+            echo "UPCOMING.md already pristine — nothing to reset"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add UPCOMING.md
+          git commit -m "chore: reset UPCOMING.md after ${GITHUB_REF_NAME} [skip ci]"
+          git push origin main
