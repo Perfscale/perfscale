@@ -97,8 +97,8 @@ fn bench_metrics(c: &mut Criterion) {
         )
     });
 
-    // 100k samples ≈ a 30s run at ~3.3k RPS; summary_lines clones and sorts
-    // the whole vector, which is the expensive part being measured.
+    // 100k samples ≈ a 30s run at ~3.3k RPS; with the HDR histogram the
+    // summary cost is bucket iteration, independent of sample count.
     let mut filled = Metrics::default();
     for i in 0..100_000u64 {
         filled.record(&HttpSample {

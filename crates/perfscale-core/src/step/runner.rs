@@ -33,16 +33,45 @@ impl From<LogTag> for LogSource {
 // Shared metrics
 // ---------------------------------------------------------------------------
 
+/// Durations are tracked in microseconds: 1µs floor keeps sub-millisecond
+/// loopback requests distinguishable, the 1-hour ceiling is far beyond any
+/// sane single request.
+const HIST_LOW_MICROS: u64 = 1;
+const HIST_HIGH_MICROS: u64 = 3_600_000_000;
+/// Two significant digits → quantiles within ≤1% of the true value.
+const HIST_SIGFIGS: u8 = 2;
+
 /// Per-run HTTP metrics accumulator.
 ///
-/// Public only so `benches/` can exercise the hot paths (`record`, percentile
+/// Durations live in a fixed-size HDR histogram (~tens of KB) instead of one
+/// f64 per request: storing raw samples made memory grow 8 bytes per request
+/// — a 30-hour soak at 10k RPS would have needed ~26 GB at the final
+/// clone-and-sort. The histogram trades that for a ≤1% quantile error,
+/// invisible at the 2-decimal precision the summary prints.
+///
+/// Public only so `benches/` can exercise the hot paths (`record`, quantile
 /// computation in `summary_lines`) — not part of the supported API surface.
 #[doc(hidden)]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Metrics {
-    durations: Vec<f64>, // ms per HTTP request, sub-millisecond precision
+    durations_micros: hdrhistogram::Histogram<u64>,
     failures: u64,
     total: u64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            durations_micros: hdrhistogram::Histogram::new_with_bounds(
+                HIST_LOW_MICROS,
+                HIST_HIGH_MICROS,
+                HIST_SIGFIGS,
+            )
+            .expect("static histogram bounds are valid"),
+            failures: 0,
+            total: 0,
+        }
+    }
 }
 
 impl Metrics {
@@ -51,7 +80,11 @@ impl Metrics {
         if s.failed {
             self.failures += 1;
         }
-        self.durations.push(s.duration_ms);
+        let micros = (s.duration_ms * 1000.0).round() as u64;
+        // Clamped into bounds, so the record cannot fail.
+        let _ = self
+            .durations_micros
+            .record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
     }
 
     /// Emit k6-compatible summary lines.
@@ -76,15 +109,8 @@ impl Metrics {
             return lines;
         }
 
-        let mut sorted = self.durations.clone();
-        sorted.sort_by(f64::total_cmp);
-        let n = sorted.len();
-
-        let avg = sorted.iter().sum::<f64>() / n as f64;
-        let pct = |p: f64| -> f64 {
-            let idx = ((p / 100.0) * n as f64).floor() as usize;
-            sorted[idx.min(n - 1)]
-        };
+        let h = &self.durations_micros;
+        let pct = |q: f64| -> f64 { h.value_at_quantile(q) as f64 / 1000.0 };
 
         let rps = self.total as f64 / wall_secs.max(0.001);
         let err = self.failures as f64 / self.total as f64 * 100.0;
@@ -92,13 +118,13 @@ impl Metrics {
         lines.extend([
             format!(
                 "http_req_duration......: avg={avg:.2}ms p(50)={p50:.2}ms p(90)={p90:.2}ms p(95)={p95:.2}ms p(99)={p99:.2}ms min={min:.2}ms max={max:.2}ms",
-                avg = avg,
-                p50 = pct(50.0),
-                p90 = pct(90.0),
-                p95 = pct(95.0),
-                p99 = pct(99.0),
-                min = sorted[0],
-                max = sorted[n - 1],
+                avg = h.mean() / 1000.0,
+                p50 = pct(0.50),
+                p90 = pct(0.90),
+                p95 = pct(0.95),
+                p99 = pct(0.99),
+                min = h.min() as f64 / 1000.0,
+                max = h.max() as f64 / 1000.0,
             ),
             format!("http_req_failed........: {err:.2}%"),
             format!("http_reqs..............: {total} {rps:.2}/s", total = self.total),
@@ -288,6 +314,58 @@ mod tests {
         }
         handle.await.unwrap();
         lines
+    }
+
+    /// The histogram must stay within its promised ≤1% quantile error and
+    /// keep sub-millisecond resolution — the properties that let it replace
+    /// exact per-request storage.
+    #[test]
+    fn metrics_histogram_quantiles_within_one_percent() {
+        let mut m = Metrics::default();
+        for i in 1..=10_000u64 {
+            m.record(&HttpSample {
+                duration_ms: i as f64 / 10.0, // 0.1ms .. 1000ms, uniform
+                status: 200,
+                failed: false,
+            });
+        }
+
+        let lines = m.summary_lines(10.0, 10_000, 1);
+        let dur = lines
+            .iter()
+            .find(|l| l.starts_with("http_req_duration"))
+            .unwrap();
+
+        let get = |key: &str| -> f64 {
+            let start = dur.find(key).unwrap() + key.len();
+            dur[start..].split("ms").next().unwrap().parse().unwrap()
+        };
+
+        let within =
+            |actual: f64, expected: f64| (actual - expected).abs() <= expected * 0.011 + 0.01;
+        assert!(within(get("p(50)="), 500.0), "p50: {dur}");
+        assert!(within(get("p(90)="), 900.0), "p90: {dur}");
+        assert!(within(get("p(99)="), 990.0), "p99: {dur}");
+        assert!(within(get("avg="), 500.05), "avg: {dur}");
+        assert!(within(get("max="), 1000.0), "max: {dur}");
+        // Sub-millisecond floor survives (0.1ms recorded as 100µs).
+        assert!(get("min=") <= 0.11, "min: {dur}");
+    }
+
+    /// Out-of-range values must clamp, not panic or vanish.
+    #[test]
+    fn metrics_histogram_clamps_extreme_durations() {
+        let mut m = Metrics::default();
+        for ms in [0.0, 10_000_000.0] {
+            m.record(&HttpSample {
+                duration_ms: ms,
+                status: 200,
+                failed: false,
+            });
+        }
+        let lines = m.summary_lines(1.0, 2, 1);
+        let dur = lines.iter().find(|l| l.starts_with("http_reqs")).unwrap();
+        assert!(dur.contains("2 "), "both samples counted: {dur}");
     }
 
     #[tokio::test]

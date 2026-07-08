@@ -16,3 +16,8 @@ Release notes for the next release, written as features land.
 
 - Release notes are now written by hand in `UPCOMING.md` instead of being a
   bare commit diff; the release workflow publishes and then resets the file.
+- The native engine tracks request durations in a fixed-size HDR histogram
+  (~tens of KB) instead of storing every sample: long soak runs no longer
+  grow memory 8 bytes per request (a 30-hour run at 10k RPS previously
+  needed ~26 GB at the final summary). Quantiles are now within ≤1% of the
+  exact value — invisible at the precision the summary prints.

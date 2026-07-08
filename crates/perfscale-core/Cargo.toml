@@ -21,6 +21,10 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 # CSV parsing for locust's --csv stats output
 csv = "1"
 
+# Fixed-size latency histogram for the native engine (no serialization/sync
+# features — just the core data structure)
+hdrhistogram = { version = "7", default-features = false }
+
 # YAML/JSON schema generation + validation
 schemars   = "0.8"
 jsonschema = "0.18"
