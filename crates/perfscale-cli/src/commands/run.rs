@@ -4,9 +4,10 @@ use std::time::Duration;
 use perfscale_core::runner::locust::LocustOpts;
 use perfscale_core::runner::{self, ExecutionPlan, LogLine, LogSource, RunOutput};
 use perfscale_core::step::TestDef;
+use perfscale_core::summary::{iso8601_utc, ExportMeta, SummaryExport};
 use perfscale_core::yaml::{self, ConfigFile};
 
-use crate::cli::RunArgs;
+use crate::cli::{RunArgs, SummaryFormat};
 use crate::error::CliError;
 
 pub async fn run(args: RunArgs) -> Result<(), CliError> {
@@ -17,6 +18,7 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
     };
 
     let plan = resolve_plan(&args, native_test, config.as_ref());
+    let (engine, vus, duration) = plan_meta(&plan);
     let report_url = resolve_report_url(&args, config.as_ref());
 
     let RunOutput {
@@ -50,6 +52,85 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
         report_summary(&url, &summary_lines).await;
     }
 
+    if let Some(ref path) = args.summary_export {
+        let export = build_export(engine, vus, duration, &summary_lines);
+        write_summary_export(path, args.summary_format, &export)?;
+    }
+
+    Ok(())
+}
+
+/// Engine name and load shape for the export metadata. k6 owns its load
+/// shape inside the script, so vus/duration are unknown to the CLI there.
+fn plan_meta(plan: &ExecutionPlan) -> (&'static str, Option<u32>, Option<String>) {
+    match plan {
+        ExecutionPlan::K6Script(_) => ("k6", None, None),
+        ExecutionPlan::LocustScript { opts, .. } => {
+            ("locust", Some(opts.users), Some(opts.duration.clone()))
+        }
+        ExecutionPlan::NativeSteps { config, .. } => {
+            ("native", Some(config.vus), Some(config.duration.clone()))
+        }
+    }
+}
+
+fn build_export(
+    engine: &str,
+    vus: Option<u32>,
+    duration: Option<String>,
+    summary_lines: &[String],
+) -> SummaryExport {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    SummaryExport {
+        meta: ExportMeta {
+            perfscale_version: env!("CARGO_PKG_VERSION").to_string(),
+            engine: engine.to_string(),
+            vus,
+            duration,
+            timestamp: iso8601_utc(secs),
+        },
+        summary: perfscale_core::summary::parse_summary(&summary_lines.join("\n")),
+    }
+}
+
+/// Format precedence: explicit `--summary-format`, else a `.md` file
+/// extension, else JSON.
+fn export_format(path: &Path, flag: Option<SummaryFormat>) -> SummaryFormat {
+    flag.unwrap_or_else(|| {
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        {
+            SummaryFormat::Md
+        } else {
+            SummaryFormat::Json
+        }
+    })
+}
+
+fn write_summary_export(
+    path: &Path,
+    flag: Option<SummaryFormat>,
+    export: &SummaryExport,
+) -> Result<(), CliError> {
+    let body = match export_format(path, flag) {
+        SummaryFormat::Json => export.to_json(),
+        SummaryFormat::Md => export.to_markdown(),
+    };
+    std::fs::write(path, body).map_err(|e| {
+        CliError::new(format!(
+            "failed to write summary export '{}'",
+            path.display()
+        ))
+        .cause(e.to_string())
+        .hint("the run itself completed — only writing the export file failed")
+        .docs("cli/commands.md#perfscale-run")
+    })?;
+    eprintln!("[system] summary exported to {}", path.display());
     Ok(())
 }
 
@@ -214,6 +295,8 @@ mod tests {
             host: None,
             report: None,
             quiet: false,
+            summary_export: None,
+            summary_format: None,
         }
     }
 
@@ -373,6 +456,100 @@ mod tests {
         ));
         // Non-quiet prints everything.
         assert!(should_print(&line(LogSource::Stdout, "anything"), false));
+    }
+
+    #[test]
+    fn plan_meta_reports_engine_and_load_shape() {
+        let native = ExecutionPlan::NativeSteps {
+            test: sample_test(),
+            config: RunConfig {
+                vus: 7,
+                duration: "45s".into(),
+            },
+            quiet: false,
+        };
+        assert_eq!(plan_meta(&native), ("native", Some(7), Some("45s".into())));
+
+        let k6 = ExecutionPlan::K6Script(PathBuf::from("a.js"));
+        assert_eq!(plan_meta(&k6), ("k6", None, None));
+
+        let locust = ExecutionPlan::LocustScript {
+            path: PathBuf::from("b.py"),
+            opts: LocustOpts {
+                users: 3,
+                spawn_rate: 3,
+                duration: "1m".into(),
+                host: None,
+            },
+        };
+        assert_eq!(plan_meta(&locust), ("locust", Some(3), Some("1m".into())));
+    }
+
+    #[test]
+    fn export_format_flag_beats_extension_beats_json_default() {
+        use std::path::PathBuf;
+        let md_path = PathBuf::from("out.md");
+        let json_path = PathBuf::from("out.json");
+        let bare_path = PathBuf::from("summary");
+
+        assert_eq!(export_format(&md_path, None), SummaryFormat::Md);
+        assert_eq!(export_format(&json_path, None), SummaryFormat::Json);
+        assert_eq!(export_format(&bare_path, None), SummaryFormat::Json);
+        assert_eq!(
+            export_format(&md_path, Some(SummaryFormat::Json)),
+            SummaryFormat::Json
+        );
+        assert_eq!(
+            export_format(&json_path, Some(SummaryFormat::Md)),
+            SummaryFormat::Md
+        );
+    }
+
+    #[test]
+    fn build_export_parses_summary_and_stamps_meta() {
+        let lines = vec![
+            "http_req_duration......: avg=0.42ms p(50)=0.31ms p(90)=0.88ms p(95)=1.02ms p(99)=1.90ms min=0.09ms max=3.10ms".to_string(),
+            "http_req_failed........: 0.00%".to_string(),
+            "http_reqs..............: 120 2.00/s".to_string(),
+        ];
+        let export = build_export("native", Some(10), Some("30s".into()), &lines);
+        assert_eq!(export.meta.engine, "native");
+        assert_eq!(export.meta.vus, Some(10));
+        assert_eq!(export.meta.perfscale_version, env!("CARGO_PKG_VERSION"));
+        assert!(export.meta.timestamp.ends_with('Z'));
+        let s = export.summary.expect("summary parsed");
+        assert_eq!(s.total_requests, 120);
+    }
+
+    #[test]
+    fn build_export_without_http_metrics_has_none_summary() {
+        let lines = vec!["iterations..............: 10 1.00/s".to_string()];
+        let export = build_export("native", Some(1), Some("1s".into()), &lines);
+        assert!(export.summary.is_none());
+    }
+
+    #[test]
+    fn write_summary_export_writes_json_and_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let export = build_export("native", Some(2), Some("1s".into()), &[]);
+
+        let json_path = dir.path().join("out.json");
+        write_summary_export(&json_path, None, &export).unwrap();
+        let json = std::fs::read_to_string(&json_path).unwrap();
+        assert!(json.contains("\"engine\": \"native\""));
+
+        let md_path = dir.path().join("out.md");
+        write_summary_export(&md_path, None, &export).unwrap();
+        let md = std::fs::read_to_string(&md_path).unwrap();
+        assert!(md.starts_with("### perfscale run summary"));
+    }
+
+    #[test]
+    fn write_summary_export_unwritable_path_is_cli_error() {
+        let export = build_export("native", None, None, &[]);
+        let err = write_summary_export(Path::new("/nonexistent-dir/out.json"), None, &export)
+            .unwrap_err();
+        assert!(err.to_string().contains("failed to write summary export"));
     }
 
     #[test]

@@ -23,7 +23,9 @@ fn run_after_help() -> String {
          perfscale run --locust locustfile.py --host https://target.example.com -c load.yaml\n  \
          perfscale run -f test.yaml -c config.yaml\n  \
          perfscale run -f test.yaml -c config.yaml --quiet\n  \
-         perfscale run -f test.yaml -c config.yaml --report http://localhost:7999\n\n\
+         perfscale run -f test.yaml -c config.yaml --report http://localhost:7999\n  \
+         perfscale run -f test.yaml -c config.yaml --summary-export result.json\n  \
+         perfscale run --k6 script.js --summary-export \"$GITHUB_STEP_SUMMARY\" --summary-format md\n\n\
          The run exits 0 even when checks fail (that's load-test feedback, not a CLI error);\n\
          it exits 1 when the run itself can't execute (bad file, engine missing, invalid YAML).\n\n\
          Documentation: {DOCS_BASE}/cli/commands.md\n\
@@ -141,6 +143,23 @@ pub struct RunArgs {
     /// also removes their formatting/IO cost under high load.
     #[arg(short = 'q', long)]
     pub quiet: bool,
+
+    /// After the run, write the parsed metric summary plus run metadata
+    /// (engine, VUs, duration, timestamp) to this file. Format defaults to
+    /// JSON; a `.md` extension or `--summary-format md` selects Markdown.
+    #[arg(long, value_name = "FILE")]
+    pub summary_export: Option<PathBuf>,
+
+    /// Format for --summary-export. `md` renders a Markdown table — handy for
+    /// CI job summaries (e.g. `--summary-export "$GITHUB_STEP_SUMMARY"`).
+    #[arg(long, value_enum, requires = "summary_export")]
+    pub summary_format: Option<SummaryFormat>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum SummaryFormat {
+    Json,
+    Md,
 }
 
 #[derive(Args)]
@@ -308,6 +327,38 @@ mod tests {
             Commands::Run(args) => assert!(!args.quiet),
             _ => panic!("expected Run"),
         }
+    }
+
+    #[test]
+    fn run_summary_export_parses_with_optional_format() {
+        let cli = parse(&["run", "--k6", "a.js", "--summary-export", "out.json"]).unwrap();
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.summary_export, Some(PathBuf::from("out.json")));
+                assert!(args.summary_format.is_none());
+            }
+            _ => panic!("expected Run"),
+        }
+
+        let cli = parse(&[
+            "run",
+            "--k6",
+            "a.js",
+            "--summary-export",
+            "summary",
+            "--summary-format",
+            "md",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Run(args) => assert_eq!(args.summary_format, Some(SummaryFormat::Md)),
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn run_summary_format_without_export_is_rejected() {
+        assert!(parse(&["run", "--k6", "a.js", "--summary-format", "md"]).is_err());
     }
 
     #[test]

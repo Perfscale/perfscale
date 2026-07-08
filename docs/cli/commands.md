@@ -20,6 +20,8 @@ Exactly one engine flag is required: `--k6`, `--locust`, or `-f`.
 | `--host <URL>` | base URL | Target host for `--locust` (locust's `--host`) |
 | `--report <URL>` | base URL | POST the summary to a `perfscale serve` instance after the run; overrides `report.url` from the config file |
 | `-q, --quiet` | — | Suppress per-request output; errors and the final metric summary still print. The native engine drops the lines at the source, which also removes their formatting/IO cost under high load |
+| `--summary-export <FILE>` | path | After the run, write the parsed metric summary (requests, RPS, latency percentiles, error rate) plus run metadata (engine, VUs, duration, timestamp, perfscale version) to this file. JSON by default; a `.md` extension selects Markdown |
+| `--summary-format <json\|md>` | with `--summary-export` | Explicit export format, overriding the extension. `md` renders a table for CI job summaries: `--summary-export "$GITHUB_STEP_SUMMARY" --summary-format md` |
 
 ### Exit code semantics
 
@@ -38,6 +40,35 @@ Exactly one engine flag is required: `--k6`, `--locust`, or `-f`.
 
 - **stdout** — engine output and the final metric summary (machine-friendly)
 - **stderr** — errors, failed checks, and `[system]` progress markers
+
+### Summary export
+
+`--summary-export` writes a self-describing result file after the run:
+
+```json
+{
+  "meta": {
+    "perfscale_version": "0.2.0",
+    "engine": "native",
+    "vus": 10,
+    "duration": "30s",
+    "timestamp": "2026-07-08T11:11:17Z"
+  },
+  "summary": {
+    "avg_ms": 0.09, "med_ms": 0.08, "p90_ms": 0.15, "p95_ms": 0.17,
+    "p99_ms": 0.27, "min_ms": 0.02, "max_ms": 2.86,
+    "error_rate": 0.0, "total_requests": 20872, "requests_per_sec": 20866.54
+  }
+}
+```
+
+`vus`/`duration` are `null` for `--k6` runs (the load shape lives in the
+script); `summary` is `null` when the run produced no HTTP metrics. With
+`--summary-format md` the same data renders as a Markdown table — pointed at
+`$GITHUB_STEP_SUMMARY`, it lands directly in the GitHub Actions job summary.
+A failed export write is a CLI error (exit 1) even though the run itself
+completed — CI should not silently continue without the artifact it asked
+for.
 
 ### Engine availability errors
 
