@@ -12,6 +12,13 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+### Added
+
+- `std/http@v1` can send `multipart/form-data`: a `multipart:` array of
+  parts — text fields (`value`) and file uploads (`file`, with optional
+  `filename`/`content_type`). Mutually exclusive with `body`; the boundary
+  header is set automatically.
+
 ### Changed
 
 - Release notes are now written by hand in `UPCOMING.md` instead of being a

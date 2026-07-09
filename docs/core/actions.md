@@ -16,7 +16,8 @@ Perform one HTTP request per iteration. Timing feeds the run's metrics.
 | `url` | string | **required** | Absolute URL |
 | `method` | string | `GET` | Any HTTP method, including extension methods like `QUERY` (safe method with a body, [draft-ietf-httpbis-safe-method-w-body](https://datatracker.ietf.org/doc/draft-ietf-httpbis-safe-method-w-body/)) |
 | `headers` | object | — | `{ "Name": "Value" }`, string values only |
-| `body` | string \| object | — | String → `text/plain`; object → serialized JSON with `application/json` |
+| `body` | string \| object | — | String → `text/plain`; object → serialized JSON with `application/json`. Mutually exclusive with `multipart` |
+| `multipart` | array | — | Send `multipart/form-data` — see [Multipart uploads](#multipart-uploads). Mutually exclusive with `body` |
 | `timeout` | integer (ms) | `10000` | Per-request timeout |
 | `insecure` | boolean | `false` | Skip TLS certificate verification — for self-signed targets like `perfscale serve --tls`. Never use against hosts you don't control |
 
@@ -28,6 +29,47 @@ Perform one HTTP request per iteration. Timing feeds the run's metrics.
 
 Statuses ≥ 400, transport errors, and timeouts count as failed requests in
 `http_req_failed`. A timeout is logged distinctly (`→ TIMEOUT after ...ms`).
+
+### Multipart uploads
+
+`multipart` sends `multipart/form-data` (file uploads, HTML-form-style
+endpoints). Each array element is one part:
+
+| Part field | Required | Description |
+|---|---|---|
+| `name` | yes | Form field name |
+| `value` | one of value/file | Text field content |
+| `file` | one of value/file | Path to a file on disk (relative to the working directory) |
+| `filename` | no | Filename sent to the server; defaults to the file's basename |
+| `content_type` | no | MIME type of the part (e.g. `application/octet-stream`) |
+
+```yaml
+steps:
+  - name: upload report
+    use: std/http@v1
+    with:
+      method: POST
+      url: "https://api.example.com/upload"
+      multipart:
+        - name: file
+          file: ./fixtures/report.csv
+          content_type: text/csv
+        - name: description
+          value: "uploaded by ${{ __last__.status }} check run"
+    check:
+      status: 201
+```
+
+Notes:
+
+- The `Content-Type: multipart/form-data; boundary=…` header is set
+  automatically — don't add it to `headers`.
+- `${{ ... }}` placeholders work in part values and paths, like everywhere
+  else in `with:`.
+- Files are read from disk on every iteration: the OS page cache makes
+  repeats cheap, and a file changed between runs is picked up. Under high
+  RPS prefer small fixture files.
+- A missing/unreadable file fails the step before any request is sent.
 
 ## `std/check@v1`
 

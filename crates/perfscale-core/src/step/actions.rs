@@ -104,15 +104,21 @@ pub async fn execute_action(
 // ---------------------------------------------------------------------------
 //
 // Parameters:
-//   method   – HTTP method, default "GET". Any valid token is accepted,
-//              including extension methods like QUERY (safe method with a
-//              body, draft-ietf-httpbis-safe-method-w-body)
-//   url      – required
-//   headers  – optional JSON object { "Name": "Value" }
-//   body     – optional: JSON object → application/json, string → text/plain
-//   timeout  – optional timeout in ms, default 10000
-//   insecure – optional bool: skip TLS certificate verification (self-signed
-//              targets like `perfscale serve --tls`), default false
+//   method    – HTTP method, default "GET". Any valid token is accepted,
+//               including extension methods like QUERY (safe method with a
+//               body, draft-ietf-httpbis-safe-method-w-body)
+//   url       – required
+//   headers   – optional JSON object { "Name": "Value" }
+//   body      – optional: JSON object → application/json, string → text/plain
+//   multipart – optional array of multipart/form-data parts (mutually
+//               exclusive with body). Each part: `name` plus either `value`
+//               (text field) or `file` (path on disk); optional `filename`
+//               (defaults to the file's basename) and `content_type`.
+//               Files are read from disk each iteration — the OS page cache
+//               keeps repeats cheap, and edits between runs are picked up.
+//   timeout   – optional timeout in ms, default 10000
+//   insecure  – optional bool: skip TLS certificate verification (self-signed
+//               targets like `perfscale serve --tls`), default false
 //
 // Output:
 //   { "status": <u16>, "body": <string>, "duration_ms": <f64> }
@@ -171,7 +177,15 @@ async fn http_action(params: &Value, step_name: &str) -> ActionOutput {
         }
     }
 
-    if !params["body"].is_null() {
+    if !params["multipart"].is_null() {
+        if !params["body"].is_null() {
+            return err(step_name, "'body' and 'multipart' are mutually exclusive");
+        }
+        match build_multipart(&params["multipart"], step_name).await {
+            Ok(form) => req = req.multipart(form),
+            Err(out) => return out,
+        }
+    } else if !params["body"].is_null() {
         match &params["body"] {
             Value::String(s) => req = req.header("content-type", "text/plain").body(s.clone()),
             other => {
@@ -225,6 +239,80 @@ async fn http_action(params: &Value, step_name: &str) -> ActionOutput {
             }
         }
     }
+}
+
+/// Build a `multipart/form-data` form from the `multipart` parameter — an
+/// array of parts, each `{ name, value }` (text field) or
+/// `{ name, file[, filename][, content_type] }` (file upload). Files are read
+/// per call: no process-level cache, so a file edited between runs is picked
+/// up (the agent is long-lived), and the OS page cache keeps per-iteration
+/// reads cheap. The Content-Type header with its boundary is set by reqwest.
+async fn build_multipart(
+    spec: &Value,
+    step_name: &str,
+) -> Result<reqwest::multipart::Form, ActionOutput> {
+    let Some(parts) = spec.as_array() else {
+        return Err(err(step_name, "'multipart' must be an array of parts"));
+    };
+    if parts.is_empty() {
+        return Err(err(step_name, "'multipart' must not be empty"));
+    }
+
+    let mut form = reqwest::multipart::Form::new();
+    for (i, p) in parts.iter().enumerate() {
+        let Some(name) = p["name"].as_str() else {
+            return Err(err(
+                step_name,
+                &format!("multipart part #{i}: 'name' is required"),
+            ));
+        };
+
+        if let Some(text) = p["value"].as_str() {
+            form = form.text(name.to_owned(), text.to_owned());
+            continue;
+        }
+
+        let Some(path) = p["file"].as_str() else {
+            return Err(err(
+                step_name,
+                &format!("multipart part '{name}': needs 'value' (text) or 'file' (path)"),
+            ));
+        };
+        let data = match tokio::fs::read(path).await {
+            Ok(d) => d,
+            Err(e) => {
+                return Err(err(
+                    step_name,
+                    &format!("multipart part '{name}': cannot read file '{path}': {e}"),
+                ));
+            }
+        };
+
+        let filename = p["filename"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| {
+                std::path::Path::new(path)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "file".to_owned());
+
+        let mut part = reqwest::multipart::Part::bytes(data).file_name(filename);
+        if let Some(ct) = p["content_type"].as_str() {
+            part = match part.mime_str(ct) {
+                Ok(p) => p,
+                Err(_) => {
+                    return Err(err(
+                        step_name,
+                        &format!("multipart part '{name}': invalid content_type '{ct}'"),
+                    ));
+                }
+            };
+        }
+        form = form.part(name.to_owned(), part);
+    }
+    Ok(form)
 }
 
 /// Flatten an error and its source chain into one line — reqwest's `Display`
@@ -581,6 +669,156 @@ mod tests {
         let out = execute_action("std/http@v1", &params, &ctx, "step").await;
         assert!(out.success);
         assert_eq!(out.value["status"], 200);
+    }
+
+    // -----------------------------------------------------------------
+    // std/http@v1 — multipart/form-data
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn http_action_multipart_uploads_file_and_text_fields() {
+        use wiremock::matchers::body_string_contains;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("payload.bin");
+        std::fs::write(&file_path, b"file-bytes-123").unwrap();
+
+        let server = MockServer::start().await;
+        // The multipart body carries each part with its content-disposition;
+        // matching on those fragments pins names, filename, and contents.
+        Mock::given(method("POST"))
+            .and(path("/upload"))
+            .and(body_string_contains("name=\"file\""))
+            .and(body_string_contains("filename=\"payload.bin\""))
+            .and(body_string_contains("file-bytes-123"))
+            .and(body_string_contains("name=\"description\""))
+            .and(body_string_contains("load test upload"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ctx = Context::new();
+        let params = json!({
+            "method": "POST",
+            "url": format!("{}/upload", server.uri()),
+            "multipart": [
+                { "name": "file", "file": file_path.to_str().unwrap(),
+                  "content_type": "application/octet-stream" },
+                { "name": "description", "value": "load test upload" },
+            ],
+        });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert_eq!(out.value["status"], 201);
+        server.verify().await;
+
+        // Content-Type must be multipart/form-data with a boundary.
+        let reqs = server.received_requests().await.unwrap();
+        let ct = reqs[0]
+            .headers
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.starts_with("multipart/form-data; boundary="),
+            "content-type: {ct}"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_action_multipart_custom_filename_and_interpolation() {
+        use wiremock::matchers::body_string_contains;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("data.tmp");
+        std::fs::write(&file_path, b"x").unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/upload"))
+            .and(body_string_contains("filename=\"report.csv\""))
+            .and(body_string_contains("run-77")) // interpolated field value
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut ctx = Context::new();
+        ctx.set("run", json!({ "id": "run-77" }));
+        let params = json!({
+            "method": "POST",
+            "url": format!("{}/upload", server.uri()),
+            "multipart": [
+                { "name": "file", "file": file_path.to_str().unwrap(),
+                  "filename": "report.csv" },
+                { "name": "run_id", "value": "${{ run.id }}" },
+            ],
+        });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn http_action_multipart_missing_file_errors_without_network_call() {
+        let ctx = Context::new();
+        let params = json!({
+            "method": "POST",
+            "url": "http://127.0.0.1:1/upload",
+            "multipart": [ { "name": "file", "file": "/nonexistent/nope.bin" } ],
+        });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+        assert!(!out.success);
+        assert!(out.http_sample.is_none(), "no request must be attempted");
+        assert!(out.logs[0].1.contains("cannot read file"), "{:?}", out.logs);
+    }
+
+    #[tokio::test]
+    async fn http_action_multipart_and_body_are_mutually_exclusive() {
+        let ctx = Context::new();
+        let params = json!({
+            "method": "POST",
+            "url": "http://127.0.0.1:1/upload",
+            "body": "text",
+            "multipart": [ { "name": "f", "value": "v" } ],
+        });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("mutually exclusive"),
+            "{:?}",
+            out.logs
+        );
+    }
+
+    #[tokio::test]
+    async fn http_action_multipart_rejects_malformed_parts() {
+        let ctx = Context::new();
+        for (params, needle) in [
+            (
+                json!({ "url": "http://x/", "multipart": {} }),
+                "must be an array",
+            ),
+            (
+                json!({ "url": "http://x/", "multipart": [] }),
+                "must not be empty",
+            ),
+            (
+                json!({ "url": "http://x/", "multipart": [{ "value": "no-name" }] }),
+                "'name' is required",
+            ),
+            (
+                json!({ "url": "http://x/", "multipart": [{ "name": "f" }] }),
+                "needs 'value' (text) or 'file' (path)",
+            ),
+        ] {
+            let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+            assert!(!out.success);
+            assert!(out.logs[0].1.contains(needle), "{:?}", out.logs);
+        }
     }
 
     #[tokio::test]
