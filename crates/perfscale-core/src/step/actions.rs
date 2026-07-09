@@ -600,7 +600,14 @@ async fn file_write_action(params: &Value, step_name: &str) -> ActionOutput {
             .open(path)
             .await
         {
-            Ok(mut f) => f.write_all(&bytes).await,
+            // flush() before drop is load-bearing: tokio buffers writes and
+            // closes files asynchronously on drop, so an unflushed write_all
+            // can be silently lost. (tokio::fs::write in the other branch
+            // flushes internally.)
+            Ok(mut f) => match f.write_all(&bytes).await {
+                Ok(()) => f.flush().await,
+                Err(e) => Err(e),
+            },
             Err(e) => Err(e),
         }
     } else {
