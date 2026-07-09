@@ -24,8 +24,16 @@ Perform one HTTP request per iteration. Timing feeds the run's metrics.
 **Output** (available via `outputs` / `__last__`):
 
 ```json
-{ "status": 200, "body": "...", "duration_ms": 42.37 }
+{
+  "status": 200,
+  "body": "...",
+  "duration_ms": 42.37,
+  "headers": { "content-type": "application/json", "x-request-id": "abc-123" }
+}
 ```
+
+Header names are lowercase; repeated headers are joined with `", "`. Reuse
+them in later steps via `${{ resp.headers.x-request-id }}`.
 
 Statuses ≥ 400, transport errors, and timeouts count as failed requests in
 `http_req_failed`. A timeout is logged distinctly (`→ TIMEOUT after ...ms`).

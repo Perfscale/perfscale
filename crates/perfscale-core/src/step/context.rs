@@ -26,8 +26,10 @@ impl Context {
     /// Interpolate `${{ expr }}` placeholders in a string.
     ///
     /// Supported forms:
-    /// - `${{ name }}`        → whole stored value as string
-    /// - `${{ name.field }}`  → field of a stored JSON object
+    /// - `${{ name }}`                → whole stored value as string
+    /// - `${{ name.field }}`          → field of a stored JSON object
+    /// - `${{ name.a.b }}`            → nested path, one JSON level per `.`
+    ///                                  (e.g. `${{ resp.headers.x-request-id }}`)
     pub fn interpolate(&self, s: &str) -> String {
         let mut result = s.to_string();
         let mut offset = 0usize;
@@ -52,14 +54,22 @@ impl Context {
         result
     }
 
-    /// Resolve an expression like `"resp.status"` or `"resp"`.
+    /// Resolve an expression like `"resp"`, `"resp.status"`, or a nested
+    /// path like `"resp.headers.x-request-id"` — each `.` descends one JSON
+    /// object level. Missing variables or fields resolve to an empty string.
     fn resolve_expr(&self, expr: &str) -> String {
-        let parts: Vec<&str> = expr.splitn(2, '.').collect();
-        match (self.vars.get(parts[0]), parts.get(1)) {
-            (Some(v), Some(field)) => v.get(*field).map(value_to_string).unwrap_or_default(),
-            (Some(v), None) => value_to_string(v),
-            _ => String::new(),
+        let mut segments = expr.split('.');
+        let root = segments.next().unwrap_or("");
+        let Some(mut current) = self.vars.get(root) else {
+            return String::new();
+        };
+        for segment in segments {
+            match current.get(segment) {
+                Some(v) => current = v,
+                None => return String::new(),
+            }
         }
+        value_to_string(current)
     }
 
     /// Apply interpolation to every string leaf of a JSON `Value`.
@@ -109,6 +119,27 @@ mod tests {
     fn interpolate_missing_is_empty() {
         let ctx = Context::new();
         assert_eq!(ctx.interpolate("${{ missing.field }}"), "");
+    }
+
+    #[test]
+    fn interpolate_nested_path_descends_json_levels() {
+        let mut ctx = Context::new();
+        ctx.set(
+            "resp",
+            json!({ "headers": { "x-request-id": "abc-123", "content-type": "application/json" } }),
+        );
+        assert_eq!(
+            ctx.interpolate("id=${{ resp.headers.x-request-id }}"),
+            "id=abc-123"
+        );
+        // Whole nested object stringifies like any other value.
+        assert_eq!(
+            ctx.interpolate("${{ resp.headers }}"),
+            r#"{"content-type":"application/json","x-request-id":"abc-123"}"#
+        );
+        // A miss at any depth resolves to empty, same as one-level misses.
+        assert_eq!(ctx.interpolate("${{ resp.headers.nope }}"), "");
+        assert_eq!(ctx.interpolate("${{ resp.nope.deeper }}"), "");
     }
 
     #[test]

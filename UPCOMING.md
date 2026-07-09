@@ -20,6 +20,9 @@ Release notes for the next release, written as features land.
 - New `std/file-write@v1` action: write (or append) content to a file —
   e.g. persist `${{ resp.body }}` to disk; base64 content is decoded before
   writing.
+- `std/http@v1` output now includes response `headers` (lowercase names),
+  and `${{ ... }}` paths descend nested objects — chain requests on response
+  headers: `headers: { x-session: "${{ r1.headers.x-session }}" }`.
 - `std/http@v1` can send `multipart/form-data`: a `multipart:` array of
   parts — text fields (`value`) and file uploads (`file`, with optional
   `filename`/`content_type`). Mutually exclusive with `body`; the boundary

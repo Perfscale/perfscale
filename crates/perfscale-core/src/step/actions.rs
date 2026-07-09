@@ -206,11 +206,17 @@ async fn http_action(params: &Value, step_name: &str) -> ActionOutput {
             let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let status = resp.status().as_u16();
             let reason = resp.status().canonical_reason().unwrap_or("");
+            let headers = header_map_to_json(resp.headers());
             let body = resp.text().await.unwrap_or_default();
             let failed = status >= 400;
 
             ActionOutput {
-                value: json!({ "status": status, "body": body, "duration_ms": duration_ms }),
+                value: json!({
+                    "status": status,
+                    "body": body,
+                    "duration_ms": duration_ms,
+                    "headers": headers,
+                }),
                 logs: vec![(
                     if failed { LogTag::Err } else { LogTag::Out },
                     format!("{method} {url} → {status} {reason} ({duration_ms:.2}ms)"),
@@ -317,6 +323,28 @@ async fn build_multipart(
         form = form.part(name.to_owned(), part);
     }
     Ok(form)
+}
+
+/// Response headers as a JSON object: lowercase names → string values, so
+/// later steps can reference `${{ resp.headers.x-request-id }}`. Repeated
+/// headers are joined with ", " (fine for everything except `set-cookie`,
+/// where only the combined string is available). Non-UTF-8 values are
+/// skipped.
+fn header_map_to_json(headers: &reqwest::header::HeaderMap) -> serde_json::Map<String, Value> {
+    let mut map = serde_json::Map::with_capacity(headers.len());
+    for (name, value) in headers {
+        let Ok(v) = value.to_str() else { continue };
+        match map.get_mut(name.as_str()) {
+            Some(Value::String(existing)) => {
+                existing.push_str(", ");
+                existing.push_str(v);
+            }
+            _ => {
+                map.insert(name.as_str().to_owned(), Value::String(v.to_owned()));
+            }
+        }
+    }
+    map
 }
 
 /// Flatten an error and its source chain into one line — reqwest's `Display`
@@ -711,6 +739,76 @@ mod tests {
             out.value["duration_ms"].as_f64().unwrap(),
             sample.duration_ms
         );
+    }
+
+    #[tokio::test]
+    async fn http_action_exposes_response_headers() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/hdr"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-request-id", "req-42")
+                    .insert_header("x-multi", "a")
+                    .append_header("x-multi", "b"),
+            )
+            .mount(&server)
+            .await;
+
+        let ctx = Context::new();
+        let params = json!({ "url": format!("{}/hdr", server.uri()) });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+
+        assert!(out.success);
+        assert_eq!(out.value["headers"]["x-request-id"], "req-42");
+        // Repeated headers are joined with ", ".
+        assert_eq!(out.value["headers"]["x-multi"], "a, b");
+    }
+
+    /// The user-facing chain: request 1 → response headers → request 2
+    /// reuses one of them via `${{ r1.headers.<name> }}`.
+    #[tokio::test]
+    async fn http_action_response_header_flows_into_next_request() {
+        use wiremock::matchers::header;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/first"))
+            .respond_with(ResponseTemplate::new(200).insert_header("x-session", "sess-777"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/second"))
+            .and(header("x-session", "sess-777"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut ctx = Context::new();
+        let first = execute_action(
+            "std/http@v1",
+            &json!({ "url": format!("{}/first", server.uri()) }),
+            &ctx,
+            "first",
+        )
+        .await;
+        ctx.set("r1", first.value.clone());
+
+        let second = execute_action(
+            "std/http@v1",
+            &json!({
+                "url": format!("{}/second", server.uri()),
+                "headers": { "x-session": "${{ r1.headers.x-session }}" },
+            }),
+            &ctx,
+            "second",
+        )
+        .await;
+
+        assert!(second.success, "logs: {:?}", second.logs);
+        server.verify().await;
     }
 
     #[tokio::test]

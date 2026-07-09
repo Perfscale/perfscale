@@ -51,10 +51,25 @@ value** in a later step's `with:` or `check:` can then reference it:
 |---|---|
 | `${{ name }}` | The whole stored output, stringified |
 | `${{ name.field }}` | One field of a stored object (e.g. `.status`, `.body`, `.duration_ms`) |
+| `${{ name.a.b }}` | Nested path — one JSON level per `.`, e.g. `${{ resp.headers.x-request-id }}` |
 | `${{ __last__ }}` / `${{ __last__.field }}` | The immediately preceding step's output — always available, no `outputs:` needed |
 
 For `std/http@v1` the stored output is
-`{ "status": <int>, "body": <string>, "duration_ms": <float> }`.
+`{ "status": <int>, "body": <string>, "duration_ms": <float>, "headers": <object> }`
+— header names lowercase, so a session/token header from response 1 can flow
+into request 2:
+
+```yaml
+steps:
+  - use: std/http@v1
+    with: { url: "https://api.example.com/first" }
+    outputs: r1
+  - use: std/http@v1
+    with:
+      url: "https://api.example.com/second"
+      headers:
+        x-session: "${{ r1.headers.x-session }}"
+```
 
 ```yaml
 steps:
@@ -89,8 +104,8 @@ Rules and edge cases:
   `${{ auth.status }}`.
 - A **missing variable or field resolves to an empty string** — the run does
   not fail. Gate on the value with `check:` when absence should be an error.
-- Field access is one level deep (`name.field`); deeper paths are not
-  supported yet.
+- Path segments descend one JSON object level per `.` — header names with
+  dots in them cannot be addressed (rare; everything else works).
 - Placeholders are resolved per virtual user, per iteration — each VU sees
   the outputs of its own step chain, never another VU's.
 - Steps without any `${{` are executed as-is: the engine skips the
