@@ -41,25 +41,64 @@ steps:
 | `check` | no | Assertions on this step's output — same keys as `std/check@v1` |
 | `outputs` | no | Variable name to store the step output under |
 
-### Variable interpolation
+### Variables (`${{ ... }}`)
 
-Any string in `with`/`check` may reference previous step outputs with
-`${{ name }}` or `${{ name.field }}`:
+Steps pass data to later steps through GitHub-Actions-style placeholders.
+A step stores its output under the name given by `outputs:`; any **string
+value** in a later step's `with:` or `check:` can then reference it:
+
+| Expression | Resolves to |
+|---|---|
+| `${{ name }}` | The whole stored output, stringified |
+| `${{ name.field }}` | One field of a stored object (e.g. `.status`, `.body`, `.duration_ms`) |
+| `${{ __last__ }}` / `${{ __last__.field }}` | The immediately preceding step's output — always available, no `outputs:` needed |
+
+For `std/http@v1` the stored output is
+`{ "status": <int>, "body": <string>, "duration_ms": <float> }`.
 
 ```yaml
 steps:
-  - use: std/http@v1
-    with: { url: "https://api.example.com/token" }
-    outputs: auth
-  - use: std/http@v1
+  - name: login
+    use: std/http@v1
+    with:
+      method: POST
+      url: "https://api.example.com/token"
+      body: { user: demo }
+    outputs: auth                          # ← stored as `auth`
+
+  - name: fetch profile
+    use: std/http@v1
     with:
       url: "https://api.example.com/me"
       headers:
-        authorization: "Bearer ${{ auth.body }}"
+        authorization: "Bearer ${{ auth.body }}"   # nested values work
+    check:
+      body_contains: "${{ auth.body }}"            # check values too
+
+  - use: std/log@v1
+    with:
+      message: "login took ${{ auth.duration_ms }}ms → ${{ auth.status }}"
 ```
 
-Missing variables resolve to an empty string. The output of the previous step
-is always additionally available as `__last__` (used when `check` has no `on`).
+Rules and edge cases:
+
+- Placeholders work in string values at **any depth** of `with`/`check` —
+  nested objects (headers), array elements, bodies. Keys are never
+  interpolated.
+- Whitespace inside the braces is ignored: `${{auth.status}}` ≡
+  `${{ auth.status }}`.
+- A **missing variable or field resolves to an empty string** — the run does
+  not fail. Gate on the value with `check:` when absence should be an error.
+- Field access is one level deep (`name.field`); deeper paths are not
+  supported yet.
+- Placeholders are resolved per virtual user, per iteration — each VU sees
+  the outputs of its own step chain, never another VU's.
+- Steps without any `${{` are executed as-is: the engine skips the
+  interpolation pass entirely, so plain steps pay zero overhead for this
+  feature.
+- YAML quoting: both plain (`Bearer ${{ auth.body }}`) and quoted
+  (`"${{ auth.body }}"`) scalars work; quote when the value starts with a
+  character YAML treats specially (`{`, `[`, `*`, …).
 
 ## Config (`-c config.yaml`)
 

@@ -155,6 +155,35 @@ steps:
         );
     }
 
+    /// `${{ ... }}` placeholders (GitHub-Actions-style) must survive YAML
+    /// parsing verbatim — quoted or plain — so the runtime interpolator
+    /// receives them untouched.
+    #[test]
+    fn placeholders_survive_yaml_parsing_verbatim() {
+        let yaml = r#"
+steps:
+  - use: std/http@v1
+    with:
+      url: "https://api.example.com/users/${{ login.body }}"
+      headers:
+        authorization: Bearer ${{ login.body }}
+    check:
+      body_contains: "${{ login.body }}"
+    outputs: user
+"#;
+        let test = parse_test_file(yaml).unwrap();
+        let with = test.steps[0].with.as_ref().unwrap();
+        assert_eq!(
+            with["url"],
+            "https://api.example.com/users/${{ login.body }}"
+        );
+        assert_eq!(with["headers"]["authorization"], "Bearer ${{ login.body }}");
+        assert_eq!(
+            test.steps[0].check.as_ref().unwrap()["body_contains"],
+            "${{ login.body }}"
+        );
+    }
+
     #[test]
     fn parses_test_file_with_every_builtin_action() {
         let yaml = r#"

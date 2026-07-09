@@ -16,6 +16,10 @@ Release notes for the next release, written as features land.
 
 - Release notes are now written by hand in `UPCOMING.md` instead of being a
   bare commit diff; the release workflow publishes and then resets the file.
+- Steps without `${{ ... }}` placeholders skip the interpolation pass
+  entirely — no per-iteration deep clone of the `with:` block on the hot
+  path. The `${{ ... }}` variable syntax is now fully documented in the
+  YAML reference.
 - The native engine tracks request durations in a fixed-size HDR histogram
   (~tens of KB) instead of storing every sample: long soak runs no longer
   grow memory 8 bytes per request (a 30-hour run at 10k RPS previously

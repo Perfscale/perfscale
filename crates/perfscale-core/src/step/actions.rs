@@ -55,6 +55,17 @@ pub struct HttpSample {
 // Dispatch
 // ---------------------------------------------------------------------------
 
+/// True when any string leaf contains a `${{ ... }}` placeholder. Keys are
+/// never interpolated, so only values are scanned.
+fn has_placeholder(v: &Value) -> bool {
+    match v {
+        Value::String(s) => s.contains("${{"),
+        Value::Object(m) => m.values().any(has_placeholder),
+        Value::Array(a) => a.iter().any(has_placeholder),
+        _ => false,
+    }
+}
+
 /// Execute a step action by its ID, with interpolation already resolved.
 pub async fn execute_action(
     action_id: &str,
@@ -62,7 +73,14 @@ pub async fn execute_action(
     ctx: &Context,
     step_name: &str,
 ) -> ActionOutput {
-    let resolved = ctx.interpolate_value(params);
+    // Interpolation deep-clones the whole params tree; most steps have no
+    // placeholders, and this runs once per step per iteration — a cheap
+    // borrow-only scan skips the clone on the hot path.
+    let resolved: std::borrow::Cow<'_, Value> = if has_placeholder(params) {
+        std::borrow::Cow::Owned(ctx.interpolate_value(params))
+    } else {
+        std::borrow::Cow::Borrowed(params)
+    };
 
     match action_id {
         "std/http@v1" | "http" => http_action(&resolved, step_name).await,
@@ -810,5 +828,65 @@ mod tests {
         )
         .await;
         assert_eq!(out.logs[0].1, "hello world");
+    }
+
+    #[tokio::test]
+    async fn execute_action_interpolates_nested_objects_and_arrays() {
+        let mut ctx = Context::new();
+        ctx.set("resp", json!({ "status": 201, "body": "tok-42" }));
+        // GitHub-Actions-style placeholders anywhere in the value tree —
+        // nested objects (headers) and array elements alike.
+        let out = execute_action(
+            "std/log@v1",
+            &json!({
+                "message": "status=${{ resp.status }}",
+                "extra": { "auth": "Bearer ${{ resp.body }}" },
+                "list": ["${{ resp.status }}", "plain"],
+            }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.logs[0].1, "status=201");
+    }
+
+    // -----------------------------------------------------------------
+    // has_placeholder — the hot-path gate that skips interpolation
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn has_placeholder_finds_placeholders_at_any_depth() {
+        assert!(has_placeholder(&json!("${{ x }}")));
+        assert!(has_placeholder(&json!({ "a": { "b": "${{ x.y }}" } })));
+        assert!(has_placeholder(&json!({ "a": ["plain", "${{ x }}"] })));
+        // Unterminated opener still counts — interpolate() decides what to
+        // do with it; the gate must never skip a candidate.
+        assert!(has_placeholder(&json!("broken ${{ oops")));
+    }
+
+    #[test]
+    fn has_placeholder_false_for_plain_params() {
+        assert!(!has_placeholder(&json!({
+            "method": "POST",
+            "url": "https://api.example.com/items?x=1",
+            "headers": { "x-api-key": "secret" },
+            "body": { "n": 3, "flag": true, "note": "no vars here, ${ not enough }" },
+            "list": [1, "two", null],
+        })));
+    }
+
+    #[tokio::test]
+    async fn plain_params_pass_through_unchanged() {
+        // No placeholders → the borrow-only fast path; output must be
+        // byte-identical to what interpolation would have produced.
+        let ctx = Context::new();
+        let out = execute_action(
+            "std/log@v1",
+            &json!({ "message": "plain text with $ and { braces }" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.logs[0].1, "plain text with $ and { braces }");
     }
 }
