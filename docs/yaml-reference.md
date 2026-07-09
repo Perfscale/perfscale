@@ -35,7 +35,7 @@ steps:
 
 | Field | Required | Description |
 |---|---|---|
-| `use` | yes | Action ID: `std/http@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1` (short aliases `http`, `check`, `sleep`, `log` also work) |
+| `use` | yes | Action ID: `std/http@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1` (short aliases `http`, `check`, `sleep`, `log`, `file-read`, `file-write` also work) |
 | `name` | no | Human-readable label shown in log lines |
 | `with` | no | Action parameters — see [Actions](core/actions.md) |
 | `check` | no | Assertions on this step's output — same keys as `std/check@v1` |

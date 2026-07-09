@@ -6,6 +6,8 @@
 //! | `std/check@v1`   | Assert properties of a previous step output      |
 //! | `std/sleep@v1`   | Wait N milliseconds                              |
 //! | `std/log@v1`     | Emit a log line                                  |
+//! | `std/file-read@v1`  | Read a file (process-wide cached)            |
+//! | `std/file-write@v1` | Write content to a file                      |
 
 use std::time::Instant;
 
@@ -87,6 +89,8 @@ pub async fn execute_action(
         "std/check@v1" | "check" => check_action(&resolved, ctx, step_name),
         "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name).await,
         "std/log@v1" | "log" => log_action(&resolved, step_name),
+        "std/file-read@v1" | "file-read" => file_read_action(&resolved, step_name).await,
+        "std/file-write@v1" | "file-write" => file_write_action(&resolved, step_name).await,
         unknown => ActionOutput {
             value: Value::Null,
             logs: vec![(
@@ -407,6 +411,183 @@ fn check_action(params: &Value, ctx: &Context, step_name: &str) -> ActionOutput 
         value: json!({ "passed": all_pass }),
         logs,
         success: all_pass,
+        http_sample: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// std/file-read@v1
+// ---------------------------------------------------------------------------
+//
+// Parameters:
+//   path     – required, file to read
+//   encoding – "text" (default; file must be valid UTF-8) or "base64"
+//
+// Output:
+//   { "content": <string>, "size": <u64>, "path": <string> }
+//
+// Content is cached process-wide, keyed by (path, encoding) and validated
+// against the file's (mtime, len) on every access: the first iteration pays
+// the disk read, subsequent iterations across all VUs hit RAM, and a file
+// edited between runs of a long-lived agent is picked up via a cheap stat.
+
+/// Actual disk reads performed by `std/file-read@v1` — observable cache behaviour
+/// for tests; costs one relaxed increment per miss.
+static FILE_DISK_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+type FileCacheKey = (String, String); // (path, encoding)
+type FileCacheEntry = (Option<std::time::SystemTime>, u64, std::sync::Arc<String>);
+
+fn file_cache() -> &'static std::sync::Mutex<std::collections::HashMap<FileCacheKey, FileCacheEntry>>
+{
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<FileCacheKey, FileCacheEntry>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+async fn file_read_action(params: &Value, step_name: &str) -> ActionOutput {
+    let Some(path) = params["path"].as_str() else {
+        return err(step_name, "'path' is required");
+    };
+    let encoding = params["encoding"].as_str().unwrap_or("text");
+    if !matches!(encoding, "text" | "base64") {
+        return err(
+            step_name,
+            &format!("invalid encoding '{encoding}' — use \"text\" or \"base64\""),
+        );
+    }
+
+    let meta = match tokio::fs::metadata(path).await {
+        Ok(m) => m,
+        Err(e) => return err(step_name, &format!("cannot read file '{path}': {e}")),
+    };
+    let (mtime, len) = (meta.modified().ok(), meta.len());
+    let key = (path.to_owned(), encoding.to_owned());
+
+    // Never hold the lock across an await: check-release, read, insert.
+    let cached = {
+        let cache = file_cache().lock().unwrap();
+        cache.get(&key).and_then(|(m, l, content)| {
+            (*m == mtime && *l == len).then(|| std::sync::Arc::clone(content))
+        })
+    };
+
+    let content = match cached {
+        Some(c) => c,
+        None => {
+            FILE_DISK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let bytes = match tokio::fs::read(path).await {
+                Ok(b) => b,
+                Err(e) => return err(step_name, &format!("cannot read file '{path}': {e}")),
+            };
+            let encoded = match encoding {
+                "base64" => {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD.encode(&bytes)
+                }
+                _ => match String::from_utf8(bytes) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return err(
+                            step_name,
+                            &format!(
+                                "file '{path}' is not valid UTF-8 — use `encoding: base64` for binary content"
+                            ),
+                        );
+                    }
+                },
+            };
+            let arc = std::sync::Arc::new(encoded);
+            file_cache()
+                .lock()
+                .unwrap()
+                .insert(key, (mtime, len, std::sync::Arc::clone(&arc)));
+            arc
+        }
+    };
+
+    ActionOutput {
+        value: json!({ "content": content.as_str(), "size": len, "path": path }),
+        // No per-iteration log line: cache hits are the hot path and a line
+        // per request would spam the stream (see the yaml quiet story).
+        logs: Vec::new(),
+        success: true,
+        http_sample: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// std/file-write@v1
+// ---------------------------------------------------------------------------
+//
+// Parameters:
+//   path     – required, file to write
+//   content  – required string; interpolation makes `${{ resp.body }}` the
+//              typical payload
+//   encoding – "text" (default: write the string as-is) or "base64"
+//              (decode before writing — the inverse of file-read's base64)
+//   append   – optional bool, default false (overwrite)
+//
+// Output:
+//   { "path": <string>, "size": <u64> }   // bytes written this call
+//
+// Writing revalidates any `std/file-read@v1` cache entry for the same path
+// automatically — the read cache is keyed by (mtime, len), which the write
+// changes. With `append: true` and multiple VUs the per-call write is a
+// single O_APPEND syscall, so calls do not interleave mid-content.
+
+async fn file_write_action(params: &Value, step_name: &str) -> ActionOutput {
+    let Some(path) = params["path"].as_str() else {
+        return err(step_name, "'path' is required");
+    };
+    let Some(content) = params["content"].as_str() else {
+        return err(step_name, "'content' is required (a string)");
+    };
+    let encoding = params["encoding"].as_str().unwrap_or("text");
+    let append = params["append"].as_bool().unwrap_or(false);
+
+    let bytes: Vec<u8> = match encoding {
+        "text" => content.as_bytes().to_vec(),
+        "base64" => {
+            use base64::Engine as _;
+            match base64::engine::general_purpose::STANDARD.decode(content) {
+                Ok(b) => b,
+                Err(e) => return err(step_name, &format!("invalid base64 content: {e}")),
+            }
+        }
+        other => {
+            return err(
+                step_name,
+                &format!("invalid encoding '{other}' — use \"text\" or \"base64\""),
+            );
+        }
+    };
+
+    let result = if append {
+        use tokio::io::AsyncWriteExt as _;
+        match tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await
+        {
+            Ok(mut f) => f.write_all(&bytes).await,
+            Err(e) => Err(e),
+        }
+    } else {
+        tokio::fs::write(path, &bytes).await
+    };
+
+    if let Err(e) = result {
+        return err(step_name, &format!("cannot write file '{path}': {e}"));
+    }
+
+    ActionOutput {
+        value: json!({ "path": path, "size": bytes.len() }),
+        // No per-iteration log line — same hot-path reasoning as file-read.
+        logs: Vec::new(),
+        success: true,
         http_sample: None,
     }
 }
@@ -987,6 +1168,292 @@ mod tests {
         let ctx = Context::new(); // no __last__ set at all
         let out = execute_action("std/check@v1", &json!({ "status": 200 }), &ctx, "step").await;
         assert!(!out.success);
+    }
+
+    // -----------------------------------------------------------------
+    // std/file-read@v1 / std/file-write@v1
+    // -----------------------------------------------------------------
+
+    fn disk_reads() -> u64 {
+        FILE_DISK_READS.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_read_reads_content_and_reports_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fixture.txt");
+        std::fs::write(&path, "hello fixture").unwrap();
+
+        let ctx = Context::new();
+        let params = json!({ "path": path.to_str().unwrap() });
+        let out = execute_action("std/file-read@v1", &params, &ctx, "step").await;
+
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert_eq!(out.value["content"], "hello fixture");
+        assert_eq!(out.value["size"], 13);
+        assert_eq!(out.value["path"], path.to_str().unwrap());
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_read_output_interpolates_into_later_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("payload.json");
+        std::fs::write(&path, r#"{"kind":"fixture"}"#).unwrap();
+
+        let mut ctx = Context::new();
+        let params = json!({ "path": path.to_str().unwrap() });
+        let out = execute_action("std/file-read@v1", &params, &ctx, "load").await;
+        ctx.set("payload", out.value.clone());
+
+        // The whole point: file content flows into other steps as a variable.
+        let log = execute_action(
+            "std/log@v1",
+            &json!({ "message": "body=${{ payload.content }}" }),
+            &ctx,
+            "use",
+        )
+        .await;
+        assert_eq!(log.logs[0].1, r#"body={"kind":"fixture"}"#);
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_read_caches_across_calls_and_revalidates_on_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cached.txt");
+        std::fs::write(&path, "version-one").unwrap();
+        let ctx = Context::new();
+        let params = json!({ "path": path.to_str().unwrap() });
+
+        let before = disk_reads();
+        let first = execute_action("std/file-read@v1", &params, &ctx, "step").await;
+        let second = execute_action("std/file-read@v1", &params, &ctx, "step").await;
+        assert_eq!(first.value["content"], "version-one");
+        assert_eq!(second.value["content"], "version-one");
+        assert_eq!(
+            disk_reads() - before,
+            1,
+            "second access must be served from the cache"
+        );
+
+        // Different length → (mtime, len) validation forces a re-read even
+        // if the filesystem's mtime granularity hides the update.
+        std::fs::write(&path, "version-two-longer").unwrap();
+        let third = execute_action("std/file-read@v1", &params, &ctx, "step").await;
+        assert_eq!(third.value["content"], "version-two-longer");
+        assert_eq!(disk_reads() - before, 2, "changed file must be re-read");
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_read_base64_encodes_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blob.bin");
+        std::fs::write(&path, [0xFFu8, 0x00, 0x7F]).unwrap();
+
+        let ctx = Context::new();
+        let params = json!({ "path": path.to_str().unwrap(), "encoding": "base64" });
+        let out = execute_action("std/file-read@v1", &params, &ctx, "step").await;
+        assert!(out.success);
+        assert_eq!(out.value["content"], "/wB/");
+        assert_eq!(out.value["size"], 3);
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_read_non_utf8_text_suggests_base64() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("binary.bin");
+        std::fs::write(&path, [0xFFu8, 0xFE]).unwrap();
+
+        let ctx = Context::new();
+        let params = json!({ "path": path.to_str().unwrap() });
+        let out = execute_action("std/file-read@v1", &params, &ctx, "step").await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("base64"), "{:?}", out.logs);
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_read_missing_path_and_missing_file_error() {
+        let ctx = Context::new();
+
+        let out = execute_action("std/file-read@v1", &json!({}), &ctx, "step").await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("'path' is required"));
+
+        let out = execute_action(
+            "std/file-read@v1",
+            &json!({ "path": "/nonexistent/nope.txt" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("cannot read file"));
+
+        let out = execute_action(
+            "std/file-read@v1",
+            &json!({ "path": "x", "encoding": "hex" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("invalid encoding"));
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_read_alias_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("alias.txt");
+        std::fs::write(&path, "x").unwrap();
+        let ctx = Context::new();
+        let out = execute_action(
+            "file-read",
+            &json!({ "path": path.to_str().unwrap() }),
+            &ctx,
+            "s",
+        )
+        .await;
+        assert!(out.success);
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_write_writes_and_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.txt");
+        let ctx = Context::new();
+
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": path.to_str().unwrap(), "content": "first" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert_eq!(out.value["size"], 5);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+
+        // Default mode overwrites.
+        execute_action(
+            "std/file-write@v1",
+            &json!({ "path": path.to_str().unwrap(), "content": "second" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_write_append_mode_accumulates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.txt");
+        let ctx = Context::new();
+        for line in ["one\n", "two\n"] {
+            execute_action(
+                "std/file-write@v1",
+                &json!({ "path": path.to_str().unwrap(), "content": line, "append": true }),
+                &ctx,
+                "step",
+            )
+            .await;
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\n");
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_write_base64_decodes_before_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blob.bin");
+        let ctx = Context::new();
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": path.to_str().unwrap(), "content": "/wB/", "encoding": "base64" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success);
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0xFFu8, 0x00, 0x7F]);
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_write_interpolates_content_from_previous_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resp.json");
+        let mut ctx = Context::new();
+        ctx.set("resp", json!({ "body": "{\"ok\":true}" }));
+
+        // The killer use case: persist a previous step's response body.
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": path.to_str().unwrap(), "content": "${{ resp.body }}" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"ok\":true}");
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_write_then_read_revalidates_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roundtrip.txt");
+        let ctx = Context::new();
+        let p = path.to_str().unwrap();
+
+        std::fs::write(&path, "old-content").unwrap();
+        let read1 = execute_action("std/file-read@v1", &json!({ "path": p }), &ctx, "r").await;
+        assert_eq!(read1.value["content"], "old-content");
+
+        // A write changes (mtime, len) → the read cache must not serve stale.
+        execute_action(
+            "std/file-write@v1",
+            &json!({ "path": p, "content": "new-content!" }),
+            &ctx,
+            "w",
+        )
+        .await;
+        let read2 = execute_action("std/file-read@v1", &json!({ "path": p }), &ctx, "r").await;
+        assert_eq!(read2.value["content"], "new-content!");
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_write_rejects_bad_params() {
+        let ctx = Context::new();
+        for (params, needle) in [
+            (json!({ "content": "x" }), "'path' is required"),
+            (json!({ "path": "/tmp/x" }), "'content' is required"),
+            (
+                json!({ "path": "/tmp/x", "content": "x", "encoding": "hex" }),
+                "invalid encoding",
+            ),
+            (
+                json!({ "path": "/tmp/x", "content": "not base64!!!", "encoding": "base64" }),
+                "invalid base64",
+            ),
+            (
+                json!({ "path": "/nonexistent-dir/x", "content": "x" }),
+                "cannot write file",
+            ),
+        ] {
+            let out = execute_action("std/file-write@v1", &params, &ctx, "step").await;
+            assert!(!out.success, "params should fail: {params}");
+            assert!(out.logs[0].1.contains(needle), "{:?}", out.logs);
+        }
     }
 
     // -----------------------------------------------------------------

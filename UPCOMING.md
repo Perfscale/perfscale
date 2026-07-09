@@ -14,6 +14,12 @@ Release notes for the next release, written as features land.
 
 ### Added
 
+- New `std/file-read@v1` action: read a file once into a process-wide cache
+  (revalidated by mtime/size) and reference its content from later steps via
+  `${{ name.content }}` — `text` or `base64` encoding.
+- New `std/file-write@v1` action: write (or append) content to a file —
+  e.g. persist `${{ resp.body }}` to disk; base64 content is decoded before
+  writing.
 - `std/http@v1` can send `multipart/form-data`: a `multipart:` array of
   parts — text fields (`value`) and file uploads (`file`, with optional
   `filename`/`content_type`). Mutually exclusive with `body`; the boundary

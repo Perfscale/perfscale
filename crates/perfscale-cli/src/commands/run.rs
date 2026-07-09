@@ -185,7 +185,7 @@ fn load_test_def(path: &Path) -> Result<TestDef, CliError> {
         CliError::new(format!("invalid test file '{}'", path.display()))
             .cause(e)
             .hint(
-                "each step needs `use:` naming an action (std/http@v1, std/check@v1, std/sleep@v1, std/log@v1); \
+                "each step needs `use:` naming an action (std/http@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1); \
                  parameters go under `with:`",
             )
             .docs("yaml-reference.md#test-definition--f-testyaml")

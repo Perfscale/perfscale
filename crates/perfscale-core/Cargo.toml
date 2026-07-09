@@ -25,6 +25,9 @@ csv = "1"
 # features — just the core data structure)
 hdrhistogram = { version = "7", default-features = false }
 
+# `std/file@v1` binary content encoding
+base64 = "0.22"
+
 # YAML/JSON schema generation + validation
 schemars   = "0.8"
 jsonschema = "0.18"

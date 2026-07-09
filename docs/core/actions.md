@@ -5,7 +5,7 @@ action in `use`, passes parameters in `with`, and may assert on the result in
 `check`.
 
 Full IDs carry a namespace and version (`std/http@v1`); the short aliases
-(`http`, `check`, `sleep`, `log`) resolve to the same implementations.
+(`http`, `check`, `sleep`, `log`, `file-read`, `file-write`) resolve to the same implementations.
 
 ## `std/http@v1`
 
@@ -70,6 +70,89 @@ Notes:
   repeats cheap, and a file changed between runs is picked up. Under high
   RPS prefer small fixture files.
 - A missing/unreadable file fails the step before any request is sent.
+
+## `std/file-read@v1`
+
+Read a file into the process-wide cache and expose its content to later
+steps. The first access pays the disk read; every following iteration —
+across all VUs — is served from RAM. The cache revalidates against the
+file's `(mtime, size)` on each access, so a file edited between runs of a
+long-lived agent is picked up automatically.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | **required** | File to read |
+| `encoding` | string | `text` | `text` (file must be valid UTF-8) or `base64` (binary content) |
+
+**Output** (available via `outputs` / `__last__`):
+
+```json
+{ "content": "...", "size": 1024, "path": "./fixtures/payload.json" }
+```
+
+```yaml
+steps:
+  - name: load payload
+    use: std/file-read@v1
+    with: { path: ./fixtures/payload.json }
+    outputs: payload
+
+  - name: send it
+    use: std/http@v1
+    with:
+      method: POST
+      url: "https://api.example.com/items"
+      headers: { content-type: application/json }
+      body: "${{ payload.content }}"
+    check:
+      status: 201
+```
+
+Notes:
+
+- A non-UTF-8 file with `encoding: text` fails the step — use
+  `encoding: base64` for binary content.
+- Emits no per-iteration log lines: cache hits are the hot path.
+- Referencing `${{ payload.content }}` copies the content into the request —
+  the cache saves disk reads, not the per-request copy. Keep fixtures small
+  under high RPS.
+- For file *uploads*, prefer `std/http@v1`'s [`multipart`](#multipart-uploads)
+  parameter, which sends proper `multipart/form-data`.
+
+## `std/file-write@v1`
+
+Write content to a file — typically to persist a previous step's response.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `path` | string | **required** | File to write (parent directory must exist) |
+| `content` | string | **required** | Data to write; `${{ ... }}` placeholders make `${{ resp.body }}` the typical payload |
+| `encoding` | string | `text` | `text` writes the string as-is; `base64` decodes it first (the inverse of `file-read`'s base64) |
+| `append` | boolean | `false` | Append instead of overwrite |
+
+**Output**: `{ "path": <string>, "size": <bytes written> }`
+
+```yaml
+steps:
+  - name: fetch report
+    use: std/http@v1
+    with: { url: "https://api.example.com/report" }
+    outputs: resp
+
+  - name: save it
+    use: std/file-write@v1
+    with:
+      path: ./out/report.json
+      content: "${{ resp.body }}"
+```
+
+Notes:
+
+- Writing a path that `std/file-read@v1` has cached invalidates that cache
+  entry automatically — the read cache revalidates by `(mtime, size)`.
+- With `append: true` each call is a single `O_APPEND` write, so concurrent
+  VUs do not interleave mid-content; ordering between VUs is unspecified.
+- Emits no per-iteration log lines.
 
 ## `std/check@v1`
 

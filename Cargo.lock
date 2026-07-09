@@ -1466,6 +1466,7 @@ dependencies = [
 name = "perfscale-core"
 version = "0.3.0"
 dependencies = [
+ "base64",
  "criterion",
  "csv",
  "hdrhistogram",

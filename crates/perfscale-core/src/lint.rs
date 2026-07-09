@@ -95,7 +95,7 @@ fn schema_issues(value: &Value, kind: DocKind, issues: &mut Vec<LintIssue>) {
 
 fn schema_error_suggestion(problem: &str) -> Option<String> {
     if problem.contains("\"use\" is a required property") {
-        Some("every step must name an action: `use: std/http@v1`, `std/check@v1`, `std/sleep@v1`, or `std/log@v1`".into())
+        Some("every step must name an action: `use: std/http@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, or `std/file-write@v1`".into())
     } else if problem.contains("\"steps\" is a required property") {
         Some("a test definition is a mapping with a `steps:` list at the top level".into())
     } else if problem.contains("\"url\" is a required property") {
@@ -131,6 +131,8 @@ const HTTP_WITH_FIELDS: [&str; 7] = [
 ];
 const SLEEP_WITH_FIELDS: [&str; 2] = ["ms", "seconds"];
 const LOG_WITH_FIELDS: [&str; 1] = ["message"];
+const FILE_READ_WITH_FIELDS: [&str; 2] = ["path", "encoding"];
+const FILE_WRITE_WITH_FIELDS: [&str; 4] = ["path", "content", "encoding", "append"];
 
 fn lint_test_fields(value: &Value, issues: &mut Vec<LintIssue>) {
     if let Some(map) = value.as_object() {
@@ -156,11 +158,18 @@ fn lint_test_fields(value: &Value, issues: &mut Vec<LintIssue>) {
                 problem: format!("unknown action '{action}'"),
                 suggestion: did_you_mean(
                     action,
-                    &["std/http@v1", "std/check@v1", "std/sleep@v1", "std/log@v1"],
+                    &[
+                        "std/http@v1",
+                        "std/check@v1",
+                        "std/sleep@v1",
+                        "std/log@v1",
+                        "std/file-read@v1",
+                        "std/file-write@v1",
+                    ],
                 )
                 .or_else(|| {
                     Some(
-                        "available actions: std/http@v1, std/check@v1, std/sleep@v1, std/log@v1"
+                        "available actions: std/http@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1"
                             .into(),
                     )
                 }),
@@ -173,6 +182,8 @@ fn lint_test_fields(value: &Value, issues: &mut Vec<LintIssue>) {
                 "std/check@v1" | "check" => Some(&CHECK_FIELDS),
                 "std/sleep@v1" | "sleep" => Some(&SLEEP_WITH_FIELDS),
                 "std/log@v1" | "log" => Some(&LOG_WITH_FIELDS),
+                "std/file-read@v1" | "file-read" => Some(&FILE_READ_WITH_FIELDS),
+                "std/file-write@v1" | "file-write" => Some(&FILE_WRITE_WITH_FIELDS),
                 _ => None,
             };
             if let Some(fields) = with_fields {
@@ -205,6 +216,10 @@ fn is_known_action(action: &str) -> bool {
             | "std/sleep@v1"
             | "sleep"
             | "std/log@v1"
+            | "std/file-read@v1"
+            | "file-read"
+            | "std/file-write@v1"
+            | "file-write"
             | "log"
     )
 }
