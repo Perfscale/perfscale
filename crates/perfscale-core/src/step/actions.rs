@@ -3,12 +3,25 @@
 //! | Action ID        | What it does                                     |
 //! |------------------|--------------------------------------------------|
 //! | `std/http@v1`    | HTTP request (any method) with timing            |
+//! | `std/tcp@v1`     | Raw TCP connect / send / receive with timing     |
+//! | `std/udp@v1`     | Raw UDP send / receive with timing               |
 //! | `std/check@v1`   | Assert properties of a previous step output      |
 //! | `std/sleep@v1`   | Wait N milliseconds                              |
 //! | `std/log@v1`     | Emit a log line                                  |
 //! | `std/file-read@v1`  | Read a file (process-wide cached)            |
 //! | `std/file-write@v1` | Write content to a file                      |
+//!
+//! # Extending with custom actions
+//!
+//! Downstream crates (e.g. proprietary `pro/*` actions such as `pro/fix@v1`)
+//! can plug in their own actions without living in this OSS crate by
+//! implementing [`ActionHandler`] and calling [`register_action`] once at
+//! process start. Registered handlers are consulted only when no built-in
+//! `std/*` action matches, so built-ins never pay a lookup.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 
 use serde_json::{json, Value};
@@ -86,21 +99,75 @@ pub async fn execute_action(
 
     match action_id {
         "std/http@v1" | "http" => http_action(&resolved, step_name).await,
+        "std/tcp@v1" | "tcp" => tcp_action(&resolved, step_name).await,
+        "std/udp@v1" | "udp" => udp_action(&resolved, step_name).await,
         "std/check@v1" | "check" => check_action(&resolved, ctx, step_name),
         "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name).await,
         "std/log@v1" | "log" => log_action(&resolved, step_name),
         "std/file-read@v1" | "file-read" => file_read_action(&resolved, step_name).await,
         "std/file-write@v1" | "file-write" => file_write_action(&resolved, step_name).await,
-        unknown => ActionOutput {
-            value: Value::Null,
-            logs: vec![(
-                LogTag::Err,
-                format!("{step_name}: unknown action '{unknown}'"),
-            )],
-            success: false,
-            http_sample: None,
-        },
+        unknown => {
+            // No built-in match — hand off to a downstream-registered handler
+            // (proprietary `pro/*` actions live outside this OSS crate). The
+            // Arc is cloned out before the lock is released so no guard is held
+            // across the handler's `.await`.
+            let handler = {
+                let reg = action_registry().read().unwrap();
+                reg.iter().find(|h| h.matches(unknown)).cloned()
+            };
+            match handler {
+                Some(h) => h.call(unknown, &resolved, ctx, step_name).await,
+                None => ActionOutput {
+                    value: Value::Null,
+                    logs: vec![(
+                        LogTag::Err,
+                        format!("{step_name}: unknown action '{unknown}'"),
+                    )],
+                    success: false,
+                    http_sample: None,
+                },
+            }
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Extension registry — pluggable custom actions
+// ---------------------------------------------------------------------------
+
+/// Boxed future returned by a registered [`ActionHandler`].
+pub type ActionFuture<'a> = Pin<Box<dyn Future<Output = ActionOutput> + Send + 'a>>;
+
+/// A pluggable action implementation supplied by a downstream crate.
+///
+/// Perfscale is open source; higher-tier actions (e.g. the proprietary FIX
+/// protocol action `pro/fix@v1`) live in closed crates and register
+/// themselves here at process start via [`register_action`]. Handlers are
+/// only consulted for action IDs no built-in `std/*` action matches.
+pub trait ActionHandler: Send + Sync {
+    /// True when this handler serves `action_id` (e.g. `"pro/fix@v1"`).
+    fn matches(&self, action_id: &str) -> bool;
+
+    /// Execute the action. `params` already has `${{ }}` interpolation applied.
+    fn call<'a>(
+        &'a self,
+        action_id: &'a str,
+        params: &'a Value,
+        ctx: &'a Context,
+        step_name: &'a str,
+    ) -> ActionFuture<'a>;
+}
+
+fn action_registry() -> &'static RwLock<Vec<Arc<dyn ActionHandler>>> {
+    static REGISTRY: OnceLock<RwLock<Vec<Arc<dyn ActionHandler>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Register a custom [`ActionHandler`]. Handlers are consulted in registration
+/// order. Typically called once at startup (e.g. a paid agent build enabling
+/// `pro/fix@v1`); registering the same action twice just shadows the later one.
+pub fn register_action(handler: Arc<dyn ActionHandler>) {
+    action_registry().write().unwrap().push(handler);
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +426,278 @@ fn error_chain(e: &dyn std::error::Error) -> String {
         src = s.source();
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// std/tcp@v1
+// ---------------------------------------------------------------------------
+//
+// Raw TCP: open a connection, optionally send a payload, optionally read a
+// response, and time the whole exchange. No protocol framing — this is the
+// building block for probing arbitrary line/binary services (Redis, SMTP,
+// custom gateways) under load.
+//
+// Parameters:
+//   host / port  – target; alternatively `address: "host:port"`
+//   send         – optional string payload to write after connecting
+//   send_base64  – optional base64 payload (mutually exclusive with `send`);
+//                  use for binary protocols
+//   read         – optional bool (default: true when the target is expected to
+//                  reply — i.e. whenever `expect` is set, otherwise false).
+//                  When true, read one chunk of the response.
+//   read_bytes   – optional cap on bytes to read, default 65536
+//   expect       – optional substring the response must contain (implies read)
+//   timeout      – optional ms for connect + exchange, default 10000
+//
+// Output:
+//   { "connected": <bool>, "sent": <u64>, "received": <u64>,
+//     "response": <string>, "duration_ms": <f64> }
+//
+// The `response` is UTF-8 lossy; binary services should assert on length via a
+// later step rather than the string. Timing feeds the same latency histogram
+// as HTTP (reported under `http_req_duration`), so percentiles are comparable
+// across transports.
+
+async fn tcp_action(params: &Value, step_name: &str) -> ActionOutput {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpStream;
+
+    let addr = match resolve_address(params) {
+        Ok(a) => a,
+        Err(msg) => return err(step_name, &msg),
+    };
+    let timeout_ms = params["timeout"].as_u64().unwrap_or(10_000);
+    let payload = match resolve_payload(params, step_name) {
+        Ok(p) => p,
+        Err(out) => return out,
+    };
+    let expect = params["expect"].as_str();
+    let want_read = params["read"].as_bool().unwrap_or(expect.is_some());
+    let read_cap = params["read_bytes"].as_u64().unwrap_or(65536) as usize;
+
+    let t0 = Instant::now();
+    let exchange = tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+        let mut stream = TcpStream::connect(&addr).await?;
+        let mut sent = 0u64;
+        if let Some(bytes) = &payload {
+            stream.write_all(bytes).await?;
+            stream.flush().await?;
+            sent = bytes.len() as u64;
+        }
+        let mut buf = Vec::new();
+        if want_read {
+            let mut chunk = vec![0u8; read_cap.min(65536)];
+            let n = stream.read(&mut chunk).await?;
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        Ok::<_, std::io::Error>((sent, buf))
+    })
+    .await;
+
+    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+    match exchange {
+        Ok(Ok((sent, buf))) => {
+            let response = String::from_utf8_lossy(&buf).into_owned();
+            let received = buf.len() as u64;
+            let matched = expect.map(|e| response.contains(e));
+            let failed = matched == Some(false);
+            let mut logs = vec![(
+                if failed { LogTag::Err } else { LogTag::Out },
+                format!(
+                    "TCP {addr} → connected, sent {sent}B, recv {received}B ({duration_ms:.2}ms)"
+                ),
+            )];
+            if failed {
+                logs.push((
+                    LogTag::Err,
+                    format!("TCP {addr}: response did not contain {:?}", expect.unwrap()),
+                ));
+            }
+            ActionOutput {
+                value: json!({
+                    "connected": true,
+                    "sent": sent,
+                    "received": received,
+                    "response": response,
+                    "duration_ms": duration_ms,
+                }),
+                logs,
+                success: !failed,
+                http_sample: Some(HttpSample {
+                    duration_ms,
+                    status: 0,
+                    failed,
+                }),
+            }
+        }
+        Ok(Err(e)) => tcp_udp_err("TCP", &addr, &error_chain(&e), duration_ms),
+        Err(_) => tcp_udp_err(
+            "TCP",
+            &addr,
+            &format!("TIMEOUT after {duration_ms:.2}ms"),
+            duration_ms,
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// std/udp@v1
+// ---------------------------------------------------------------------------
+//
+// Raw UDP: bind an ephemeral local socket, send a datagram to the target, and
+// optionally wait for a reply. Round-trip latency is measured from send to the
+// reply datagram (or just the send when no reply is expected).
+//
+// Parameters:
+//   host / port  – target; alternatively `address: "host:port"`
+//   send         – string payload (or `send_base64` for binary); required
+//   read         – optional bool: wait for a reply datagram
+//                  (default: true when `expect` is set, otherwise false)
+//   read_bytes   – optional cap on the reply size, default 65536
+//   expect       – optional substring the reply must contain (implies read)
+//   timeout      – optional ms for the exchange, default 10000
+//
+// Output:
+//   { "sent": <u64>, "received": <u64>, "response": <string>,
+//     "duration_ms": <f64> }
+//
+// UDP is connectionless: a "successful" send only means the datagram left the
+// host. Set `read`/`expect` to actually validate a response.
+
+async fn udp_action(params: &Value, step_name: &str) -> ActionOutput {
+    use tokio::net::UdpSocket;
+
+    let addr = match resolve_address(params) {
+        Ok(a) => a,
+        Err(msg) => return err(step_name, &msg),
+    };
+    let timeout_ms = params["timeout"].as_u64().unwrap_or(10_000);
+    let payload = match resolve_payload(params, step_name) {
+        Ok(Some(p)) => p,
+        Ok(None) => return err(step_name, "'send' (or 'send_base64') is required for UDP"),
+        Err(out) => return out,
+    };
+    let expect = params["expect"].as_str();
+    let want_read = params["read"].as_bool().unwrap_or(expect.is_some());
+    let read_cap = params["read_bytes"].as_u64().unwrap_or(65536) as usize;
+
+    let t0 = Instant::now();
+    let exchange = tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+        // ":0" lets the OS pick an ephemeral port on the matching family. UDP
+        // over IPv4 targets binds 0.0.0.0; a v6 literal target would need a v6
+        // bind, but host:port targets here are resolved by `connect`.
+        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        socket.connect(&addr).await?;
+        socket.send(&payload).await?;
+        let sent = payload.len() as u64;
+        let mut buf = Vec::new();
+        if want_read {
+            let mut chunk = vec![0u8; read_cap.min(65536)];
+            let n = socket.recv(&mut chunk).await?;
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        Ok::<_, std::io::Error>((sent, buf))
+    })
+    .await;
+
+    let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+    match exchange {
+        Ok(Ok((sent, buf))) => {
+            let response = String::from_utf8_lossy(&buf).into_owned();
+            let received = buf.len() as u64;
+            let matched = expect.map(|e| response.contains(e));
+            let failed = matched == Some(false);
+            let mut logs = vec![(
+                if failed { LogTag::Err } else { LogTag::Out },
+                format!("UDP {addr} → sent {sent}B, recv {received}B ({duration_ms:.2}ms)"),
+            )];
+            if failed {
+                logs.push((
+                    LogTag::Err,
+                    format!("UDP {addr}: reply did not contain {:?}", expect.unwrap()),
+                ));
+            }
+            ActionOutput {
+                value: json!({
+                    "sent": sent,
+                    "received": received,
+                    "response": response,
+                    "duration_ms": duration_ms,
+                }),
+                logs,
+                success: !failed,
+                http_sample: Some(HttpSample {
+                    duration_ms,
+                    status: 0,
+                    failed,
+                }),
+            }
+        }
+        Ok(Err(e)) => tcp_udp_err("UDP", &addr, &error_chain(&e), duration_ms),
+        Err(_) => tcp_udp_err(
+            "UDP",
+            &addr,
+            &format!("TIMEOUT after {duration_ms:.2}ms"),
+            duration_ms,
+        ),
+    }
+}
+
+/// Build a `host:port` string from either an `address` param or separate
+/// `host` + `port` params.
+fn resolve_address(params: &Value) -> Result<String, String> {
+    if let Some(addr) = params["address"].as_str() {
+        return Ok(addr.to_string());
+    }
+    let host = params["host"]
+        .as_str()
+        .ok_or_else(|| "'host' (with 'port') or 'address' is required".to_string())?;
+    let port = params["port"]
+        .as_u64()
+        .ok_or_else(|| "'port' is required (a number)".to_string())?;
+    Ok(format!("{host}:{port}"))
+}
+
+/// Resolve an outbound payload from `send` (text) or `send_base64` (binary).
+/// Returns `Ok(None)` when neither is present. The two are mutually exclusive.
+fn resolve_payload(params: &Value, step_name: &str) -> Result<Option<Vec<u8>>, ActionOutput> {
+    let text = params["send"].as_str();
+    let b64 = params["send_base64"].as_str();
+    match (text, b64) {
+        (Some(_), Some(_)) => Err(err(
+            step_name,
+            "'send' and 'send_base64' are mutually exclusive",
+        )),
+        (Some(s), None) => Ok(Some(s.as_bytes().to_vec())),
+        (None, Some(b)) => {
+            use base64::Engine as _;
+            match base64::engine::general_purpose::STANDARD.decode(b) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(e) => Err(err(
+                    step_name,
+                    &format!("invalid base64 in 'send_base64': {e}"),
+                )),
+            }
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+/// Shared error shape for the raw transport actions: a failed sample so the
+/// error still counts toward the failure rate, plus a single stderr line.
+fn tcp_udp_err(proto: &str, addr: &str, detail: &str, duration_ms: f64) -> ActionOutput {
+    ActionOutput {
+        value: json!({ "connected": false, "error": detail, "duration_ms": duration_ms }),
+        logs: vec![(LogTag::Err, format!("{proto} {addr} → ERROR: {detail}"))],
+        success: false,
+        http_sample: Some(HttpSample {
+            duration_ms,
+            status: 0,
+            failed: true,
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1149,6 +1488,211 @@ mod tests {
         let out = execute_action("std/http@v1", &params, &ctx, "step").await;
         assert!(!out.success);
         assert!(out.logs[0].1.contains("TIMEOUT"));
+    }
+
+    // -----------------------------------------------------------------
+    // std/tcp@v1
+    // -----------------------------------------------------------------
+
+    /// Spawn a one-shot TCP echo server; returns its bound address.
+    async fn spawn_tcp_echo() -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    if let Ok(n) = sock.read(&mut buf).await {
+                        let _ = sock.write_all(&buf[..n]).await;
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn tcp_action_sends_and_reads_echo() {
+        let addr = spawn_tcp_echo().await;
+        let ctx = Context::new();
+        let params = json!({ "address": addr, "send": "ping", "read": true });
+        let out = execute_action("std/tcp@v1", &params, &ctx, "step").await;
+
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert_eq!(out.value["connected"], true);
+        assert_eq!(out.value["sent"], 4);
+        assert_eq!(out.value["response"], "ping");
+        assert!(!out.http_sample.unwrap().failed);
+    }
+
+    #[tokio::test]
+    async fn tcp_action_expect_mismatch_fails() {
+        let addr = spawn_tcp_echo().await;
+        let ctx = Context::new();
+        let params = json!({ "address": addr, "send": "ping", "expect": "pong" });
+        let out = execute_action("std/tcp@v1", &params, &ctx, "step").await;
+
+        assert!(!out.success);
+        assert!(out.http_sample.unwrap().failed);
+        assert!(out.logs.iter().any(|(_, m)| m.contains("did not contain")));
+    }
+
+    #[tokio::test]
+    async fn tcp_action_host_port_form_and_base64_payload() {
+        let addr = spawn_tcp_echo().await;
+        let (host, port) = addr.rsplit_once(':').unwrap();
+        let ctx = Context::new();
+        // "AQID" == bytes [1,2,3]
+        let params = json!({
+            "host": host, "port": port.parse::<u16>().unwrap(),
+            "send_base64": "AQID", "read": true,
+        });
+        let out = execute_action("std/tcp@v1", &params, &ctx, "step").await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert_eq!(out.value["sent"], 3);
+        assert_eq!(out.value["received"], 3);
+    }
+
+    #[tokio::test]
+    async fn tcp_action_connection_refused_is_failed_sample() {
+        let ctx = Context::new();
+        // Port 1 on loopback is not listening; connect fails fast.
+        let params = json!({ "host": "127.0.0.1", "port": 1, "timeout": 2000 });
+        let out = execute_action("std/tcp@v1", &params, &ctx, "step").await;
+        assert!(!out.success);
+        assert_eq!(out.value["connected"], false);
+        assert!(out.http_sample.unwrap().failed);
+    }
+
+    #[tokio::test]
+    async fn tcp_action_missing_target_errors() {
+        let ctx = Context::new();
+        let out = execute_action("std/tcp@v1", &json!({}), &ctx, "step").await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("'host'"));
+        assert!(out.http_sample.is_none());
+    }
+
+    #[tokio::test]
+    async fn tcp_action_send_and_send_base64_mutually_exclusive() {
+        let ctx = Context::new();
+        let params = json!({ "address": "127.0.0.1:1", "send": "x", "send_base64": "eA==" });
+        let out = execute_action("std/tcp@v1", &params, &ctx, "step").await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("mutually exclusive"));
+    }
+
+    // -----------------------------------------------------------------
+    // std/udp@v1
+    // -----------------------------------------------------------------
+
+    /// Spawn a one-shot UDP echo server; returns its bound address.
+    async fn spawn_udp_echo() -> String {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            while let Ok((n, peer)) = socket.recv_from(&mut buf).await {
+                let _ = socket.send_to(&buf[..n], peer).await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn udp_action_sends_and_reads_echo() {
+        let addr = spawn_udp_echo().await;
+        let ctx = Context::new();
+        let params = json!({ "address": addr, "send": "ping", "read": true, "timeout": 2000 });
+        let out = execute_action("std/udp@v1", &params, &ctx, "step").await;
+
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert_eq!(out.value["sent"], 4);
+        assert_eq!(out.value["response"], "ping");
+        assert!(!out.http_sample.unwrap().failed);
+    }
+
+    #[tokio::test]
+    async fn udp_action_send_only_succeeds_without_reply() {
+        let addr = spawn_udp_echo().await;
+        let ctx = Context::new();
+        // No `read`/`expect` → fire-and-forget; success once the datagram is sent.
+        let params = json!({ "address": addr, "send": "fire" });
+        let out = execute_action("std/udp@v1", &params, &ctx, "step").await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert_eq!(out.value["received"], 0);
+    }
+
+    #[tokio::test]
+    async fn udp_action_requires_payload() {
+        let ctx = Context::new();
+        let out = execute_action(
+            "std/udp@v1",
+            &json!({ "address": "127.0.0.1:9" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("required"));
+    }
+
+    #[tokio::test]
+    async fn udp_action_expect_reply_timeout_is_failed_sample() {
+        let ctx = Context::new();
+        // A likely-dead port with no listener: expect a reply that never comes.
+        let params = json!({
+            "host": "127.0.0.1", "port": 9,
+            "send": "x", "expect": "y", "timeout": 200,
+        });
+        let out = execute_action("std/udp@v1", &params, &ctx, "step").await;
+        assert!(!out.success);
+        assert!(out.http_sample.unwrap().failed);
+    }
+
+    // -----------------------------------------------------------------
+    // Extension registry — custom action handlers
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn registered_handler_serves_custom_action() {
+        struct Echo;
+        impl ActionHandler for Echo {
+            fn matches(&self, id: &str) -> bool {
+                id == "pro/echo@v1"
+            }
+            fn call<'a>(
+                &'a self,
+                _id: &'a str,
+                params: &'a Value,
+                _ctx: &'a Context,
+                _step: &'a str,
+            ) -> ActionFuture<'a> {
+                Box::pin(async move {
+                    ActionOutput {
+                        value: json!({ "echoed": params["msg"].clone() }),
+                        logs: Vec::new(),
+                        success: true,
+                        http_sample: None,
+                    }
+                })
+            }
+        }
+        register_action(Arc::new(Echo));
+
+        let ctx = Context::new();
+        let out = execute_action("pro/echo@v1", &json!({ "msg": "hi" }), &ctx, "step").await;
+        assert!(out.success);
+        assert_eq!(out.value["echoed"], "hi");
+
+        // An action no handler matches still reports the clear built-in error.
+        let miss = execute_action("pro/nope@v1", &json!({}), &ctx, "step").await;
+        assert!(!miss.success);
+        assert!(miss.logs[0].1.contains("unknown action"));
     }
 
     // -----------------------------------------------------------------

@@ -75,6 +75,8 @@ steps:
 
     let rx = runner::execute(ExecutionPlan::NativeSteps {
         test,
+        before: config.before,
+        variables: config.variables,
         config: config.run,
         quiet: false,
     })
@@ -149,6 +151,8 @@ steps:
 
     let rx = runner::execute(ExecutionPlan::NativeSteps {
         test,
+        before: Vec::new(),
+        variables: serde_json::Map::new(),
         config,
         quiet: false,
     })
@@ -199,6 +203,8 @@ steps:
 
     let rx = runner::execute(ExecutionPlan::NativeSteps {
         test,
+        before: Vec::new(),
+        variables: serde_json::Map::new(),
         config,
         quiet: false,
     })

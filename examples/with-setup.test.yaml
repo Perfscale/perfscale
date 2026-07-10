@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=../schema/test.schema.json
+#
+# Companion test for with-setup.config.yaml — references the config `before`
+# output (`config.auth`) and a static variable (`vars.region`).
+steps:
+  - name: fetch with setup context
+    uses: std/http@v1
+    with:
+      url: https://httpbin.org/anything
+      headers:
+        x-region: ${{ vars.region }}
+        x-setup-status: "${{ config.auth.status }}"
+    check:
+      status: 200
+
+  - uses: std/sleep@v1
+    with:
+      ms: 200

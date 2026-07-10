@@ -5,7 +5,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::step::{RunConfig, TestDef};
+use crate::step::{RunConfig, Step, TestDef};
 
 /// Where to forward the aggregated run summary after `perfscale run` finishes.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -20,6 +20,19 @@ pub struct ConfigFile {
     #[serde(flatten)]
     pub run: RunConfig,
     pub report: Option<ReportConfig>,
+
+    /// Setup steps run **once** before the load starts (not per VU iteration).
+    /// Each step's `outputs` is exposed to test steps under the `config`
+    /// namespace, e.g. a `before` step with `outputs: fix_config` is read in a
+    /// test as `${{ config.fix_config.<field> }}`. If any setup step fails, the
+    /// run aborts before spawning VUs.
+    #[serde(default)]
+    pub before: Vec<Step>,
+
+    /// Static variables exposed to `before` and test steps under the `vars`
+    /// namespace, e.g. `${{ vars.region }}`. Values may themselves be objects.
+    #[serde(default)]
+    pub variables: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Parse a test-definition YAML document (`-f test.yaml`).
@@ -213,11 +226,84 @@ steps:
             report: Some(ReportConfig {
                 url: "http://localhost:7999".into(),
             }),
+            before: Vec::new(),
+            variables: serde_json::Map::new(),
         };
         let json = serde_json::to_value(&cfg).unwrap();
         let back: ConfigFile = serde_json::from_value(json).unwrap();
         assert_eq!(back.run.vus, 7);
         assert_eq!(back.report.unwrap().url, "http://localhost:7999");
+    }
+
+    #[test]
+    fn parses_config_with_before_and_variables() {
+        let yaml = r#"
+vus: 50
+variables:
+  region: eu
+  retries: 3
+before:
+  - uses: std/http@v1
+    with:
+      url: https://example.com/token
+    outputs: auth
+"#;
+        let cfg = parse_config_file(yaml).unwrap();
+        assert_eq!(cfg.run.vus, 50);
+        assert_eq!(cfg.variables["region"], "eu");
+        assert_eq!(cfg.variables["retries"], 3);
+        assert_eq!(cfg.before.len(), 1);
+        // `uses:` alias resolves to the same action field as `use:`.
+        assert_eq!(cfg.before[0].action, "std/http@v1");
+        assert_eq!(cfg.before[0].outputs.as_deref(), Some("auth"));
+    }
+
+    #[test]
+    fn config_without_before_or_variables_defaults_empty() {
+        let cfg = parse_config_file("vus: 3\n").unwrap();
+        assert!(cfg.before.is_empty());
+        assert!(cfg.variables.is_empty());
+    }
+
+    #[test]
+    fn test_step_accepts_uses_alias() {
+        let yaml = r#"
+steps:
+  - uses: std/log@v1
+    with: { message: hi }
+"#;
+        let test = parse_test_file(yaml).unwrap();
+        assert_eq!(test.steps[0].action, "std/log@v1");
+    }
+
+    #[test]
+    fn step_with_neither_use_nor_uses_is_rejected() {
+        let yaml = r#"
+steps:
+  - with: { message: hi }
+"#;
+        let err = parse_test_file(yaml).unwrap_err();
+        assert!(
+            err.contains("schema validation failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn before_step_pro_action_survives_schema_validation() {
+        // pro/* actions are registered at runtime; the config schema must not
+        // reject a before step that uses one.
+        let yaml = r#"
+vus: 10
+before:
+  - uses: pro/fix-config@v1
+    with:
+      host: example.com
+      port: 1111
+    outputs: fix_config
+"#;
+        let cfg = parse_config_file(yaml).unwrap();
+        assert_eq!(cfg.before[0].action, "pro/fix-config@v1");
     }
 
     #[test]

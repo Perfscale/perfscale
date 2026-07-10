@@ -29,7 +29,7 @@ impl Context {
     /// - `${{ name }}`                → whole stored value as string
     /// - `${{ name.field }}`          → field of a stored JSON object
     /// - `${{ name.a.b }}`            → nested path, one JSON level per `.`
-    ///                                  (e.g. `${{ resp.headers.x-request-id }}`)
+    ///   (e.g. `${{ resp.headers.x-request-id }}`)
     pub fn interpolate(&self, s: &str) -> String {
         let mut result = s.to_string();
         let mut offset = 0usize;

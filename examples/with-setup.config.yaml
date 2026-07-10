@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema/config.schema.json
+#
+# Config with one-time `before:` setup and static `variables:`.
+# Run with: perfscale run -f examples/with-setup.test.yaml -c examples/with-setup.config.yaml
+vus: 10
+duration: 30s
+
+variables:
+  region: eu-west
+
+before:
+  # Runs once before the load starts. Its `outputs` name (`auth`) is exposed to
+  # every test step as `${{ config.auth.<field> }}`.
+  - uses: std/http@v1
+    with:
+      method: POST
+      url: https://httpbin.org/anything
+      body:
+        user: demo
+        region: ${{ vars.region }}
+    outputs: auth

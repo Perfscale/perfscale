@@ -385,7 +385,7 @@ fn lint_missing_use_shows_fix_with_action_list() {
         .args(["lint", test_file.path().to_str().unwrap()])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("\"use\" is a required property"))
+        .stdout(predicate::str::contains("must name an action"))
         .stdout(predicate::str::contains("fix:"))
         .stdout(predicate::str::contains("std/http@v1"));
 }

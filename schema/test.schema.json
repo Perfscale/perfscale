@@ -2,6 +2,18 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
     "Step": {
+      "anyOf": [
+        {
+          "required": [
+            "use"
+          ]
+        },
+        {
+          "required": [
+            "uses"
+          ]
+        }
+      ],
       "description": "A single step in a test definition.",
       "properties": {
         "check": {
@@ -22,16 +34,17 @@
           ]
         },
         "use": {
-          "description": "Action identifier, e.g. `\"std/http@v1\"`.",
+          "description": "Action identifier, e.g. `\"std/http@v1\"`. Written as `use:` in YAML; `uses:` is accepted as an alias (GitHub-Actions muscle memory).",
+          "type": "string"
+        },
+        "uses": {
+          "description": "Action identifier, e.g. `\"std/http@v1\"`. Written as `use:` in YAML; `uses:` is accepted as an alias (GitHub-Actions muscle memory).",
           "type": "string"
         },
         "with": {
           "description": "Action-specific parameters (interpolation applied at runtime)."
         }
       },
-      "required": [
-        "use"
-      ],
       "type": "object"
     }
   },

@@ -222,10 +222,12 @@ fn resolve_plan(
     if args.file.is_some() {
         let test = native_test.expect("caller must load the test def when --file is set");
         // `-f` requires `-c` (enforced by clap), so config is always present here.
-        let run_config = config.expect("clap requires -c with -f").run.clone();
+        let cfg = config.expect("clap requires -c with -f");
         return ExecutionPlan::NativeSteps {
             test,
-            config: run_config,
+            config: cfg.run.clone(),
+            before: cfg.before.clone(),
+            variables: cfg.variables.clone(),
             quiet: args.quiet,
         };
     }
@@ -313,6 +315,8 @@ mod tests {
             report: report_url.map(|url| ReportConfig {
                 url: url.to_string(),
             }),
+            before: Vec::new(),
+            variables: serde_json::Map::new(),
         }
     }
 
@@ -466,6 +470,8 @@ mod tests {
                 vus: 7,
                 duration: "45s".into(),
             },
+            before: Vec::new(),
+            variables: serde_json::Map::new(),
             quiet: false,
         };
         assert_eq!(plan_meta(&native), ("native", Some(7), Some("45s".into())));

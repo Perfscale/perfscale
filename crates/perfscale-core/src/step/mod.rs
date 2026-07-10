@@ -51,8 +51,9 @@ pub struct Step {
     /// Human-readable label shown in log output.
     pub name: Option<String>,
 
-    /// Action identifier, e.g. `"std/http@v1"`.
-    #[serde(rename = "use")]
+    /// Action identifier, e.g. `"std/http@v1"`. Written as `use:` in YAML;
+    /// `uses:` is accepted as an alias (GitHub-Actions muscle memory).
+    #[serde(rename = "use", alias = "uses")]
     pub action: String,
 
     /// Action-specific parameters (interpolation applied at runtime).

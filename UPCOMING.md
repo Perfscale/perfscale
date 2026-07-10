@@ -14,6 +14,18 @@ Release notes for the next release, written as features land.
 
 ### Added
 
+- New `std/tcp@v1` and `std/udp@v1` actions: raw TCP/UDP probes — connect (TCP),
+  send an optional payload (`send` / `send_base64`), optionally read a response
+  and assert a substring (`expect`), all with per-request timing. Latency feeds
+  the same metrics as HTTP, so percentiles are comparable across transports.
+- Config files gain a `before:` block: setup steps that run **once** before the
+  load (not per iteration). Each step's `outputs` is exposed to test steps under
+  the `config` namespace — `${{ config.<name>.<field> }}` — for building a
+  reusable value (e.g. a token or connection profile). A failing setup step
+  aborts the run before any VU starts.
+- Config files gain a `variables:` block: static values exposed to steps as
+  `${{ vars.<key> }}`.
+- Steps accept `uses:` as an alias for `use:`.
 - New `std/file-read@v1` action: read a file once into a process-wide cache
   (revalidated by mtime/size) and reference its content from later steps via
   `${{ name.content }}` — `text` or `base64` encoding.
@@ -41,3 +53,6 @@ Release notes for the next release, written as features land.
   grow memory 8 bytes per request (a 30-hour run at 10k RPS previously
   needed ~26 GB at the final summary). Quantiles are now within ≤1% of the
   exact value — invisible at the precision the summary prints.
+- The step engine exposes an `ActionHandler` registration seam
+  (`register_action`) so downstream builds can add custom `pro/*` actions
+  without forking; built-in `std/*` actions pay no lookup cost for it.

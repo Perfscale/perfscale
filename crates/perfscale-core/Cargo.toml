@@ -12,8 +12,9 @@ serde_json = "1"
 serde_yaml = "0.9"
 uuid       = { version = "1", features = ["serde", "v4"] }
 
-# Async runtime + subprocess management (k6, locust)
-tokio = { version = "1", features = ["time", "sync", "rt", "macros", "process", "io-util", "fs"] }
+# Async runtime + subprocess management (k6, locust). `net` powers the raw
+# transport actions (std/tcp@v1, std/udp@v1).
+tokio = { version = "1", features = ["time", "sync", "rt", "macros", "process", "io-util", "fs", "net"] }
 
 # HTTP client for std/http@v1
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"], default-features = false }

@@ -13,10 +13,64 @@
         "url"
       ],
       "type": "object"
+    },
+    "Step": {
+      "anyOf": [
+        {
+          "required": [
+            "use"
+          ]
+        },
+        {
+          "required": [
+            "uses"
+          ]
+        }
+      ],
+      "description": "A single step in a test definition.",
+      "properties": {
+        "check": {
+          "description": "Post-execution assertions.  Keys are assertion names; values are expected values.  Example: `{ \"status\": 200, \"duration_ms_lt\": 500 }`."
+        },
+        "name": {
+          "description": "Human-readable label shown in log output.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outputs": {
+          "description": "Variable name to store step output under for `${{ name.field }}` use.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "use": {
+          "description": "Action identifier, e.g. `\"std/http@v1\"`. Written as `use:` in YAML; `uses:` is accepted as an alias (GitHub-Actions muscle memory).",
+          "type": "string"
+        },
+        "uses": {
+          "description": "Action identifier, e.g. `\"std/http@v1\"`. Written as `use:` in YAML; `uses:` is accepted as an alias (GitHub-Actions muscle memory).",
+          "type": "string"
+        },
+        "with": {
+          "description": "Action-specific parameters (interpolation applied at runtime)."
+        }
+      },
+      "type": "object"
     }
   },
   "description": "Top-level `-c config.yaml` document.",
   "properties": {
+    "before": {
+      "default": [],
+      "description": "Setup steps run **once** before the load starts (not per VU iteration). Each step's `outputs` is exposed to test steps under the `config` namespace, e.g. a `before` step with `outputs: fix_config` is read in a test as `${{ config.fix_config.<field> }}`. If any setup step fails, the run aborts before spawning VUs.",
+      "items": {
+        "$ref": "#/definitions/Step"
+      },
+      "type": "array"
+    },
     "duration": {
       "default": "1m",
       "description": "Duration string: `\"30s\"`, `\"1m\"`, `\"5m30s\"`, `\"1h\"`.",
@@ -31,6 +85,12 @@
           "type": "null"
         }
       ]
+    },
+    "variables": {
+      "additionalProperties": true,
+      "default": {},
+      "description": "Static variables exposed to `before` and test steps under the `vars` namespace, e.g. `${{ vars.region }}`. Values may themselves be objects.",
+      "type": "object"
     },
     "vus": {
       "default": 1,

@@ -35,7 +35,7 @@ steps:
 
 | Field | Required | Description |
 |---|---|---|
-| `use` | yes | Action ID: `std/http@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1` (short aliases `http`, `check`, `sleep`, `log`, `file-read`, `file-write` also work) |
+| `use` | yes | Action ID: `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1` (short aliases `http`, `tcp`, `udp`, `check`, `sleep`, `log`, `file-read`, `file-write` also work). `uses:` is accepted as an alias for `use:` |
 | `name` | no | Human-readable label shown in log lines |
 | `with` | no | Action parameters — see [Actions](core/actions.md) |
 | `check` | no | Assertions on this step's output — same keys as `std/check@v1` |
@@ -53,6 +53,8 @@ value** in a later step's `with:` or `check:` can then reference it:
 | `${{ name.field }}` | One field of a stored object (e.g. `.status`, `.body`, `.duration_ms`) |
 | `${{ name.a.b }}` | Nested path — one JSON level per `.`, e.g. `${{ resp.headers.x-request-id }}` |
 | `${{ __last__ }}` / `${{ __last__.field }}` | The immediately preceding step's output — always available, no `outputs:` needed |
+| `${{ config.<name>.<field> }}` | Output of a config-file `before:` setup step (see [Config](#config--c-configyaml)) |
+| `${{ vars.<key> }}` | A static value from the config file's `variables:` block |
 
 For `std/http@v1` the stored output is
 `{ "status": <int>, "body": <string>, "duration_ms": <float>, "headers": <object> }`
@@ -130,6 +132,49 @@ report:          # optional — forward the summary after the run
 | `vus` | `1` | Concurrent virtual users |
 | `duration` | `1m` | Wall-clock run length; bare numbers are seconds |
 | `report.url` | — | A `perfscale serve` base URL; the CLI `--report` flag overrides it |
+| `before` | `[]` | One-time setup steps — see [Setup and variables](#setup-and-variables) |
+| `variables` | `{}` | Static values exposed to steps as `${{ vars.* }}` |
+
+### Setup and variables
+
+`before:` steps run **once**, in order, before any VU starts — for one-time
+setup like fetching a token or building a connection profile. Each `before`
+step is a normal step (`use`/`with`/`outputs`); its `outputs` name is exposed
+to **every** test step under the `config` namespace. `variables:` holds static
+values, exposed under `vars`.
+
+```yaml
+vus: 50
+variables:
+  region: eu-west
+before:
+  - uses: std/http@v1
+    with:
+      method: POST
+      url: "https://api.example.com/token"
+      body: { user: demo, region: "${{ vars.region }}" }
+    outputs: auth            # ← exposed to test steps as config.auth
+```
+
+```yaml
+# test.yaml
+steps:
+  - uses: std/http@v1
+    with:
+      url: "https://api.example.com/me"
+      headers:
+        authorization: "Bearer ${{ config.auth.body }}"   # from before step
+        x-region: "${{ vars.region }}"                      # from variables
+```
+
+- `before` runs regardless of `--quiet` (its failures always print). If any
+  setup step fails, the run **aborts before spawning VUs** — a broken setup
+  would make every iteration fail identically.
+- `before` steps see `${{ vars.* }}` and earlier setup outputs (under their own
+  `outputs` name). Test steps see `config.*` and `vars.*` but not each other's.
+- Interpolation always yields a **string**, so a numeric config value like
+  `${{ config.fix_config.port }}` reaches the action as `"1111"`. Actions that
+  take numbers accept the string form.
 
 With `--locust`, the same config maps to locust's `--users`/`--spawn-rate`/`--run-time`.
 With `--k6`, load config lives in the script's own `options` block and the
@@ -154,7 +199,7 @@ perfscale validates before running. Examples of what you'll see:
 
 ```text
 error: schema validation failed:
-  /steps/0 — "use" is a required property
+  /steps/0 — every step must name an action: `use: std/http@v1` (or the `uses:` alias)
 ```
 
 ```text

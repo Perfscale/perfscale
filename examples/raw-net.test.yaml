@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=../schema/test.schema.json
+#
+# Raw TCP / UDP probes. Run with:
+#   perfscale run -f examples/raw-net.test.yaml -c examples/hello.config.yaml
+steps:
+  # TCP: connect, send a line, read the echo/greeting, assert on it.
+  - name: tcp probe
+    use: std/tcp@v1
+    with:
+      host: 127.0.0.1
+      port: 6379
+      send: "PING\r\n"
+      expect: "PONG"
+      timeout: 2000
+    outputs: tcp
+
+  - name: log tcp
+    use: std/log@v1
+    with:
+      message: "tcp recv ${{ tcp.received }}B in ${{ tcp.duration_ms }}ms"
+
+  # UDP: fire a datagram and wait for a reply.
+  - name: udp probe
+    use: std/udp@v1
+    with:
+      address: 127.0.0.1:9999
+      send: "ping"
+      read: true
+      timeout: 1000
+
+  - use: std/sleep@v1
+    with:
+      ms: 200

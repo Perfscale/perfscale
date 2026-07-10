@@ -5,7 +5,7 @@ action in `use`, passes parameters in `with`, and may assert on the result in
 `check`.
 
 Full IDs carry a namespace and version (`std/http@v1`); the short aliases
-(`http`, `check`, `sleep`, `log`, `file-read`, `file-write`) resolve to the same implementations.
+(`http`, `tcp`, `udp`, `check`, `sleep`, `log`, `file-read`, `file-write`) resolve to the same implementations.
 
 ## `std/http@v1`
 
@@ -78,6 +78,54 @@ Notes:
   repeats cheap, and a file changed between runs is picked up. Under high
   RPS prefer small fixture files.
 - A missing/unreadable file fails the step before any request is sent.
+
+## `std/tcp@v1`
+
+Open a raw TCP connection, optionally send a payload, optionally read a
+response, and time the whole exchange. No protocol framing — the building block
+for probing arbitrary line/binary services (Redis, SMTP, custom gateways).
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `host` | string | **required*** | Target host (with `port`) |
+| `port` | integer | **required*** | Target port |
+| `address` | string | — | `host:port` shorthand, instead of `host`+`port` |
+| `send` | string | — | Text payload to write after connecting |
+| `send_base64` | string | — | Base64 payload for binary protocols. Mutually exclusive with `send` |
+| `read` | boolean | `true` if `expect` is set, else `false` | Read one response chunk |
+| `read_bytes` | integer | `65536` | Cap on bytes read |
+| `expect` | string | — | Substring the response must contain (implies `read`) |
+| `timeout` | integer (ms) | `10000` | Timeout for connect + exchange |
+
+\* Provide either `address` **or** `host` + `port`.
+
+**Output** (available via `outputs` / `__last__`):
+
+```json
+{ "connected": true, "sent": 4, "received": 4, "response": "pong", "duration_ms": 0.63 }
+```
+
+`response` is UTF-8 lossy — for binary services assert on `received` rather than
+the string. Connection failures, timeouts, and an `expect` mismatch mark the
+step failed and count toward `http_req_failed`; timing lands in
+`http_req_duration` alongside HTTP and UDP, so percentiles are comparable across
+transports.
+
+## `std/udp@v1`
+
+Send a UDP datagram to the target and optionally wait for a reply. Round-trip
+latency is measured from send to the reply datagram (or just the send when no
+reply is expected). Same `with` fields as `std/tcp@v1`, except `send`
+(or `send_base64`) is **required**.
+
+UDP is connectionless: a "successful" send only means the datagram left the
+host. Set `read` (or `expect`) to actually validate a response.
+
+**Output:**
+
+```json
+{ "sent": 4, "received": 4, "response": "pong", "duration_ms": 0.21 }
+```
 
 ## `std/file-read@v1`
 
@@ -213,3 +261,13 @@ All string leaves in `with`/`check` are interpolated before the action runs:
 3. Add unit tests next to the existing ones (wiremock is available for HTTP).
 4. Document it here and, if it introduces new step fields, regenerate the
    schemas (`cargo run -p perfscale-core --example gen_schema`).
+
+## Custom actions from downstream crates
+
+Actions that shouldn't live in this OSS crate — higher-tier or proprietary
+protocols such as the FIX action `pro/fix@v1` — plug in without a fork.
+Implement the `perfscale_core::step::actions::ActionHandler` trait in your own
+crate and call `register_action(Arc::new(MyHandler))` once at process start
+(e.g. in the agent's `main`). Registered handlers are consulted only for action
+IDs no built-in `std/*` action matches, so built-ins pay no lookup cost. Params
+reach the handler with `${{ }}` interpolation already applied.

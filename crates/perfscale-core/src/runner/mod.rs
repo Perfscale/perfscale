@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
-use crate::step::{RunConfig, TestDef};
+use crate::step::{RunConfig, Step, TestDef};
 
 /// A single line of output from any runner.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -62,6 +62,11 @@ pub enum ExecutionPlan {
     NativeSteps {
         test: TestDef,
         config: RunConfig,
+        /// One-time setup steps from the config file's `before:` block.
+        before: Vec<Step>,
+        /// Static variables from the config file's `variables:` block, exposed
+        /// to steps as `${{ vars.* }}`.
+        variables: serde_json::Map<String, serde_json::Value>,
         /// Drop per-iteration success output at the source (`--quiet`);
         /// errors and the final metric summary still stream.
         quiet: bool,
@@ -81,12 +86,15 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
         ExecutionPlan::NativeSteps {
             test,
             config,
+            before,
+            variables,
             quiet,
         } => {
             let (tx, rx) = mpsc::channel(512);
             let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
-                crate::step::runner::run_steps(test.steps, config, quiet, tx).await;
+                crate::step::runner::run_native(test.steps, before, config, variables, quiet, tx)
+                    .await;
                 let _ = exit_tx.send(Some(0));
             });
             Ok(RunOutput {
@@ -154,6 +162,8 @@ mod tests {
         } = execute(ExecutionPlan::NativeSteps {
             test,
             config,
+            before: Vec::new(),
+            variables: serde_json::Map::new(),
             quiet: false,
         })
         .await

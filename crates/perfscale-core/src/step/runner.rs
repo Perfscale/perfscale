@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
 use crate::runner::{LogLine, LogSource};
@@ -146,12 +146,57 @@ impl Metrics {
 /// passing checks) is dropped at the source — not just filtered at print time
 /// — so a busy loop skips the formatting and channel traffic too. Errors,
 /// failing checks, and the final metric summary always come through.
+///
+/// This is the no-setup entry point: equivalent to [`run_native`] with no
+/// `before` steps and no static variables. Kept for callers (and tests) that
+/// only have a step list and a run config.
 pub async fn run_steps(
     steps: Vec<Step>,
     config: RunConfig,
     quiet: bool,
     tx: mpsc::Sender<LogLine>,
 ) {
+    run_native(steps, Vec::new(), config, Map::new(), quiet, tx).await
+}
+
+/// Execute a native test with optional one-time `before` setup and static
+/// `variables`.
+///
+/// `before` steps run once, in order, before any VU is spawned. Each step's
+/// `outputs` is collected into a `config` object exposed to every test step as
+/// `${{ config.<name>.<field> }}`; `variables` is exposed as `${{ vars.* }}`.
+/// If any setup step fails, the run aborts before spawning VUs — a broken
+/// setup would make every iteration fail identically, so failing fast is
+/// clearer than a wall of downstream errors.
+pub async fn run_native(
+    steps: Vec<Step>,
+    before: Vec<Step>,
+    config: RunConfig,
+    variables: Map<String, Value>,
+    quiet: bool,
+    tx: mpsc::Sender<LogLine>,
+) {
+    let vars = if variables.is_empty() {
+        Value::Null
+    } else {
+        Value::Object(variables)
+    };
+
+    // --- One-time setup ---
+    let config_seed = match run_before(&before, &vars, quiet, &tx).await {
+        Ok(v) => v,
+        Err(msg) => {
+            emit(
+                &tx,
+                LogSource::Stderr,
+                &format!("Setup failed, aborting run: {msg}"),
+            )
+            .await;
+            emit(&tx, LogSource::System, "Done — setup error").await;
+            return;
+        }
+    };
+
     let duration_secs = config.duration_secs();
     let vus = config.vus.max(1);
     let deadline = Instant::now() + Duration::from_secs(duration_secs);
@@ -171,16 +216,27 @@ pub async fn run_steps(
     .await;
 
     let steps = Arc::new(steps);
+    // Shared, immutable across VUs — cloned into each VU's context once.
+    let config_seed = Arc::new(config_seed);
+    let vars = Arc::new(vars);
     let mut handles = Vec::with_capacity(vus as usize);
 
     for vu_id in 1..=vus {
         let steps_ref = Arc::clone(&steps);
         let metrics = Arc::clone(&metrics);
         let iter_count = Arc::clone(&iter_count);
+        let config_seed = Arc::clone(&config_seed);
+        let vars = Arc::clone(&vars);
         let tx = tx.clone();
 
         handles.push(tokio::spawn(async move {
             let mut ctx = Context::new();
+            if !config_seed.is_null() {
+                ctx.set("config", (*config_seed).clone());
+            }
+            if !vars.is_null() {
+                ctx.set("vars", (*vars).clone());
+            }
 
             while Instant::now() < deadline {
                 iter_count.fetch_add(1, Ordering::Relaxed);
@@ -213,6 +269,73 @@ pub async fn run_steps(
         &format!("Done — {wall_secs:.1}s wall clock"),
     )
     .await;
+}
+
+// ---------------------------------------------------------------------------
+// One-time setup (`before`)
+// ---------------------------------------------------------------------------
+
+/// Run the `before` steps once in a shared context and return a `config`
+/// object mapping each step's `outputs` name to its output value.
+///
+/// `vars` (the static `variables`) is seeded so setup steps can interpolate
+/// `${{ vars.* }}`; each setup step also sees earlier setup outputs under their
+/// own `outputs` name. Setup runs regardless of `quiet` but respects it for log
+/// suppression. The first failing step short-circuits with an `Err` naming it.
+async fn run_before(
+    before: &[Step],
+    vars: &Value,
+    quiet: bool,
+    tx: &mpsc::Sender<LogLine>,
+) -> Result<Value, String> {
+    if before.is_empty() {
+        return Ok(Value::Null);
+    }
+
+    emit(
+        tx,
+        LogSource::System,
+        &format!(
+            "Running {} setup step{} (before)",
+            before.len(),
+            if before.len() == 1 { "" } else { "s" }
+        ),
+    )
+    .await;
+
+    let mut ctx = Context::new();
+    if !vars.is_null() {
+        ctx.set("vars", vars.clone());
+    }
+
+    let mut config = Map::new();
+    for step in before {
+        let action = &step.action;
+        let step_name = step.name.as_deref().unwrap_or(action.as_str());
+        let empty = Value::Object(Default::default());
+        let params = step.with.as_ref().unwrap_or(&empty);
+
+        let output = execute_action(action, params, &ctx, step_name).await;
+
+        for (tag, text) in &output.logs {
+            if quiet && *tag != LogTag::Err {
+                continue;
+            }
+            emit(tx, LogSource::from(*tag), text).await;
+        }
+
+        if !output.success {
+            return Err(format!("setup step '{step_name}' failed"));
+        }
+
+        ctx.set("__last__", output.value.clone());
+        if let Some(name) = &step.outputs {
+            ctx.set(name, output.value.clone());
+            config.insert(name.clone(), output.value);
+        }
+    }
+
+    Ok(Value::Object(config))
 }
 
 // ---------------------------------------------------------------------------
@@ -570,6 +693,171 @@ mod tests {
             duration: "1s".into(),
         };
         let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
+        assert!(lines.iter().any(|l| l.text.starts_with("Starting 1 VU")));
+    }
+
+    // -----------------------------------------------------------------
+    // run_native — before / variables
+    // -----------------------------------------------------------------
+
+    fn log_step(name: &str, message: &str, outputs: Option<&str>) -> Step {
+        Step {
+            name: Some(name.into()),
+            action: "std/log@v1".into(),
+            with: Some(json!({ "message": message })),
+            check: None,
+            outputs: outputs.map(str::to_owned),
+        }
+    }
+
+    async fn run_native_and_collect(
+        steps: Vec<Step>,
+        before: Vec<Step>,
+        variables: Map<String, Value>,
+        config: RunConfig,
+    ) -> Vec<LogLine> {
+        let (tx, mut rx) = mpsc::channel(512);
+        let handle = tokio::spawn(run_native(steps, before, config, variables, false, tx));
+        let mut lines = Vec::new();
+        while let Some(line) = rx.recv().await {
+            lines.push(line);
+        }
+        handle.await.unwrap();
+        lines
+    }
+
+    /// A `before` step's `outputs` is exposed to test steps under `config.<name>`.
+    #[tokio::test]
+    async fn before_output_flows_into_test_steps_as_config() {
+        // file-write is a convenient action whose output has known fields, but
+        // a std/http against a mock is closer to the real story. Use file-read
+        // to seed a value, then reference it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.txt");
+        std::fs::write(&path, "example.com").unwrap();
+
+        let before = vec![Step {
+            name: Some("load host".into()),
+            action: "std/file-read@v1".into(),
+            with: Some(json!({ "path": path.to_str().unwrap() })),
+            check: None,
+            outputs: Some("cfg".into()),
+        }];
+        // Test step logs the config value interpolated from the before output.
+        let steps = vec![log_step("show", "host=${{ config.cfg.content }}", None)];
+
+        let lines = run_native_and_collect(
+            steps,
+            before,
+            Map::new(),
+            RunConfig {
+                vus: 1,
+                duration: "1s".into(),
+            },
+        )
+        .await;
+
+        assert!(
+            lines.iter().any(|l| l.text == "host=example.com"),
+            "config.cfg.content must interpolate into the test step: {lines:?}"
+        );
+    }
+
+    /// Static `variables` are exposed to test steps under `vars.*`.
+    #[tokio::test]
+    async fn variables_flow_into_test_steps_as_vars() {
+        let mut vars = Map::new();
+        vars.insert("region".into(), json!("eu-west"));
+        let steps = vec![log_step("show", "region=${{ vars.region }}", None)];
+
+        let lines = run_native_and_collect(
+            steps,
+            Vec::new(),
+            vars,
+            RunConfig {
+                vus: 1,
+                duration: "1s".into(),
+            },
+        )
+        .await;
+        assert!(lines.iter().any(|l| l.text == "region=eu-west"));
+    }
+
+    /// A `before` step can read `${{ vars.* }}`, and later `before` steps see
+    /// earlier setup outputs under their own name.
+    #[tokio::test]
+    async fn before_steps_see_vars_and_prior_outputs() {
+        let mut vars = Map::new();
+        vars.insert("greeting".into(), json!("hello"));
+        // Setup emits a marker referencing vars; we assert the setup log line.
+        let before = vec![log_step("greet", "setup ${{ vars.greeting }}", Some("g"))];
+        let steps = vec![sleep_step(1)];
+
+        let lines = run_native_and_collect(
+            steps,
+            before,
+            vars,
+            RunConfig {
+                vus: 1,
+                duration: "1s".into(),
+            },
+        )
+        .await;
+        assert!(lines.iter().any(|l| l.text == "setup hello"));
+        assert!(lines.iter().any(|l| l.text.contains("setup step")));
+    }
+
+    /// A failing `before` step aborts the run before any VU starts.
+    #[tokio::test]
+    async fn failing_before_step_aborts_before_vus() {
+        // std/http to an unlistenable port fails → setup fails.
+        let before = vec![Step {
+            name: Some("bad setup".into()),
+            action: "std/http@v1".into(),
+            with: Some(json!({ "url": "http://127.0.0.1:0/", "timeout": 1000 })),
+            check: None,
+            outputs: None,
+        }];
+        let steps = vec![log_step("should-not-run", "MUST NOT APPEAR", None)];
+
+        let lines = run_native_and_collect(
+            steps,
+            before,
+            Map::new(),
+            RunConfig {
+                vus: 5,
+                duration: "1s".into(),
+            },
+        )
+        .await;
+
+        assert!(
+            lines.iter().any(|l| l.text.contains("Setup failed")),
+            "expected a setup-failure line: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.text == "MUST NOT APPEAR"),
+            "test steps must not run after setup failure"
+        );
+        assert!(
+            !lines.iter().any(|l| l.text.starts_with("Starting")),
+            "no VUs must be spawned after setup failure"
+        );
+    }
+
+    /// `run_steps` is `run_native` with no setup — no setup banner, VUs run.
+    #[tokio::test]
+    async fn run_steps_is_run_native_without_setup() {
+        let lines = run_and_collect(
+            vec![sleep_step(1)],
+            RunConfig {
+                vus: 1,
+                duration: "1s".into(),
+            },
+            false,
+        )
+        .await;
+        assert!(!lines.iter().any(|l| l.text.contains("setup step")));
         assert!(lines.iter().any(|l| l.text.starts_with("Starting 1 VU")));
     }
 }

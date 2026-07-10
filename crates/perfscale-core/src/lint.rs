@@ -94,8 +94,11 @@ fn schema_issues(value: &Value, kind: DocKind, issues: &mut Vec<LintIssue>) {
 }
 
 fn schema_error_suggestion(problem: &str) -> Option<String> {
-    if problem.contains("\"use\" is a required property") {
-        Some("every step must name an action: `use: std/http@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, or `std/file-write@v1`".into())
+    // A step missing both `use` and `uses` fails the `anyOf` on the Step
+    // definition (see `schema::relax_use_alias`); the older wording was
+    // `"use" is a required property`.
+    if problem.contains("\"use\" is a required property") || problem.contains("anyOf") {
+        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, or `std/file-write@v1`".into())
     } else if problem.contains("\"steps\" is a required property") {
         Some("a test definition is a mapping with a `steps:` list at the top level".into())
     } else if problem.contains("\"url\" is a required property") {
@@ -116,8 +119,8 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 const TEST_TOP_FIELDS: [&str; 1] = ["steps"];
-const STEP_FIELDS: [&str; 5] = ["name", "use", "with", "check", "outputs"];
-const CONFIG_TOP_FIELDS: [&str; 3] = ["vus", "duration", "report"];
+const STEP_FIELDS: [&str; 6] = ["name", "use", "uses", "with", "check", "outputs"];
+const CONFIG_TOP_FIELDS: [&str; 5] = ["vus", "duration", "report", "before", "variables"];
 const REPORT_FIELDS: [&str; 1] = ["url"];
 const CHECK_FIELDS: [&str; 4] = ["on", "status", "duration_ms_lt", "body_contains"];
 const HTTP_WITH_FIELDS: [&str; 7] = [
@@ -128,6 +131,18 @@ const HTTP_WITH_FIELDS: [&str; 7] = [
     "timeout",
     "insecure",
     "multipart",
+];
+// TCP and UDP share the same `with` fields; `read`/`expect` gate the reply.
+const RAW_NET_WITH_FIELDS: [&str; 9] = [
+    "host",
+    "port",
+    "address",
+    "send",
+    "send_base64",
+    "read",
+    "read_bytes",
+    "expect",
+    "timeout",
 ];
 const SLEEP_WITH_FIELDS: [&str; 2] = ["ms", "seconds"];
 const LOG_WITH_FIELDS: [&str; 1] = ["message"];
@@ -144,56 +159,78 @@ fn lint_test_fields(value: &Value, issues: &mut Vec<LintIssue>) {
     };
 
     for (i, step) in steps.iter().enumerate() {
-        let loc = format!("/steps/{i}");
-        let Some(map) = step.as_object() else {
-            continue;
-        };
+        lint_step(step, &format!("/steps/{i}"), issues);
+    }
+}
 
-        unknown_field_issues(map, &STEP_FIELDS, &loc, issues);
+/// Lint one step map (shared by test `steps` and config `before` steps): known
+/// top-level fields, a resolvable action, and per-action `with`/`check` fields.
+fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
+    let Some(map) = step.as_object() else {
+        return;
+    };
 
-        let action = map.get("use").and_then(|v| v.as_str()).unwrap_or("");
-        if !action.is_empty() && !is_known_action(action) {
-            issues.push(LintIssue {
-                location: format!("{loc}/use"),
-                problem: format!("unknown action '{action}'"),
-                suggestion: did_you_mean(
-                    action,
-                    &[
-                        "std/http@v1",
-                        "std/check@v1",
-                        "std/sleep@v1",
-                        "std/log@v1",
-                        "std/file-read@v1",
-                        "std/file-write@v1",
-                    ],
+    unknown_field_issues(map, &STEP_FIELDS, loc, issues);
+
+    // `use` is canonical; `uses` is an accepted alias.
+    let use_key = if map.contains_key("uses") {
+        "uses"
+    } else {
+        "use"
+    };
+    let action = map
+        .get("use")
+        .or_else(|| map.get("uses"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // `pro/*` actions are proprietary and registered at runtime, so the linter
+    // can't know them statically — never flag them as unknown.
+    if !action.is_empty() && !action.starts_with("pro/") && !is_known_action(action) {
+        issues.push(LintIssue {
+            location: format!("{loc}/{use_key}"),
+            problem: format!("unknown action '{action}'"),
+            suggestion: did_you_mean(
+                action,
+                &[
+                    "std/http@v1",
+                    "std/tcp@v1",
+                    "std/udp@v1",
+                    "std/check@v1",
+                    "std/sleep@v1",
+                    "std/log@v1",
+                    "std/file-read@v1",
+                    "std/file-write@v1",
+                ],
+            )
+            .or_else(|| {
+                Some(
+                    "available actions: std/http@v1, std/tcp@v1, std/udp@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1"
+                        .into(),
                 )
-                .or_else(|| {
-                    Some(
-                        "available actions: std/http@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1"
-                            .into(),
-                    )
-                }),
-            });
-        }
+            }),
+        });
+    }
 
-        if let Some(with) = map.get("with").and_then(|v| v.as_object()) {
-            let with_fields: Option<&[&str]> = match action {
-                "std/http@v1" | "http" => Some(&HTTP_WITH_FIELDS),
-                "std/check@v1" | "check" => Some(&CHECK_FIELDS),
-                "std/sleep@v1" | "sleep" => Some(&SLEEP_WITH_FIELDS),
-                "std/log@v1" | "log" => Some(&LOG_WITH_FIELDS),
-                "std/file-read@v1" | "file-read" => Some(&FILE_READ_WITH_FIELDS),
-                "std/file-write@v1" | "file-write" => Some(&FILE_WRITE_WITH_FIELDS),
-                _ => None,
-            };
-            if let Some(fields) = with_fields {
-                unknown_field_issues(with, fields, &format!("{loc}/with"), issues);
-            }
+    if let Some(with) = map.get("with").and_then(|v| v.as_object()) {
+        let with_fields: Option<&[&str]> = match action {
+            "std/http@v1" | "http" => Some(&HTTP_WITH_FIELDS),
+            "std/tcp@v1" | "tcp" | "std/udp@v1" | "udp" => Some(&RAW_NET_WITH_FIELDS),
+            "std/check@v1" | "check" => Some(&CHECK_FIELDS),
+            "std/sleep@v1" | "sleep" => Some(&SLEEP_WITH_FIELDS),
+            "std/log@v1" | "log" => Some(&LOG_WITH_FIELDS),
+            "std/file-read@v1" | "file-read" => Some(&FILE_READ_WITH_FIELDS),
+            "std/file-write@v1" | "file-write" => Some(&FILE_WRITE_WITH_FIELDS),
+            // pro/* and unknown actions: `with` is free-form, don't lint fields.
+            _ => None,
+        };
+        if let Some(fields) = with_fields {
+            unknown_field_issues(with, fields, &format!("{loc}/with"), issues);
         }
+    }
 
-        if let Some(check) = map.get("check").and_then(|v| v.as_object()) {
-            unknown_field_issues(check, &CHECK_FIELDS, &format!("{loc}/check"), issues);
-        }
+    if let Some(check) = map.get("check").and_then(|v| v.as_object()) {
+        unknown_field_issues(check, &CHECK_FIELDS, &format!("{loc}/check"), issues);
     }
 }
 
@@ -204,6 +241,13 @@ fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
     if let Some(report) = map.get("report").and_then(|v| v.as_object()) {
         unknown_field_issues(report, &REPORT_FIELDS, "/report", issues);
     }
+
+    // `before:` steps get the same per-step linting as test steps.
+    if let Some(before) = map.get("before").and_then(|b| b.as_array()) {
+        for (i, step) in before.iter().enumerate() {
+            lint_step(step, &format!("/before/{i}"), issues);
+        }
+    }
 }
 
 fn is_known_action(action: &str) -> bool {
@@ -211,6 +255,10 @@ fn is_known_action(action: &str) -> bool {
         action,
         "std/http@v1"
             | "http"
+            | "std/tcp@v1"
+            | "tcp"
+            | "std/udp@v1"
+            | "udp"
             | "std/check@v1"
             | "check"
             | "std/sleep@v1"
@@ -308,11 +356,17 @@ steps:
     fn missing_use_reports_location_and_fix() {
         let yaml = "steps:\n  - name: ping\n    with:\n      url: https://x\n";
         let issues = lint(yaml, DocKind::Test);
+        // The step names no action (neither `use` nor `uses`); the schema
+        // reports this at /steps/0 and the linter attaches the action hint.
         let missing = issues
             .iter()
-            .find(|i| i.problem.contains("\"use\" is a required property"))
+            .find(|i| {
+                i.location == "/steps/0"
+                    && i.suggestion
+                        .as_deref()
+                        .is_some_and(|s| s.contains("std/http@v1"))
+            })
             .unwrap();
-        assert_eq!(missing.location, "/steps/0");
         assert!(missing
             .suggestion
             .as_deref()
