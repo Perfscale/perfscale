@@ -57,6 +57,11 @@ pub struct Metrics {
     durations_micros: hdrhistogram::Histogram<u64>,
     failures: u64,
     total: u64,
+    /// Custom named counters contributed by actions via the reserved
+    /// `metrics` key of their output value — e.g. `pro/fix@v1` emits
+    /// `fix_messages_sent`. Summed across VUs/iterations, then reported as
+    /// `<name>: <total> <rate>/s` so the same downstream parser handles them.
+    counters: std::collections::BTreeMap<String, f64>,
 }
 
 impl Default for Metrics {
@@ -70,6 +75,7 @@ impl Default for Metrics {
             .expect("static histogram bounds are valid"),
             failures: 0,
             total: 0,
+            counters: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -85,6 +91,16 @@ impl Metrics {
         let _ = self
             .durations_micros
             .record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
+    }
+
+    /// Fold a step's custom `metrics` object (name → numeric increment) into
+    /// the run counters. Non-numeric values are ignored.
+    pub fn add_counters(&mut self, obj: &serde_json::Map<String, Value>) {
+        for (name, v) in obj {
+            if let Some(x) = v.as_f64() {
+                *self.counters.entry(name.clone()).or_insert(0.0) += x;
+            }
+        }
     }
 
     /// Emit k6-compatible summary lines.
@@ -104,6 +120,13 @@ impl Metrics {
         lines.push(format!(
             "iterations..............: {total_iters} {iter_rate:.2}/s"
         ));
+
+        // Custom action counters (e.g. FIX message rates) — emitted whether or
+        // not the run made HTTP-style requests.
+        for (name, total) in &self.counters {
+            let rate = total / wall_secs.max(0.001);
+            lines.push(format!("{name}: {total:.0} {rate:.2}/s"));
+        }
 
         if self.total == 0 {
             return lines;
@@ -357,9 +380,16 @@ async fn execute_step(
 
     let output = execute_action(action, params, ctx, step_name).await;
 
-    // Collect HTTP timing
-    if let Some(ref sample) = output.http_sample {
-        metrics.lock().unwrap().record(sample);
+    // Collect HTTP timing and any custom counters the action exposed under the
+    // reserved `metrics` key of its output value.
+    if output.http_sample.is_some() || output.value.get("metrics").is_some() {
+        let mut m = metrics.lock().unwrap();
+        if let Some(ref sample) = output.http_sample {
+            m.record(sample);
+        }
+        if let Some(obj) = output.value.get("metrics").and_then(|v| v.as_object()) {
+            m.add_counters(obj);
+        }
     }
 
     // Stream log lines (quiet drops everything except errors)
@@ -473,6 +503,25 @@ mod tests {
         assert!(within(get("max="), 1000.0), "max: {dur}");
         // Sub-millisecond floor survives (0.1ms recorded as 100µs).
         assert!(get("min=") <= 0.11, "min: {dur}");
+    }
+
+    /// Custom action counters accumulate and surface as `<name>: total rate/s`
+    /// summary lines the downstream parser understands.
+    #[test]
+    fn metrics_custom_counters_appear_in_summary() {
+        let mut m = Metrics::default();
+        let obj = json!({ "fix_messages_sent": 3.0, "fix_messages_received": 2.0 });
+        m.add_counters(obj.as_object().unwrap());
+        m.add_counters(obj.as_object().unwrap()); // accumulate a second step
+
+        let lines = m.summary_lines(2.0, 4, 1);
+        let sent = lines
+            .iter()
+            .find(|l| l.starts_with("fix_messages_sent"))
+            .expect("counter line present");
+        // 3+3 = 6 total, 6/2s = 3.00/s
+        assert!(sent.contains("6") && sent.contains("3.00/s"), "{sent}");
+        assert!(lines.iter().any(|l| l.starts_with("fix_messages_received")));
     }
 
     /// Out-of-range values must clamp, not panic or vanish.

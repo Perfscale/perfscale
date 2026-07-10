@@ -1,16 +1,16 @@
 # Graph Report - perfscale  (2026-07-10)
 
 ## Corpus Check
-- 55 files · ~58,533 words
+- 55 files · ~58,426 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1155 nodes · 1928 edges · 74 communities (62 shown, 12 thin omitted)
+- 1158 nodes · 1939 edges · 74 communities (62 shown, 12 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 26 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `c8f79cef`
+- Built from commit: `a62fccc8`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -91,7 +91,7 @@
 2. `cmd()` - 24 edges
 3. `ActionOutput` - 20 edges
 4. `run_steps()` - 19 edges
-5. `execute_step()` - 18 edges
+5. `execute_step()` - 19 edges
 6. `lint()` - 17 edges
 7. `run_native()` - 16 edges
 8. `What You Must Do When Invoked` - 16 edges
@@ -167,7 +167,7 @@ Nodes (33): k6-compatible summary format, Child, Default, Error, Option, Path, P
 
 ### Community 6 - "Step Runner Core"
 Cohesion: 0.09
-Nodes (47): Arc, Arc, Context, Default, HttpSample, LogLine, LogTag, Map (+39 more)
+Nodes (49): Arc, BTreeMap, Arc, Context, Default, HttpSample, LogLine, LogTag (+41 more)
 
 ### Community 7 - "Run Command Internals"
 Cohesion: 0.11
@@ -374,7 +374,7 @@ Cohesion: 0.50
 Nodes (4): spawn_tcp_echo(), tcp_action_expect_mismatch_fails(), tcp_action_host_port_form_and_base64_payload(), tcp_action_sends_and_reads_echo()
 
 ## Knowledge Gaps
-- **344 isolated node(s):** `PreToolUse`, `Commands`, `Commands`, `SelfUpdateArgs`, `Option` (+339 more)
+- **345 isolated node(s):** `PreToolUse`, `Commands`, `Commands`, `SelfUpdateArgs`, `Option` (+340 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **12 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -382,16 +382,16 @@ Nodes (4): spawn_tcp_echo(), tcp_action_expect_mismatch_fails(), tcp_action_host
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Duration` connect `Self-Update Version & Artifacts` to `Step Actions (http/check/log/sleep)`, `Run Command Internals`, `CLI Integration Tests`, `E2E Workflow Tests`, `Self-Update Integration Tests`, `Self-Update Download/Verify/Swap`?**
-  _High betweenness centrality (0.162) - this node is a cross-community bridge._
+  _High betweenness centrality (0.161) - this node is a cross-community bridge._
 - **Why does `execute_action()` connect `Step Actions (http/check/log/sleep)` to `Community 65`, `Community 66`, `Community 70`, `Step Runner Core`, `Community 73`, `Schema Generation`, `Community 63`?**
-  _High betweenness centrality (0.126) - this node is a cross-community bridge._
+  _High betweenness centrality (0.123) - this node is a cross-community bridge._
 - **Why does `run_steps()` connect `Step Runner Core` to `Schema Generation Tests`, `Runner Output & LogLine Stream`, `Runner Config & Output Structs`, `Context Interpolation`?**
-  _High betweenness centrality (0.099) - this node is a cross-community bridge._
+  _High betweenness centrality (0.100) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `execute_action()` (e.g. with `lint::lint` and `run_before()`) actually correct?**
   _`execute_action()` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 2 inferred relationships involving `run_steps()` (e.g. with `run_streaming()` and `run_streaming()`) actually correct?**
   _`run_steps()` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `PreToolUse`, `Commands`, `Commands` to the rest of the system?**
-  _356 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _357 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Step Actions (http/check/log/sleep)` be split into smaller, more focused modules?**
   _Cohesion score 0.0633879781420765 - nodes in this community are weakly interconnected._

@@ -1,7 +1,7 @@
 # Graph Report - perfscale  (2026-07-10)
 
 ## Corpus Check
-- 55 files · ~58,377 words
+- 55 files · ~58,533 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary

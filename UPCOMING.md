@@ -11,3 +11,11 @@ Release notes for the next release, written as features land.
 - If this file has no entries at tag time, the release falls back to
   auto-generated notes and the workflow prints a warning.
 -->
+
+### Added
+
+- Actions can emit **custom run metrics**: a `metrics` object in a step's output
+  value (name → number) is summed across VUs/iterations by the native engine and
+  reported in the summary as `<name>: <total> <rate>/s` — the same line shape the
+  downstream parsers already read. Enables protocol-specific dashboards (e.g. FIX
+  send/receive message rates) without changing the metrics pipeline.
