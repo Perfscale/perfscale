@@ -154,6 +154,40 @@ impl Metrics {
         ]);
         lines
     }
+
+    /// Total requests recorded so far (used by the periodic stats reporter to
+    /// compute the per-window throughput).
+    pub fn total_requests(&self) -> u64 {
+        self.total
+    }
+
+    /// One-line machine-readable snapshot for streaming time-series consumers
+    /// (the controlplane parses these out of the OTEL log stream).
+    ///
+    /// `window_reqs`/`window_secs` yield the instantaneous throughput; the
+    /// latency percentiles are cumulative since run start (the HDR histogram
+    /// is never reset, so they converge instead of jittering).
+    ///
+    /// ```text
+    /// [stats] ts=1720000000000 rps=246.80 err_pct=0.00 p50=1.20 p90=3.40 p95=4.10 p99=8.20 reqs=1234 iters=456
+    /// ```
+    pub fn stats_line(&self, ts_ms: u64, window_reqs: u64, window_secs: f64, iters: u64) -> String {
+        let rps = window_reqs as f64 / window_secs.max(0.001);
+        if self.total == 0 {
+            return format!("[stats] ts={ts_ms} rps={rps:.2} reqs=0 iters={iters}");
+        }
+        let h = &self.durations_micros;
+        let pct = |q: f64| -> f64 { h.value_at_quantile(q) as f64 / 1000.0 };
+        let err = self.failures as f64 / self.total as f64 * 100.0;
+        format!(
+            "[stats] ts={ts_ms} rps={rps:.2} err_pct={err:.2} p50={p50:.2} p90={p90:.2} p95={p95:.2} p99={p99:.2} reqs={total} iters={iters}",
+            p50 = pct(0.50),
+            p90 = pct(0.90),
+            p95 = pct(0.95),
+            p99 = pct(0.99),
+            total = self.total,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -273,9 +307,40 @@ pub async fn run_native(
         }));
     }
 
+    // Periodic [stats] reporter: one machine-readable line every 5s while the
+    // VUs run, so downstream consumers can chart latency/throughput over time.
+    let reporter = {
+        let metrics = Arc::clone(&metrics);
+        let iter_count = Arc::clone(&iter_count);
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            const INTERVAL_SECS: u64 = 5;
+            let mut interval = tokio::time::interval(Duration::from_secs(INTERVAL_SECS));
+            interval.tick().await; // consume the immediate first tick
+            let mut prev_total: u64 = 0;
+            loop {
+                interval.tick().await;
+                let ts_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let iters = iter_count.load(Ordering::Relaxed);
+                let line = {
+                    let m = metrics.lock().unwrap();
+                    let total = m.total_requests();
+                    let line = m.stats_line(ts_ms, total - prev_total, INTERVAL_SECS as f64, iters);
+                    prev_total = total;
+                    line
+                };
+                emit(&tx, LogSource::Stdout, &line).await;
+            }
+        })
+    };
+
     for h in handles {
         let _ = h.await;
     }
+    reporter.abort();
 
     let wall_secs = started.elapsed().as_secs_f64();
     let total_iters = iter_count.load(Ordering::Relaxed);
@@ -522,6 +587,34 @@ mod tests {
         // 3+3 = 6 total, 6/2s = 3.00/s
         assert!(sent.contains("6") && sent.contains("3.00/s"), "{sent}");
         assert!(lines.iter().any(|l| l.starts_with("fix_messages_received")));
+    }
+
+    #[test]
+    fn metrics_stats_line_reports_window_rate_and_percentiles() {
+        let mut m = Metrics::default();
+        for _ in 0..10 {
+            m.record(&HttpSample {
+                duration_ms: 2.0,
+                status: 200,
+                failed: false,
+            });
+        }
+        // 10 requests in a 5s window → 2.00 rps
+        let line = m.stats_line(1_720_000_000_000, 10, 5.0, 42);
+        assert!(line.starts_with("[stats] ts=1720000000000 "), "{line}");
+        assert!(line.contains("rps=2.00"), "{line}");
+        assert!(line.contains("p50="), "{line}");
+        assert!(line.contains("p99="), "{line}");
+        assert!(line.contains("reqs=10"), "{line}");
+        assert!(line.contains("iters=42"), "{line}");
+    }
+
+    #[test]
+    fn metrics_stats_line_without_requests_omits_percentiles() {
+        let m = Metrics::default();
+        let line = m.stats_line(1, 0, 5.0, 3);
+        assert!(line.contains("reqs=0"), "{line}");
+        assert!(!line.contains("p50="), "{line}");
     }
 
     /// Out-of-range values must clamp, not panic or vanish.

@@ -5329,28 +5329,10 @@
       "norm_label": "vec"
     },
     {
-      "label": ".total_requests()",
-      "file_type": "code",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L160",
-      "id": "step_runner_metrics_total_requests",
-      "community": 6,
-      "norm_label": ".total_requests()"
-    },
-    {
-      "label": ".stats_line()",
-      "file_type": "code",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L174",
-      "id": "step_runner_metrics_stats_line",
-      "community": 6,
-      "norm_label": ".stats_line()"
-    },
-    {
       "label": "run_steps()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L210",
+      "source_location": "L176",
       "id": "step_runner_run_steps",
       "community": 6,
       "norm_label": "run_steps()"
@@ -5359,7 +5341,7 @@
       "label": "Step",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L210",
+      "source_location": "L176",
       "id": "crates_perfscale_core_src_step_runner_rs_step",
       "community": 6,
       "norm_label": "step"
@@ -5368,7 +5350,7 @@
       "label": "RunConfig",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L210",
+      "source_location": "L176",
       "id": "crates_perfscale_core_src_step_runner_rs_runconfig",
       "community": 6,
       "norm_label": "runconfig"
@@ -5377,7 +5359,7 @@
       "label": "Sender",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L210",
+      "source_location": "L176",
       "id": "sender",
       "community": 6,
       "norm_label": "sender"
@@ -5386,7 +5368,7 @@
       "label": "LogLine",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L210",
+      "source_location": "L176",
       "id": "crates_perfscale_core_src_step_runner_rs_logline",
       "community": 6,
       "norm_label": "logline"
@@ -5395,7 +5377,7 @@
       "label": "run_native()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L228",
+      "source_location": "L194",
       "id": "step_runner_run_native",
       "community": 6,
       "norm_label": "run_native()"
@@ -5404,7 +5386,7 @@
       "label": "run_before()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L373",
+      "source_location": "L308",
       "id": "step_runner_run_before",
       "community": 6,
       "norm_label": "run_before()"
@@ -5413,7 +5395,7 @@
       "label": "Result",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L373",
+      "source_location": "L308",
       "id": "crates_perfscale_core_src_step_runner_rs_result",
       "community": 6,
       "norm_label": "result"
@@ -5422,7 +5404,7 @@
       "label": "execute_step()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L433",
+      "source_location": "L368",
       "id": "step_runner_execute_step",
       "community": 6,
       "norm_label": "execute_step()"
@@ -5431,7 +5413,7 @@
       "label": "Context",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L433",
+      "source_location": "L368",
       "id": "crates_perfscale_core_src_step_runner_rs_context",
       "community": 6,
       "norm_label": "context"
@@ -5440,7 +5422,7 @@
       "label": "Arc",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L433",
+      "source_location": "L368",
       "id": "crates_perfscale_core_src_step_runner_rs_arc",
       "community": 6,
       "norm_label": "arc"
@@ -5449,7 +5431,7 @@
       "label": "Mutex",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L433",
+      "source_location": "L368",
       "id": "crates_perfscale_core_src_step_runner_rs_mutex",
       "community": 6,
       "norm_label": "mutex"
@@ -5458,7 +5440,7 @@
       "label": "emit()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L491",
+      "source_location": "L426",
       "id": "step_runner_emit",
       "community": 6,
       "norm_label": "emit()"
@@ -5467,7 +5449,7 @@
       "label": "sleep_step()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L508",
+      "source_location": "L443",
       "id": "step_runner_sleep_step",
       "community": 6,
       "norm_label": "sleep_step()"
@@ -5476,7 +5458,7 @@
       "label": "run_and_collect()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L525",
+      "source_location": "L460",
       "id": "step_runner_run_and_collect",
       "community": 6,
       "norm_label": "run_and_collect()"
@@ -5485,7 +5467,7 @@
       "label": "metrics_histogram_quantiles_within_one_percent()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L541",
+      "source_location": "L476",
       "id": "step_runner_metrics_histogram_quantiles_within_one_percent",
       "community": 6,
       "norm_label": "metrics_histogram_quantiles_within_one_percent()"
@@ -5494,34 +5476,16 @@
       "label": "metrics_custom_counters_appear_in_summary()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L576",
+      "source_location": "L511",
       "id": "step_runner_metrics_custom_counters_appear_in_summary",
       "community": 6,
       "norm_label": "metrics_custom_counters_appear_in_summary()"
     },
     {
-      "label": "metrics_stats_line_reports_window_rate_and_percentiles()",
-      "file_type": "code",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L593",
-      "id": "step_runner_metrics_stats_line_reports_window_rate_and_percentiles",
-      "community": 6,
-      "norm_label": "metrics_stats_line_reports_window_rate_and_percentiles()"
-    },
-    {
-      "label": "metrics_stats_line_without_requests_omits_percentiles()",
-      "file_type": "code",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L613",
-      "id": "step_runner_metrics_stats_line_without_requests_omits_percentiles",
-      "community": 6,
-      "norm_label": "metrics_stats_line_without_requests_omits_percentiles()"
-    },
-    {
       "label": "metrics_histogram_clamps_extreme_durations()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L622",
+      "source_location": "L529",
       "id": "step_runner_metrics_histogram_clamps_extreme_durations",
       "community": 6,
       "norm_label": "metrics_histogram_clamps_extreme_durations()"
@@ -5530,7 +5494,7 @@
       "label": "run_steps_sleep_only_emits_start_and_done_markers()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L637",
+      "source_location": "L544",
       "id": "step_runner_run_steps_sleep_only_emits_start_and_done_markers",
       "community": 6,
       "norm_label": "run_steps_sleep_only_emits_start_and_done_markers()"
@@ -5539,7 +5503,7 @@
       "label": "run_steps_records_http_metrics()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L651",
+      "source_location": "L558",
       "id": "step_runner_run_steps_records_http_metrics",
       "community": 6,
       "norm_label": "run_steps_records_http_metrics()"
@@ -5548,7 +5512,7 @@
       "label": "run_steps_inline_check_failure_streams_as_stderr()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L688",
+      "source_location": "L595",
       "id": "step_runner_run_steps_inline_check_failure_streams_as_stderr",
       "community": 6,
       "norm_label": "run_steps_inline_check_failure_streams_as_stderr()"
@@ -5557,7 +5521,7 @@
       "label": "run_steps_quiet_drops_request_lines_but_keeps_summary()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L718",
+      "source_location": "L625",
       "id": "step_runner_run_steps_quiet_drops_request_lines_but_keeps_summary",
       "community": 6,
       "norm_label": "run_steps_quiet_drops_request_lines_but_keeps_summary()"
@@ -5566,7 +5530,7 @@
       "label": "run_steps_quiet_still_reports_check_failures()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L757",
+      "source_location": "L664",
       "id": "step_runner_run_steps_quiet_still_reports_check_failures",
       "community": 6,
       "norm_label": "run_steps_quiet_still_reports_check_failures()"
@@ -5575,7 +5539,7 @@
       "label": "run_steps_multiple_vus_reports_correct_count()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L787",
+      "source_location": "L694",
       "id": "step_runner_run_steps_multiple_vus_reports_correct_count",
       "community": 6,
       "norm_label": "run_steps_multiple_vus_reports_correct_count()"
@@ -5584,7 +5548,7 @@
       "label": "run_steps_propagates_outputs_between_steps()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L799",
+      "source_location": "L706",
       "id": "step_runner_run_steps_propagates_outputs_between_steps",
       "community": 6,
       "norm_label": "run_steps_propagates_outputs_between_steps()"
@@ -5593,7 +5557,7 @@
       "label": "run_steps_zero_vus_is_clamped_to_one()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L832",
+      "source_location": "L739",
       "id": "step_runner_run_steps_zero_vus_is_clamped_to_one",
       "community": 6,
       "norm_label": "run_steps_zero_vus_is_clamped_to_one()"
@@ -5602,7 +5566,7 @@
       "label": "log_step()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L845",
+      "source_location": "L752",
       "id": "step_runner_log_step",
       "community": 6,
       "norm_label": "log_step()"
@@ -5611,7 +5575,7 @@
       "label": "Option",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L845",
+      "source_location": "L752",
       "id": "crates_perfscale_core_src_step_runner_rs_option",
       "community": 6,
       "norm_label": "option"
@@ -5620,7 +5584,7 @@
       "label": "run_native_and_collect()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L855",
+      "source_location": "L762",
       "id": "step_runner_run_native_and_collect",
       "community": 6,
       "norm_label": "run_native_and_collect()"
@@ -5629,7 +5593,7 @@
       "label": "before_output_flows_into_test_steps_as_config()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L873",
+      "source_location": "L780",
       "id": "step_runner_before_output_flows_into_test_steps_as_config",
       "community": 6,
       "norm_label": "before_output_flows_into_test_steps_as_config()"
@@ -5638,7 +5602,7 @@
       "label": "variables_flow_into_test_steps_as_vars()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L910",
+      "source_location": "L817",
       "id": "step_runner_variables_flow_into_test_steps_as_vars",
       "community": 6,
       "norm_label": "variables_flow_into_test_steps_as_vars()"
@@ -5647,7 +5611,7 @@
       "label": "before_steps_see_vars_and_prior_outputs()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L931",
+      "source_location": "L838",
       "id": "step_runner_before_steps_see_vars_and_prior_outputs",
       "community": 6,
       "norm_label": "before_steps_see_vars_and_prior_outputs()"
@@ -5656,7 +5620,7 @@
       "label": "failing_before_step_aborts_before_vus()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L954",
+      "source_location": "L861",
       "id": "step_runner_failing_before_step_aborts_before_vus",
       "community": 6,
       "norm_label": "failing_before_step_aborts_before_vus()"
@@ -5665,7 +5629,7 @@
       "label": "run_steps_is_run_native_without_setup()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L992",
+      "source_location": "L899",
       "id": "step_runner_run_steps_is_run_native_without_setup",
       "community": 6,
       "norm_label": "run_steps_is_run_native_without_setup()"
@@ -23400,9 +23364,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L511",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner",
-      "target": "step_runner_metrics_custom_counters_appear_in_summary"
+      "target": "step_runner_metrics_custom_counters_appear_in_summary",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -23423,26 +23387,6 @@
       "confidence_score": 1.0,
       "source": "step_runner",
       "target": "step_runner_metrics_histogram_quantiles_within_one_percent"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L593",
-      "weight": 1.0,
-      "source": "step_runner",
-      "target": "step_runner_metrics_stats_line_reports_window_rate_and_percentiles",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L613",
-      "weight": 1.0,
-      "source": "step_runner",
-      "target": "step_runner_metrics_stats_line_without_requests_omits_percentiles",
-      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -23719,9 +23663,9 @@
       "source_location": "L64",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_runner_metrics",
-      "target": "btreemap"
+      "target": "btreemap",
+      "confidence_score": 1.0
     },
     {
       "relation": "implements",
@@ -23740,9 +23684,9 @@
       "source_location": "L64",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_runner_metrics",
-      "target": "crates_perfscale_core_src_step_runner_rs_string"
+      "target": "crates_perfscale_core_src_step_runner_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -23772,9 +23716,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L98",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_metrics",
-      "target": "step_runner_metrics_add_counters"
+      "target": "step_runner_metrics_add_counters",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -23800,31 +23744,11 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L174",
-      "weight": 1.0,
-      "source": "step_runner_metrics",
-      "target": "step_runner_metrics_stats_line",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L59",
       "weight": 1.0,
       "confidence_score": 1.0,
       "source": "step_runner_metrics",
       "target": "step_runner_metrics_summary_lines"
-    },
-    {
-      "relation": "method",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L160",
-      "weight": 1.0,
-      "source": "step_runner_metrics",
-      "target": "step_runner_metrics_total_requests",
-      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -23833,18 +23757,7 @@
       "source_location": "L98",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_add_counters",
-      "target": "crates_perfscale_core_src_step_runner_rs_string"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L174",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "step_runner_metrics_stats_line",
       "target": "crates_perfscale_core_src_step_runner_rs_string",
       "confidence_score": 1.0
     },
@@ -23910,9 +23823,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L512",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_custom_counters_appear_in_summary",
-      "target": "step_runner_metrics_default"
+      "target": "step_runner_metrics_default",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -23935,28 +23848,6 @@
       "confidence_score": 1.0,
       "source": "step_runner_metrics_histogram_quantiles_within_one_percent",
       "target": "step_runner_metrics_default"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L594",
-      "weight": 1.0,
-      "source": "step_runner_metrics_stats_line_reports_window_rate_and_percentiles",
-      "target": "step_runner_metrics_default",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L614",
-      "weight": 1.0,
-      "source": "step_runner_metrics_stats_line_without_requests_omits_percentiles",
-      "target": "step_runner_metrics_default",
-      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -24040,22 +23931,11 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L596",
-      "weight": 1.0,
-      "source": "step_runner_metrics_stats_line_reports_window_rate_and_percentiles",
-      "target": "step_runner_metrics_record",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L391",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_execute_step",
-      "target": "step_runner_metrics_add_counters"
+      "target": "step_runner_metrics_add_counters",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -24064,9 +23944,9 @@
       "source_location": "L98",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_add_counters",
-      "target": "crates_perfscale_core_src_step_runner_rs_map"
+      "target": "crates_perfscale_core_src_step_runner_rs_map",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -24075,9 +23955,9 @@
       "source_location": "L98",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_add_counters",
-      "target": "crates_perfscale_core_src_step_runner_rs_value"
+      "target": "crates_perfscale_core_src_step_runner_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -24086,9 +23966,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L514",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_custom_counters_appear_in_summary",
-      "target": "step_runner_metrics_add_counters"
+      "target": "step_runner_metrics_add_counters",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -24152,9 +24032,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L517",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_custom_counters_appear_in_summary",
-      "target": "step_runner_metrics_summary_lines"
+      "target": "step_runner_metrics_summary_lines",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -24254,50 +24134,6 @@
       "confidence_score": 1.0,
       "source": "step_runner_run_steps",
       "target": "crates_perfscale_core_src_step_runner_rs_vec"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L330",
-      "weight": 1.0,
-      "source": "step_runner_run_native",
-      "target": "step_runner_metrics_total_requests",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L603",
-      "weight": 1.0,
-      "source": "step_runner_metrics_stats_line_reports_window_rate_and_percentiles",
-      "target": "step_runner_metrics_stats_line",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L615",
-      "weight": 1.0,
-      "source": "step_runner_metrics_stats_line_without_requests_omits_percentiles",
-      "target": "step_runner_metrics_stats_line",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/runner.rs",
-      "source_location": "L331",
-      "weight": 1.0,
-      "source": "step_runner_run_native",
-      "target": "step_runner_metrics_stats_line",
-      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -31689,5 +31525,5 @@
       "source_file": "crates/perfscale-core/src/yaml.rs"
     }
   ],
-  "built_at_commit": "d20a9d474b87d98e7a99220994e21b669c980f40"
+  "built_at_commit": "a62fccc8459bef1f24b4e5966f23eb6b51365866"
 }
