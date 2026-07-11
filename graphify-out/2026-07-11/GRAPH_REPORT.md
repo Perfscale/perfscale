@@ -1,16 +1,16 @@
-# Graph Report - perfscale  (2026-07-11)
+# Graph Report - perfscale  (2026-07-10)
 
 ## Corpus Check
-- 55 files · ~58,800 words
+- 55 files · ~58,426 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1162 nodes · 1951 edges · 74 communities (62 shown, 12 thin omitted)
+- 1158 nodes · 1939 edges · 74 communities (62 shown, 12 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 26 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `d20a9d47`
+- Built from commit: `a62fccc8`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -92,8 +92,8 @@
 3. `ActionOutput` - 20 edges
 4. `run_steps()` - 19 edges
 5. `execute_step()` - 19 edges
-6. `run_native()` - 18 edges
-7. `lint()` - 17 edges
+6. `lint()` - 17 edges
+7. `run_native()` - 16 edges
 8. `What You Must Do When Invoked` - 16 edges
 9. `parse()` - 15 edges
 10. `run()` - 15 edges
@@ -167,7 +167,7 @@ Nodes (33): k6-compatible summary format, Child, Default, Error, Option, Path, P
 
 ### Community 6 - "Step Runner Core"
 Cohesion: 0.09
-Nodes (51): Arc, BTreeMap, Arc, Context, Default, HttpSample, LogLine, LogTag (+43 more)
+Nodes (49): Arc, BTreeMap, Arc, Context, Default, HttpSample, LogLine, LogTag (+41 more)
 
 ### Community 7 - "Run Command Internals"
 Cohesion: 0.11
@@ -382,11 +382,11 @@ Nodes (4): spawn_tcp_echo(), tcp_action_expect_mismatch_fails(), tcp_action_host
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Duration` connect `Self-Update Version & Artifacts` to `Step Actions (http/check/log/sleep)`, `Run Command Internals`, `CLI Integration Tests`, `E2E Workflow Tests`, `Self-Update Integration Tests`, `Self-Update Download/Verify/Swap`?**
-  _High betweenness centrality (0.157) - this node is a cross-community bridge._
+  _High betweenness centrality (0.161) - this node is a cross-community bridge._
 - **Why does `execute_action()` connect `Step Actions (http/check/log/sleep)` to `Community 65`, `Community 66`, `Community 70`, `Step Runner Core`, `Community 73`, `Schema Generation`, `Community 63`?**
-  _High betweenness centrality (0.113) - this node is a cross-community bridge._
+  _High betweenness centrality (0.123) - this node is a cross-community bridge._
 - **Why does `run_steps()` connect `Step Runner Core` to `Schema Generation Tests`, `Runner Output & LogLine Stream`, `Runner Config & Output Structs`, `Context Interpolation`?**
-  _High betweenness centrality (0.101) - this node is a cross-community bridge._
+  _High betweenness centrality (0.100) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `execute_action()` (e.g. with `lint::lint` and `run_before()`) actually correct?**
   _`execute_action()` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 2 inferred relationships involving `run_steps()` (e.g. with `run_streaming()` and `run_streaming()`) actually correct?**
