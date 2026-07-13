@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::error::DOCS_BASE;
 
@@ -67,9 +67,37 @@ pub enum Commands {
     Serve(ServeArgs),
     /// Validate test/config YAML files without running them.
     Lint(LintArgs),
+    /// Print the JSON Schema for test or config YAML files.
+    Schema(SchemaArgs),
     /// Update perfscale to the latest release for this platform.
     #[command(name = "self-update")]
     SelfUpdate(SelfUpdateArgs),
+}
+
+fn schema_after_help() -> String {
+    format!(
+        "Prints the JSON Schema perfscale validates YAML files against — the same\n\
+         schemas `perfscale lint` uses. Useful for IDE autocomplete and MCP/agent tooling.\n\n\
+         Examples:\n  \
+         perfscale schema test       schema for test definitions (steps)\n  \
+         perfscale schema config     schema for run configs\n\n\
+         Documentation: {DOCS_BASE}/cli/commands.md#perfscale-schema"
+    )
+}
+
+#[derive(Args)]
+#[command(after_help = schema_after_help())]
+pub struct SchemaArgs {
+    /// Which schema to print.
+    #[arg(value_enum)]
+    pub kind: SchemaDumpKind,
+}
+
+/// Schema selector for `perfscale schema` (no `auto` — printing needs an explicit kind).
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum SchemaDumpKind {
+    Test,
+    Config,
 }
 
 fn self_update_after_help() -> String {
@@ -227,6 +255,26 @@ mod tests {
     #[test]
     fn lint_requires_at_least_one_file() {
         assert!(parse(&["lint"]).is_err());
+    }
+
+    #[test]
+    fn schema_parses_test_and_config_kinds() {
+        for (arg, expect_test) in [("test", true), ("config", false)] {
+            let cli = parse(&["schema", arg]).unwrap();
+            match cli.command {
+                Commands::Schema(args) => match args.kind {
+                    SchemaDumpKind::Test => assert!(expect_test),
+                    SchemaDumpKind::Config => assert!(!expect_test),
+                },
+                _ => panic!("expected Schema"),
+            }
+        }
+    }
+
+    #[test]
+    fn schema_requires_explicit_kind() {
+        assert!(parse(&["schema"]).is_err());
+        assert!(parse(&["schema", "auto"]).is_err());
     }
 
     #[test]

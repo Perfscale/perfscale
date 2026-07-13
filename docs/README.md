@@ -11,9 +11,10 @@ tiny local dev server for collecting results.
 
 ## CLI (`perfscale` binary)
 
-- [Commands](cli/commands.md) — `run`, `serve`, and `lint` reference
+- [Commands](cli/commands.md) — `run`, `serve`, `lint`, and `schema` reference
 - [Recipes](cli/examples.md) — copy-paste examples for common workflows
 - [Benchmarks](benchmarks.md) — engine comparison methodology & CI runs
+- [MCP server](mcp.md) — drive perfscale from AI agents over the Model Context Protocol
 
 ## Core (`perfscale-core` library)
 

@@ -137,6 +137,24 @@ gate:
 - run: perfscale lint tests/*.yaml
 ```
 
+## `perfscale schema`
+
+Print the JSON Schema perfscale validates YAML files against — the exact
+schemas `lint` and `run` use, as pretty JSON on stdout.
+
+```sh
+perfscale schema test     # schema for test definitions (steps)
+perfscale schema config   # schema for run configs
+```
+
+Made for anything that authors perfscale YAML programmatically:
+
+- **Editor autocomplete** — point your YAML language server at the output
+- **Agent tooling** — the [perfscale MCP server](../mcp.md) calls this to give
+  models the authoring contract
+
+Exit code: `0` on success.
+
 ## `perfscale self-update`
 
 Replaces the running binary with the latest
