@@ -52,6 +52,16 @@ pub async fn self_update(args: SelfUpdateArgs) -> Result<(), CliError> {
         return Ok(());
     }
 
+    // npm owns the files of an @perfscale/exe install — swapping the binary
+    // behind npm's back would leave its metadata claiming the old version.
+    if update::is_npm_install() {
+        return Err(CliError::new(
+            "this perfscale was installed via npm (@perfscale/exe) — self-update would desync npm's package metadata",
+        )
+        .hint(format!("update through npm instead: {}", update::NPM_UPDATE_COMMAND))
+        .docs("cli/commands.md#perfscale-self-update"));
+    }
+
     let artifact = update::current_artifact().ok_or_else(|| {
         CliError::new(format!(
             "no prebuilt binary for this platform ({}/{})",

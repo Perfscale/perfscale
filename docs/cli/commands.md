@@ -175,6 +175,20 @@ perfscale self-update --force      # reinstall even if already up to date
 | `--check` | Report whether an update exists without installing. Exit codes: `0` up to date, `10` update available — scriptable in cron/CI |
 | `--force` | Reinstall the latest release even when versions match |
 
+### npm installs
+
+When perfscale was installed with `npm install -g @perfscale/exe`, the binary
+belongs to npm — swapping it in place would leave npm's package metadata
+claiming the old version. `self-update` detects this (the executable lives
+under `node_modules/@perfscale/`) and refuses with the right command instead:
+
+```sh
+npm install -g @perfscale/exe@latest
+```
+
+`--check` still works, and the passive hint below suggests the npm command
+for npm installs automatically.
+
 ### The passive "update available" hint
 
 Other commands (`run`, `serve`, `lint`) print a one-line stderr hint

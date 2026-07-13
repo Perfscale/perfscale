@@ -121,6 +121,29 @@ pub fn current_artifact() -> Option<&'static str> {
     artifact_for(std::env::consts::OS, std::env::consts::ARCH)
 }
 
+// ---------------------------------------------------------------------------
+// npm-managed installs
+// ---------------------------------------------------------------------------
+
+/// The command that updates an npm-managed install (`@perfscale/exe`).
+pub const NPM_UPDATE_COMMAND: &str = "npm install -g @perfscale/exe@latest";
+
+/// True when the running binary was installed by npm: `@perfscale/exe`
+/// resolves its platform package to
+/// `…/node_modules/@perfscale/<os>-<arch>/bin/perfscale`. Swapping that file
+/// in place would desync npm's metadata (the package would still claim the
+/// old version), so npm installs must be updated through npm.
+pub fn is_npm_install() -> bool {
+    std::env::current_exe()
+        .map(|p| path_is_npm_install(&p.to_string_lossy()))
+        .unwrap_or(false)
+}
+
+fn path_is_npm_install(path: &str) -> bool {
+    path.replace('\\', "/")
+        .contains("/node_modules/@perfscale/")
+}
+
 /// Download URL for a release asset of a specific tag.
 pub fn asset_url(tag: &str, artifact: &str) -> String {
     format!(
@@ -235,9 +258,12 @@ pub async fn maybe_print_update_notice() {
     };
 
     if is_newer(&latest, CURRENT_VERSION) {
-        eprintln!(
-            "\nperfscale {latest} is available (you have {CURRENT_VERSION}) — run `perfscale self-update`"
-        );
+        let cmd = if is_npm_install() {
+            NPM_UPDATE_COMMAND
+        } else {
+            "perfscale self-update"
+        };
+        eprintln!("\nperfscale {latest} is available (you have {CURRENT_VERSION}) — run `{cmd}`");
     }
 }
 
@@ -295,6 +321,21 @@ mod tests {
     fn current_platform_has_an_artifact() {
         // The dev/CI machines we build on are all release platforms.
         assert!(current_artifact().is_some());
+    }
+
+    #[test]
+    fn npm_install_detection_by_path() {
+        assert!(path_is_npm_install(
+            "/usr/local/lib/node_modules/@perfscale/darwin-arm64/bin/perfscale"
+        ));
+        assert!(path_is_npm_install(
+            r"C:\Users\u\AppData\Roaming\npm\node_modules\@perfscale\win32-x64\bin\perfscale.exe"
+        ));
+        assert!(!path_is_npm_install("/usr/local/bin/perfscale"));
+        // Other scopes' node_modules don't count.
+        assert!(!path_is_npm_install(
+            "/opt/app/node_modules/@other/pkg/bin/perfscale"
+        ));
     }
 
     #[test]
