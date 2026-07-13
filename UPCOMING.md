@@ -14,6 +14,10 @@ Release notes for the next release, written as features land.
 
 ### Added
 
+- **npm install**: `npm install -g @perfscale/exe` installs the standalone
+  binary for your platform (esbuild-style optionalDependencies — npm fetches
+  only the matching `@perfscale/<os>-<arch>` package; Linux builds are static
+  musl and run on any distro). Published automatically from every release tag.
 - Actions can emit **custom run metrics**: a `metrics` object in a step's output
   value (name → number) is summed across VUs/iterations by the native engine and
   reported in the summary as `<name>: <total> <rate>/s` — the same line shape the

@@ -8,6 +8,17 @@ results.
 [YAML reference](docs/yaml-reference.md) · [CLI commands](docs/cli/commands.md) ·
 [recipes](docs/cli/examples.md) · [architecture](docs/core/architecture.md)
 
+## Install
+
+```sh
+npm install -g @perfscale/exe   # standalone binary via npm, no Node.js at runtime
+```
+
+Or grab a binary from [GitHub Releases](https://github.com/Perfscale/perfscale/releases)
+(`perfscale self-update` keeps it current), or build from source with
+`cargo build --release -p perfscale-cli`. Details in
+[getting started](docs/getting-started.md).
+
 ## Stack
 
 - Rust, tokio (async runtime)

@@ -2,7 +2,14 @@
 
 ## Install
 
-Download a binary for your platform from
+Via npm — installs the standalone binary for your platform (no Node.js
+required at runtime):
+
+```sh
+npm install -g @perfscale/exe
+```
+
+Or download a binary for your platform from
 [GitHub Releases](https://github.com/Perfscale/perfscale/releases):
 
 | Platform | Artifact |

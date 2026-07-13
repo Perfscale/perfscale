@@ -119,6 +119,41 @@ jobs:
             dist/sha256sums.txt
           generate_release_notes: true
 
+  # ── Publish to npm (@perfscale/exe + platform packages) ─────────────────────
+  npm:
+    name: Publish to npm
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm --provenance
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Assemble packages
+        run: node npm/build-npm-packages.mjs "${GITHUB_REF_NAME#v}" dist npm/out
+
+      # Platform packages first — the meta package's optionalDependencies
+      # must be resolvable the moment @perfscale/exe lands.
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for pkg in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64 exe; do
+            npm publish "npm/out/$pkg" --access public --provenance
+          done
+
   # ── Reset UPCOMING.md for the next cycle ────────────────────────────────────
   reset-upcoming:
     name: Reset UPCOMING.md
