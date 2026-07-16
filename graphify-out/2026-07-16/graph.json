@@ -2503,46 +2503,10 @@
       "norm_label": "native_run_shows_check_failures_on_stderr_but_exits_zero()"
     },
     {
-      "label": "ws_echo_server()",
-      "file_type": "code",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L279",
-      "id": "tests_e2e_workflows_ws_echo_server",
-      "community": 13,
-      "norm_label": "ws_echo_server()"
-    },
-    {
-      "label": "Runtime",
-      "file_type": "code",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L279",
-      "id": "runtime",
-      "community": 13,
-      "norm_label": "runtime"
-    },
-    {
-      "label": "websocket_live_connection_full_journey()",
-      "file_type": "code",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L314",
-      "id": "tests_e2e_workflows_websocket_live_connection_full_journey",
-      "community": 13,
-      "norm_label": "websocket_live_connection_full_journey()"
-    },
-    {
-      "label": "websocket_unmet_until_rule_fails_step_but_run_completes()",
-      "file_type": "code",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L382",
-      "id": "tests_e2e_workflows_websocket_unmet_until_rule_fails_step_but_run_completes",
-      "community": 13,
-      "norm_label": "websocket_unmet_until_rule_fails_step_but_run_completes()"
-    },
-    {
       "label": "shipped_k6_example_runs_when_k6_installed()",
       "file_type": "code",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L431",
+      "source_location": "L279",
       "id": "tests_e2e_workflows_shipped_k6_example_runs_when_k6_installed",
       "community": 13,
       "norm_label": "shipped_k6_example_runs_when_k6_installed()"
@@ -2551,7 +2515,7 @@
       "label": "locust_headless_run_produces_unified_summary()",
       "file_type": "code",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L456",
+      "source_location": "L304",
       "id": "tests_e2e_workflows_locust_headless_run_produces_unified_summary",
       "community": 13,
       "norm_label": "locust_headless_run_produces_unified_summary()"
@@ -2560,7 +2524,7 @@
       "label": "run_k6_broken_script_exits_nonzero_with_no_metrics()",
       "file_type": "code",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L491",
+      "source_location": "L339",
       "id": "tests_e2e_workflows_run_k6_broken_script_exits_nonzero_with_no_metrics",
       "community": 13,
       "norm_label": "run_k6_broken_script_exits_nonzero_with_no_metrics()"
@@ -4173,7 +4137,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L48",
       "id": "crates_perfscale_core_src_step_actions_rs_string",
-      "community": 79,
+      "community": 63,
       "norm_label": "string"
     },
     {
@@ -4398,7 +4362,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L436",
       "id": "step_actions_error_chain",
-      "community": 65,
+      "community": 76,
       "norm_label": "error_chain()"
     },
     {
@@ -4407,7 +4371,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L436",
       "id": "crates_perfscale_core_src_step_actions_rs_error",
-      "community": 65,
+      "community": 76,
       "norm_label": "error"
     },
     {
@@ -4488,7 +4452,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L881",
       "id": "step_actions_message_text",
-      "community": 79,
+      "community": 63,
       "norm_label": "message_text()"
     },
     {
@@ -4839,7 +4803,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L1707",
       "id": "step_actions_spawn_udp_echo",
-      "community": 79,
+      "community": 80,
       "norm_label": "spawn_udp_echo()"
     },
     {
@@ -4848,7 +4812,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L1720",
       "id": "step_actions_udp_action_sends_and_reads_echo",
-      "community": 79,
+      "community": 80,
       "norm_label": "udp_action_sends_and_reads_echo()"
     },
     {
@@ -4857,7 +4821,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L1733",
       "id": "step_actions_udp_action_send_only_succeeds_without_reply",
-      "community": 79,
+      "community": 80,
       "norm_label": "udp_action_send_only_succeeds_without_reply()"
     },
     {
@@ -7064,42 +7028,6 @@
       "id": "step_ws_subprotocol_is_negotiated_and_reported",
       "community": 76,
       "norm_label": "subprotocol_is_negotiated_and_reported()"
-    },
-    {
-      "label": "tls_echo_server()",
-      "file_type": "code",
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1688",
-      "id": "step_ws_tls_echo_server",
-      "community": 76,
-      "norm_label": "tls_echo_server()"
-    },
-    {
-      "label": "wss_with_skip_tls_verify_connects_and_echoes()",
-      "file_type": "code",
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1732",
-      "id": "step_ws_wss_with_skip_tls_verify_connects_and_echoes",
-      "community": 76,
-      "norm_label": "wss_with_skip_tls_verify_connects_and_echoes()"
-    },
-    {
-      "label": "wss_self_signed_is_rejected_by_default()",
-      "file_type": "code",
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1753",
-      "id": "step_ws_wss_self_signed_is_rejected_by_default",
-      "community": 76,
-      "norm_label": "wss_self_signed_is_rejected_by_default()"
-    },
-    {
-      "label": "wss_profile_string_carries_tls_flag()",
-      "file_type": "code",
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1770",
-      "id": "step_ws_wss_profile_string_carries_tls_flag",
-      "community": 76,
-      "norm_label": "wss_profile_string_carries_tls_flag()"
     },
     {
       "label": "summary.rs",
@@ -9633,7 +9561,7 @@
       "label": "Commands",
       "file_type": "document",
       "source_file": "README.md",
-      "source_location": "L47",
+      "source_location": "L45",
       "id": "readme_commands",
       "community": 45,
       "norm_label": "commands"
@@ -9642,7 +9570,7 @@
       "label": "Repository layout",
       "file_type": "document",
       "source_file": "README.md",
-      "source_location": "L65",
+      "source_location": "L63",
       "id": "readme_repository_layout",
       "community": 45,
       "norm_label": "repository layout"
@@ -9651,7 +9579,7 @@
       "label": "Local development",
       "file_type": "document",
       "source_file": "README.md",
-      "source_location": "L77",
+      "source_location": "L75",
       "id": "readme_local_development",
       "community": 45,
       "norm_label": "local development"
@@ -9660,7 +9588,7 @@
       "label": "Release binaries",
       "file_type": "document",
       "source_file": "README.md",
-      "source_location": "L94",
+      "source_location": "L92",
       "id": "readme_release_binaries",
       "community": 45,
       "norm_label": "release binaries"
@@ -9669,7 +9597,7 @@
       "label": "Environment variables",
       "file_type": "document",
       "source_file": "README.md",
-      "source_location": "L119",
+      "source_location": "L117",
       "id": "readme_environment_variables",
       "community": 45,
       "norm_label": "environment variables"
@@ -9678,7 +9606,7 @@
       "label": "License",
       "file_type": "document",
       "source_file": "README.md",
-      "source_location": "L125",
+      "source_location": "L123",
       "id": "readme_license",
       "community": 45,
       "norm_label": "license"
@@ -11317,7 +11245,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L222",
-      "community": 76,
+      "community": 6,
       "norm_label": "arc",
       "id": "arc"
     },
@@ -12510,7 +12438,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 0,
+      "community": 66,
       "norm_label": "context::interpolate",
       "id": "step_context_interpolate"
     },
@@ -12523,7 +12451,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 0,
+      "community": 66,
       "norm_label": "context::interpolate_value",
       "id": "step_context_interpolate_value"
     },
@@ -16532,9 +16460,9 @@
       "source_location": "L69",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "src_error_clierror_fmt",
-      "target": "crates_perfscale_cli_src_error_rs_formatter"
+      "target": "crates_perfscale_cli_src_error_rs_formatter",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -17009,9 +16937,9 @@
       "source_location": "L68",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "duration"
+      "target": "duration",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -17904,41 +17832,11 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L314",
-      "weight": 1.0,
-      "source": "tests_e2e_workflows",
-      "target": "tests_e2e_workflows_websocket_live_connection_full_journey",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L382",
-      "weight": 1.0,
-      "source": "tests_e2e_workflows",
-      "target": "tests_e2e_workflows_websocket_unmet_until_rule_fails_step_but_run_completes",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
       "source_location": "L109",
       "weight": 1.0,
       "confidence_score": 1.0,
       "source": "tests_e2e_workflows",
       "target": "tests_e2e_workflows_write_temp"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L279",
-      "weight": 1.0,
-      "source": "tests_e2e_workflows",
-      "target": "tests_e2e_workflows_ws_echo_server",
-      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -18067,17 +17965,6 @@
       "confidence_score": 1.0,
       "source": "tests_e2e_workflows_serveproc_wait_for_output",
       "target": "crates_perfscale_cli_tests_e2e_workflows_rs_string"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L279",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "tests_e2e_workflows_ws_echo_server",
-      "target": "crates_perfscale_cli_tests_e2e_workflows_rs_string",
-      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -18234,28 +18121,6 @@
       "target": "tests_e2e_workflows_write_temp"
     },
     {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L319",
-      "weight": 1.0,
-      "source": "tests_e2e_workflows_websocket_live_connection_full_journey",
-      "target": "tests_e2e_workflows_write_temp",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L387",
-      "weight": 1.0,
-      "source": "tests_e2e_workflows_websocket_unmet_until_rule_fails_step_but_run_completes",
-      "target": "tests_e2e_workflows_write_temp",
-      "confidence_score": 1.0
-    },
-    {
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
@@ -18265,39 +18130,6 @@
       "confidence_score": 1.0,
       "source": "tests_e2e_workflows_write_temp",
       "target": "namedtempfile"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L315",
-      "weight": 1.0,
-      "source": "tests_e2e_workflows_websocket_live_connection_full_journey",
-      "target": "tests_e2e_workflows_ws_echo_server",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L383",
-      "weight": 1.0,
-      "source": "tests_e2e_workflows_websocket_unmet_until_rule_fails_step_but_run_completes",
-      "target": "tests_e2e_workflows_ws_echo_server",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L279",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "tests_e2e_workflows_ws_echo_server",
-      "target": "runtime",
-      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -18828,9 +18660,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L249",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_choice_picks_one_option"
+      "target": "src_generate_choice_picks_one_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18838,9 +18670,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L155",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_civil_from_millis"
+      "target": "src_generate_civil_from_millis",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18848,9 +18680,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L296",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_civil_from_millis_known_dates"
+      "target": "src_generate_civil_from_millis_known_dates",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18858,9 +18690,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L319",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_double_brace_engine_placeholders_are_untouched"
+      "target": "src_generate_double_brace_engine_placeholders_are_untouched",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18868,9 +18700,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L30",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_gen"
+      "target": "src_generate_gen",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18878,9 +18710,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L326",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_mixed_literal_and_tokens"
+      "target": "src_generate_mixed_literal_and_tokens",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18888,9 +18720,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L176",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_now_fix"
+      "target": "src_generate_now_fix",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18898,9 +18730,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L268",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_now_has_fix_timestamp_shape"
+      "target": "src_generate_now_has_fix_timestamp_shape",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18908,9 +18740,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L182",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_now_iso"
+      "target": "src_generate_now_iso",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18918,9 +18750,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L285",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_now_iso_has_rfc3339_shape"
+      "target": "src_generate_now_iso_has_rfc3339_shape",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18928,9 +18760,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L277",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_now_ms_is_plausible_unix_millis"
+      "target": "src_generate_now_ms_is_plausible_unix_millis",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18938,9 +18770,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L145",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_now_unix_millis"
+      "target": "src_generate_now_unix_millis",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18948,9 +18780,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L189",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_parse_call"
+      "target": "src_generate_parse_call",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18958,9 +18790,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L212",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_plain_string_passes_through"
+      "target": "src_generate_plain_string_passes_through",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18968,9 +18800,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L228",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_rand_stays_in_range"
+      "target": "src_generate_rand_stays_in_range",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18978,9 +18810,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L237",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_randf_respects_bounds_and_decimals"
+      "target": "src_generate_randf_respects_bounds_and_decimals",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18988,9 +18820,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L218",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_seq_is_shared_within_a_message_and_bumps_per_message"
+      "target": "src_generate_seq_is_shared_within_a_message_and_bumps_per_message",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -18998,9 +18830,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L201",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_two_ints"
+      "target": "src_generate_two_ints",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -19008,9 +18840,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L312",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_unknown_token_left_verbatim"
+      "target": "src_generate_unknown_token_left_verbatim",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -19018,9 +18850,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L258",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate",
-      "target": "src_generate_uuid_is_hex_and_varies"
+      "target": "src_generate_uuid_is_hex_and_varies",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -19028,9 +18860,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L46",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen",
-      "target": "src_generate_gen_begin_message"
+      "target": "src_generate_gen_begin_message",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -19038,9 +18870,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L100",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen",
-      "target": "src_generate_gen_eval"
+      "target": "src_generate_gen_eval",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -19048,9 +18880,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L70",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen",
-      "target": "src_generate_gen_expand"
+      "target": "src_generate_gen_expand",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -19058,9 +18890,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L37",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -19068,9 +18900,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L50",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen",
-      "target": "src_generate_gen_next_u64"
+      "target": "src_generate_gen_next_u64",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -19078,9 +18910,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L60",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen",
-      "target": "src_generate_gen_rand_range"
+      "target": "src_generate_gen_rand_range",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19089,9 +18921,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L250",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_choice_picks_one_option",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19100,9 +18932,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L320",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_double_brace_engine_placeholders_are_untouched",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -19111,9 +18943,9 @@
       "source_location": "L37",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_generate_gen_new",
-      "target": "crates_perfscale_core_src_generate_rs_self"
+      "target": "crates_perfscale_core_src_generate_rs_self",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19122,9 +18954,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L327",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_mixed_literal_and_tokens",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19133,9 +18965,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L269",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_now_has_fix_timestamp_shape",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19144,9 +18976,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L286",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_now_iso_has_rfc3339_shape",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19155,9 +18987,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L278",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_now_ms_is_plausible_unix_millis",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19166,9 +18998,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L213",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_plain_string_passes_through",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19177,9 +19009,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L229",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_rand_stays_in_range",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19188,9 +19020,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L238",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_randf_respects_bounds_and_decimals",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19199,9 +19031,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L219",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_seq_is_shared_within_a_message_and_bumps_per_message",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19210,9 +19042,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L313",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_unknown_token_left_verbatim",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19221,9 +19053,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L259",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_uuid_is_hex_and_varies",
-      "target": "src_generate_gen_new"
+      "target": "src_generate_gen_new",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19232,9 +19064,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L328",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_mixed_literal_and_tokens",
-      "target": "src_generate_gen_begin_message"
+      "target": "src_generate_gen_begin_message",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19243,9 +19075,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L220",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_seq_is_shared_within_a_message_and_bumps_per_message",
-      "target": "src_generate_gen_begin_message"
+      "target": "src_generate_gen_begin_message",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19254,9 +19086,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L131",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen_eval",
-      "target": "src_generate_gen_next_u64"
+      "target": "src_generate_gen_next_u64",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19265,9 +19097,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L65",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen_rand_range",
-      "target": "src_generate_gen_next_u64"
+      "target": "src_generate_gen_next_u64",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19276,9 +19108,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L112",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen_eval",
-      "target": "src_generate_gen_rand_range"
+      "target": "src_generate_gen_rand_range",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19287,9 +19119,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L252",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_choice_picks_one_option",
-      "target": "src_generate_gen_expand"
+      "target": "src_generate_gen_expand",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -19298,9 +19130,9 @@
       "source_location": "L70",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_generate_gen_expand",
-      "target": "crates_perfscale_core_src_generate_rs_string"
+      "target": "crates_perfscale_core_src_generate_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19309,9 +19141,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L87",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen_expand",
-      "target": "src_generate_gen_eval"
+      "target": "src_generate_gen_eval",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19320,9 +19152,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L329",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_mixed_literal_and_tokens",
-      "target": "src_generate_gen_expand"
+      "target": "src_generate_gen_expand",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19331,9 +19163,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L270",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_now_has_fix_timestamp_shape",
-      "target": "src_generate_gen_expand"
+      "target": "src_generate_gen_expand",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19342,9 +19174,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L287",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_now_iso_has_rfc3339_shape",
-      "target": "src_generate_gen_expand"
+      "target": "src_generate_gen_expand",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19353,9 +19185,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L279",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_now_ms_is_plausible_unix_millis",
-      "target": "src_generate_gen_expand"
+      "target": "src_generate_gen_expand",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19364,9 +19196,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L231",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_rand_stays_in_range",
-      "target": "src_generate_gen_expand"
+      "target": "src_generate_gen_expand",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19375,9 +19207,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L240",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_randf_respects_bounds_and_decimals",
-      "target": "src_generate_gen_expand"
+      "target": "src_generate_gen_expand",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19386,9 +19218,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L260",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_uuid_is_hex_and_varies",
-      "target": "src_generate_gen_expand"
+      "target": "src_generate_gen_expand",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -19397,9 +19229,9 @@
       "source_location": "L100",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_generate_gen_eval",
-      "target": "crates_perfscale_core_src_generate_rs_string"
+      "target": "crates_perfscale_core_src_generate_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -19408,9 +19240,9 @@
       "source_location": "L176",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_generate_now_fix",
-      "target": "crates_perfscale_core_src_generate_rs_string"
+      "target": "crates_perfscale_core_src_generate_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -19419,9 +19251,9 @@
       "source_location": "L182",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_generate_now_iso",
-      "target": "crates_perfscale_core_src_generate_rs_string"
+      "target": "crates_perfscale_core_src_generate_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -19430,9 +19262,9 @@
       "source_location": "L189",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_generate_parse_call",
-      "target": "crates_perfscale_core_src_generate_rs_string"
+      "target": "crates_perfscale_core_src_generate_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -19441,9 +19273,9 @@
       "source_location": "L201",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "src_generate_two_ints",
-      "target": "crates_perfscale_core_src_generate_rs_string"
+      "target": "crates_perfscale_core_src_generate_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -19452,9 +19284,9 @@
       "source_location": "L100",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_generate_gen_eval",
-      "target": "crates_perfscale_core_src_generate_rs_option"
+      "target": "crates_perfscale_core_src_generate_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19463,9 +19295,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L104",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen_eval",
-      "target": "src_generate_now_fix"
+      "target": "src_generate_now_fix",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19474,9 +19306,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L106",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen_eval",
-      "target": "src_generate_now_iso"
+      "target": "src_generate_now_iso",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19485,9 +19317,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L105",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen_eval",
-      "target": "src_generate_now_unix_millis"
+      "target": "src_generate_now_unix_millis",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19496,9 +19328,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L108",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen_eval",
-      "target": "src_generate_parse_call"
+      "target": "src_generate_parse_call",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19507,9 +19339,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L111",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_gen_eval",
-      "target": "src_generate_two_ints"
+      "target": "src_generate_two_ints",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -19518,9 +19350,9 @@
       "source_location": "L189",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_generate_parse_call",
-      "target": "crates_perfscale_core_src_generate_rs_option"
+      "target": "crates_perfscale_core_src_generate_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -19529,9 +19361,9 @@
       "source_location": "L201",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "src_generate_two_ints",
-      "target": "crates_perfscale_core_src_generate_rs_option"
+      "target": "crates_perfscale_core_src_generate_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19540,9 +19372,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L177",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_now_fix",
-      "target": "src_generate_now_unix_millis"
+      "target": "src_generate_now_unix_millis",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19551,9 +19383,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L183",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_now_iso",
-      "target": "src_generate_now_unix_millis"
+      "target": "src_generate_now_unix_millis",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19562,9 +19394,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L177",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_now_fix",
-      "target": "src_generate_civil_from_millis"
+      "target": "src_generate_civil_from_millis",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -19573,9 +19405,9 @@
       "source_file": "crates/perfscale-core/src/generate.rs",
       "source_location": "L183",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "src_generate_now_iso",
-      "target": "src_generate_civil_from_millis"
+      "target": "src_generate_civil_from_millis",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -19584,9 +19416,9 @@
       "source_location": "L189",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "src_generate_parse_call",
-      "target": "crates_perfscale_core_src_generate_rs_vec"
+      "target": "crates_perfscale_core_src_generate_rs_vec",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -22332,9 +22164,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L2054",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions",
-      "target": "step_actions_check_action_bad_on_path_falls_back_to_last"
+      "target": "step_actions_check_action_bad_on_path_falls_back_to_last",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -22372,9 +22204,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L1938",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions",
-      "target": "step_actions_check_action_message_contains_any_semantics"
+      "target": "step_actions_check_action_message_contains_any_semantics",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -22382,9 +22214,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L1966",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions",
-      "target": "step_actions_check_action_message_matches_ws_strings_and_fix_objects"
+      "target": "step_actions_check_action_message_matches_ws_strings_and_fix_objects",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -22392,9 +22224,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L2006",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions",
-      "target": "step_actions_check_action_messages_count_gte"
+      "target": "step_actions_check_action_messages_count_gte",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -22412,9 +22244,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L2025",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions",
-      "target": "step_actions_check_action_on_path_addresses_single_message"
+      "target": "step_actions_check_action_on_path_addresses_single_message",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -23002,9 +22834,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L869",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions",
-      "target": "step_actions_message_candidates"
+      "target": "step_actions_message_candidates",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -23012,9 +22844,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L890",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions",
-      "target": "step_actions_message_json_matches"
+      "target": "step_actions_message_json_matches",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -23022,9 +22854,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L881",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions",
-      "target": "step_actions_message_text"
+      "target": "step_actions_message_text",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -23072,9 +22904,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L854",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions",
-      "target": "step_actions_resolve_check_target"
+      "target": "step_actions_resolve_check_target",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -23612,9 +23444,9 @@
       "source_location": "L869",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_actions_message_candidates",
-      "target": "crates_perfscale_core_src_step_actions_rs_value"
+      "target": "crates_perfscale_core_src_step_actions_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -23623,9 +23455,9 @@
       "source_location": "L890",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_actions_message_json_matches",
-      "target": "crates_perfscale_core_src_step_actions_rs_value"
+      "target": "crates_perfscale_core_src_step_actions_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -23634,9 +23466,9 @@
       "source_location": "L881",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_actions_message_text",
-      "target": "crates_perfscale_core_src_step_actions_rs_value"
+      "target": "crates_perfscale_core_src_step_actions_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -23656,9 +23488,9 @@
       "source_location": "L854",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_actions_resolve_check_target",
-      "target": "crates_perfscale_core_src_step_actions_rs_value"
+      "target": "crates_perfscale_core_src_step_actions_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -23722,9 +23554,9 @@
       "source_location": "L869",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_actions_message_candidates",
-      "target": "crates_perfscale_core_src_step_actions_rs_vec"
+      "target": "crates_perfscale_core_src_step_actions_rs_vec",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -23766,9 +23598,9 @@
       "source_location": "L881",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_actions_message_text",
-      "target": "crates_perfscale_core_src_step_actions_rs_string"
+      "target": "crates_perfscale_core_src_step_actions_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -23810,9 +23642,9 @@
       "source_location": "L854",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_actions_resolve_check_target",
-      "target": "crates_perfscale_core_src_step_actions_rs_option"
+      "target": "crates_perfscale_core_src_step_actions_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -23873,9 +23705,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L2057",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions_check_action_bad_on_path_falls_back_to_last",
-      "target": "step_actions_execute_action"
+      "target": "step_actions_execute_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -23917,9 +23749,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L1944",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions_check_action_message_contains_any_semantics",
-      "target": "step_actions_execute_action"
+      "target": "step_actions_execute_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -23928,9 +23760,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L1977",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions_check_action_message_matches_ws_strings_and_fix_objects",
-      "target": "step_actions_execute_action"
+      "target": "step_actions_execute_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -23939,9 +23771,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L2010",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions_check_action_messages_count_gte",
-      "target": "step_actions_execute_action"
+      "target": "step_actions_execute_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -23961,9 +23793,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L2031",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions_check_action_on_path_addresses_single_message",
-      "target": "step_actions_execute_action"
+      "target": "step_actions_execute_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -24922,39 +24754,6 @@
       "target": "step_actions_execute_action"
     },
     {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "INFERRED",
-      "confidence_score": 0.8,
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1774",
-      "weight": 1.0,
-      "source": "step_ws_wss_profile_string_carries_tls_flag",
-      "target": "step_actions_execute_action"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "INFERRED",
-      "confidence_score": 0.8,
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1756",
-      "weight": 1.0,
-      "source": "step_ws_wss_self_signed_is_rejected_by_default",
-      "target": "step_actions_execute_action"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "INFERRED",
-      "confidence_score": 0.8,
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1735",
-      "weight": 1.0,
-      "source": "step_ws_wss_with_skip_tls_verify_connects_and_echoes",
-      "target": "step_actions_execute_action"
-    },
-    {
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-core/src/step/actions.rs",
@@ -24972,9 +24771,9 @@
       "source_location": "L854",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_actions_resolve_check_target",
-      "target": "crates_perfscale_core_src_step_actions_rs_context"
+      "target": "crates_perfscale_core_src_step_actions_rs_context",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -25025,9 +24824,9 @@
       "source_location": "L21",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "step_resources",
-      "target": "sync"
+      "target": "sync",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -25443,9 +25242,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L797",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions_check_action",
-      "target": "step_actions_message_candidates"
+      "target": "step_actions_message_candidates",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -25454,9 +25253,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L812",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions_check_action",
-      "target": "step_actions_message_json_matches"
+      "target": "step_actions_message_json_matches",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -25465,9 +25264,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L799",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions_check_action",
-      "target": "step_actions_message_text"
+      "target": "step_actions_message_text",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -25476,9 +25275,9 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L745",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_actions_check_action",
-      "target": "step_actions_resolve_check_target"
+      "target": "step_actions_resolve_check_target",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -25847,9 +25646,9 @@
       "source_location": "L16",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_context_context",
-      "target": "resources"
+      "target": "resources",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -25994,9 +25793,9 @@
       "source_location": "L77",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "resources"
+      "target": "resources",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -26627,9 +26426,9 @@
       "source_location": "L27",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "step_resources",
-      "target": "crates_perfscale_core_src_step_resources_rs_gen"
+      "target": "crates_perfscale_core_src_step_resources_rs_gen",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -26638,9 +26437,9 @@
       "source_location": "L20",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "step_resources",
-      "target": "crates_perfscale_core_src_step_resources_rs_hashmap"
+      "target": "crates_perfscale_core_src_step_resources_rs_hashmap",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -26649,9 +26448,9 @@
       "source_location": "L22",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "step_resources",
-      "target": "crates_perfscale_core_src_step_resources_rs_instant"
+      "target": "crates_perfscale_core_src_step_resources_rs_instant",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -26659,9 +26458,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L156",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources",
-      "target": "step_resources_clones_share_one_pool"
+      "target": "step_resources_clones_share_one_pool",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -26669,9 +26468,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L143",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources",
-      "target": "step_resources_ids_are_unique_and_drain_clears"
+      "target": "step_resources_ids_are_unique_and_drain_clears",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -26679,9 +26478,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L50",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources",
-      "target": "step_resources_inner"
+      "target": "step_resources_inner",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -26689,9 +26488,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L129",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources",
-      "target": "step_resources_insert_take_put_back_roundtrip"
+      "target": "step_resources_insert_take_put_back_roundtrip",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -26699,9 +26498,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L110",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources",
-      "target": "step_resources_loopback_conn"
+      "target": "step_resources_loopback_conn",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -26709,9 +26508,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L58",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources",
-      "target": "step_resources_resources"
+      "target": "step_resources_resources",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -26719,9 +26518,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L34",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources",
-      "target": "step_resources_wsconn"
+      "target": "step_resources_wsconn",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26730,9 +26529,9 @@
       "source_location": "L52",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_resources_inner",
-      "target": "step_resources_wsconn"
+      "target": "step_resources_wsconn",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26741,9 +26540,9 @@
       "source_location": "L110",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_resources_loopback_conn",
-      "target": "step_resources_wsconn"
+      "target": "step_resources_wsconn",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26752,9 +26551,9 @@
       "source_location": "L64",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_resources_resources_insert",
-      "target": "step_resources_wsconn"
+      "target": "step_resources_wsconn",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26763,9 +26562,9 @@
       "source_location": "L79",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_resources_resources_put_back",
-      "target": "step_resources_wsconn"
+      "target": "step_resources_wsconn",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26774,9 +26573,9 @@
       "source_location": "L74",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_resources_resources_take",
-      "target": "step_resources_wsconn"
+      "target": "step_resources_wsconn",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26785,9 +26584,9 @@
       "source_location": "L40",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_resources_wsconn",
-      "target": "crates_perfscale_core_src_step_resources_rs_gen"
+      "target": "crates_perfscale_core_src_step_resources_rs_gen",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26796,9 +26595,9 @@
       "source_location": "L43",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_resources_wsconn",
-      "target": "crates_perfscale_core_src_step_resources_rs_instant"
+      "target": "crates_perfscale_core_src_step_resources_rs_instant",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26807,9 +26606,9 @@
       "source_location": "L43",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_resources_wsconn",
-      "target": "crates_perfscale_core_src_step_resources_rs_option"
+      "target": "crates_perfscale_core_src_step_resources_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26818,9 +26617,9 @@
       "source_location": "L37",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_resources_wsconn",
-      "target": "crates_perfscale_core_src_step_resources_rs_string"
+      "target": "crates_perfscale_core_src_step_resources_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26829,9 +26628,9 @@
       "source_location": "L46",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_resources_wsconn",
-      "target": "crates_perfscale_core_src_step_resources_rs_value"
+      "target": "crates_perfscale_core_src_step_resources_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26840,9 +26639,9 @@
       "source_location": "L46",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_resources_wsconn",
-      "target": "crates_perfscale_core_src_step_resources_rs_vecdeque"
+      "target": "crates_perfscale_core_src_step_resources_rs_vecdeque",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26851,9 +26650,9 @@
       "source_location": "L35",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_resources_wsconn",
-      "target": "crates_perfscale_core_src_step_resources_rs_wsstream"
+      "target": "crates_perfscale_core_src_step_resources_rs_wsstream",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26862,9 +26661,9 @@
       "source_location": "L52",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_resources_inner",
-      "target": "crates_perfscale_core_src_step_resources_rs_string"
+      "target": "crates_perfscale_core_src_step_resources_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26873,9 +26672,9 @@
       "source_location": "L64",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_resources_resources_insert",
-      "target": "crates_perfscale_core_src_step_resources_rs_string"
+      "target": "crates_perfscale_core_src_step_resources_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26884,9 +26683,9 @@
       "source_location": "L74",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_resources_resources_take",
-      "target": "crates_perfscale_core_src_step_resources_rs_option"
+      "target": "crates_perfscale_core_src_step_resources_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26895,9 +26694,9 @@
       "source_location": "L52",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_resources_inner",
-      "target": "crates_perfscale_core_src_step_resources_rs_hashmap"
+      "target": "crates_perfscale_core_src_step_resources_rs_hashmap",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26906,9 +26705,9 @@
       "source_location": "L59",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_resources_resources",
-      "target": "step_resources_inner"
+      "target": "step_resources_inner",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26917,9 +26716,9 @@
       "source_location": "L59",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_resources_resources",
-      "target": "crates_perfscale_core_src_step_resources_rs_arc"
+      "target": "crates_perfscale_core_src_step_resources_rs_arc",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -26928,9 +26727,9 @@
       "source_location": "L59",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_resources_resources",
-      "target": "crates_perfscale_core_src_step_resources_rs_mutex"
+      "target": "crates_perfscale_core_src_step_resources_rs_mutex",
+      "confidence_score": 1.0
     },
     {
       "relation": "implements",
@@ -26938,9 +26737,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L97",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_resources",
-      "target": "debug"
+      "target": "debug",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -26948,9 +26747,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L89",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_resources",
-      "target": "step_resources_resources_drain"
+      "target": "step_resources_resources_drain",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -26958,9 +26757,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L98",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_resources",
-      "target": "step_resources_resources_fmt"
+      "target": "step_resources_resources_fmt",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -26968,9 +26767,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L64",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_resources",
-      "target": "step_resources_resources_insert"
+      "target": "step_resources_resources_insert",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -26978,9 +26777,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L79",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_resources",
-      "target": "step_resources_resources_put_back"
+      "target": "step_resources_resources_put_back",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -26988,9 +26787,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L74",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_resources",
-      "target": "step_resources_resources_take"
+      "target": "step_resources_resources_take",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -26999,9 +26798,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L161",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_clones_share_one_pool",
-      "target": "step_resources_resources_insert"
+      "target": "step_resources_resources_insert",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -27010,9 +26809,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L133",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_insert_take_put_back_roundtrip",
-      "target": "step_resources_resources_insert"
+      "target": "step_resources_resources_insert",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -27021,9 +26820,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L80",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_resources_put_back",
-      "target": "step_resources_resources_insert"
+      "target": "step_resources_resources_insert",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -27032,9 +26831,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L136",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_insert_take_put_back_roundtrip",
-      "target": "step_resources_resources_take"
+      "target": "step_resources_resources_take",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -27043,9 +26842,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L138",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_insert_take_put_back_roundtrip",
-      "target": "step_resources_resources_put_back"
+      "target": "step_resources_resources_put_back",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -27054,9 +26853,9 @@
       "source_location": "L98",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_resources_resources_fmt",
-      "target": "crates_perfscale_core_src_step_resources_rs_formatter"
+      "target": "crates_perfscale_core_src_step_resources_rs_formatter",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -27065,9 +26864,9 @@
       "source_location": "L98",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_resources_resources_fmt",
-      "target": "crates_perfscale_core_src_step_resources_rs_result"
+      "target": "crates_perfscale_core_src_step_resources_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -27076,9 +26875,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L161",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_clones_share_one_pool",
-      "target": "step_resources_loopback_conn"
+      "target": "step_resources_loopback_conn",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -27087,9 +26886,9 @@
       "source_file": "crates/perfscale-core/src/step/resources.rs",
       "source_location": "L133",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_resources_insert_take_put_back_roundtrip",
-      "target": "step_resources_loopback_conn"
+      "target": "step_resources_loopback_conn",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -27098,9 +26897,9 @@
       "source_location": "L110",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_resources_loopback_conn",
-      "target": "tcplistener"
+      "target": "tcplistener",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -27199,9 +26998,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L644",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner",
-      "target": "step_runner_metrics_custom_histograms_appear_in_summary"
+      "target": "step_runner_metrics_custom_histograms_appear_in_summary",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -27229,9 +27028,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L671",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner",
-      "target": "step_runner_metrics_mixed_counters_and_histograms"
+      "target": "step_runner_metrics_mixed_counters_and_histograms",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -27389,9 +27188,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L936",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner",
-      "target": "step_runner_run_steps_websocket_live_connection_and_metrics"
+      "target": "step_runner_run_steps_websocket_live_connection_and_metrics",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -27740,9 +27539,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L645",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_custom_histograms_appear_in_summary",
-      "target": "step_runner_metrics_default"
+      "target": "step_runner_metrics_default",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -27773,9 +27572,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L672",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_mixed_counters_and_histograms",
-      "target": "step_runner_metrics_default"
+      "target": "step_runner_metrics_default",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -27850,9 +27649,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L121",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_add_counters",
-      "target": "step_runner_metrics_record"
+      "target": "step_runner_metrics_record",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -27949,9 +27748,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L646",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_custom_histograms_appear_in_summary",
-      "target": "step_runner_metrics_add_counters"
+      "target": "step_runner_metrics_add_counters",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -27960,9 +27759,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L674",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_mixed_counters_and_histograms",
-      "target": "step_runner_metrics_add_counters"
+      "target": "step_runner_metrics_add_counters",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -28037,9 +27836,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L649",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_custom_histograms_appear_in_summary",
-      "target": "step_runner_metrics_summary_lines"
+      "target": "step_runner_metrics_summary_lines",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -28070,9 +27869,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L676",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_metrics_mixed_counters_and_histograms",
-      "target": "step_runner_metrics_summary_lines"
+      "target": "step_runner_metrics_summary_lines",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -28740,9 +28539,9 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L991",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_runner_run_steps_websocket_live_connection_and_metrics",
-      "target": "step_runner_run_and_collect"
+      "target": "step_runner_run_and_collect",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -28817,9 +28616,9 @@
       "source_location": "L63",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "arc"
+      "target": "arc",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -28828,9 +28627,9 @@
       "source_location": "L76",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "crates_perfscale_core_src_step_ws_rs_context"
+      "target": "crates_perfscale_core_src_step_ws_rs_context",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -28839,9 +28638,9 @@
       "source_location": "L78",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "crates_perfscale_core_src_step_ws_rs_gen"
+      "target": "crates_perfscale_core_src_step_ws_rs_gen",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -28850,9 +28649,9 @@
       "source_location": "L64",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "crates_perfscale_core_src_step_ws_rs_instant"
+      "target": "crates_perfscale_core_src_step_ws_rs_instant",
+      "confidence_score": 1.0
     },
     {
       "relation": "imports_from",
@@ -28861,9 +28660,9 @@
       "source_location": "L72",
       "weight": 1.0,
       "context": "import",
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "message"
+      "target": "message",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28871,9 +28670,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1426",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_binary_roundtrip_uses_base64"
+      "target": "step_ws_binary_roundtrip_uses_base64",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28881,9 +28680,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L154",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_bool_param"
+      "target": "step_ws_bool_param",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28891,9 +28690,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1493",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_close_removes_connection"
+      "target": "step_ws_close_removes_connection",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28901,9 +28700,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1210",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_connect_id"
+      "target": "step_ws_connect_id",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28911,9 +28710,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1528",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_connect_refused_is_failed_sample"
+      "target": "step_ws_connect_refused_is_failed_sample",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28921,9 +28720,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1306",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_connect_reports_sample_and_id"
+      "target": "step_ws_connect_reports_sample_and_id",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28931,9 +28730,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1275",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_connect_send_recv_roundtrip"
+      "target": "step_ws_connect_send_recv_roundtrip",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28941,9 +28740,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1180",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28951,9 +28750,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L297",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_frame_to_value"
+      "target": "step_ws_frame_to_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28961,9 +28760,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L444",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_joined_body"
+      "target": "step_ws_joined_body",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28971,9 +28770,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1262",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_json_subset_ignores_extra_fields_and_recurses"
+      "target": "step_ws_json_subset_ignores_extra_fields_and_recurses",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28981,9 +28780,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L353",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_json_subset_match"
+      "target": "step_ws_json_subset_match",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -28991,9 +28790,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1542",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_mutually_exclusive_params_are_rejected"
+      "target": "step_ws_mutually_exclusive_params_are_rejected",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29001,9 +28800,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L226",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_no_verify_tls_config"
+      "target": "step_ws_no_verify_tls_config",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29011,9 +28810,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L454",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_payload"
+      "target": "step_ws_payload",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29021,9 +28820,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1453",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_ping_measures_rtt_and_buffers_data"
+      "target": "step_ws_ping_measures_rtt_and_buffers_data",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29031,9 +28830,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L85",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_profile"
+      "target": "step_ws_profile",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29041,9 +28840,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1243",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_profile_accepts_json_string_from_interpolation"
+      "target": "step_ws_profile_accepts_json_string_from_interpolation",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29051,9 +28850,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1229",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_profile_inline_overrides_connection_object"
+      "target": "step_ws_profile_inline_overrides_connection_object",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29061,9 +28860,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1252",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_profile_rejects_garbage_connection"
+      "target": "step_ws_profile_rejects_garbage_connection",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29071,9 +28870,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1221",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_profile_requires_ws_url"
+      "target": "step_ws_profile_requires_ws_url",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29081,9 +28880,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L377",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_read_until"
+      "target": "step_ws_read_until",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29091,9 +28890,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1318",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_recv_count_mode_reads_n_messages"
+      "target": "step_ws_recv_count_mode_reads_n_messages",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29101,9 +28900,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1373",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_recv_timeout_without_match_fails_step"
+      "target": "step_ws_recv_timeout_without_match_fails_step",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29111,9 +28910,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1347",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_recv_until_json_subset_matches"
+      "target": "step_ws_recv_until_json_subset_matches",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29121,9 +28920,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L363",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_recvoutcome"
+      "target": "step_ws_recvoutcome",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29131,9 +28930,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L94",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_resolve_profile"
+      "target": "step_ws_resolve_profile",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29141,9 +28940,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1062",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_run_session"
+      "target": "step_ws_run_session",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29151,9 +28950,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1399",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_send_generator_expands_per_send"
+      "target": "step_ws_send_generator_expands_per_send",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29161,9 +28960,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L492",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_send_repeated"
+      "target": "step_ws_send_repeated",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29171,9 +28970,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1625",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_session_connect_failure_is_failed_sample"
+      "target": "step_ws_session_connect_failure_is_failed_sample",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29181,9 +28980,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1572",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_session_exchanges_and_times_whole_step"
+      "target": "step_ws_session_exchanges_and_times_whole_step",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29191,9 +28990,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1601",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_session_unmatched_until_fails_but_reports_exchange"
+      "target": "step_ws_session_unmatched_until_fails_but_reports_exchange",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29201,9 +29000,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1050",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_sessionoutcome"
+      "target": "step_ws_sessionoutcome",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29211,9 +29010,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1643",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_subprotocol_is_negotiated_and_reported"
+      "target": "step_ws_subprotocol_is_negotiated_and_reported",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29221,18 +29020,8 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L612",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_take_conn"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1688",
-      "weight": 1.0,
-      "source": "step_ws",
-      "target": "step_ws_tls_echo_server",
+      "target": "step_ws_take_conn",
       "confidence_score": 1.0
     },
     {
@@ -29241,9 +29030,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L161",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_u64_param"
+      "target": "step_ws_u64_param",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29251,9 +29040,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1519",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_unknown_and_missing_id_fail_clearly"
+      "target": "step_ws_unknown_and_missing_id_fail_clearly",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29261,9 +29050,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L310",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_until"
+      "target": "step_ws_until",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29271,9 +29060,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L898",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_ws_close_action"
+      "target": "step_ws_ws_close_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29281,9 +29070,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L536",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_ws_connect_action"
+      "target": "step_ws_ws_connect_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29291,9 +29080,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L598",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_ws_err"
+      "target": "step_ws_ws_err",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29301,9 +29090,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L173",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_ws_handshake"
+      "target": "step_ws_ws_handshake",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29311,9 +29100,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L821",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_ws_ping_action"
+      "target": "step_ws_ws_ping_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29321,9 +29110,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L728",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_ws_recv_action"
+      "target": "step_ws_ws_recv_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29331,9 +29120,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L645",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_ws_send_action"
+      "target": "step_ws_ws_send_action",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -29341,38 +29130,8 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L981",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_ws_session_action"
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1770",
-      "weight": 1.0,
-      "source": "step_ws",
-      "target": "step_ws_wss_profile_string_carries_tls_flag",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1753",
-      "weight": 1.0,
-      "source": "step_ws",
-      "target": "step_ws_wss_self_signed_is_rejected_by_default",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "contains",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1732",
-      "weight": 1.0,
-      "source": "step_ws",
-      "target": "step_ws_wss_with_skip_tls_verify_connects_and_echoes",
+      "target": "step_ws_ws_session_action",
       "confidence_score": 1.0
     },
     {
@@ -29382,9 +29141,9 @@
       "source_location": "L88",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_profile",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29393,9 +29152,9 @@
       "source_location": "L88",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_ws_profile",
-      "target": "crates_perfscale_core_src_step_ws_rs_vec"
+      "target": "crates_perfscale_core_src_step_ws_rs_vec",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29404,9 +29163,9 @@
       "source_location": "L94",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_resolve_profile",
-      "target": "step_ws_profile"
+      "target": "step_ws_profile",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29415,9 +29174,9 @@
       "source_location": "L1062",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_run_session",
-      "target": "step_ws_profile"
+      "target": "step_ws_profile",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29426,9 +29185,9 @@
       "source_location": "L173",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_handshake",
-      "target": "step_ws_profile"
+      "target": "step_ws_profile",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29437,9 +29196,9 @@
       "source_location": "L1210",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_connect_id",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29448,9 +29207,9 @@
       "source_location": "L1180",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_echo_server",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29459,9 +29218,9 @@
       "source_location": "L444",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_joined_body",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29470,9 +29229,9 @@
       "source_location": "L226",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_no_verify_tls_config",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29481,9 +29240,9 @@
       "source_location": "L460",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_payload_from_params",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29492,9 +29251,9 @@
       "source_location": "L371",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_recvoutcome",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29503,9 +29262,9 @@
       "source_location": "L94",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_resolve_profile",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29514,9 +29273,9 @@
       "source_location": "L1062",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_run_session",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29525,9 +29284,9 @@
       "source_location": "L492",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_send_repeated",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29536,9 +29295,9 @@
       "source_location": "L1057",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_sessionoutcome",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29547,18 +29306,7 @@
       "source_location": "L612",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_take_conn",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
-    },
-    {
-      "relation": "references",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1688",
-      "weight": 1.0,
-      "context": "return_type",
-      "source": "step_ws_tls_echo_server",
       "target": "crates_perfscale_core_src_step_ws_rs_string",
       "confidence_score": 1.0
     },
@@ -29569,9 +29317,9 @@
       "source_location": "L317",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_until_from_params",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29580,9 +29328,9 @@
       "source_location": "L173",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_handshake",
-      "target": "crates_perfscale_core_src_step_ws_rs_string"
+      "target": "crates_perfscale_core_src_step_ws_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29591,9 +29339,9 @@
       "source_location": "L364",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_ws_recvoutcome",
-      "target": "crates_perfscale_core_src_step_ws_rs_vec"
+      "target": "crates_perfscale_core_src_step_ws_rs_vec",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29602,9 +29350,9 @@
       "source_location": "L1054",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_ws_sessionoutcome",
-      "target": "crates_perfscale_core_src_step_ws_rs_vec"
+      "target": "crates_perfscale_core_src_step_ws_rs_vec",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -29613,9 +29361,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1245",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_profile_accepts_json_string_from_interpolation",
-      "target": "step_ws_resolve_profile"
+      "target": "step_ws_resolve_profile",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -29624,9 +29372,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1230",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_profile_inline_overrides_connection_object",
-      "target": "step_ws_resolve_profile"
+      "target": "step_ws_resolve_profile",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29635,9 +29383,9 @@
       "source_location": "L94",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_resolve_profile",
-      "target": "crates_perfscale_core_src_step_ws_rs_result"
+      "target": "crates_perfscale_core_src_step_ws_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29646,9 +29394,9 @@
       "source_location": "L94",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_resolve_profile",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -29657,9 +29405,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L148",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_resolve_profile",
-      "target": "step_ws_bool_param"
+      "target": "step_ws_bool_param",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -29668,9 +29416,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L541",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_connect_action",
-      "target": "step_ws_resolve_profile"
+      "target": "step_ws_resolve_profile",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -29679,9 +29427,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L982",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_session_action",
-      "target": "step_ws_resolve_profile"
+      "target": "step_ws_resolve_profile",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29690,9 +29438,9 @@
       "source_location": "L154",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_bool_param",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29701,9 +29449,9 @@
       "source_location": "L297",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_frame_to_value",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29712,9 +29460,9 @@
       "source_location": "L444",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_joined_body",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29723,9 +29471,9 @@
       "source_location": "L353",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_json_subset_match",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29734,9 +29482,9 @@
       "source_location": "L460",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_payload_from_params",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29745,9 +29493,9 @@
       "source_location": "L377",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_read_until",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29756,9 +29504,9 @@
       "source_location": "L364",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_recvoutcome",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29767,9 +29515,9 @@
       "source_location": "L1062",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_run_session",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29778,9 +29526,9 @@
       "source_location": "L1053",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_sessionoutcome",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29789,9 +29537,9 @@
       "source_location": "L612",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_take_conn",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29800,9 +29548,9 @@
       "source_location": "L161",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_u64_param",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29811,9 +29559,9 @@
       "source_location": "L317",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_until_from_params",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29822,9 +29570,9 @@
       "source_location": "L338",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_until_matches",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29833,9 +29581,9 @@
       "source_location": "L898",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_close_action",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29844,9 +29592,9 @@
       "source_location": "L536",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_connect_action",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29855,9 +29603,9 @@
       "source_location": "L821",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_ping_action",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29866,9 +29614,9 @@
       "source_location": "L728",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_recv_action",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29877,9 +29625,9 @@
       "source_location": "L645",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_send_action",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29888,9 +29636,9 @@
       "source_location": "L981",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_session_action",
-      "target": "crates_perfscale_core_src_step_ws_rs_value"
+      "target": "crates_perfscale_core_src_step_ws_rs_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29899,9 +29647,9 @@
       "source_location": "L226",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_no_verify_tls_config",
-      "target": "crates_perfscale_core_src_step_ws_rs_result"
+      "target": "crates_perfscale_core_src_step_ws_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29910,9 +29658,9 @@
       "source_location": "L460",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_payload_from_params",
-      "target": "crates_perfscale_core_src_step_ws_rs_result"
+      "target": "crates_perfscale_core_src_step_ws_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29921,9 +29669,9 @@
       "source_location": "L1062",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_run_session",
-      "target": "crates_perfscale_core_src_step_ws_rs_result"
+      "target": "crates_perfscale_core_src_step_ws_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29932,9 +29680,9 @@
       "source_location": "L492",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_send_repeated",
-      "target": "crates_perfscale_core_src_step_ws_rs_result"
+      "target": "crates_perfscale_core_src_step_ws_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29943,9 +29691,9 @@
       "source_location": "L612",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_take_conn",
-      "target": "crates_perfscale_core_src_step_ws_rs_result"
+      "target": "crates_perfscale_core_src_step_ws_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29954,9 +29702,9 @@
       "source_location": "L317",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_until_from_params",
-      "target": "crates_perfscale_core_src_step_ws_rs_result"
+      "target": "crates_perfscale_core_src_step_ws_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -29965,9 +29713,9 @@
       "source_location": "L173",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_handshake",
-      "target": "crates_perfscale_core_src_step_ws_rs_result"
+      "target": "crates_perfscale_core_src_step_ws_rs_result",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -29976,9 +29724,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1102",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_run_session",
-      "target": "step_ws_u64_param"
+      "target": "step_ws_u64_param",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -29987,9 +29735,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L331",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_until_from_params",
-      "target": "step_ws_u64_param"
+      "target": "step_ws_u64_param",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -29998,9 +29746,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L909",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_close_action",
-      "target": "step_ws_u64_param"
+      "target": "step_ws_u64_param",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30009,9 +29757,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L547",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_connect_action",
-      "target": "step_ws_u64_param"
+      "target": "step_ws_u64_param",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30020,9 +29768,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L828",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_ping_action",
-      "target": "step_ws_u64_param"
+      "target": "step_ws_u64_param",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30031,9 +29779,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L742",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_recv_action",
-      "target": "step_ws_u64_param"
+      "target": "step_ws_u64_param",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30042,9 +29790,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L657",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_send_action",
-      "target": "step_ws_u64_param"
+      "target": "step_ws_u64_param",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30053,9 +29801,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L988",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_session_action",
-      "target": "step_ws_u64_param"
+      "target": "step_ws_u64_param",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30064,9 +29812,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1068",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_run_session",
-      "target": "step_ws_ws_handshake"
+      "target": "step_ws_ws_handshake",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30075,9 +29823,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L552",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_connect_action",
-      "target": "step_ws_ws_handshake"
+      "target": "step_ws_ws_handshake",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30086,9 +29834,9 @@
       "source_location": "L173",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_handshake",
-      "target": "crates_perfscale_core_src_step_ws_rs_option"
+      "target": "crates_perfscale_core_src_step_ws_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30097,9 +29845,9 @@
       "source_location": "L173",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_handshake",
-      "target": "crates_perfscale_core_src_step_ws_rs_wsstream"
+      "target": "crates_perfscale_core_src_step_ws_rs_wsstream",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30108,9 +29856,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L203",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_handshake",
-      "target": "step_ws_no_verify_tls_config"
+      "target": "step_ws_no_verify_tls_config",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30119,9 +29867,9 @@
       "source_location": "L377",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_read_until",
-      "target": "crates_perfscale_core_src_step_ws_rs_wsstream"
+      "target": "crates_perfscale_core_src_step_ws_rs_wsstream",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30130,9 +29878,9 @@
       "source_location": "L492",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_send_repeated",
-      "target": "crates_perfscale_core_src_step_ws_rs_wsstream"
+      "target": "crates_perfscale_core_src_step_ws_rs_wsstream",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30141,9 +29889,9 @@
       "source_location": "L297",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_frame_to_value",
-      "target": "crates_perfscale_core_src_step_ws_rs_option"
+      "target": "crates_perfscale_core_src_step_ws_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30152,9 +29900,9 @@
       "source_location": "L377",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_read_until",
-      "target": "crates_perfscale_core_src_step_ws_rs_option"
+      "target": "crates_perfscale_core_src_step_ws_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30163,9 +29911,9 @@
       "source_location": "L371",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_ws_recvoutcome",
-      "target": "crates_perfscale_core_src_step_ws_rs_option"
+      "target": "crates_perfscale_core_src_step_ws_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30174,9 +29922,9 @@
       "source_location": "L1057",
       "weight": 1.0,
       "context": "field",
-      "confidence_score": 1.0,
       "source": "step_ws_sessionoutcome",
-      "target": "crates_perfscale_core_src_step_ws_rs_option"
+      "target": "crates_perfscale_core_src_step_ws_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30185,9 +29933,9 @@
       "source_location": "L226",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_no_verify_tls_config",
-      "target": "clientconfig"
+      "target": "clientconfig",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30196,9 +29944,9 @@
       "source_location": "L297",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_frame_to_value",
-      "target": "message"
+      "target": "message",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30207,9 +29955,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L426",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_read_until",
-      "target": "step_ws_frame_to_value"
+      "target": "step_ws_frame_to_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30218,9 +29966,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L854",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_ping_action",
-      "target": "step_ws_frame_to_value"
+      "target": "step_ws_frame_to_value",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30229,9 +29977,9 @@
       "source_location": "L480",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_payload_render",
-      "target": "message"
+      "target": "message",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30240,9 +29988,9 @@
       "source_location": "L377",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_read_until",
-      "target": "step_ws_until"
+      "target": "step_ws_until",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30251,9 +29999,9 @@
       "source_location": "L317",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_until_from_params",
-      "target": "step_ws_until"
+      "target": "step_ws_until",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -30261,9 +30009,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L338",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_until",
-      "target": "step_ws_until_matches"
+      "target": "step_ws_until_matches",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30272,9 +30020,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L400",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_read_until",
-      "target": "step_ws_until_matches"
+      "target": "step_ws_until_matches",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30283,9 +30031,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L345",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_until_matches",
-      "target": "step_ws_json_subset_match"
+      "target": "step_ws_json_subset_match",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30294,9 +30042,9 @@
       "source_location": "L377",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_read_until",
-      "target": "step_ws_recvoutcome"
+      "target": "step_ws_recvoutcome",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30305,9 +30053,9 @@
       "source_location": "L377",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_read_until",
-      "target": "crates_perfscale_core_src_step_ws_rs_instant"
+      "target": "crates_perfscale_core_src_step_ws_rs_instant",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30316,9 +30064,9 @@
       "source_location": "L377",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_read_until",
-      "target": "crates_perfscale_core_src_step_ws_rs_vecdeque"
+      "target": "crates_perfscale_core_src_step_ws_rs_vecdeque",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30327,9 +30075,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1138",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_run_session",
-      "target": "step_ws_read_until"
+      "target": "step_ws_read_until",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30338,9 +30086,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L749",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_recv_action",
-      "target": "step_ws_read_until"
+      "target": "step_ws_read_until",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30349,9 +30097,9 @@
       "source_location": "L1062",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_run_session",
-      "target": "crates_perfscale_core_src_step_ws_rs_instant"
+      "target": "crates_perfscale_core_src_step_ws_rs_instant",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30360,9 +30108,9 @@
       "source_location": "L492",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_send_repeated",
-      "target": "crates_perfscale_core_src_step_ws_rs_instant"
+      "target": "crates_perfscale_core_src_step_ws_rs_instant",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30371,9 +30119,9 @@
       "source_location": "L460",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_payload_from_params",
-      "target": "step_ws_payload"
+      "target": "step_ws_payload",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -30381,9 +30129,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L480",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_payload",
-      "target": "step_ws_payload_render"
+      "target": "step_ws_payload_render",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30392,9 +30140,9 @@
       "source_location": "L492",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_send_repeated",
-      "target": "step_ws_payload"
+      "target": "step_ws_payload",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30403,9 +30151,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1093",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_run_session",
-      "target": "step_ws_payload_from_params"
+      "target": "step_ws_payload_from_params",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30414,9 +30162,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L733",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_recv_action",
-      "target": "step_ws_payload_from_params"
+      "target": "step_ws_payload_from_params",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30425,9 +30173,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L650",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_send_action",
-      "target": "step_ws_payload_from_params"
+      "target": "step_ws_payload_from_params",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30436,9 +30184,9 @@
       "source_location": "L480",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_payload_render",
-      "target": "crates_perfscale_core_src_step_ws_rs_gen"
+      "target": "crates_perfscale_core_src_step_ws_rs_gen",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30447,9 +30195,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L509",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_send_repeated",
-      "target": "step_ws_payload_render"
+      "target": "step_ws_payload_render",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30458,9 +30206,9 @@
       "source_location": "L492",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_send_repeated",
-      "target": "crates_perfscale_core_src_step_ws_rs_gen"
+      "target": "crates_perfscale_core_src_step_ws_rs_gen",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30469,9 +30217,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1109",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_run_session",
-      "target": "step_ws_send_repeated"
+      "target": "step_ws_send_repeated",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30480,9 +30228,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L669",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_send_action",
-      "target": "step_ws_send_repeated"
+      "target": "step_ws_send_repeated",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30491,9 +30239,9 @@
       "source_location": "L536",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_connect_action",
-      "target": "actionoutput"
+      "target": "actionoutput",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30502,9 +30250,9 @@
       "source_location": "L536",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_connect_action",
-      "target": "crates_perfscale_core_src_step_ws_rs_context"
+      "target": "crates_perfscale_core_src_step_ws_rs_context",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30513,9 +30261,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L557",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_connect_action",
-      "target": "step_ws_ws_err"
+      "target": "step_ws_ws_err",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30524,9 +30272,9 @@
       "source_location": "L1210",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_connect_id",
-      "target": "crates_perfscale_core_src_step_ws_rs_context"
+      "target": "crates_perfscale_core_src_step_ws_rs_context",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30535,9 +30283,9 @@
       "source_location": "L612",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_take_conn",
-      "target": "crates_perfscale_core_src_step_ws_rs_context"
+      "target": "crates_perfscale_core_src_step_ws_rs_context",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30546,9 +30294,9 @@
       "source_location": "L898",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_close_action",
-      "target": "crates_perfscale_core_src_step_ws_rs_context"
+      "target": "crates_perfscale_core_src_step_ws_rs_context",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30557,9 +30305,9 @@
       "source_location": "L821",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_ping_action",
-      "target": "crates_perfscale_core_src_step_ws_rs_context"
+      "target": "crates_perfscale_core_src_step_ws_rs_context",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30568,9 +30316,9 @@
       "source_location": "L728",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_recv_action",
-      "target": "crates_perfscale_core_src_step_ws_rs_context"
+      "target": "crates_perfscale_core_src_step_ws_rs_context",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30579,9 +30327,9 @@
       "source_location": "L645",
       "weight": 1.0,
       "context": "parameter_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_send_action",
-      "target": "crates_perfscale_core_src_step_ws_rs_context"
+      "target": "crates_perfscale_core_src_step_ws_rs_context",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30590,9 +30338,9 @@
       "source_location": "L898",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_close_action",
-      "target": "actionoutput"
+      "target": "actionoutput",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30601,9 +30349,9 @@
       "source_location": "L598",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_err",
-      "target": "actionoutput"
+      "target": "actionoutput",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30612,9 +30360,9 @@
       "source_location": "L821",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_ping_action",
-      "target": "actionoutput"
+      "target": "actionoutput",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30623,9 +30371,9 @@
       "source_location": "L728",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_recv_action",
-      "target": "actionoutput"
+      "target": "actionoutput",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30634,9 +30382,9 @@
       "source_location": "L645",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_send_action",
-      "target": "actionoutput"
+      "target": "actionoutput",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30645,9 +30393,9 @@
       "source_location": "L981",
       "weight": 1.0,
       "context": "return_type",
-      "confidence_score": 1.0,
       "source": "step_ws_ws_session_action",
-      "target": "actionoutput"
+      "target": "actionoutput",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30656,9 +30404,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1046",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_session_action",
-      "target": "step_ws_ws_err"
+      "target": "step_ws_ws_err",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30667,9 +30415,9 @@
       "source_location": "L612",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_take_conn",
-      "target": "wsconn"
+      "target": "wsconn",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30678,9 +30426,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L903",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_close_action",
-      "target": "step_ws_take_conn"
+      "target": "step_ws_take_conn",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30689,9 +30437,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L822",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_ping_action",
-      "target": "step_ws_take_conn"
+      "target": "step_ws_take_conn",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30700,9 +30448,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L729",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_recv_action",
-      "target": "step_ws_take_conn"
+      "target": "step_ws_take_conn",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30711,9 +30459,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L646",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_send_action",
-      "target": "step_ws_take_conn"
+      "target": "step_ws_take_conn",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30722,9 +30470,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L999",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ws_session_action",
-      "target": "step_ws_run_session"
+      "target": "step_ws_run_session",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -30733,9 +30481,9 @@
       "source_location": "L1062",
       "weight": 1.0,
       "context": "generic_arg",
-      "confidence_score": 1.0,
       "source": "step_ws_run_session",
-      "target": "step_ws_sessionoutcome"
+      "target": "step_ws_sessionoutcome",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30744,9 +30492,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1427",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_binary_roundtrip_uses_base64",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30755,9 +30503,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1494",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_close_removes_connection",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30766,9 +30514,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1307",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_connect_reports_sample_and_id",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30777,9 +30525,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1276",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_connect_send_recv_roundtrip",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30788,9 +30536,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1543",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_mutually_exclusive_params_are_rejected",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30799,9 +30547,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1454",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ping_measures_rtt_and_buffers_data",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30810,9 +30558,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1319",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_recv_count_mode_reads_n_messages",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30821,9 +30569,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1374",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_recv_timeout_without_match_fails_step",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30832,9 +30580,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1348",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_recv_until_json_subset_matches",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30843,9 +30591,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1400",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_send_generator_expands_per_send",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30854,9 +30602,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1573",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_session_exchanges_and_times_whole_step",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30865,9 +30613,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1602",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_session_unmatched_until_fails_but_reports_exchange",
-      "target": "step_ws_echo_server"
+      "target": "step_ws_echo_server",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30876,9 +30624,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1429",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_binary_roundtrip_uses_base64",
-      "target": "step_ws_connect_id"
+      "target": "step_ws_connect_id",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30887,9 +30635,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1496",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_close_removes_connection",
-      "target": "step_ws_connect_id"
+      "target": "step_ws_connect_id",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30898,9 +30646,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1278",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_connect_send_recv_roundtrip",
-      "target": "step_ws_connect_id"
+      "target": "step_ws_connect_id",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30909,9 +30657,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1545",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_mutually_exclusive_params_are_rejected",
-      "target": "step_ws_connect_id"
+      "target": "step_ws_connect_id",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30920,9 +30668,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1456",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_ping_measures_rtt_and_buffers_data",
-      "target": "step_ws_connect_id"
+      "target": "step_ws_connect_id",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30931,9 +30679,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1321",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_recv_count_mode_reads_n_messages",
-      "target": "step_ws_connect_id"
+      "target": "step_ws_connect_id",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30942,9 +30690,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1376",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_recv_timeout_without_match_fails_step",
-      "target": "step_ws_connect_id"
+      "target": "step_ws_connect_id",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30953,9 +30701,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1350",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_recv_until_json_subset_matches",
-      "target": "step_ws_connect_id"
+      "target": "step_ws_connect_id",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -30964,41 +30712,8 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1402",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "step_ws_send_generator_expands_per_send",
-      "target": "step_ws_connect_id"
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1771",
-      "weight": 1.0,
-      "source": "step_ws_wss_profile_string_carries_tls_flag",
-      "target": "step_ws_tls_echo_server",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1754",
-      "weight": 1.0,
-      "source": "step_ws_wss_self_signed_is_rejected_by_default",
-      "target": "step_ws_tls_echo_server",
-      "confidence_score": 1.0
-    },
-    {
-      "relation": "calls",
-      "context": "call",
-      "confidence": "EXTRACTED",
-      "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1733",
-      "weight": 1.0,
-      "source": "step_ws_wss_with_skip_tls_verify_connects_and_echoes",
-      "target": "step_ws_tls_echo_server",
+      "target": "step_ws_connect_id",
       "confidence_score": 1.0
     },
     {
@@ -35471,9 +35186,9 @@
       "source_file": "docs/core/actions.md",
       "source_location": "L132",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "core_actions_built_in_actions",
-      "target": "core_actions_websocket_std_ws_v1_and_the_std_ws_v1_family"
+      "target": "core_actions_websocket_std_ws_v1_and_the_std_ws_v1_family",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -35491,9 +35206,9 @@
       "source_file": "docs/core/actions.md",
       "source_location": "L150",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "core_actions_websocket_std_ws_v1_and_the_std_ws_v1_family",
-      "target": "core_actions_connection_profile"
+      "target": "core_actions_connection_profile",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -35501,9 +35216,9 @@
       "source_file": "docs/core/actions.md",
       "source_location": "L243",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "core_actions_websocket_std_ws_v1_and_the_std_ws_v1_family",
-      "target": "core_actions_std_ws_close_v1"
+      "target": "core_actions_std_ws_close_v1",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -35511,9 +35226,9 @@
       "source_file": "docs/core/actions.md",
       "source_location": "L166",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "core_actions_websocket_std_ws_v1_and_the_std_ws_v1_family",
-      "target": "core_actions_std_ws_connect_v1"
+      "target": "core_actions_std_ws_connect_v1",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -35521,9 +35236,9 @@
       "source_file": "docs/core/actions.md",
       "source_location": "L236",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "core_actions_websocket_std_ws_v1_and_the_std_ws_v1_family",
-      "target": "core_actions_std_ws_ping_v1"
+      "target": "core_actions_std_ws_ping_v1",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -35531,9 +35246,9 @@
       "source_file": "docs/core/actions.md",
       "source_location": "L206",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "core_actions_websocket_std_ws_v1_and_the_std_ws_v1_family",
-      "target": "core_actions_std_ws_recv_v1"
+      "target": "core_actions_std_ws_recv_v1",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -35541,9 +35256,9 @@
       "source_file": "docs/core/actions.md",
       "source_location": "L177",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "core_actions_websocket_std_ws_v1_and_the_std_ws_v1_family",
-      "target": "core_actions_std_ws_send_v1"
+      "target": "core_actions_std_ws_send_v1",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -35551,9 +35266,9 @@
       "source_file": "docs/core/actions.md",
       "source_location": "L248",
       "weight": 1.0,
-      "confidence_score": 1.0,
       "source": "core_actions_websocket_std_ws_v1_and_the_std_ws_v1_family",
-      "target": "core_actions_std_ws_v1_one_shot_session"
+      "target": "core_actions_std_ws_v1_one_shot_session",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",

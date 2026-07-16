@@ -1,16 +1,16 @@
-# Graph Report - perfscale  (2026-07-11)
+# Graph Report - perfscale  (2026-07-13)
 
 ## Corpus Check
-- 55 files · ~58,800 words
+- 57 files · ~59,505 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1162 nodes · 1951 edges · 74 communities (62 shown, 12 thin omitted)
-- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 26 edges (avg confidence: 0.82)
+- 1180 nodes · 1972 edges · 76 communities (64 shown, 12 thin omitted)
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 28 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `d20a9d47`
+- Built from commit: `c7e51e73`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -85,6 +85,8 @@
 - [[_COMMUNITY_Community 71|Community 71]]
 - [[_COMMUNITY_Community 72|Community 72]]
 - [[_COMMUNITY_Community 73|Community 73]]
+- [[_COMMUNITY_Community 74|Community 74]]
+- [[_COMMUNITY_Community 75|Community 75]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `execute_action()` - 79 edges
@@ -94,8 +96,8 @@
 5. `execute_step()` - 19 edges
 6. `run_native()` - 18 edges
 7. `lint()` - 17 edges
-8. `What You Must Do When Invoked` - 16 edges
-9. `parse()` - 15 edges
+8. `parse()` - 16 edges
+9. `What You Must Do When Invoked` - 16 edges
 10. `run()` - 15 edges
 
 ## Surprising Connections (you probably didn't know these)
@@ -115,6 +117,7 @@
 - 1-file cycle: `crates/perfscale-cli/src/commands/lint.rs -> crates/perfscale-cli/src/commands/lint.rs`
 - 1-file cycle: `crates/perfscale-cli/src/commands/run.rs -> crates/perfscale-cli/src/commands/run.rs`
 - 1-file cycle: `crates/perfscale-cli/src/update.rs -> crates/perfscale-cli/src/update.rs`
+- 1-file cycle: `crates/perfscale-cli/src/commands/schema.rs -> crates/perfscale-cli/src/commands/schema.rs`
 - 1-file cycle: `crates/perfscale-cli/src/commands/self_update.rs -> crates/perfscale-cli/src/commands/self_update.rs`
 - 1-file cycle: `crates/perfscale-cli/src/commands/serve.rs -> crates/perfscale-cli/src/commands/serve.rs`
 - 1-file cycle: `crates/perfscale-core/benches/engine.rs -> crates/perfscale-core/benches/engine.rs`
@@ -139,7 +142,7 @@
 - **Three load-test engines unified behind execute** — runner_k6_run_streaming, runner_locust_run_streaming, step_runner_run_steps, runner_mod_execute [INFERRED 0.85]
 - **YAML parse + schema validation + lint flow** — yaml_parse_with_schema, schema_test_schema, schema_config_schema, lint_lint [INFERRED 0.85]
 
-## Communities (74 total, 12 thin omitted)
+## Communities (76 total, 12 thin omitted)
 
 ### Community 0 - "Step Actions (http/check/log/sleep)"
 Cohesion: 0.06
@@ -158,8 +161,8 @@ Cohesion: 0.08
 Nodes (39): std/check@v1 action, std/http@v1 action, std/log@v1 action, std/sleep@v1 action, Benchmark methodology (hyperfine), ConfigFile schema, ReportConfig schema, External engines as subprocesses constraint (+31 more)
 
 ### Community 4 - "CLI Arg Parsing & Lint Tests"
-Cohesion: 0.07
-Nodes (33): Commands, Error, Option, PathBuf, Result, String, SummaryFormat, Vec (+25 more)
+Cohesion: 0.06
+Nodes (38): Commands, Error, Option, PathBuf, Result, String, SummaryFormat, Vec (+30 more)
 
 ### Community 5 - "Runner Config & Output Structs"
 Cohesion: 0.11
@@ -206,8 +209,8 @@ Cohesion: 0.20
 Nodes (14): Option, Result, Self, String, Display, Formatter, Into, CliError (+6 more)
 
 ### Community 16 - "Serve HTTP Endpoints"
-Cohesion: 0.09
-Nodes (36): bench_interpolate(), bench_metrics(), bench_yaml_parse(), app(), health_route_rejects_post(), health_route_returns_ok(), ingest(), metrics_route_accepts_empty_lines() (+28 more)
+Cohesion: 0.10
+Nodes (29): bench_interpolate(), bench_metrics(), bench_yaml_parse(), app(), health_route_rejects_post(), health_route_returns_ok(), ingest(), metrics_route_accepts_empty_lines() (+21 more)
 
 ### Community 17 - "Test Schema Definitions"
 Cohesion: 0.09
@@ -310,8 +313,8 @@ Cohesion: 0.50
 Nodes (3): Commit messages, graphify, perfscale — opensource repo rules
 
 ### Community 57 - "Community 57"
-Cohesion: 0.17
-Nodes (12): Benchmarking, CLI commands, Engine availability errors, Environment variables, Exit code semantics, Output streams, `perfscale lint`, `perfscale run` (+4 more)
+Cohesion: 0.15
+Nodes (13): Benchmarking, CLI commands, Engine availability errors, Environment variables, Exit code semantics, Output streams, `perfscale lint`, `perfscale run` (+5 more)
 
 ### Community 58 - "Community 58"
 Cohesion: 0.21
@@ -373,8 +376,16 @@ Nodes (3): perfscale RFCs, Process, Status values
 Cohesion: 0.50
 Nodes (4): spawn_tcp_echo(), tcp_action_expect_mismatch_fails(), tcp_action_host_port_form_and_base64_payload(), tcp_action_sends_and_reads_echo()
 
+### Community 74 - "Community 74"
+Cohesion: 0.28
+Nodes (11): run(), CliError, Result, Value, SchemaArgs, both_schemas_compile_as_valid_json_schema(), config_schema(), config_schema_describes_vus_and_duration_with_defaults() (+3 more)
+
+### Community 75 - "Community 75"
+Cohesion: 0.33
+Nodes (5): Environment variables, MCP server, Notes, Setup, Tools
+
 ## Knowledge Gaps
-- **345 isolated node(s):** `PreToolUse`, `Commands`, `Commands`, `SelfUpdateArgs`, `Option` (+340 more)
+- **354 isolated node(s):** `PreToolUse`, `Commands`, `Commands`, `SchemaDumpKind`, `SchemaDumpKind` (+349 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **12 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -382,16 +393,16 @@ Nodes (4): spawn_tcp_echo(), tcp_action_expect_mismatch_fails(), tcp_action_host
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Duration` connect `Self-Update Version & Artifacts` to `Step Actions (http/check/log/sleep)`, `Run Command Internals`, `CLI Integration Tests`, `E2E Workflow Tests`, `Self-Update Integration Tests`, `Self-Update Download/Verify/Swap`?**
-  _High betweenness centrality (0.157) - this node is a cross-community bridge._
+  _High betweenness centrality (0.151) - this node is a cross-community bridge._
 - **Why does `execute_action()` connect `Step Actions (http/check/log/sleep)` to `Community 65`, `Community 66`, `Community 70`, `Step Runner Core`, `Community 73`, `Schema Generation`, `Community 63`?**
-  _High betweenness centrality (0.113) - this node is a cross-community bridge._
+  _High betweenness centrality (0.107) - this node is a cross-community bridge._
 - **Why does `run_steps()` connect `Step Runner Core` to `Schema Generation Tests`, `Runner Output & LogLine Stream`, `Runner Config & Output Structs`, `Context Interpolation`?**
-  _High betweenness centrality (0.101) - this node is a cross-community bridge._
+  _High betweenness centrality (0.100) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `execute_action()` (e.g. with `lint::lint` and `run_before()`) actually correct?**
   _`execute_action()` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 2 inferred relationships involving `run_steps()` (e.g. with `run_streaming()` and `run_streaming()`) actually correct?**
   _`run_steps()` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `PreToolUse`, `Commands`, `Commands` to the rest of the system?**
-  _357 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _366 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Step Actions (http/check/log/sleep)` be split into smaller, more focused modules?**
   _Cohesion score 0.0633879781420765 - nodes in this community are weakly interconnected._
