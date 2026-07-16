@@ -1647,6 +1647,9 @@ mod tests {
         tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
             use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+            // The callback's Result type (large ErrorResponse Err) is fixed
+            // by tungstenite's accept_hdr_async signature.
+            #[allow(clippy::result_large_err)]
             let cb = |req: &Request, mut resp: Response| {
                 let offered = req
                     .headers()
