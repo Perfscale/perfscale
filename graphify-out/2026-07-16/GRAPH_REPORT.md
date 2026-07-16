@@ -1,12 +1,12 @@
 # Graph Report - perfscale  (2026-07-16)
 
 ## Corpus Check
-- 61 files · ~71,364 words
+- 61 files · ~72,082 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1336 nodes · 2367 edges · 81 communities (69 shown, 12 thin omitted)
-- Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 49 edges (avg confidence: 0.81)
+- 1344 nodes · 2387 edges · 79 communities (68 shown, 11 thin omitted)
+- Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 52 edges (avg confidence: 0.81)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
@@ -77,7 +77,6 @@
 - [[_COMMUNITY_Community 63|Community 63]]
 - [[_COMMUNITY_Community 64|Community 64]]
 - [[_COMMUNITY_Community 65|Community 65]]
-- [[_COMMUNITY_Community 66|Community 66]]
 - [[_COMMUNITY_Community 67|Community 67]]
 - [[_COMMUNITY_Community 68|Community 68]]
 - [[_COMMUNITY_Community 69|Community 69]]
@@ -91,10 +90,9 @@
 - [[_COMMUNITY_Community 77|Community 77]]
 - [[_COMMUNITY_Community 78|Community 78]]
 - [[_COMMUNITY_Community 79|Community 79]]
-- [[_COMMUNITY_Community 80|Community 80]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `execute_action()` - 101 edges
+1. `execute_action()` - 104 edges
 2. `cmd()` - 24 edges
 3. `ActionOutput` - 20 edges
 4. `Value` - 20 edges
@@ -149,11 +147,11 @@
 - **Three load-test engines unified behind execute** — runner_k6_run_streaming, runner_locust_run_streaming, step_runner_run_steps, runner_mod_execute [INFERRED 0.85]
 - **YAML parse + schema validation + lint flow** — yaml_parse_with_schema, schema_test_schema, schema_config_schema, lint_lint [INFERRED 0.85]
 
-## Communities (81 total, 12 thin omitted)
+## Communities (79 total, 11 thin omitted)
 
 ### Community 0 - "Step Actions (http/check/log/sleep)"
 Cohesion: 0.06
-Nodes (63): check_action_bad_on_path_falls_back_to_last(), check_action_body_contains_pass_and_fail(), check_action_duration_ms_lt_handles_fractional_values(), check_action_duration_ms_lt_pass_and_fail(), check_action_message_contains_any_semantics(), check_action_message_matches_ws_strings_and_fix_objects(), check_action_messages_count_gte(), check_action_missing_target_fails_gracefully() (+55 more)
+Nodes (65): check_action_bad_on_path_falls_back_to_last(), check_action_body_contains_pass_and_fail(), check_action_duration_ms_lt_handles_fractional_values(), check_action_duration_ms_lt_pass_and_fail(), check_action_message_contains_any_semantics(), check_action_message_matches_ws_strings_and_fix_objects(), check_action_messages_count_gte(), check_action_missing_target_fails_gracefully() (+57 more)
 
 ### Community 1 - "CLI Parser & Commands"
 Cohesion: 0.22
@@ -176,8 +174,8 @@ Cohesion: 0.11
 Nodes (33): k6-compatible summary format, Child, Default, Error, Option, Path, PathBuf, Result (+25 more)
 
 ### Community 6 - "Step Runner Core"
-Cohesion: 0.08
-Nodes (54): Arc, BTreeMap, Arc, Context, Default, HttpSample, LogLine, LogTag (+46 more)
+Cohesion: 0.09
+Nodes (53): BTreeMap, Arc, Context, Default, HttpSample, LogLine, LogTag, Map (+45 more)
 
 ### Community 7 - "Run Command Internals"
 Cohesion: 0.11
@@ -204,8 +202,8 @@ Cohesion: 0.11
 Nodes (13): Default, Option, Self, String, Value, LocustOpts::from_run_config, default_duration(), default_vus() (+5 more)
 
 ### Community 13 - "E2E Workflow Tests"
-Cohesion: 0.14
-Nodes (20): BufReader, ChildStdout, Child, Self, String, Vec, Drop, NamedTempFile (+12 more)
+Cohesion: 0.13
+Nodes (24): BufReader, ChildStdout, Child, Self, String, Vec, Drop, NamedTempFile (+16 more)
 
 ### Community 14 - "Context Interpolation"
 Cohesion: 0.17
@@ -344,16 +342,16 @@ Cohesion: 0.50
 Nodes (3): Added, Changed, Upcoming release
 
 ### Community 63 - "Community 63"
-Cohesion: 0.17
-Nodes (27): Context, HttpSample, LogTag, Option, Result, String, Value, Vec (+19 more)
+Cohesion: 0.18
+Nodes (25): Context, HttpSample, LogTag, Option, Result, Value, Vec, Form (+17 more)
 
 ### Community 64 - "Community 64"
 Cohesion: 0.10
 Nodes (19): Alternatives considered, Benefits, Detailed design, Drawbacks, Execution order and lifecycle, Goals, Metrics isolation, Motivation (+11 more)
 
 ### Community 65 - "Community 65"
-Cohesion: 0.29
-Nodes (8): Client, Map, HeaderMap, header_map_to_json(), http_action(), HttpSample, shared_client(), shared_insecure_client()
+Cohesion: 0.22
+Nodes (10): Client, Error, Map, HeaderMap, error_chain(), header_map_to_json(), http_action(), HttpSample (+2 more)
 
 ### Community 67 - "Community 67"
 Cohesion: 0.11
@@ -392,8 +390,8 @@ Cohesion: 0.33
 Nodes (5): Environment variables, MCP server, Notes, Setup, Tools
 
 ### Community 76 - "Community 76"
-Cohesion: 0.09
-Nodes (60): ActionOutput, ClientConfig, Error, Context, Gen, Instant, Option, Result (+52 more)
+Cohesion: 0.08
+Nodes (63): ActionOutput, Arc, ClientConfig, Context, Gen, Instant, Option, Result (+55 more)
 
 ### Community 77 - "Community 77"
 Cohesion: 0.15
@@ -404,32 +402,28 @@ Cohesion: 0.13
 Nodes (20): Arc, Formatter, Gen, HashMap, Instant, Mutex, Option, Result (+12 more)
 
 ### Community 79 - "Community 79"
-Cohesion: 0.50
-Nodes (4): spawn_tcp_echo(), tcp_action_expect_mismatch_fails(), tcp_action_host_port_form_and_base64_payload(), tcp_action_sends_and_reads_echo()
-
-### Community 80 - "Community 80"
-Cohesion: 0.67
-Nodes (3): spawn_udp_echo(), udp_action_send_only_succeeds_without_reply(), udp_action_sends_and_reads_echo()
+Cohesion: 0.22
+Nodes (9): String, message_text(), spawn_tcp_echo(), spawn_udp_echo(), tcp_action_expect_mismatch_fails(), tcp_action_host_port_form_and_base64_payload(), tcp_action_sends_and_reads_echo(), udp_action_send_only_succeeds_without_reply() (+1 more)
 
 ## Knowledge Gaps
-- **380 isolated node(s):** `PreToolUse`, `Commands`, `Commands`, `SchemaDumpKind`, `SchemaDumpKind` (+375 more)
+- **381 isolated node(s):** `PreToolUse`, `Commands`, `Commands`, `SchemaDumpKind`, `SchemaDumpKind` (+376 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **12 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **11 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Duration` connect `Self-Update Version & Artifacts` to `Step Actions (http/check/log/sleep)`, `Run Command Internals`, `CLI Integration Tests`, `Community 76`, `E2E Workflow Tests`, `Self-Update Integration Tests`, `Self-Update Download/Verify/Swap`?**
-  _High betweenness centrality (0.139) - this node is a cross-community bridge._
-- **Why does `execute_action()` connect `Step Actions (http/check/log/sleep)` to `Community 65`, `Community 66`, `Community 70`, `Step Runner Core`, `Community 76`, `Community 79`, `Community 80`, `Schema Generation`, `Community 63`?**
-  _High betweenness centrality (0.108) - this node is a cross-community bridge._
-- **Why does `Json` connect `Serve HTTP Endpoints` to `Step Actions (http/check/log/sleep)`, `Step Runner Core`, `Community 74`, `Context Interpolation`, `VUs Schema Property`?**
-  _High betweenness centrality (0.077) - this node is a cross-community bridge._
-- **Are the 19 inferred relationships involving `execute_action()` (e.g. with `lint::lint` and `run_before()`) actually correct?**
-  _`execute_action()` has 19 INFERRED edges - model-reasoned connections that need verification._
+  _High betweenness centrality (0.146) - this node is a cross-community bridge._
+- **Why does `execute_action()` connect `Step Actions (http/check/log/sleep)` to `Community 65`, `Community 70`, `Step Runner Core`, `Community 76`, `Community 79`, `Schema Generation`, `Community 63`?**
+  _High betweenness centrality (0.116) - this node is a cross-community bridge._
+- **Why does `run_steps()` connect `Step Runner Core` to `Runner Output & LogLine Stream`, `Locust Runner Options`, `Runner Config & Output Structs`, `Context Interpolation`?**
+  _High betweenness centrality (0.081) - this node is a cross-community bridge._
+- **Are the 22 inferred relationships involving `execute_action()` (e.g. with `lint::lint` and `run_before()`) actually correct?**
+  _`execute_action()` has 22 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `PreToolUse`, `Commands`, `Commands` to the rest of the system?**
-  _392 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _393 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Step Actions (http/check/log/sleep)` be split into smaller, more focused modules?**
-  _Cohesion score 0.05874125874125874 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.056189640035118525 - nodes in this community are weakly interconnected._
 - **Should `Runner Output & LogLine Stream` be split into smaller, more focused modules?**
   _Cohesion score 0.09615384615384616 - nodes in this community are weakly interconnected._

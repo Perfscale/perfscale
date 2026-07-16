@@ -2539,10 +2539,28 @@
       "norm_label": "websocket_unmet_until_rule_fails_step_but_run_completes()"
     },
     {
+      "label": "websocket_connection_from_before_setup_does_not_leak_into_vus()",
+      "file_type": "code",
+      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
+      "source_location": "L433",
+      "id": "tests_e2e_workflows_websocket_connection_from_before_setup_does_not_leak_into_vus",
+      "community": 13,
+      "norm_label": "websocket_connection_from_before_setup_does_not_leak_into_vus()"
+    },
+    {
+      "label": "config_after_section_is_flagged_by_lint()",
+      "file_type": "code",
+      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
+      "source_location": "L484",
+      "id": "tests_e2e_workflows_config_after_section_is_flagged_by_lint",
+      "community": 13,
+      "norm_label": "config_after_section_is_flagged_by_lint()"
+    },
+    {
       "label": "shipped_k6_example_runs_when_k6_installed()",
       "file_type": "code",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L431",
+      "source_location": "L508",
       "id": "tests_e2e_workflows_shipped_k6_example_runs_when_k6_installed",
       "community": 13,
       "norm_label": "shipped_k6_example_runs_when_k6_installed()"
@@ -2551,7 +2569,7 @@
       "label": "locust_headless_run_produces_unified_summary()",
       "file_type": "code",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L456",
+      "source_location": "L533",
       "id": "tests_e2e_workflows_locust_headless_run_produces_unified_summary",
       "community": 13,
       "norm_label": "locust_headless_run_produces_unified_summary()"
@@ -2560,7 +2578,7 @@
       "label": "run_k6_broken_script_exits_nonzero_with_no_metrics()",
       "file_type": "code",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L491",
+      "source_location": "L568",
       "id": "tests_e2e_workflows_run_k6_broken_script_exits_nonzero_with_no_metrics",
       "community": 13,
       "norm_label": "run_k6_broken_script_exits_nonzero_with_no_metrics()"
@@ -4173,7 +4191,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L48",
       "id": "crates_perfscale_core_src_step_actions_rs_string",
-      "community": 79,
+      "community": 63,
       "norm_label": "string"
     },
     {
@@ -4398,7 +4416,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L436",
       "id": "step_actions_error_chain",
-      "community": 65,
+      "community": 76,
       "norm_label": "error_chain()"
     },
     {
@@ -4407,7 +4425,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L436",
       "id": "crates_perfscale_core_src_step_actions_rs_error",
-      "community": 65,
+      "community": 76,
       "norm_label": "error"
     },
     {
@@ -4488,7 +4506,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L881",
       "id": "step_actions_message_text",
-      "community": 79,
+      "community": 63,
       "norm_label": "message_text()"
     },
     {
@@ -4839,7 +4857,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L1707",
       "id": "step_actions_spawn_udp_echo",
-      "community": 79,
+      "community": 80,
       "norm_label": "spawn_udp_echo()"
     },
     {
@@ -4848,7 +4866,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L1720",
       "id": "step_actions_udp_action_sends_and_reads_echo",
-      "community": 79,
+      "community": 80,
       "norm_label": "udp_action_sends_and_reads_echo()"
     },
     {
@@ -4857,7 +4875,7 @@
       "source_file": "crates/perfscale-core/src/step/actions.rs",
       "source_location": "L1733",
       "id": "step_actions_udp_action_send_only_succeeds_without_reply",
-      "community": 79,
+      "community": 80,
       "norm_label": "udp_action_send_only_succeeds_without_reply()"
     },
     {
@@ -5487,7 +5505,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L52",
       "id": "step_mod_step",
-      "community": 12,
+      "community": 66,
       "norm_label": "step"
     },
     {
@@ -5496,7 +5514,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L54",
       "id": "crates_perfscale_core_src_step_mod_rs_option",
-      "community": 12,
+      "community": 66,
       "norm_label": "option"
     },
     {
@@ -5505,7 +5523,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L54",
       "id": "crates_perfscale_core_src_step_mod_rs_string",
-      "community": 12,
+      "community": 66,
       "norm_label": "string"
     },
     {
@@ -5514,7 +5532,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L62",
       "id": "crates_perfscale_core_src_step_mod_rs_value",
-      "community": 12,
+      "community": 66,
       "norm_label": "value"
     },
     {
@@ -5523,7 +5541,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L78",
       "id": "step_mod_runconfig",
-      "community": 12,
+      "community": 25,
       "norm_label": "runconfig"
     },
     {
@@ -5550,7 +5568,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L95",
       "id": "crates_perfscale_core_src_step_mod_rs_default",
-      "community": 12,
+      "community": 25,
       "norm_label": "default"
     },
     {
@@ -5577,7 +5595,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L106",
       "id": "step_mod_runconfig_duration_secs",
-      "community": 12,
+      "community": 25,
       "norm_label": ".duration_secs()"
     },
     {
@@ -5586,7 +5604,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L113",
       "id": "step_mod_parse_duration_secs",
-      "community": 12,
+      "community": 25,
       "norm_label": "parse_duration_secs()"
     },
     {
@@ -5595,7 +5613,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L141",
       "id": "step_mod_preset_config",
-      "community": 12,
+      "community": 66,
       "norm_label": "preset_config()"
     },
     {
@@ -7008,7 +7026,7 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1519",
       "id": "step_ws_unknown_and_missing_id_fail_clearly",
-      "community": 76,
+      "community": 0,
       "norm_label": "unknown_and_missing_id_fail_clearly()"
     },
     {
@@ -7017,7 +7035,7 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1528",
       "id": "step_ws_connect_refused_is_failed_sample",
-      "community": 76,
+      "community": 0,
       "norm_label": "connect_refused_is_failed_sample()"
     },
     {
@@ -7053,7 +7071,7 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1625",
       "id": "step_ws_session_connect_failure_is_failed_sample",
-      "community": 76,
+      "community": 0,
       "norm_label": "session_connect_failure_is_failed_sample()"
     },
     {
@@ -7062,14 +7080,14 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1643",
       "id": "step_ws_subprotocol_is_negotiated_and_reported",
-      "community": 76,
+      "community": 0,
       "norm_label": "subprotocol_is_negotiated_and_reported()"
     },
     {
       "label": "tls_echo_server()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1688",
+      "source_location": "L1691",
       "id": "step_ws_tls_echo_server",
       "community": 76,
       "norm_label": "tls_echo_server()"
@@ -7078,7 +7096,7 @@
       "label": "wss_with_skip_tls_verify_connects_and_echoes()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1732",
+      "source_location": "L1735",
       "id": "step_ws_wss_with_skip_tls_verify_connects_and_echoes",
       "community": 76,
       "norm_label": "wss_with_skip_tls_verify_connects_and_echoes()"
@@ -7087,7 +7105,7 @@
       "label": "wss_self_signed_is_rejected_by_default()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1753",
+      "source_location": "L1756",
       "id": "step_ws_wss_self_signed_is_rejected_by_default",
       "community": 76,
       "norm_label": "wss_self_signed_is_rejected_by_default()"
@@ -7096,7 +7114,7 @@
       "label": "wss_profile_string_carries_tls_flag()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/ws.rs",
-      "source_location": "L1770",
+      "source_location": "L1773",
       "id": "step_ws_wss_profile_string_carries_tls_flag",
       "community": 76,
       "norm_label": "wss_profile_string_carries_tls_flag()"
@@ -8430,7 +8448,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L3",
       "id": "schema_test_schema_definitions",
-      "community": 25,
+      "community": 17,
       "norm_label": "definitions"
     },
     {
@@ -8439,7 +8457,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L4",
       "id": "schema_test_schema_definitions_step",
-      "community": 25,
+      "community": 17,
       "norm_label": "step"
     },
     {
@@ -8448,7 +8466,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L5",
       "id": "schema_test_schema_step_anyof",
-      "community": 25,
+      "community": 17,
       "norm_label": "anyof"
     },
     {
@@ -8457,7 +8475,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L17",
       "id": "schema_test_schema_step_description",
-      "community": 25,
+      "community": 17,
       "norm_label": "description"
     },
     {
@@ -8619,7 +8637,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L48",
       "id": "schema_test_schema_step_type",
-      "community": 25,
+      "community": 17,
       "norm_label": "type"
     },
     {
@@ -9700,15 +9718,6 @@
       "id": "upcoming_upcoming_release",
       "community": 62,
       "norm_label": "upcoming release"
-    },
-    {
-      "label": "Added",
-      "file_type": "document",
-      "source_file": "UPCOMING.md",
-      "source_location": "L15",
-      "id": "upcoming_added",
-      "community": 62,
-      "norm_label": "added"
     },
     {
       "label": "README.md",
@@ -11286,6 +11295,15 @@
       "norm_label": "process"
     },
     {
+      "label": "Added",
+      "file_type": "document",
+      "source_file": "UPCOMING.md",
+      "source_location": "L15",
+      "community": 62,
+      "norm_label": "added",
+      "id": "upcoming_added"
+    },
+    {
       "label": "Formatter",
       "file_type": "code",
       "source_file": "crates/perfscale-cli/src/error.rs",
@@ -11308,7 +11326,7 @@
       "file_type": "code",
       "source_file": "schema/test.schema.json",
       "source_location": "L32",
-      "community": 25,
+      "community": 17,
       "norm_label": "required",
       "id": "schema_test_schema_step_required"
     },
@@ -11317,7 +11335,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L222",
-      "community": 76,
+      "community": 6,
       "norm_label": "arc",
       "id": "arc"
     },
@@ -12484,7 +12502,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 12,
+      "community": 25,
       "norm_label": "locustopts::from_run_config",
       "id": "runner_locust_from_run_config"
     },
@@ -12666,7 +12684,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 24,
+      "community": 25,
       "norm_label": "configfile",
       "id": "yaml_configfile"
     },
@@ -12679,7 +12697,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 24,
+      "community": 25,
       "norm_label": "reportconfig",
       "id": "yaml_reportconfig"
     },
@@ -17794,6 +17812,16 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
+      "source_location": "L484",
+      "weight": 1.0,
+      "source": "tests_e2e_workflows",
+      "target": "tests_e2e_workflows_config_after_section_is_flagged_by_lint",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
       "source_location": "L13",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -17904,11 +17932,21 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L314",
+      "source_location": "L433",
       "weight": 1.0,
       "source": "tests_e2e_workflows",
-      "target": "tests_e2e_workflows_websocket_live_connection_full_journey",
+      "target": "tests_e2e_workflows_websocket_connection_from_before_setup_does_not_leak_into_vus",
       "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
+      "source_location": "L314",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "tests_e2e_workflows",
+      "target": "tests_e2e_workflows_websocket_live_connection_full_journey"
     },
     {
       "relation": "contains",
@@ -17916,9 +17954,9 @@
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
       "source_location": "L382",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "tests_e2e_workflows",
-      "target": "tests_e2e_workflows_websocket_unmet_until_rule_fails_step_but_run_completes",
-      "confidence_score": 1.0
+      "target": "tests_e2e_workflows_websocket_unmet_until_rule_fails_step_but_run_completes"
     },
     {
       "relation": "contains",
@@ -17936,9 +17974,9 @@
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
       "source_location": "L279",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "tests_e2e_workflows",
-      "target": "tests_e2e_workflows_ws_echo_server",
-      "confidence_score": 1.0
+      "target": "tests_e2e_workflows_ws_echo_server"
     },
     {
       "relation": "calls",
@@ -18075,9 +18113,9 @@
       "source_location": "L279",
       "weight": 1.0,
       "context": "return_type",
+      "confidence_score": 1.0,
       "source": "tests_e2e_workflows_ws_echo_server",
-      "target": "crates_perfscale_cli_tests_e2e_workflows_rs_string",
-      "confidence_score": 1.0
+      "target": "crates_perfscale_cli_tests_e2e_workflows_rs_string"
     },
     {
       "relation": "calls",
@@ -18144,6 +18182,17 @@
       "confidence_score": 1.0,
       "source": "tests_e2e_workflows_serveproc_wait_for_output",
       "target": "crates_perfscale_cli_tests_e2e_workflows_rs_vec"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
+      "source_location": "L485",
+      "weight": 1.0,
+      "source": "tests_e2e_workflows_config_after_section_is_flagged_by_lint",
+      "target": "tests_e2e_workflows_write_temp",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -18238,9 +18287,9 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L319",
+      "source_location": "L436",
       "weight": 1.0,
-      "source": "tests_e2e_workflows_websocket_live_connection_full_journey",
+      "source": "tests_e2e_workflows_websocket_connection_from_before_setup_does_not_leak_into_vus",
       "target": "tests_e2e_workflows_write_temp",
       "confidence_score": 1.0
     },
@@ -18249,11 +18298,22 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
+      "source_location": "L319",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "tests_e2e_workflows_websocket_live_connection_full_journey",
+      "target": "tests_e2e_workflows_write_temp"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
       "source_location": "L387",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "tests_e2e_workflows_websocket_unmet_until_rule_fails_step_but_run_completes",
-      "target": "tests_e2e_workflows_write_temp",
-      "confidence_score": 1.0
+      "target": "tests_e2e_workflows_write_temp"
     },
     {
       "relation": "references",
@@ -18271,9 +18331,9 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
-      "source_location": "L315",
+      "source_location": "L434",
       "weight": 1.0,
-      "source": "tests_e2e_workflows_websocket_live_connection_full_journey",
+      "source": "tests_e2e_workflows_websocket_connection_from_before_setup_does_not_leak_into_vus",
       "target": "tests_e2e_workflows_ws_echo_server",
       "confidence_score": 1.0
     },
@@ -18282,11 +18342,22 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
+      "source_location": "L315",
+      "weight": 1.0,
+      "confidence_score": 1.0,
+      "source": "tests_e2e_workflows_websocket_live_connection_full_journey",
+      "target": "tests_e2e_workflows_ws_echo_server"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-cli/tests/e2e_workflows.rs",
       "source_location": "L383",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "tests_e2e_workflows_websocket_unmet_until_rule_fails_step_but_run_completes",
-      "target": "tests_e2e_workflows_ws_echo_server",
-      "confidence_score": 1.0
+      "target": "tests_e2e_workflows_ws_echo_server"
     },
     {
       "relation": "references",
@@ -18295,9 +18366,9 @@
       "source_location": "L279",
       "weight": 1.0,
       "context": "return_type",
+      "confidence_score": 1.0,
       "source": "tests_e2e_workflows_ws_echo_server",
-      "target": "runtime",
-      "confidence_score": 1.0
+      "target": "runtime"
     },
     {
       "relation": "imports_from",
@@ -29231,9 +29302,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1688",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_tls_echo_server",
-      "confidence_score": 1.0
+      "target": "step_ws_tls_echo_server"
     },
     {
       "relation": "contains",
@@ -29351,9 +29422,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1770",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_wss_profile_string_carries_tls_flag",
-      "confidence_score": 1.0
+      "target": "step_ws_wss_profile_string_carries_tls_flag"
     },
     {
       "relation": "contains",
@@ -29361,9 +29432,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1753",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_wss_self_signed_is_rejected_by_default",
-      "confidence_score": 1.0
+      "target": "step_ws_wss_self_signed_is_rejected_by_default"
     },
     {
       "relation": "contains",
@@ -29371,9 +29442,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1732",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "step_ws",
-      "target": "step_ws_wss_with_skip_tls_verify_connects_and_echoes",
-      "confidence_score": 1.0
+      "target": "step_ws_wss_with_skip_tls_verify_connects_and_echoes"
     },
     {
       "relation": "references",
@@ -29558,9 +29629,9 @@
       "source_location": "L1688",
       "weight": 1.0,
       "context": "return_type",
+      "confidence_score": 1.0,
       "source": "step_ws_tls_echo_server",
-      "target": "crates_perfscale_core_src_step_ws_rs_string",
-      "confidence_score": 1.0
+      "target": "crates_perfscale_core_src_step_ws_rs_string"
     },
     {
       "relation": "references",
@@ -30975,9 +31046,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1771",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "step_ws_wss_profile_string_carries_tls_flag",
-      "target": "step_ws_tls_echo_server",
-      "confidence_score": 1.0
+      "target": "step_ws_tls_echo_server"
     },
     {
       "relation": "calls",
@@ -30986,9 +31057,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1754",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "step_ws_wss_self_signed_is_rejected_by_default",
-      "target": "step_ws_tls_echo_server",
-      "confidence_score": 1.0
+      "target": "step_ws_tls_echo_server"
     },
     {
       "relation": "calls",
@@ -30997,9 +31068,9 @@
       "source_file": "crates/perfscale-core/src/step/ws.rs",
       "source_location": "L1733",
       "weight": 1.0,
+      "confidence_score": 1.0,
       "source": "step_ws_wss_with_skip_tls_verify_connects_and_echoes",
-      "target": "step_ws_tls_echo_server",
-      "confidence_score": 1.0
+      "target": "step_ws_tls_echo_server"
     },
     {
       "relation": "contains",
@@ -37987,5 +38058,5 @@
       "source_file": "crates/perfscale-core/src/yaml.rs"
     }
   ],
-  "built_at_commit": "e2fdc233e2d69336535a35fa9f7f084b91ea80e1"
+  "built_at_commit": "e463e99322b647025023f6818896da4912cfd075"
 }
