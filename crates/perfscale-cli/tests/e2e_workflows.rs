@@ -422,6 +422,83 @@ fn websocket_unmet_until_rule_fails_step_but_run_completes() {
         ));
 }
 
+/// Contract test: a Live Connection opened in `before:` setup does NOT leak
+/// into VU iterations. The setup context (and its socket) is gone before any
+/// VU starts, and N concurrent VUs must never share one socket — they would
+/// race for each other's frames and the test would measure a mutex, not the
+/// server. The connect itself succeeds and its id lands in `config`, but a
+/// VU step using that id gets a clear error naming the cause.
+#[test]
+#[file_serial(heavy_io)]
+fn websocket_connection_from_before_setup_does_not_leak_into_vus() {
+    let (_rt, url) = ws_echo_server();
+
+    let config_file = write_temp(
+        ".yaml",
+        &format!(
+            r#"vus: 1
+duration: 1s
+before:
+  - use: std/ws-connect@v1
+    with: {{ url: "{url}" }}
+    outputs: feed
+"#
+        ),
+    );
+    let test_file = write_temp(
+        ".yaml",
+        r#"steps:
+  - name: use stale id
+    use: std/ws-send@v1
+    with:
+      id: "${{ config.feed.id }}"
+      send: "hello"
+  - use: std/sleep@v1
+    with: { ms: 200 }
+"#,
+    );
+
+    assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args([
+            "run",
+            "-f",
+            test_file.path().to_str().unwrap(),
+            "-c",
+            config_file.path().to_str().unwrap(),
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        // Setup succeeded (the connect itself works), the run completes —
+        // the failing send is load-test feedback, not a CLI error.
+        .success()
+        .stderr(predicate::str::contains("unknown connection id"))
+        .stderr(predicate::str::contains("`before:` setup"));
+}
+
+/// There is no `after:` section in a config — teardown belongs in the step
+/// list (`std/ws-close@v1` at the end of an iteration), and whatever is left
+/// open is dropped by the engine at iteration end. The linter names the
+/// unknown field instead of letting it be silently ignored.
+#[test]
+#[file_serial(heavy_io)]
+fn config_after_section_is_flagged_by_lint() {
+    let config_file = write_temp(
+        ".yaml",
+        r#"vus: 1
+duration: 1s
+after:
+  - use: std/ws-close@v1
+    with: { id: "ws-1" }
+"#,
+    );
+
+    assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args(["lint", config_file.path().to_str().unwrap()])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .stdout(predicate::str::contains("unknown field 'after'"));
+}
+
 // ---------------------------------------------------------------------------
 // Shipped examples work as-is for engines that don't need the network
 // ---------------------------------------------------------------------------
