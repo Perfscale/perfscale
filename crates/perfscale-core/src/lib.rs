@@ -8,6 +8,7 @@
 //! Test/config files are plain YAML, deserialized straight into [`step::TestDef`]
 //! and [`yaml::ConfigFile`] via `serde`.
 
+pub mod generate;
 pub mod lint;
 pub mod models;
 pub mod runner;

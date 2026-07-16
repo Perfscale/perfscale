@@ -5,6 +5,12 @@
 //! | `std/http@v1`    | HTTP request (any method) with timing            |
 //! | `std/tcp@v1`     | Raw TCP connect / send / receive with timing     |
 //! | `std/udp@v1`     | Raw UDP send / receive with timing               |
+//! | `std/ws@v1`      | WebSocket one-shot session (connect→msgs→close)  |
+//! | `std/ws-connect@v1` | Open a live WebSocket, returns its id         |
+//! | `std/ws-send@v1`    | Send message(s) on a live WebSocket           |
+//! | `std/ws-recv@v1`    | Read from a live WebSocket until a rule       |
+//! | `std/ws-ping@v1`    | Ping→pong round trip on a live WebSocket      |
+//! | `std/ws-close@v1`   | Gracefully close a live WebSocket             |
 //! | `std/check@v1`   | Assert properties of a previous step output      |
 //! | `std/sleep@v1`   | Wait N milliseconds                              |
 //! | `std/log@v1`     | Emit a log line                                  |
@@ -101,6 +107,16 @@ pub async fn execute_action(
         "std/http@v1" | "http" => http_action(&resolved, step_name).await,
         "std/tcp@v1" | "tcp" => tcp_action(&resolved, step_name).await,
         "std/udp@v1" | "udp" => udp_action(&resolved, step_name).await,
+        "std/ws@v1" | "ws" => super::ws::ws_session_action(&resolved, step_name).await,
+        "std/ws-connect@v1" | "ws-connect" => {
+            super::ws::ws_connect_action(&resolved, ctx, step_name).await
+        }
+        "std/ws-send@v1" | "ws-send" => super::ws::ws_send_action(&resolved, ctx, step_name).await,
+        "std/ws-recv@v1" | "ws-recv" => super::ws::ws_recv_action(&resolved, ctx, step_name).await,
+        "std/ws-ping@v1" | "ws-ping" => super::ws::ws_ping_action(&resolved, ctx, step_name).await,
+        "std/ws-close@v1" | "ws-close" => {
+            super::ws::ws_close_action(&resolved, ctx, step_name).await
+        }
         "std/check@v1" | "check" => check_action(&resolved, ctx, step_name),
         "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name).await,
         "std/log@v1" | "log" => log_action(&resolved, step_name),
@@ -417,7 +433,7 @@ fn header_map_to_json(headers: &reqwest::header::HeaderMap) -> serde_json::Map<S
 /// Flatten an error and its source chain into one line — reqwest's `Display`
 /// alone is just "error sending request for url (...)", which hides the actual
 /// cause (connection refused, reset, dns, ...).
-fn error_chain(e: &dyn std::error::Error) -> String {
+pub(crate) fn error_chain(e: &dyn std::error::Error) -> String {
     let mut out = e.to_string();
     let mut src = e.source();
     while let Some(s) = src {
@@ -705,17 +721,29 @@ fn tcp_udp_err(proto: &str, addr: &str, detail: &str, duration_ms: f64) -> Actio
 // ---------------------------------------------------------------------------
 //
 // Parameters (the check object itself):
-//   on            – variable name to check (optional; defaults to "__last__")
+//   on            – variable to check (optional; defaults to "__last__").
+//                   Dots descend into the value: `on: got.messages.0`
+//                   addresses one message by position (an Indexed assert).
 //   status        – HTTP status must equal this value
 //   duration_ms_lt – duration_ms must be strictly less than this value
 //   body_contains  – response body must contain this string
+//
+// Message asserts — over the `messages` list that message-exchanging actions
+// (std/ws@v1, std/ws-recv@v1, pro/fix@v1) expose in their output. All use the
+// ANY quantifier: at least one message must match, because streams carry
+// noise (heartbeats, unrelated events). When `on` addresses a single message
+// (or a non-message output), that value alone is the candidate set.
+//   message_contains   – some message's text form contains this substring
+//   message_matches    – some message JSON-subset-matches this object
+//                        (objects — e.g. FIX tag maps — match directly;
+//                        strings are parsed as JSON first)
+//   messages_count_gte – the messages list has at least N entries
 
 fn check_action(params: &Value, ctx: &Context, step_name: &str) -> ActionOutput {
     let on_var = params.get("on").and_then(|v| v.as_str());
     let target = on_var
-        .and_then(|name| ctx.vars.get(name))
-        .or_else(|| ctx.vars.get("__last__"))
-        .cloned()
+        .and_then(|path| resolve_check_target(ctx, path))
+        .or_else(|| ctx.vars.get("__last__").cloned())
         .unwrap_or(Value::Null);
 
     let mut all_pass = true;
@@ -764,6 +792,44 @@ fn check_action(params: &Value, ctx: &Context, step_name: &str) -> ActionOutput 
                     ),
                 )
             }
+            "message_contains" => {
+                let want = expected.as_str().unwrap_or("");
+                let ok = message_candidates(&target)
+                    .iter()
+                    .any(|m| message_text(m).contains(want));
+                (
+                    ok,
+                    format!(
+                        "some message contains {:?} → {}",
+                        want,
+                        if ok { "PASS" } else { "FAIL" }
+                    ),
+                )
+            }
+            "message_matches" => {
+                let ok = message_candidates(&target)
+                    .iter()
+                    .any(|m| message_json_matches(expected, m));
+                (
+                    ok,
+                    format!(
+                        "some message matches {expected} → {}",
+                        if ok { "PASS" } else { "FAIL" }
+                    ),
+                )
+            }
+            "messages_count_gte" => {
+                let got = message_candidates(&target).len() as u64;
+                let want = expected.as_u64().unwrap_or(u64::MAX);
+                let ok = got >= want;
+                (
+                    ok,
+                    format!(
+                        "messages count>={want} → {} (got {got})",
+                        if ok { "PASS" } else { "FAIL" }
+                    ),
+                )
+            }
             other => (false, format!("unknown check type '{other}'")),
         };
 
@@ -779,6 +845,53 @@ fn check_action(params: &Value, ctx: &Context, step_name: &str) -> ActionOutput 
         logs,
         success: all_pass,
         http_sample: None,
+    }
+}
+
+/// Resolve the `on:` path — a variable name, optionally descending into the
+/// stored value one JSON level per `.` (array indices included), so
+/// `on: got.messages.0` checks a single message.
+fn resolve_check_target(ctx: &Context, path: &str) -> Option<Value> {
+    let mut segments = path.split('.');
+    let mut current = ctx.vars.get(segments.next()?)?;
+    for seg in segments {
+        current = match current {
+            Value::Array(a) => a.get(seg.parse::<usize>().ok()?)?,
+            other => other.get(seg)?,
+        };
+    }
+    Some(current.clone())
+}
+
+/// The messages a message-assert quantifies over: the target's `messages`
+/// list, the target itself when it *is* a list, else the target alone (an
+/// `on:`-addressed single message).
+fn message_candidates(target: &Value) -> Vec<&Value> {
+    match target.get("messages") {
+        Some(Value::Array(a)) => a.iter().collect(),
+        _ => match target {
+            Value::Array(a) => a.iter().collect(),
+            other => vec![other],
+        },
+    }
+}
+
+/// A message's text form: strings as-is (WS frames), objects/values as their
+/// JSON rendering (FIX tag maps).
+fn message_text(m: &Value) -> String {
+    match m {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// JSON-subset match for one message: objects (FIX tag maps) match directly,
+/// strings (WS text frames) are parsed as JSON first.
+fn message_json_matches(pattern: &Value, m: &Value) -> bool {
+    match m {
+        Value::String(s) => serde_json::from_str::<Value>(s)
+            .is_ok_and(|parsed| super::ws::json_subset_match(pattern, &parsed)),
+        other => super::ws::json_subset_match(pattern, other),
     }
 }
 
@@ -1011,7 +1124,7 @@ fn log_action(params: &Value, _step_name: &str) -> ActionOutput {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn err(step_name: &str, msg: &str) -> ActionOutput {
+pub(crate) fn err(step_name: &str, msg: &str) -> ActionOutput {
     ActionOutput {
         value: Value::Null,
         logs: vec![(LogTag::Err, format!("{step_name}: {msg}"))],
@@ -1817,6 +1930,138 @@ mod tests {
         let ctx = Context::new(); // no __last__ set at all
         let out = execute_action("std/check@v1", &json!({ "status": 200 }), &ctx, "step").await;
         assert!(!out.success);
+    }
+
+    /// Message asserts quantify over the `messages` list with ANY semantics:
+    /// one matching message among noise passes; none fails.
+    #[tokio::test]
+    async fn check_action_message_contains_any_semantics() {
+        let mut ctx = Context::new();
+        ctx.set(
+            "got",
+            json!({ "messages": ["heartbeat", "8=FIX.4.4|35=8|150=F", "heartbeat"] }),
+        );
+        let out = execute_action(
+            "std/check@v1",
+            &json!({ "on": "got", "message_contains": "35=8" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success);
+
+        let out = execute_action(
+            "std/check@v1",
+            &json!({ "on": "got", "message_contains": "35=9" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+    }
+
+    /// `message_matches` handles both message shapes: WS text frames (strings,
+    /// parsed as JSON) and FIX frames (tag→value objects, matched directly).
+    #[tokio::test]
+    async fn check_action_message_matches_ws_strings_and_fix_objects() {
+        let mut ctx = Context::new();
+        ctx.set(
+            "ws_out",
+            json!({ "messages": [r#"{"type":"trade","px":1.5,"extra":1}"#, "not json"] }),
+        );
+        ctx.set(
+            "fix_out",
+            json!({ "messages": [ { "35": "8", "150": "F", "55": "EURUSD" } ] }),
+        );
+
+        let out = execute_action(
+            "std/check@v1",
+            &json!({ "on": "ws_out", "message_matches": { "type": "trade" } }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+
+        let out = execute_action(
+            "std/check@v1",
+            &json!({ "on": "fix_out", "message_matches": { "35": "8", "150": "F" } }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+
+        let out = execute_action(
+            "std/check@v1",
+            &json!({ "on": "fix_out", "message_matches": { "35": "9" } }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+    }
+
+    #[tokio::test]
+    async fn check_action_messages_count_gte() {
+        let mut ctx = Context::new();
+        ctx.set("got", json!({ "messages": ["a", "b", "c"] }));
+        for (want, pass) in [(3, true), (4, false)] {
+            let out = execute_action(
+                "std/check@v1",
+                &json!({ "on": "got", "messages_count_gte": want }),
+                &ctx,
+                "step",
+            )
+            .await;
+            assert_eq!(out.success, pass, "count>={want}");
+        }
+    }
+
+    /// An Indexed assert: `on:` descends into the output, so a check can
+    /// address one message by position (deterministic exchanges only —
+    /// streams are unordered).
+    #[tokio::test]
+    async fn check_action_on_path_addresses_single_message() {
+        let mut ctx = Context::new();
+        ctx.set(
+            "got",
+            json!({ "messages": [r#"{"type":"welcome"}"#, r#"{"type":"data"}"#] }),
+        );
+        let out = execute_action(
+            "std/check@v1",
+            &json!({ "on": "got.messages.0", "message_matches": { "type": "welcome" } }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+
+        // The wrong index fails — the indexed message is the only candidate.
+        let out = execute_action(
+            "std/check@v1",
+            &json!({ "on": "got.messages.1", "message_matches": { "type": "welcome" } }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+    }
+
+    /// A bad `on:` path falls back to `__last__` (same forgiving behavior as
+    /// an unknown variable name always had).
+    #[tokio::test]
+    async fn check_action_bad_on_path_falls_back_to_last() {
+        let mut ctx = Context::new();
+        ctx.set("__last__", json!({ "status": 200 }));
+        let out = execute_action(
+            "std/check@v1",
+            &json!({ "on": "got.messages.99", "status": 200 }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success);
     }
 
     // -----------------------------------------------------------------

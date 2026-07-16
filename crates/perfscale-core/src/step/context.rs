@@ -7,10 +7,13 @@ use serde_json::Value;
 /// Execution context for a single VU iteration.
 ///
 /// Stores step outputs so later steps can reference them via
-/// `${{ var_name.field }}` in string parameter values.
+/// `${{ var_name.field }}` in string parameter values. Live resources (open
+/// WebSockets) are not JSON and live in `resources` instead — steps refer to
+/// them by the Connection ID a connect step returned.
 #[derive(Debug, Default, Clone)]
 pub struct Context {
     pub(crate) vars: HashMap<String, Value>,
+    pub(crate) resources: crate::step::resources::Resources,
 }
 
 impl Context {

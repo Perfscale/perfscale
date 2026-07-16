@@ -98,7 +98,7 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
     // definition (see `schema::relax_use_alias`); the older wording was
     // `"use" is a required property`.
     if problem.contains("\"use\" is a required property") || problem.contains("anyOf") {
-        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, or `std/file-write@v1`".into())
+        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, or `std/file-write@v1`".into())
     } else if problem.contains("\"steps\" is a required property") {
         Some("a test definition is a mapping with a `steps:` list at the top level".into())
     } else if problem.contains("\"url\" is a required property") {
@@ -122,7 +122,15 @@ const TEST_TOP_FIELDS: [&str; 1] = ["steps"];
 const STEP_FIELDS: [&str; 6] = ["name", "use", "uses", "with", "check", "outputs"];
 const CONFIG_TOP_FIELDS: [&str; 5] = ["vus", "duration", "report", "before", "variables"];
 const REPORT_FIELDS: [&str; 1] = ["url"];
-const CHECK_FIELDS: [&str; 4] = ["on", "status", "duration_ms_lt", "body_contains"];
+const CHECK_FIELDS: [&str; 7] = [
+    "on",
+    "status",
+    "duration_ms_lt",
+    "body_contains",
+    "message_contains",
+    "message_matches",
+    "messages_count_gte",
+];
 const HTTP_WITH_FIELDS: [&str; 7] = [
     "method",
     "url",
@@ -144,6 +152,36 @@ const RAW_NET_WITH_FIELDS: [&str; 9] = [
     "expect",
     "timeout",
 ];
+// Shared by std/ws@v1 and std/ws-connect@v1 (the Connection Profile), plus
+// per-action extras below.
+const WS_PROFILE_FIELDS: [&str; 6] = [
+    "connection",
+    "url",
+    "headers",
+    "subprotocols",
+    "skipTLSVerify",
+    "timeout",
+];
+const WS_SESSION_WITH_FIELDS: [&str; 7] = [
+    "connection",
+    "url",
+    "headers",
+    "subprotocols",
+    "skipTLSVerify",
+    "timeout",
+    "messages",
+];
+const WS_SEND_WITH_FIELDS: [&str; 6] = [
+    "id",
+    "send",
+    "send_base64",
+    "repeat",
+    "interval_ms",
+    "timeout",
+];
+const WS_RECV_WITH_FIELDS: [&str; 5] = ["id", "count", "until_contains", "until_json", "timeout"];
+const WS_PING_WITH_FIELDS: [&str; 2] = ["id", "timeout"];
+const WS_CLOSE_WITH_FIELDS: [&str; 4] = ["id", "code", "reason", "timeout"];
 const SLEEP_WITH_FIELDS: [&str; 2] = ["ms", "seconds"];
 const LOG_WITH_FIELDS: [&str; 1] = ["message"];
 const FILE_READ_WITH_FIELDS: [&str; 2] = ["path", "encoding"];
@@ -196,6 +234,12 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
                     "std/http@v1",
                     "std/tcp@v1",
                     "std/udp@v1",
+                    "std/ws@v1",
+                    "std/ws-connect@v1",
+                    "std/ws-send@v1",
+                    "std/ws-recv@v1",
+                    "std/ws-ping@v1",
+                    "std/ws-close@v1",
                     "std/check@v1",
                     "std/sleep@v1",
                     "std/log@v1",
@@ -205,7 +249,7 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             )
             .or_else(|| {
                 Some(
-                    "available actions: std/http@v1, std/tcp@v1, std/udp@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1"
+                    "available actions: std/http@v1, std/tcp@v1, std/udp@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1"
                         .into(),
                 )
             }),
@@ -216,6 +260,12 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
         let with_fields: Option<&[&str]> = match action {
             "std/http@v1" | "http" => Some(&HTTP_WITH_FIELDS),
             "std/tcp@v1" | "tcp" | "std/udp@v1" | "udp" => Some(&RAW_NET_WITH_FIELDS),
+            "std/ws@v1" | "ws" => Some(&WS_SESSION_WITH_FIELDS),
+            "std/ws-connect@v1" | "ws-connect" => Some(&WS_PROFILE_FIELDS),
+            "std/ws-send@v1" | "ws-send" => Some(&WS_SEND_WITH_FIELDS),
+            "std/ws-recv@v1" | "ws-recv" => Some(&WS_RECV_WITH_FIELDS),
+            "std/ws-ping@v1" | "ws-ping" => Some(&WS_PING_WITH_FIELDS),
+            "std/ws-close@v1" | "ws-close" => Some(&WS_CLOSE_WITH_FIELDS),
             "std/check@v1" | "check" => Some(&CHECK_FIELDS),
             "std/sleep@v1" | "sleep" => Some(&SLEEP_WITH_FIELDS),
             "std/log@v1" | "log" => Some(&LOG_WITH_FIELDS),
@@ -259,6 +309,18 @@ fn is_known_action(action: &str) -> bool {
             | "tcp"
             | "std/udp@v1"
             | "udp"
+            | "std/ws@v1"
+            | "ws"
+            | "std/ws-connect@v1"
+            | "ws-connect"
+            | "std/ws-send@v1"
+            | "ws-send"
+            | "std/ws-recv@v1"
+            | "ws-recv"
+            | "std/ws-ping@v1"
+            | "ws-ping"
+            | "std/ws-close@v1"
+            | "ws-close"
             | "std/check@v1"
             | "check"
             | "std/sleep@v1"

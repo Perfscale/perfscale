@@ -1,0 +1,63 @@
+# WebSocket load test — both styles in one scenario.
+#
+# Run against any echo server, e.g.:
+#   npx wscat --listen 9222   (or any ws echo endpoint)
+#   perfscale run -f examples/websocket.test.yaml
+#
+# Style 1: a Live Connection held across steps (connect → send → recv → close).
+# Style 2: a one-shot session (`std/ws@v1`) — connect, exchange, close in one
+# step, timed as a single http_req_duration sample.
+
+steps:
+  # --- Style 1: Live Connection -------------------------------------------
+  - name: open feed
+    use: std/ws-connect@v1
+    with:
+      url: ws://127.0.0.1:9222
+    outputs: feed
+
+  - name: subscribe
+    use: std/ws-send@v1
+    with:
+      id: "${{ feed.id }}"
+      # Single-brace ${…} tokens expand per send — 5 unique messages from one
+      # template, 20ms apart.
+      send: '{"op":"subscribe","id":"sub-${seq}","ts":${now_ms}}'
+      repeat: 5
+      interval_ms: 20
+
+  - name: await echo
+    use: std/ws-recv@v1
+    with:
+      id: "${{ feed.id }}"
+      until_contains: "sub-5"
+      timeout: 5000
+    check:
+      messages_count_gte: 5
+      message_contains: "subscribe"
+    outputs: got
+
+  - name: transport rtt
+    use: std/ws-ping@v1
+    with: { id: "${{ feed.id }}" }
+    check:
+      duration_ms_lt: 250
+
+  - name: hang up
+    use: std/ws-close@v1
+    with: { id: "${{ feed.id }}" }
+
+  # --- Style 2: one-shot session ------------------------------------------
+  - name: echo session
+    use: std/ws@v1
+    with:
+      url: ws://127.0.0.1:9222
+      messages:
+        - send: '{"type":"hello","id":"${uuid}"}'
+          until_json: { type: hello }
+    check:
+      message_matches: { type: hello }
+
+  - name: pace
+    use: std/sleep@v1
+    with: { ms: 200 }

@@ -45,3 +45,5 @@ wiremock      = "0.6"
 tower         = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 serial_test = { version = "3", features = ["file_locks"] }
+tokio-tungstenite = "0.30"
+futures-util = { version = "0.3.32", default-features = false, features = ["sink"] }

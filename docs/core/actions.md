@@ -5,7 +5,9 @@ action in `use`, passes parameters in `with`, and may assert on the result in
 `check`.
 
 Full IDs carry a namespace and version (`std/http@v1`); the short aliases
-(`http`, `tcp`, `udp`, `check`, `sleep`, `log`, `file-read`, `file-write`) resolve to the same implementations.
+(`http`, `tcp`, `udp`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`,
+`ws-close`, `check`, `sleep`, `log`, `file-read`, `file-write`) resolve to the
+same implementations.
 
 ## `std/http@v1`
 
@@ -127,6 +129,152 @@ host. Set `read` (or `expect`) to actually validate a response.
 { "sent": 4, "received": 4, "response": "pong", "duration_ms": 0.21 }
 ```
 
+## WebSocket: `std/ws@v1` and the `std/ws-*@v1` family
+
+Two ways to load-test a WebSocket endpoint:
+
+- **One-shot session** — `std/ws@v1` opens a connection, exchanges messages,
+  and closes, all in one step (like a FIX session). Simplest; the whole
+  session is timed as one `http_req_duration` sample.
+- **Live connection** — `std/ws-connect@v1` opens a connection that stays up
+  across steps within the iteration; `ws-send` / `ws-recv` / `ws-ping` /
+  `ws-close` address it by the **id** the connect step returned. Use this to
+  interleave WS traffic with other steps (e.g. subscribe over WS, trigger via
+  HTTP, assert the push arrives).
+
+A connection left open at the end of an iteration is dropped abruptly (no
+Close handshake) — call `std/ws-close@v1` for a graceful shutdown. Live
+connections never survive into the next iteration, and `ws-connect` inside
+`before:` setup is not useful (the setup context is gone before VUs start).
+
+### Connection profile
+
+All connect-capable steps (`std/ws@v1`, `std/ws-connect@v1`) accept the same
+target parameters, inline or bundled as a profile object under `connection`
+(inline fields win). A profile defined in a config `before:` step travels as
+`connection: "${{ config.<name> }}"`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `url` | string | **required** | `ws://` or `wss://` target |
+| `headers` | object | — | Extra handshake headers (auth tokens etc.) |
+| `subprotocols` | array \| string | — | Offered `Sec-WebSocket-Protocol` values (e.g. `graphql-ws`) |
+| `skipTLSVerify` | boolean | `false` | Accept any server certificate (self-signed staging only) |
+| `connection` | object \| string | — | A profile supplying defaults for any field above |
+| `timeout` | integer (ms) | `10000` | Handshake timeout (for `std/ws@v1`: the whole session) |
+
+### `std/ws-connect@v1`
+
+Opens a live connection. Output:
+
+```json
+{ "id": "ws-1", "connected": true, "subprotocol": "graphql-ws", "duration_ms": 3.1 }
+```
+
+The handshake feeds `http_req_duration`. Store the output (`outputs: feed`)
+and pass `id: "${{ feed.id }}"` to the other `ws-*` steps.
+
+### `std/ws-send@v1`
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `id` | string | **required** | Connection id from `std/ws-connect@v1` |
+| `send` | string | one of send/send_base64 | Text payload; `${…}` tokens expand per send (see below) |
+| `send_base64` | string | one of send/send_base64 | Binary payload |
+| `repeat` | integer | `1` | Emit N messages from the one template |
+| `interval_ms` | integer | `0` | Gap between repeated sends |
+| `timeout` | integer (ms) | `10000` | For the whole send loop |
+
+**Output**: `{ "sent": N, "bytes": B, "duration_ms": … }`. Counts toward the
+`ws_msgs_sent` rate.
+
+Text payloads may embed single-brace `${…}` tokens, expanded anew per send —
+distinct from the engine's `${{ … }}`, which resolves once before the action
+runs:
+
+| Token | Expands to |
+|---|---|
+| `${seq}` | Monotonic counter, unique per message |
+| `${uuid}` | Random 32-hex id |
+| `${now}` | UTC `YYYYMMDD-HH:MM:SS.sss` (FIX SendingTime shape) |
+| `${now_ms}` | Unix milliseconds |
+| `${now_iso}` | UTC RFC 3339 `YYYY-MM-DDTHH:MM:SS.sssZ` |
+| `${rand(a,b)}` | Random integer in `[a,b]` |
+| `${randf(a,b[,dp])}` | Random float, `dp` decimals (default 2) |
+| `${choice(x\|y\|z)}` | Random pick |
+
+### `std/ws-recv@v1`
+
+Reads until a **stopping rule** is satisfied — not reaching it within
+`timeout` fails the step:
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `id` | string | **required** | Connection id |
+| `until_contains` | string | — | Stop when a message contains this substring |
+| `until_json` | object | — | Stop when a message JSON-subset-matches (pattern fields must equal; extra fields ignored) |
+| `count` | integer | `1` | Without an `until_*` rule: stop after N data messages |
+| `timeout` | integer (ms) | `10000` | Deadline for the stopping rule |
+
+**Output**:
+
+```json
+{ "messages": ["…"], "body": "…", "count": 2, "matched": true, "duration_ms": 8.4 }
+```
+
+Text frames arrive as strings, binary frames as base64 strings; `body` is the
+newline-joined text form (so `check: { body_contains: … }` works). Received
+messages count toward the `ws_msgs_received` rate. When an `until_*` rule
+matches and a `ws-send` preceded it on this connection, the send→match time
+is recorded as a `ws_msg_rtt` histogram sample — the application-level
+message round trip.
+
+The step's own `duration_ms` deliberately does **not** feed
+`http_req_duration`: how long a server chooses to wait before pushing is not
+target latency and would poison the shared percentiles.
+
+### `std/ws-ping@v1`
+
+Transport-level ping→pong round trip: `{ "pong": true, "duration_ms": 0.4 }`.
+Takes `id` and `timeout`. The RTT is not aggregated into any histogram —
+bound it with `check: { duration_ms_lt: … }` when needed. Data messages
+arriving while waiting for the pong are buffered for the next `ws-recv`.
+
+### `std/ws-close@v1`
+
+Graceful close handshake. Takes `id`, `code` (default `1000`), `reason`,
+`timeout`. Output: `{ "closed": true, "duration_ms": … }`.
+
+### `std/ws@v1` — one-shot session
+
+Profile parameters as above, plus `messages` — a list where each entry is a
+string (a `${…}` template to send) or an object:
+
+| Entry field | Description |
+|---|---|
+| `send` / `send_base64` | Payload, as in `ws-send` |
+| `repeat` / `interval_ms` | Stream expansion, as in `ws-send` |
+| `until_contains` / `until_json` | Wait for a matching reply before the next entry; yields a `ws_msg_rtt` sample |
+
+```yaml
+steps:
+  - name: subscribe and await first trade
+    use: std/ws@v1
+    with:
+      url: wss://stream.example.com/feed
+      messages:
+        - send: '{"op":"subscribe","channel":"trades","id":"sub-${seq}"}'
+          until_json: { type: trade }
+    check:
+      message_matches: { type: trade }
+    outputs: feed
+```
+
+**Output**: `{ "connected": true, "sent": N, "received": M, "messages": […],
+"body": "…", "subprotocol": …, "duration_ms": … }`. The whole session is one
+`http_req_duration` sample; the step fails on handshake/transport errors or
+any entry whose `until_*` rule did not match in time.
+
 ## `std/file-read@v1`
 
 Read a file into the process-wide cache and expose its content to later
@@ -218,10 +366,22 @@ standalone usage picks its target with `on`.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `on` | string | Variable name to check (defaults to the last step's output) |
+| `on` | string | What to check (defaults to the last step's output). Dots descend into the value: `on: got.messages.0` addresses one message by position |
 | `status` | integer | HTTP status must equal this value |
 | `duration_ms_lt` | integer | `duration_ms` must be strictly less |
 | `body_contains` | string | Response body must contain this substring |
+| `message_contains` | string | Some message in the `messages` list contains this substring |
+| `message_matches` | object | Some message JSON-subset-matches this object |
+| `messages_count_gte` | integer | The `messages` list has at least N entries |
+
+The `message_*` asserts work over the `messages` list that message-exchanging
+actions expose (`std/ws@v1`, `std/ws-recv@v1`, `pro/fix@v1`) and use the
+**any** quantifier — at least one message must match, because streams carry
+noise (heartbeats, unrelated events). WS text frames (strings) are parsed as
+JSON for `message_matches`; FIX frames (tag→value objects) match directly, so
+`message_matches: { "35": "8", "150": "F" }` asserts a filled
+ExecutionReport. For deterministic exchanges, address one message by index
+via `on` (`on: got.messages.0`) — brittle on unordered streams.
 
 Each assertion logs `PASS`/`FAIL`; failures go to stderr but do not stop the
 run. Output: `{ "passed": true|false }`.

@@ -62,6 +62,12 @@ pub struct Metrics {
     /// `fix_messages_sent`. Summed across VUs/iterations, then reported as
     /// `<name>: <total> <rate>/s` so the same downstream parser handles them.
     counters: std::collections::BTreeMap<String, f64>,
+    /// Custom named histograms: an action reports duration samples (ms) as a
+    /// JSON *array* under the same reserved `metrics` key — e.g. `std/ws@v1`
+    /// emits `ws_msg_rtt: [12.3, 15.1]`. Aggregated with the same HDR
+    /// settings as the request-duration histogram and summarised in the same
+    /// `avg/p(..)/min/max` shape, plus a sample count.
+    hists: std::collections::BTreeMap<String, hdrhistogram::Histogram<u64>>,
 }
 
 impl Default for Metrics {
@@ -76,6 +82,7 @@ impl Default for Metrics {
             failures: 0,
             total: 0,
             counters: std::collections::BTreeMap::new(),
+            hists: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -93,12 +100,32 @@ impl Metrics {
             .record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
     }
 
-    /// Fold a step's custom `metrics` object (name → numeric increment) into
-    /// the run counters. Non-numeric values are ignored.
+    /// Fold a step's custom `metrics` object into the run aggregates. A
+    /// numeric value increments a counter; an array of numbers records each
+    /// element as a histogram sample in milliseconds. Anything else is
+    /// ignored.
     pub fn add_counters(&mut self, obj: &serde_json::Map<String, Value>) {
         for (name, v) in obj {
-            if let Some(x) = v.as_f64() {
-                *self.counters.entry(name.clone()).or_insert(0.0) += x;
+            match v {
+                Value::Array(samples) => {
+                    let h = self.hists.entry(name.clone()).or_insert_with(|| {
+                        hdrhistogram::Histogram::new_with_bounds(
+                            HIST_LOW_MICROS,
+                            HIST_HIGH_MICROS,
+                            HIST_SIGFIGS,
+                        )
+                        .expect("static histogram bounds are valid")
+                    });
+                    for s in samples.iter().filter_map(|s| s.as_f64()) {
+                        let micros = (s * 1000.0).round() as u64;
+                        let _ = h.record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
+                    }
+                }
+                _ => {
+                    if let Some(x) = v.as_f64() {
+                        *self.counters.entry(name.clone()).or_insert(0.0) += x;
+                    }
+                }
             }
         }
     }
@@ -126,6 +153,24 @@ impl Metrics {
         for (name, total) in &self.counters {
             let rate = total / wall_secs.max(0.001);
             lines.push(format!("{name}: {total:.0} {rate:.2}/s"));
+        }
+
+        // Custom action histograms (e.g. `ws_msg_rtt`) — same shape as
+        // `http_req_duration` plus a sample count, so downstream percentile
+        // parsers can reuse one grammar.
+        for (name, h) in &self.hists {
+            let pct = |q: f64| -> f64 { h.value_at_quantile(q) as f64 / 1000.0 };
+            lines.push(format!(
+                "{name}: avg={avg:.2}ms p(50)={p50:.2}ms p(90)={p90:.2}ms p(95)={p95:.2}ms p(99)={p99:.2}ms min={min:.2}ms max={max:.2}ms count={count}",
+                avg = h.mean() / 1000.0,
+                p50 = pct(0.50),
+                p90 = pct(0.90),
+                p95 = pct(0.95),
+                p99 = pct(0.99),
+                min = h.min() as f64 / 1000.0,
+                max = h.max() as f64 / 1000.0,
+                count = h.len(),
+            ));
         }
 
         if self.total == 0 {
@@ -303,6 +348,10 @@ pub async fn run_native(
                         break;
                     }
                 }
+                // A Live Connection never outlives its iteration: whatever a
+                // scenario left open is dropped here (abrupt TCP drop, no
+                // Close handshake — `std/ws-close@v1` is the graceful path).
+                ctx.resources.drain();
             }
         }));
     }
@@ -589,6 +638,48 @@ mod tests {
         assert!(lines.iter().any(|l| l.starts_with("fix_messages_received")));
     }
 
+    /// Array values under the `metrics` key are histogram samples (ms):
+    /// aggregated across steps and summarised in the `avg/p(..)` shape.
+    #[test]
+    fn metrics_custom_histograms_appear_in_summary() {
+        let mut m = Metrics::default();
+        m.add_counters(json!({ "ws_msg_rtt": [10.0, 20.0] }).as_object().unwrap());
+        m.add_counters(json!({ "ws_msg_rtt": [30.0, 40.0] }).as_object().unwrap());
+
+        let lines = m.summary_lines(2.0, 4, 1);
+        let rtt = lines
+            .iter()
+            .find(|l| l.starts_with("ws_msg_rtt"))
+            .expect("histogram line present");
+
+        // The HDR histogram promises ≤1% quantile error — assert within it.
+        let get = |key: &str| -> f64 {
+            let start = rtt.find(key).unwrap() + key.len();
+            rtt[start..].split("ms").next().unwrap().parse().unwrap()
+        };
+        let within = |actual: f64, expected: f64| (actual - expected).abs() <= expected * 0.011;
+        assert!(within(get("avg="), 25.0), "{rtt}");
+        assert!(within(get("min="), 10.0), "{rtt}");
+        assert!(within(get("max="), 40.0), "{rtt}");
+        assert!(rtt.contains("count=4"), "{rtt}");
+        // A histogram is not double-counted as a counter.
+        assert!(!rtt.contains("/s"), "{rtt}");
+    }
+
+    /// One `metrics` object can mix counters and histogram samples.
+    #[test]
+    fn metrics_mixed_counters_and_histograms() {
+        let mut m = Metrics::default();
+        let obj = json!({ "ws_msgs_sent": 5.0, "ws_msg_rtt": [12.5] });
+        m.add_counters(obj.as_object().unwrap());
+
+        let lines = m.summary_lines(1.0, 1, 1);
+        assert!(lines.iter().any(|l| l.starts_with("ws_msgs_sent: 5")));
+        assert!(lines
+            .iter()
+            .any(|l| l.starts_with("ws_msg_rtt") && l.contains("count=1")));
+    }
+
     #[test]
     fn metrics_stats_line_reports_window_rate_and_percentiles() {
         let mut m = Metrics::default();
@@ -836,6 +927,89 @@ mod tests {
         };
         let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
         assert!(lines.iter().any(|l| l.text.starts_with("Starting 1 VU")));
+    }
+
+    /// End-to-end WebSocket flow through the VU loop: a Live Connection is
+    /// usable across steps, custom ws metrics fold into the summary, and the
+    /// iteration-end drain lets every iteration reconnect cleanly.
+    #[tokio::test]
+    async fn run_steps_websocket_live_connection_and_metrics() {
+        use futures_util::{SinkExt as _, StreamExt as _};
+
+        // Minimal echo server (accept loop → per-connection echo).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                    while let Some(Ok(msg)) = ws.next().await {
+                        match msg {
+                            tokio_tungstenite::tungstenite::Message::Text(t) => {
+                                let echo = tokio_tungstenite::tungstenite::Message::Text(t);
+                                if ws.send(echo).await.is_err() {
+                                    break;
+                                }
+                            }
+                            tokio_tungstenite::tungstenite::Message::Close(_) => break,
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        });
+
+        let steps = vec![
+            Step {
+                name: Some("open".into()),
+                action: "std/ws-connect@v1".into(),
+                with: Some(json!({ "url": url })),
+                check: None,
+                outputs: Some("feed".into()),
+            },
+            Step {
+                name: Some("sub".into()),
+                action: "std/ws-send@v1".into(),
+                with: Some(json!({ "id": "${{ feed.id }}", "send": "sub-${seq}" })),
+                check: None,
+                outputs: None,
+            },
+            Step {
+                name: Some("wait".into()),
+                action: "std/ws-recv@v1".into(),
+                with: Some(json!({ "id": "${{ feed.id }}", "until_contains": "sub-1" })),
+                check: Some(json!({ "message_contains": "sub-1" })),
+                outputs: None,
+            },
+            // No explicit close — the iteration-end drain must handle it.
+            sleep_step(50),
+        ];
+        let config = RunConfig {
+            vus: 1,
+            duration: "1s".into(),
+        };
+        let lines = run_and_collect(steps, config, false).await;
+
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.text.contains("[check]") && l.text.contains("FAIL")),
+            "no failing checks expected: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.text.starts_with("ws_msgs_sent")),
+            "custom counter in summary: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.starts_with("ws_msg_rtt") && l.text.contains("count=")),
+            "RTT histogram in summary: {lines:?}"
+        );
+        // The handshake feeds the shared latency histogram.
+        assert!(lines
+            .iter()
+            .any(|l| l.text.starts_with("http_req_duration")));
     }
 
     // -----------------------------------------------------------------

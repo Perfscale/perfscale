@@ -271,6 +271,158 @@ fn native_run_shows_check_failures_on_stderr_but_exits_zero() {
 }
 
 // ---------------------------------------------------------------------------
+// WebSocket end-to-end: real binary against a local echo server
+// ---------------------------------------------------------------------------
+
+/// A WebSocket echo server on an OS-assigned port. The returned runtime keeps
+/// the accept loop alive; hold it for the duration of the test.
+fn ws_echo_server() -> (tokio::runtime::Runtime, String) {
+    use futures_util::{SinkExt as _, StreamExt as _};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let url = rt.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(tcp).await else {
+                        return;
+                    };
+                    while let Some(Ok(msg)) = ws.next().await {
+                        match msg {
+                            Message::Text(t) => {
+                                if ws.send(Message::Text(t)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Message::Close(_) => break,
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        });
+        format!("ws://{addr}")
+    });
+    (rt, url)
+}
+
+#[test]
+#[file_serial(heavy_io)]
+fn websocket_live_connection_full_journey() {
+    let (_rt, url) = ws_echo_server();
+
+    // The full live-connection lifecycle plus a one-shot session — the same
+    // shape as examples/websocket.test.yaml, pointed at the local echo.
+    let test_file = write_temp(
+        ".yaml",
+        &format!(
+            r#"steps:
+  - name: open
+    use: std/ws-connect@v1
+    with: {{ url: "{url}" }}
+    outputs: feed
+  - name: send
+    use: std/ws-send@v1
+    with:
+      id: "${{{{ feed.id }}}}"
+      send: "sub-${{seq}}"
+      repeat: 2
+  - name: recv
+    use: std/ws-recv@v1
+    with:
+      id: "${{{{ feed.id }}}}"
+      until_contains: "sub-2"
+    check:
+      message_contains: "sub-1"
+      messages_count_gte: 2
+  - name: close
+    use: std/ws-close@v1
+    with: {{ id: "${{{{ feed.id }}}}" }}
+  - name: one-shot
+    use: std/ws@v1
+    with:
+      url: "{url}"
+      messages:
+        - send: "ping-${{uuid}}"
+          until_contains: "ping-"
+  - use: std/sleep@v1
+    with: {{ ms: 100 }}
+"#
+        ),
+    );
+    let config_file = write_temp(".yaml", "vus: 1\nduration: 1s\n");
+
+    assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args([
+            "run",
+            "-f",
+            test_file.path().to_str().unwrap(),
+            "-c",
+            config_file.path().to_str().unwrap(),
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        // Custom WS metrics land in the summary block…
+        .stdout(predicate::str::contains("ws_msgs_sent"))
+        .stdout(predicate::str::contains("ws_msgs_received"))
+        // …including the message-RTT histogram with its sample count…
+        .stdout(predicate::str::is_match(r"ws_msg_rtt: avg=.* count=\d+").unwrap())
+        // …and the handshake/session samples feed the shared histogram.
+        .stdout(predicate::str::contains("http_req_duration"))
+        // Both message asserts passed; nothing failed.
+        .stderr(predicate::str::contains("FAIL").not());
+}
+
+#[test]
+#[file_serial(heavy_io)]
+fn websocket_unmet_until_rule_fails_step_but_run_completes() {
+    let (_rt, url) = ws_echo_server();
+
+    // The until rule can never match (the echo returns what was sent), so the
+    // recv step fails — load-test feedback on stderr, exit code still 0.
+    let test_file = write_temp(
+        ".yaml",
+        &format!(
+            r#"steps:
+  - use: std/ws-connect@v1
+    with: {{ url: "{url}" }}
+    outputs: feed
+  - use: std/ws-send@v1
+    with: {{ id: "${{{{ feed.id }}}}", send: "hello" }}
+  - use: std/ws-recv@v1
+    with:
+      id: "${{{{ feed.id }}}}"
+      until_contains: "never-arrives"
+      timeout: 200
+  - use: std/sleep@v1
+    with: {{ ms: 200 }}
+"#
+        ),
+    );
+    let config_file = write_temp(".yaml", "vus: 1\nduration: 1s\n");
+
+    assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args([
+            "run",
+            "-f",
+            test_file.path().to_str().unwrap(),
+            "-c",
+            config_file.path().to_str().unwrap(),
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ws_msgs_sent"))
+        .stderr(predicate::str::contains(
+            "timeout before the stopping rule was reached",
+        ));
+}
+
+// ---------------------------------------------------------------------------
 // Shipped examples work as-is for engines that don't need the network
 // ---------------------------------------------------------------------------
 
