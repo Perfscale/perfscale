@@ -335,6 +335,7 @@ None,Aggregated,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
         let cfg = RunConfig {
             vus: 20,
             duration: "5m".into(),
+            ..Default::default()
         };
         let opts = LocustOpts::from_run_config(&cfg, Some("https://example.com".into()));
         assert_eq!(opts.users, 20);
@@ -348,6 +349,7 @@ None,Aggregated,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
         let cfg = RunConfig {
             vus: 0,
             duration: "1m".into(),
+            ..Default::default()
         };
         let opts = LocustOpts::from_run_config(&cfg, None);
         assert_eq!(opts.users, 1);

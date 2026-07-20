@@ -104,7 +104,7 @@ pub async fn execute_action(
     };
 
     match action_id {
-        "std/http@v1" | "http" => http_action(&resolved, step_name).await,
+        "std/http@v1" | "http" => http_action(&resolved, step_name, ctx).await,
         "std/tcp@v1" | "tcp" => tcp_action(&resolved, step_name).await,
         "std/udp@v1" | "udp" => udp_action(&resolved, step_name).await,
         "std/ws@v1" | "ws" => super::ws::ws_session_action(&resolved, step_name).await,
@@ -120,8 +120,8 @@ pub async fn execute_action(
         "std/check@v1" | "check" => check_action(&resolved, ctx, step_name),
         "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name).await,
         "std/log@v1" | "log" => log_action(&resolved, step_name),
-        "std/file-read@v1" | "file-read" => file_read_action(&resolved, step_name).await,
-        "std/file-write@v1" | "file-write" => file_write_action(&resolved, step_name).await,
+        "std/file-read@v1" | "file-read" => file_read_action(&resolved, step_name, ctx).await,
+        "std/file-write@v1" | "file-write" => file_write_action(&resolved, step_name, ctx).await,
         unknown => {
             // No built-in match — hand off to a downstream-registered handler
             // (proprietary `pro/*` actions live outside this OSS crate). The
@@ -203,6 +203,8 @@ pub fn register_action(handler: Arc<dyn ActionHandler>) {
 //               (defaults to the file's basename) and `content_type`.
 //               Files are read from disk each iteration — the OS page cache
 //               keeps repeats cheap, and edits between runs are picked up.
+//               `file` parts are filesystem access: they require
+//               `allow_file_actions` and honour `fs_root` confinement.
 //   timeout   – optional timeout in ms, default 10000
 //   insecure  – optional bool: skip TLS certificate verification (self-signed
 //               targets like `perfscale serve --tls`), default false
@@ -233,7 +235,7 @@ fn shared_insecure_client() -> &'static reqwest::Client {
     })
 }
 
-async fn http_action(params: &Value, step_name: &str) -> ActionOutput {
+async fn http_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
     let method = params["method"].as_str().unwrap_or("GET").to_uppercase();
     let url = match params["url"].as_str() {
         Some(u) => u.to_string(),
@@ -268,7 +270,7 @@ async fn http_action(params: &Value, step_name: &str) -> ActionOutput {
         if !params["body"].is_null() {
             return err(step_name, "'body' and 'multipart' are mutually exclusive");
         }
-        match build_multipart(&params["multipart"], step_name).await {
+        match build_multipart(&params["multipart"], step_name, ctx).await {
             Ok(form) => req = req.multipart(form),
             Err(out) => return out,
         }
@@ -340,9 +342,13 @@ async fn http_action(params: &Value, step_name: &str) -> ActionOutput {
 /// per call: no process-level cache, so a file edited between runs is picked
 /// up (the agent is long-lived), and the OS page cache keeps per-iteration
 /// reads cheap. The Content-Type header with its boundary is set by reqwest.
+///
+/// `file` parts are filesystem access: they require `allow_file_actions`
+/// and honour the context's `fs_root` confinement (see [`confine_fs_path`]).
 async fn build_multipart(
     spec: &Value,
     step_name: &str,
+    ctx: &Context,
 ) -> Result<reqwest::multipart::Form, ActionOutput> {
     let Some(parts) = spec.as_array() else {
         return Err(err(step_name, "'multipart' must be an array of parts"));
@@ -371,12 +377,19 @@ async fn build_multipart(
                 &format!("multipart part '{name}': needs 'value' (text) or 'file' (path)"),
             ));
         };
-        let data = match tokio::fs::read(path).await {
+        let path = match confine_fs_path(ctx, path, false) {
+            Ok(p) => p,
+            Err(msg) => return Err(err(step_name, &format!("multipart part '{name}': {msg}"))),
+        };
+        let data = match tokio::fs::read(&path).await {
             Ok(d) => d,
             Err(e) => {
                 return Err(err(
                     step_name,
-                    &format!("multipart part '{name}': cannot read file '{path}': {e}"),
+                    &format!(
+                        "multipart part '{name}': cannot read file '{}': {e}",
+                        path.display()
+                    ),
                 ));
             }
         };
@@ -384,11 +397,7 @@ async fn build_multipart(
         let filename = p["filename"]
             .as_str()
             .map(str::to_owned)
-            .or_else(|| {
-                std::path::Path::new(path)
-                    .file_name()
-                    .map(|f| f.to_string_lossy().into_owned())
-            })
+            .or_else(|| path.file_name().map(|f| f.to_string_lossy().into_owned()))
             .unwrap_or_else(|| "file".to_owned());
 
         let mut part = reqwest::multipart::Part::bytes(data).file_name(filename);
@@ -910,6 +919,59 @@ fn message_json_matches(pattern: &Value, m: &Value) -> bool {
 // against the file's (mtime, len) on every access: the first iteration pays
 // the disk read, subsequent iterations across all VUs hit RAM, and a file
 // edited between runs of a long-lived agent is picked up via a cheap stat.
+//
+// File access is fail-closed: the run must opt in via
+// `RunConfig::allow_file_actions`, and when `RunConfig::fs_root` is set the
+// path must stay under it (see [`confine_fs_path`]).
+
+/// Gate and confine a filesystem path for the file actions (`std/file-*@v1`)
+/// and multipart `file` parts.
+///
+/// Fail-closed: returns `Err` unless the run opted in via
+/// `Context::allow_file_actions`. When `Context::fs_root` is set, the
+/// canonicalized path must stay under the canonicalized root, rejecting
+/// `../` escapes and symlink hops out of the sandbox. Write targets may not
+/// exist yet, so their parent directory is canonicalized instead (`for_write`).
+///
+/// Returns the path to actually use: canonicalized when confined, the
+/// original path untouched otherwise (no behaviour change for unconfined
+/// runs).
+fn confine_fs_path(
+    ctx: &Context,
+    path: &str,
+    for_write: bool,
+) -> Result<std::path::PathBuf, String> {
+    if !ctx.allow_file_actions {
+        return Err("file actions disabled (allow_file_actions is false)".into());
+    }
+    let Some(root) = ctx.fs_root.as_deref() else {
+        return Ok(std::path::PathBuf::from(path));
+    };
+    let root = std::fs::canonicalize(root)
+        .map_err(|e| format!("fs_root '{}' cannot be resolved: {e}", root.display()))?;
+    let candidate = if for_write {
+        let p = std::path::Path::new(path);
+        let parent = p
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        let canon_parent = std::fs::canonicalize(parent)
+            .map_err(|e| format!("cannot resolve directory of '{path}': {e}"))?;
+        let Some(name) = p.file_name() else {
+            return Err(format!("'{path}' is not a file path"));
+        };
+        canon_parent.join(name)
+    } else {
+        std::fs::canonicalize(path).map_err(|e| format!("cannot resolve '{path}': {e}"))?
+    };
+    if !candidate.starts_with(&root) {
+        return Err(format!(
+            "path '{path}' escapes fs_root '{}'",
+            root.display()
+        ));
+    }
+    Ok(candidate)
+}
 
 /// Actual disk reads performed by `std/file-read@v1` — observable cache behaviour
 /// for tests; costs one relaxed increment per miss.
@@ -926,7 +988,7 @@ fn file_cache() -> &'static std::sync::Mutex<std::collections::HashMap<FileCache
     CACHE.get_or_init(Default::default)
 }
 
-async fn file_read_action(params: &Value, step_name: &str) -> ActionOutput {
+async fn file_read_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
     let Some(path) = params["path"].as_str() else {
         return err(step_name, "'path' is required");
     };
@@ -937,13 +999,22 @@ async fn file_read_action(params: &Value, step_name: &str) -> ActionOutput {
             &format!("invalid encoding '{encoding}' — use \"text\" or \"base64\""),
         );
     }
+    let path = match confine_fs_path(ctx, path, false) {
+        Ok(p) => p,
+        Err(msg) => return err(step_name, &msg),
+    };
 
-    let meta = match tokio::fs::metadata(path).await {
+    let meta = match tokio::fs::metadata(&path).await {
         Ok(m) => m,
-        Err(e) => return err(step_name, &format!("cannot read file '{path}': {e}")),
+        Err(e) => {
+            return err(
+                step_name,
+                &format!("cannot read file '{}': {e}", path.display()),
+            )
+        }
     };
     let (mtime, len) = (meta.modified().ok(), meta.len());
-    let key = (path.to_owned(), encoding.to_owned());
+    let key = (path.to_string_lossy().into_owned(), encoding.to_owned());
 
     // Never hold the lock across an await: check-release, read, insert.
     let cached = {
@@ -957,9 +1028,14 @@ async fn file_read_action(params: &Value, step_name: &str) -> ActionOutput {
         Some(c) => c,
         None => {
             FILE_DISK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let bytes = match tokio::fs::read(path).await {
+            let bytes = match tokio::fs::read(&path).await {
                 Ok(b) => b,
-                Err(e) => return err(step_name, &format!("cannot read file '{path}': {e}")),
+                Err(e) => {
+                    return err(
+                        step_name,
+                        &format!("cannot read file '{}': {e}", path.display()),
+                    )
+                }
             };
             let encoded = match encoding {
                 "base64" => {
@@ -972,7 +1048,8 @@ async fn file_read_action(params: &Value, step_name: &str) -> ActionOutput {
                         return err(
                             step_name,
                             &format!(
-                                "file '{path}' is not valid UTF-8 — use `encoding: base64` for binary content"
+                                "file '{}' is not valid UTF-8 — use `encoding: base64` for binary content",
+                                path.display()
                             ),
                         );
                     }
@@ -988,7 +1065,7 @@ async fn file_read_action(params: &Value, step_name: &str) -> ActionOutput {
     };
 
     ActionOutput {
-        value: json!({ "content": content.as_str(), "size": len, "path": path }),
+        value: json!({ "content": content.as_str(), "size": len, "path": path.to_string_lossy() }),
         // No per-iteration log line: cache hits are the hot path and a line
         // per request would spam the stream (see the yaml quiet story).
         logs: Vec::new(),
@@ -1016,8 +1093,12 @@ async fn file_read_action(params: &Value, step_name: &str) -> ActionOutput {
 // automatically — the read cache is keyed by (mtime, len), which the write
 // changes. With `append: true` and multiple VUs the per-call write is a
 // single O_APPEND syscall, so calls do not interleave mid-content.
+//
+// File access is fail-closed: the run must opt in via
+// `RunConfig::allow_file_actions`, and when `RunConfig::fs_root` is set the
+// path must stay under it (see [`confine_fs_path`]).
 
-async fn file_write_action(params: &Value, step_name: &str) -> ActionOutput {
+async fn file_write_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
     let Some(path) = params["path"].as_str() else {
         return err(step_name, "'path' is required");
     };
@@ -1044,12 +1125,17 @@ async fn file_write_action(params: &Value, step_name: &str) -> ActionOutput {
         }
     };
 
+    let path = match confine_fs_path(ctx, path, true) {
+        Ok(p) => p,
+        Err(msg) => return err(step_name, &msg),
+    };
+
     let result = if append {
         use tokio::io::AsyncWriteExt as _;
         match tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)
+            .open(&path)
             .await
         {
             // flush() before drop is load-bearing: tokio buffers writes and
@@ -1063,11 +1149,14 @@ async fn file_write_action(params: &Value, step_name: &str) -> ActionOutput {
             Err(e) => Err(e),
         }
     } else {
-        tokio::fs::write(path, &bytes).await
+        tokio::fs::write(&path, &bytes).await
     };
 
     if let Err(e) = result {
-        return err(step_name, &format!("cannot write file '{path}': {e}"));
+        return err(
+            step_name,
+            &format!("cannot write file '{}': {e}", path.display()),
+        );
     }
 
     ActionOutput {
@@ -1436,7 +1525,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let ctx = Context::new();
+        let ctx = file_ctx();
         let params = json!({
             "method": "POST",
             "url": format!("{}/upload", server.uri()),
@@ -1484,7 +1573,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let mut ctx = Context::new();
+        let mut ctx = file_ctx();
         ctx.set("run", json!({ "id": "run-77" }));
         let params = json!({
             "method": "POST",
@@ -1502,7 +1591,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_action_multipart_missing_file_errors_without_network_call() {
-        let ctx = Context::new();
+        let ctx = file_ctx();
         let params = json!({
             "method": "POST",
             "url": "http://127.0.0.1:1/upload",
@@ -2072,6 +2161,14 @@ mod tests {
         FILE_DISK_READS.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// File actions are fail-closed without `allow_file_actions`; the tests
+    /// below exercise the actions themselves, so they opt in (unconfined).
+    fn file_ctx() -> Context {
+        let mut ctx = Context::new();
+        ctx.allow_file_actions = true;
+        ctx
+    }
+
     #[tokio::test]
     #[serial_test::file_serial(file_actions)]
     async fn file_read_reads_content_and_reports_shape() {
@@ -2079,7 +2176,7 @@ mod tests {
         let path = dir.path().join("fixture.txt");
         std::fs::write(&path, "hello fixture").unwrap();
 
-        let ctx = Context::new();
+        let ctx = file_ctx();
         let params = json!({ "path": path.to_str().unwrap() });
         let out = execute_action("std/file-read@v1", &params, &ctx, "step").await;
 
@@ -2096,7 +2193,7 @@ mod tests {
         let path = dir.path().join("payload.json");
         std::fs::write(&path, r#"{"kind":"fixture"}"#).unwrap();
 
-        let mut ctx = Context::new();
+        let mut ctx = file_ctx();
         let params = json!({ "path": path.to_str().unwrap() });
         let out = execute_action("std/file-read@v1", &params, &ctx, "load").await;
         ctx.set("payload", out.value.clone());
@@ -2118,7 +2215,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cached.txt");
         std::fs::write(&path, "version-one").unwrap();
-        let ctx = Context::new();
+        let ctx = file_ctx();
         let params = json!({ "path": path.to_str().unwrap() });
 
         let before = disk_reads();
@@ -2147,7 +2244,7 @@ mod tests {
         let path = dir.path().join("blob.bin");
         std::fs::write(&path, [0xFFu8, 0x00, 0x7F]).unwrap();
 
-        let ctx = Context::new();
+        let ctx = file_ctx();
         let params = json!({ "path": path.to_str().unwrap(), "encoding": "base64" });
         let out = execute_action("std/file-read@v1", &params, &ctx, "step").await;
         assert!(out.success);
@@ -2162,7 +2259,7 @@ mod tests {
         let path = dir.path().join("binary.bin");
         std::fs::write(&path, [0xFFu8, 0xFE]).unwrap();
 
-        let ctx = Context::new();
+        let ctx = file_ctx();
         let params = json!({ "path": path.to_str().unwrap() });
         let out = execute_action("std/file-read@v1", &params, &ctx, "step").await;
         assert!(!out.success);
@@ -2172,7 +2269,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::file_serial(file_actions)]
     async fn file_read_missing_path_and_missing_file_error() {
-        let ctx = Context::new();
+        let ctx = file_ctx();
 
         let out = execute_action("std/file-read@v1", &json!({}), &ctx, "step").await;
         assert!(!out.success);
@@ -2205,7 +2302,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("alias.txt");
         std::fs::write(&path, "x").unwrap();
-        let ctx = Context::new();
+        let ctx = file_ctx();
         let out = execute_action(
             "file-read",
             &json!({ "path": path.to_str().unwrap() }),
@@ -2221,7 +2318,7 @@ mod tests {
     async fn file_write_writes_and_overwrites() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.txt");
-        let ctx = Context::new();
+        let ctx = file_ctx();
 
         let out = execute_action(
             "std/file-write@v1",
@@ -2250,7 +2347,7 @@ mod tests {
     async fn file_write_append_mode_accumulates() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("log.txt");
-        let ctx = Context::new();
+        let ctx = file_ctx();
         for line in ["one\n", "two\n"] {
             execute_action(
                 "std/file-write@v1",
@@ -2268,7 +2365,7 @@ mod tests {
     async fn file_write_base64_decodes_before_writing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("blob.bin");
-        let ctx = Context::new();
+        let ctx = file_ctx();
         let out = execute_action(
             "std/file-write@v1",
             &json!({ "path": path.to_str().unwrap(), "content": "/wB/", "encoding": "base64" }),
@@ -2285,7 +2382,7 @@ mod tests {
     async fn file_write_interpolates_content_from_previous_step() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("resp.json");
-        let mut ctx = Context::new();
+        let mut ctx = file_ctx();
         ctx.set("resp", json!({ "body": "{\"ok\":true}" }));
 
         // The killer use case: persist a previous step's response body.
@@ -2305,7 +2402,7 @@ mod tests {
     async fn file_write_then_read_revalidates_the_cache() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("roundtrip.txt");
-        let ctx = Context::new();
+        let ctx = file_ctx();
         let p = path.to_str().unwrap();
 
         std::fs::write(&path, "old-content").unwrap();
@@ -2327,7 +2424,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::file_serial(file_actions)]
     async fn file_write_rejects_bad_params() {
-        let ctx = Context::new();
+        let ctx = file_ctx();
         for (params, needle) in [
             (json!({ "content": "x" }), "'path' is required"),
             (json!({ "path": "/tmp/x" }), "'content' is required"),
@@ -2348,6 +2445,154 @@ mod tests {
             assert!(!out.success, "params should fail: {params}");
             assert!(out.logs[0].1.contains(needle), "{:?}", out.logs);
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Filesystem confinement (allow_file_actions / fs_root)
+    // -----------------------------------------------------------------
+
+    /// `fs_root`-confined context used by the confinement tests.
+    fn confined_ctx(root: &std::path::Path) -> Context {
+        let mut ctx = file_ctx();
+        ctx.fs_root = Some(root.to_path_buf());
+        ctx
+    }
+
+    /// Fail-closed default: without `allow_file_actions` the file actions
+    /// must refuse even a perfectly readable file.
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_read_rejected_when_file_actions_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.txt");
+        std::fs::write(&path, "top secret").unwrap();
+
+        let ctx = Context::new();
+        let out = execute_action(
+            "std/file-read@v1",
+            &json!({ "path": path.to_str().unwrap() }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("file actions disabled"),
+            "{:?}",
+            out.logs
+        );
+
+        // Same gate for writes and multipart file parts.
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": path.to_str().unwrap(), "content": "x" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("file actions disabled"),
+            "{:?}",
+            out.logs
+        );
+
+        let out = execute_action(
+            "std/http@v1",
+            &json!({ "url": "http://127.0.0.1:1/upload",
+                      "multipart": [ { "name": "f", "file": path.to_str().unwrap() } ] }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("file actions disabled"),
+            "{:?}",
+            out.logs
+        );
+        assert!(out.http_sample.is_none(), "no request must be attempted");
+    }
+
+    /// A `../` escape out of `fs_root` is rejected: the candidate is
+    /// canonicalized before comparison, so traversal never resolves.
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_read_rejects_path_traversal_escape_when_confined() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("jail");
+        std::fs::create_dir(&root).unwrap();
+        let secret = dir.path().join("secret.txt");
+        std::fs::write(&secret, "top secret").unwrap();
+
+        let ctx = confined_ctx(&root);
+        let escape = root.join("..").join("secret.txt");
+        let out = execute_action(
+            "std/file-read@v1",
+            &json!({ "path": escape.to_str().unwrap() }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("escapes fs_root"), "{:?}", out.logs);
+    }
+
+    /// Writes canonicalize the *parent* directory (the target may not exist
+    /// yet) — an escaping write is rejected before anything is created.
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_write_rejects_path_traversal_escape_when_confined() {
+        let dir = tempfile::tempdir().unwrap();
+        let escape = dir
+            .path()
+            .join("..")
+            .join(format!("perfscale-escape-{}.txt", uuid::Uuid::new_v4()));
+
+        let ctx = confined_ctx(dir.path());
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": escape.to_str().unwrap(), "content": "pwned" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("escapes fs_root"), "{:?}", out.logs);
+        assert!(!escape.exists(), "nothing must be written outside fs_root");
+    }
+
+    /// Inside `fs_root` the actions work normally (and the read path is
+    /// canonicalized to the real location).
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_actions_allowed_inside_fs_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.txt");
+        std::fs::write(&path, "inside").unwrap();
+
+        let ctx = confined_ctx(dir.path());
+        let out = execute_action(
+            "std/file-read@v1",
+            &json!({ "path": path.to_str().unwrap() }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert_eq!(out.value["content"], "inside");
+
+        let new_path = dir.path().join("subdir").join("new.txt");
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": new_path.to_str().unwrap(), "content": "written" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert_eq!(std::fs::read_to_string(&new_path).unwrap(), "written");
     }
 
     // -----------------------------------------------------------------

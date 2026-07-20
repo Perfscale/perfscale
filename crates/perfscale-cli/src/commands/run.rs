@@ -311,6 +311,7 @@ mod tests {
             run: RunConfig {
                 vus: 4,
                 duration: "2m".into(),
+                ..Default::default()
             },
             report: report_url.map(|url| ReportConfig {
                 url: url.to_string(),
@@ -469,6 +470,7 @@ mod tests {
             config: RunConfig {
                 vus: 7,
                 duration: "45s".into(),
+                ..Default::default()
             },
             before: Vec::new(),
             variables: serde_json::Map::new(),

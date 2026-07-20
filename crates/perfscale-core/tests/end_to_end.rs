@@ -147,6 +147,7 @@ steps:
     let config = RunConfig {
         vus: 1,
         duration: "1s".into(),
+        ..Default::default()
     };
 
     let rx = runner::execute(ExecutionPlan::NativeSteps {
@@ -199,6 +200,7 @@ steps:
     let config = RunConfig {
         vus: 1,
         duration: "1s".into(),
+        ..Default::default()
     };
 
     let rx = runner::execute(ExecutionPlan::NativeSteps {

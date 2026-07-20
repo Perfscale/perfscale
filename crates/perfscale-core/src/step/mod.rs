@@ -83,6 +83,22 @@ pub struct RunConfig {
     /// Duration string: `"30s"`, `"1m"`, `"5m30s"`, `"1h"`.
     #[serde(default = "default_duration")]
     pub duration: String,
+
+    /// Allow filesystem-touching steps: `std/file-read@v1`,
+    /// `std/file-write@v1`, and `file` parts in `std/http@v1` multipart
+    /// uploads. Fail-closed: defaults to `false` so a step list from an
+    /// untrusted source cannot read or write arbitrary paths.
+    #[serde(default)]
+    pub allow_file_actions: bool,
+
+    /// Confinement root for file actions. When set, every file path a step
+    /// touches is canonicalized and must stay under this directory (`../`
+    /// escapes and symlink hops out of it are rejected). Never parsed from
+    /// the wire/YAML: the embedding process (agent, CLI) sets it from its
+    /// own trusted configuration.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub fs_root: Option<std::path::PathBuf>,
 }
 
 fn default_vus() -> u32 {
@@ -97,6 +113,8 @@ impl Default for RunConfig {
         Self {
             vus: default_vus(),
             duration: default_duration(),
+            allow_file_actions: false,
+            fs_root: None,
         }
     }
 }
@@ -139,31 +157,18 @@ pub fn parse_duration_secs(s: &str) -> u64 {
 
 /// Resolve a well-known preset ID to a [`RunConfig`].
 pub fn preset_config(id: &str) -> Option<RunConfig> {
+    let run = |vus, duration: &str| RunConfig {
+        vus,
+        duration: duration.into(),
+        ..Default::default()
+    };
     match id {
-        "debug" => Some(RunConfig {
-            vus: 1,
-            duration: "1m".into(),
-        }),
-        "smoke" => Some(RunConfig {
-            vus: 5,
-            duration: "30s".into(),
-        }),
-        "load" => Some(RunConfig {
-            vus: 10,
-            duration: "5m".into(),
-        }),
-        "stress" => Some(RunConfig {
-            vus: 50,
-            duration: "5m".into(),
-        }),
-        "spike" => Some(RunConfig {
-            vus: 100,
-            duration: "1m".into(),
-        }),
-        "soak" => Some(RunConfig {
-            vus: 10,
-            duration: "30m".into(),
-        }),
+        "debug" => Some(run(1, "1m")),
+        "smoke" => Some(run(5, "30s")),
+        "load" => Some(run(10, "5m")),
+        "stress" => Some(run(50, "5m")),
+        "spike" => Some(run(100, "1m")),
+        "soak" => Some(run(10, "30m")),
         _ => None,
     }
 }
@@ -205,6 +210,7 @@ mod tests {
         let cfg = RunConfig {
             vus: 1,
             duration: "2m".into(),
+            ..Default::default()
         };
         assert_eq!(cfg.duration_secs(), 120);
     }
@@ -229,6 +235,19 @@ mod tests {
         let cfg: RunConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(cfg.vus, 1);
         assert_eq!(cfg.duration, "1m");
+        // File actions are fail-closed, and fs_root is never wire-settable.
+        assert!(!cfg.allow_file_actions);
+        assert!(cfg.fs_root.is_none());
+    }
+
+    #[test]
+    fn run_config_fs_root_is_not_deserializable() {
+        // A client must not pick its own sandbox root — the field is
+        // `#[serde(skip)]` and stays `None` even when present in the input.
+        let cfg: RunConfig =
+            serde_json::from_str(r#"{ "fs_root": "/", "allow_file_actions": true }"#).unwrap();
+        assert!(cfg.allow_file_actions);
+        assert!(cfg.fs_root.is_none());
     }
 
     #[test]

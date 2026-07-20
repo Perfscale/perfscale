@@ -14,6 +14,14 @@ use serde_json::Value;
 pub struct Context {
     pub(crate) vars: HashMap<String, Value>,
     pub(crate) resources: crate::step::resources::Resources,
+    /// Master switch for filesystem-touching actions (`std/file-read@v1`,
+    /// `std/file-write@v1`, multipart `file` parts). Fail-closed: a fresh
+    /// context denies file access until the runner seeds it from
+    /// [`crate::step::RunConfig::allow_file_actions`].
+    pub(crate) allow_file_actions: bool,
+    /// Optional confinement root: file action paths must stay under it
+    /// (`std/file-read@v1`, `std/file-write@v1`, multipart `file` parts).
+    pub(crate) fs_root: Option<std::path::PathBuf>,
 }
 
 impl Context {

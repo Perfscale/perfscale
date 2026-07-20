@@ -285,7 +285,7 @@ pub async fn run_native(
     };
 
     // --- One-time setup ---
-    let config_seed = match run_before(&before, &vars, quiet, &tx).await {
+    let config_seed = match run_before(&before, &vars, &config, quiet, &tx).await {
         Ok(v) => v,
         Err(msg) => {
             emit(
@@ -329,10 +329,14 @@ pub async fn run_native(
         let iter_count = Arc::clone(&iter_count);
         let config_seed = Arc::clone(&config_seed);
         let vars = Arc::clone(&vars);
+        let fs_root = config.fs_root.clone();
+        let allow_file_actions = config.allow_file_actions;
         let tx = tx.clone();
 
         handles.push(tokio::spawn(async move {
             let mut ctx = Context::new();
+            ctx.allow_file_actions = allow_file_actions;
+            ctx.fs_root = fs_root;
             if !config_seed.is_null() {
                 ctx.set("config", (*config_seed).clone());
             }
@@ -419,9 +423,14 @@ pub async fn run_native(
 /// `${{ vars.* }}`; each setup step also sees earlier setup outputs under their
 /// own `outputs` name. Setup runs regardless of `quiet` but respects it for log
 /// suppression. The first failing step short-circuits with an `Err` naming it.
+///
+/// `config` carries the filesystem policy (`allow_file_actions`, `fs_root`)
+/// into setup steps — they run the same actions as test steps, so the same
+/// gate applies.
 async fn run_before(
     before: &[Step],
     vars: &Value,
+    config: &RunConfig,
     quiet: bool,
     tx: &mpsc::Sender<LogLine>,
 ) -> Result<Value, String> {
@@ -441,6 +450,8 @@ async fn run_before(
     .await;
 
     let mut ctx = Context::new();
+    ctx.allow_file_actions = config.allow_file_actions;
+    ctx.fs_root = config.fs_root.clone();
     if !vars.is_null() {
         ctx.set("vars", vars.clone());
     }
@@ -729,6 +740,7 @@ mod tests {
         let config = RunConfig {
             vus: 1,
             duration: "1s".into(),
+            ..Default::default()
         };
         let lines = run_and_collect(vec![sleep_step(10)], config, false).await;
 
@@ -762,6 +774,7 @@ mod tests {
         let config = RunConfig {
             vus: 1,
             duration: "1s".into(),
+            ..Default::default()
         };
         let lines = run_and_collect(steps, config, false).await;
 
@@ -794,6 +807,7 @@ mod tests {
         let config = RunConfig {
             vus: 1,
             duration: "1s".into(),
+            ..Default::default()
         };
         let lines = run_and_collect(steps, config, false).await;
 
@@ -827,6 +841,7 @@ mod tests {
         let config = RunConfig {
             vus: 1,
             duration: "1s".into(),
+            ..Default::default()
         };
         let lines = run_and_collect(steps, config, true).await;
 
@@ -863,6 +878,7 @@ mod tests {
         let config = RunConfig {
             vus: 1,
             duration: "1s".into(),
+            ..Default::default()
         };
         let lines = run_and_collect(steps, config, true).await;
 
@@ -879,6 +895,7 @@ mod tests {
         let config = RunConfig {
             vus: 3,
             duration: "1s".into(),
+            ..Default::default()
         };
         let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
         assert!(lines
@@ -914,6 +931,7 @@ mod tests {
         let config = RunConfig {
             vus: 1,
             duration: "1s".into(),
+            ..Default::default()
         };
         let lines = run_and_collect(steps, config, false).await;
         assert!(lines.iter().any(|l| l.text == "status was 200"));
@@ -924,6 +942,7 @@ mod tests {
         let config = RunConfig {
             vus: 0,
             duration: "1s".into(),
+            ..Default::default()
         };
         let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
         assert!(lines.iter().any(|l| l.text.starts_with("Starting 1 VU")));
@@ -987,6 +1006,7 @@ mod tests {
         let config = RunConfig {
             vus: 1,
             duration: "1s".into(),
+            ..Default::default()
         };
         let lines = run_and_collect(steps, config, false).await;
 
@@ -1069,6 +1089,10 @@ mod tests {
             RunConfig {
                 vus: 1,
                 duration: "1s".into(),
+                // The `before` step reads a file — opt in explicitly (file
+                // actions are fail-closed by default).
+                allow_file_actions: true,
+                ..Default::default()
             },
         )
         .await;
@@ -1093,6 +1117,7 @@ mod tests {
             RunConfig {
                 vus: 1,
                 duration: "1s".into(),
+                ..Default::default()
             },
         )
         .await;
@@ -1116,6 +1141,7 @@ mod tests {
             RunConfig {
                 vus: 1,
                 duration: "1s".into(),
+                ..Default::default()
             },
         )
         .await;
@@ -1143,6 +1169,7 @@ mod tests {
             RunConfig {
                 vus: 5,
                 duration: "1s".into(),
+                ..Default::default()
             },
         )
         .await;
@@ -1169,6 +1196,7 @@ mod tests {
             RunConfig {
                 vus: 1,
                 duration: "1s".into(),
+                ..Default::default()
             },
             false,
         )

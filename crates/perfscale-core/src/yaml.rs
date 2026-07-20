@@ -222,6 +222,7 @@ steps:
             run: RunConfig {
                 vus: 7,
                 duration: "2m".into(),
+                ..Default::default()
             },
             report: Some(ReportConfig {
                 url: "http://localhost:7999".into(),

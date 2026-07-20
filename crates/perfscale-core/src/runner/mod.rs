@@ -155,6 +155,7 @@ mod tests {
         let config = RunConfig {
             vus: 1,
             duration: "1s".into(),
+            ..Default::default()
         };
 
         let RunOutput {

@@ -63,6 +63,11 @@
   },
   "description": "Top-level `-c config.yaml` document.",
   "properties": {
+    "allow_file_actions": {
+      "default": false,
+      "description": "Allow filesystem-touching steps: `std/file-read@v1`, `std/file-write@v1`, and `file` parts in `std/http@v1` multipart uploads. Fail-closed: defaults to `false` so a step list from an untrusted source cannot read or write arbitrary paths.",
+      "type": "boolean"
+    },
     "before": {
       "default": [],
       "description": "Setup steps run **once** before the load starts (not per VU iteration). Each step's `outputs` is exposed to test steps under the `config` namespace, e.g. a `before` step with `outputs: fix_config` is read in a test as `${{ config.fix_config.<field> }}`. If any setup step fails, the run aborts before spawning VUs.",
