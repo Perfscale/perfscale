@@ -48,6 +48,39 @@ steps:
     with: { ms: 500 }
 ```
 
+## Load-test a WebSocket endpoint
+
+[`examples/websocket.test.yaml`](../../examples/websocket.test.yaml) shows both
+styles — a live connection held across steps and a one-shot session. The live
+style addresses the connection by the id `std/ws-connect@v1` returned:
+
+```yaml
+steps:
+  - name: open feed
+    use: std/ws-connect@v1
+    with: { url: ws://127.0.0.1:9222 }
+    outputs: feed
+
+  - name: subscribe
+    use: std/ws-send@v1
+    with:
+      id: "${{ feed.id }}"
+      send: '{"op":"subscribe","id":"sub-${seq}"}'
+
+  - name: await echo
+    use: std/ws-recv@v1
+    with: { id: "${{ feed.id }}", until_contains: "sub-1", timeout: 5000 }
+    check: { message_contains: "subscribe" }
+
+  - name: hang up
+    use: std/ws-close@v1
+    with: { id: "${{ feed.id }}" }
+```
+
+Run it against any echo server (`npx wscat --listen 9222`). See
+[Actions → WebSocket](../core/actions.md#websocket-stdwsv1-and-the-stdws-v1-family)
+for the full parameter and metrics reference.
+
 ## Reuse an existing k6 script
 
 ```sh

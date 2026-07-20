@@ -161,7 +161,11 @@ target parameters, inline or bundled as a profile object under `connection`
 | `subprotocols` | array \| string | — | Offered `Sec-WebSocket-Protocol` values (e.g. `graphql-ws`) |
 | `skipTLSVerify` | boolean | `false` | Accept any server certificate (self-signed staging only) |
 | `connection` | object \| string | — | A profile supplying defaults for any field above |
-| `timeout` | integer (ms) | `10000` | Handshake timeout (for `std/ws@v1`: the whole session) |
+
+`timeout` (integer ms, default `10000`) is accepted inline by both steps but
+is **not** part of the profile — a `timeout` inside `connection` is ignored.
+For `std/ws-connect@v1` it bounds the handshake; for `std/ws@v1` the whole
+session.
 
 ### `std/ws-connect@v1`
 
@@ -171,8 +175,14 @@ Opens a live connection. Output:
 { "id": "ws-1", "connected": true, "subprotocol": "graphql-ws", "duration_ms": 3.1 }
 ```
 
-The handshake feeds `http_req_duration`. Store the output (`outputs: feed`)
-and pass `id: "${{ feed.id }}"` to the other `ws-*` steps.
+`subprotocol` is the server-negotiated protocol, or `null` when the server
+picked none. The handshake feeds `http_req_duration`; a failed handshake
+counts in `http_req_failed` and the output is
+`{ "connected": false, "error": "…", "duration_ms": … }`.
+
+Store the output (`outputs: feed`) and pass `id: "${{ feed.id }}"` to the
+other `ws-*` steps. Ids are minted per VU (`ws-1`, `ws-2`, …) and are valid
+only inside that VU's current iteration.
 
 ### `std/ws-send@v1`
 
@@ -185,8 +195,11 @@ and pass `id: "${{ feed.id }}"` to the other `ws-*` steps.
 | `interval_ms` | integer | `0` | Gap between repeated sends |
 | `timeout` | integer (ms) | `10000` | For the whole send loop |
 
-**Output**: `{ "sent": N, "bytes": B, "duration_ms": … }`. Counts toward the
-`ws_msgs_sent` rate.
+**Output**: `{ "sent": N, "bytes": B, "duration_ms": …, "metrics": { "ws_msgs_sent": N } }`.
+Counts toward the `ws_msgs_sent` rate. A transport error fails the step and
+drops the connection — later steps on that id get an "unknown connection id"
+error. A parameter error (e.g. both `send` and `send_base64`) leaves the
+connection usable.
 
 Text payloads may embed single-brace `${…}` tokens, expanded anew per send —
 distinct from the engine's `${{ … }}`, which resolves once before the action
@@ -194,7 +207,7 @@ runs:
 
 | Token | Expands to |
 |---|---|
-| `${seq}` | Monotonic counter, unique per message |
+| `${seq}` | Monotonic counter, unique per message (keeps counting across sends on the same connection) |
 | `${uuid}` | Random 32-hex id |
 | `${now}` | UTC `YYYYMMDD-HH:MM:SS.sss` (FIX SendingTime shape) |
 | `${now_ms}` | Unix milliseconds |
@@ -202,6 +215,9 @@ runs:
 | `${rand(a,b)}` | Random integer in `[a,b]` |
 | `${randf(a,b[,dp])}` | Random float, `dp` decimals (default 2) |
 | `${choice(x\|y\|z)}` | Random pick |
+
+Unknown tokens are left verbatim. `send_base64` payloads are decoded once and
+sent as-is — no token expansion.
 
 ### `std/ws-recv@v1`
 
@@ -211,7 +227,7 @@ Reads until a **stopping rule** is satisfied — not reaching it within
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `id` | string | **required** | Connection id |
-| `until_contains` | string | — | Stop when a message contains this substring |
+| `until_contains` | string | — | Stop when a message contains this substring (mutually exclusive with `until_json`) |
 | `until_json` | object | — | Stop when a message JSON-subset-matches (pattern fields must equal; extra fields ignored) |
 | `count` | integer | `1` | Without an `until_*` rule: stop after N data messages |
 | `timeout` | integer (ms) | `10000` | Deadline for the stopping rule |
@@ -219,15 +235,24 @@ Reads until a **stopping rule** is satisfied — not reaching it within
 **Output**:
 
 ```json
-{ "messages": ["…"], "body": "…", "count": 2, "matched": true, "duration_ms": 8.4 }
+{ "messages": ["…"], "body": "…", "count": 2, "matched": true, "duration_ms": 8.4,
+  "metrics": { "ws_msgs_received": 2, "ws_msg_rtt": [7.9] } }
 ```
 
-Text frames arrive as strings, binary frames as base64 strings; `body` is the
-newline-joined text form (so `check: { body_contains: … }` works). Received
-messages count toward the `ws_msgs_received` rate. When an `until_*` rule
-matches and a `ws-send` preceded it on this connection, the send→match time
-is recorded as a `ws_msg_rtt` histogram sample — the application-level
-message round trip.
+`matched` reports whether the stopping rule was reached (in `count` mode: the
+count was reached). Text frames arrive as strings, binary frames as base64
+strings; `body` is the newline-joined text form (so
+`check: { body_contains: … }` works). Received messages count toward the
+`ws_msgs_received` rate. When an `until_*` rule matches and a `ws-send`
+preceded it on this connection, the send→match time is recorded as a
+`ws_msg_rtt` histogram sample — the application-level message round trip.
+
+Every message read along the way stays in `messages`, whatever the outcome.
+If the peer closes or the transport dies before the rule is reached, the step
+fails, the output gains an `error` field, and the connection is dropped; a
+plain timeout fails the step too but leaves the connection usable for later
+steps. Ping/pong frames arriving during the read are ignored as transport
+noise.
 
 The step's own `duration_ms` deliberately does **not** feed
 `http_req_duration`: how long a server chooses to wait before pushing is not
@@ -238,12 +263,17 @@ target latency and would poison the shared percentiles.
 Transport-level ping→pong round trip: `{ "pong": true, "duration_ms": 0.4 }`.
 Takes `id` and `timeout`. The RTT is not aggregated into any histogram —
 bound it with `check: { duration_ms_lt: … }` when needed. Data messages
-arriving while waiting for the pong are buffered for the next `ws-recv`.
+arriving while waiting for the pong are buffered for the next `ws-recv`. No
+pong within `timeout` (or a closed connection) fails the step and drops the
+connection.
 
 ### `std/ws-close@v1`
 
-Graceful close handshake. Takes `id`, `code` (default `1000`), `reason`,
-`timeout`. Output: `{ "closed": true, "duration_ms": … }`.
+Graceful close handshake. Takes `id`, `code` (default `1000`, normal
+closure), `reason` (default empty) — both sent in the Close frame — and
+`timeout`. Output: `{ "closed": true, "duration_ms": … }`, reported even when
+the peer does not acknowledge within `timeout`: the socket is gone either way
+and the id is released.
 
 ### `std/ws@v1` — one-shot session
 
@@ -271,9 +301,20 @@ steps:
 ```
 
 **Output**: `{ "connected": true, "sent": N, "received": M, "messages": […],
-"body": "…", "subprotocol": …, "duration_ms": … }`. The whole session is one
-`http_req_duration` sample; the step fails on handshake/transport errors or
-any entry whose `until_*` rule did not match in time.
+"body": "…", "subprotocol": …, "duration_ms": …, "metrics": { "ws_msgs_sent": N, "ws_msgs_received": M, "ws_msg_rtt": […] } }`.
+The whole session is one `http_req_duration` sample; the step fails on
+handshake/transport errors or any entry whose `until_*` rule did not match in
+time. A mid-session failure still reports everything exchanged up to that
+point, plus an `error` field naming the failing entry (`message[i]: …`); a
+handshake failure yields `{ "connected": false, "error": "…", "duration_ms": … }`
+and counts in `http_req_failed`.
+
+### Limits
+
+Inbound protocol limits come from the WebSocket library defaults: messages up
+to 64 MiB, single frames up to 16 MiB — a larger inbound message errors the
+connection (and therefore the step reading it). Timeout values, `repeat`
+counts, and the `messages` list have no built-in caps.
 
 ## `std/file-read@v1`
 
