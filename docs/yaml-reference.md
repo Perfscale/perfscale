@@ -35,7 +35,7 @@ steps:
 
 | Field | Required | Description |
 |---|---|---|
-| `use` | yes | Action ID: `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1` (short aliases `http`, `tcp`, `udp`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `check`, `sleep`, `log`, `file-read`, `file-write` also work). `uses:` is accepted as an alias for `use:` |
+| `use` | yes | Action ID: `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1` (short aliases `http`, `tcp`, `udp`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `check`, `sleep`, `log`, `file-read`, `file-write` also work). `uses:` is accepted as an alias for `use:` |
 | `name` | no | Human-readable label shown in log lines |
 | `with` | no | Action parameters — see [Actions](core/actions.md) |
 | `check` | no | Assertions on this step's output — same keys as `std/check@v1` |

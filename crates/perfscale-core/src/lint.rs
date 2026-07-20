@@ -98,7 +98,7 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
     // definition (see `schema::relax_use_alias`); the older wording was
     // `"use" is a required property`.
     if problem.contains("\"use\" is a required property") || problem.contains("anyOf") {
-        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, or `std/file-write@v1`".into())
+        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, or `std/file-write@v1`".into())
     } else if problem.contains("\"steps\" is a required property") {
         Some("a test definition is a mapping with a `steps:` list at the top level".into())
     } else if problem.contains("\"url\" is a required property") {
@@ -182,6 +182,54 @@ const WS_SEND_WITH_FIELDS: [&str; 6] = [
 const WS_RECV_WITH_FIELDS: [&str; 5] = ["id", "count", "until_contains", "until_json", "timeout"];
 const WS_PING_WITH_FIELDS: [&str; 2] = ["id", "timeout"];
 const WS_CLOSE_WITH_FIELDS: [&str; 4] = ["id", "code", "reason", "timeout"];
+// Shared by std/grpc@v1 and std/grpc-connect@v1 (the Channel Profile), plus
+// per-action extras below.
+const GRPC_PROFILE_FIELDS: [&str; 8] = [
+    "connection",
+    "url",
+    "metadata",
+    "skipTLSVerify",
+    "descriptor_set",
+    "reflection",
+    "max_recv_size",
+    "timeout",
+];
+const GRPC_UNARY_WITH_FIELDS: [&str; 12] = [
+    "connection",
+    "url",
+    "metadata",
+    "skipTLSVerify",
+    "descriptor_set",
+    "reflection",
+    "max_recv_size",
+    "timeout",
+    "method",
+    "payload",
+    "payload_base64",
+    "expect_status",
+];
+const GRPC_CALL_WITH_FIELDS: [&str; 7] = [
+    "id",
+    "method",
+    "payload",
+    "payload_base64",
+    "metadata",
+    "expect_status",
+    "timeout",
+];
+const GRPC_STREAM_OPEN_WITH_FIELDS: [&str; 5] =
+    ["id", "method", "payload", "payload_base64", "metadata"];
+const GRPC_STREAM_SEND_WITH_FIELDS: [&str; 6] = [
+    "id",
+    "payload",
+    "payload_base64",
+    "repeat",
+    "interval_ms",
+    "timeout",
+];
+const GRPC_STREAM_RECV_WITH_FIELDS: [&str; 5] =
+    ["id", "count", "until_contains", "until_json", "timeout"];
+const GRPC_STREAM_CLOSE_WITH_FIELDS: [&str; 3] = ["id", "expect_status", "timeout"];
 const SLEEP_WITH_FIELDS: [&str; 2] = ["ms", "seconds"];
 const LOG_WITH_FIELDS: [&str; 1] = ["message"];
 const FILE_READ_WITH_FIELDS: [&str; 2] = ["path", "encoding"];
@@ -240,6 +288,13 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
                     "std/ws-recv@v1",
                     "std/ws-ping@v1",
                     "std/ws-close@v1",
+                    "std/grpc@v1",
+                    "std/grpc-connect@v1",
+                    "std/grpc-call@v1",
+                    "std/grpc-stream-open@v1",
+                    "std/grpc-stream-send@v1",
+                    "std/grpc-stream-recv@v1",
+                    "std/grpc-stream-close@v1",
                     "std/check@v1",
                     "std/sleep@v1",
                     "std/log@v1",
@@ -249,7 +304,7 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             )
             .or_else(|| {
                 Some(
-                    "available actions: std/http@v1, std/tcp@v1, std/udp@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1"
+                    "available actions: std/http@v1, std/tcp@v1, std/udp@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1"
                         .into(),
                 )
             }),
@@ -266,6 +321,15 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             "std/ws-recv@v1" | "ws-recv" => Some(&WS_RECV_WITH_FIELDS),
             "std/ws-ping@v1" | "ws-ping" => Some(&WS_PING_WITH_FIELDS),
             "std/ws-close@v1" | "ws-close" => Some(&WS_CLOSE_WITH_FIELDS),
+            "std/grpc@v1" | "grpc" => Some(&GRPC_UNARY_WITH_FIELDS),
+            "std/grpc-connect@v1" | "grpc-connect" => Some(&GRPC_PROFILE_FIELDS),
+            "std/grpc-call@v1" | "grpc-call" => Some(&GRPC_CALL_WITH_FIELDS),
+            "std/grpc-stream-open@v1" | "grpc-stream-open" => Some(&GRPC_STREAM_OPEN_WITH_FIELDS),
+            "std/grpc-stream-send@v1" | "grpc-stream-send" => Some(&GRPC_STREAM_SEND_WITH_FIELDS),
+            "std/grpc-stream-recv@v1" | "grpc-stream-recv" => Some(&GRPC_STREAM_RECV_WITH_FIELDS),
+            "std/grpc-stream-close@v1" | "grpc-stream-close" => {
+                Some(&GRPC_STREAM_CLOSE_WITH_FIELDS)
+            }
             "std/check@v1" | "check" => Some(&CHECK_FIELDS),
             "std/sleep@v1" | "sleep" => Some(&SLEEP_WITH_FIELDS),
             "std/log@v1" | "log" => Some(&LOG_WITH_FIELDS),
@@ -321,6 +385,20 @@ fn is_known_action(action: &str) -> bool {
             | "ws-ping"
             | "std/ws-close@v1"
             | "ws-close"
+            | "std/grpc@v1"
+            | "grpc"
+            | "std/grpc-connect@v1"
+            | "grpc-connect"
+            | "std/grpc-call@v1"
+            | "grpc-call"
+            | "std/grpc-stream-open@v1"
+            | "grpc-stream-open"
+            | "std/grpc-stream-send@v1"
+            | "grpc-stream-send"
+            | "std/grpc-stream-recv@v1"
+            | "grpc-stream-recv"
+            | "std/grpc-stream-close@v1"
+            | "grpc-stream-close"
             | "std/check@v1"
             | "check"
             | "std/sleep@v1"
@@ -363,7 +441,9 @@ fn did_you_mean(input: &str, candidates: &[&str]) -> Option<String> {
         .map(|(c, _)| format!("did you mean '{c}'?"))
 }
 
-fn edit_distance(a: &str, b: &str) -> usize {
+/// Levenshtein distance, used by the linter and by `grpc` method resolution
+/// for did-you-mean suggestions.
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let mut prev: Vec<usize> = (0..=b.len()).collect();
@@ -540,5 +620,75 @@ steps:
             .as_deref()
             .unwrap()
             .contains("valid fields here"));
+    }
+
+    #[test]
+    fn grpc_family_lints_clean() {
+        let yaml = r#"
+steps:
+  - name: connect
+    use: std/grpc-connect@v1
+    with:
+      url: grpcs://api.example.com
+      reflection: true
+      metadata: { authorization: Bearer x }
+    outputs: conn
+  - name: call
+    use: grpc-call
+    with:
+      id: "${{ conn.id }}"
+      method: "pkg.Svc/Method"
+      payload: { message: hi }
+      expect_status: 0
+      timeout: 5000
+  - name: open
+    use: std/grpc-stream-open@v1
+    with: { id: "${{ conn.id }}", method: "pkg.Svc/Stream" }
+    outputs: stream
+  - name: send
+    use: std/grpc-stream-send@v1
+    with: { id: "${{ stream.id }}", payload: { message: hi }, repeat: 3, interval_ms: 10 }
+  - name: recv
+    use: std/grpc-stream-recv@v1
+    with: { id: "${{ stream.id }}", until_contains: hi, timeout: 1000 }
+  - name: close
+    use: std/grpc-stream-close@v1
+    with: { id: "${{ stream.id }}", expect_status: 0 }
+  - name: oneshot
+    use: std/grpc@v1
+    with:
+      url: grpc://127.0.0.1:50051
+      descriptor_set: "AAAA"
+      method: "pkg.Svc/Method"
+      payload_base64: "CAE="
+"#;
+        assert_eq!(lint(yaml, DocKind::Test), vec![]);
+    }
+
+    #[test]
+    fn typo_in_grpc_action_gets_did_you_mean() {
+        let yaml = "steps:\n  - use: std/grpc-clal@v1\n    with:\n      id: grpc-1\n";
+        let issues = lint(yaml, DocKind::Test);
+        let bad = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown action"))
+            .unwrap();
+        assert_eq!(
+            bad.suggestion.as_deref(),
+            Some("did you mean 'std/grpc-call@v1'?")
+        );
+    }
+
+    #[test]
+    fn typo_in_grpc_with_key_gets_did_you_mean() {
+        let yaml =
+            "steps:\n  - use: std/grpc-call@v1\n    with:\n      id: grpc-1\n      paylod: {}\n";
+        let issues = lint(yaml, DocKind::Test);
+        let typo = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown field 'paylod'"))
+            .unwrap();
+        assert_eq!(typo.location, "/steps/0/with");
+        assert_eq!(typo.suggestion.as_deref(), Some("did you mean 'payload'?"));
     }
 }

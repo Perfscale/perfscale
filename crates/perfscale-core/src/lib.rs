@@ -16,3 +16,7 @@ pub mod schema;
 pub mod step;
 pub mod summary;
 pub mod yaml;
+
+/// Test-support gRPC echo server (proto/echo.proto via build.rs).
+#[cfg(test)]
+pub(crate) mod testsupport;

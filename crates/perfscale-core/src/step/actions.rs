@@ -11,6 +11,13 @@
 //! | `std/ws-recv@v1`    | Read from a live WebSocket until a rule       |
 //! | `std/ws-ping@v1`    | Ping→pong round trip on a live WebSocket      |
 //! | `std/ws-close@v1`   | Gracefully close a live WebSocket             |
+//! | `std/grpc@v1`       | One-shot gRPC unary call (connect→call→close) |
+//! | `std/grpc-connect@v1` | Open a live gRPC channel + schema, returns id |
+//! | `std/grpc-call@v1`    | Unary call on a live gRPC channel             |
+//! | `std/grpc-stream-open@v1` | Start a streaming call on a channel       |
+//! | `std/grpc-stream-send@v1` | Send message(s) on an open gRPC stream    |
+//! | `std/grpc-stream-recv@v1` | Read from an open gRPC stream             |
+//! | `std/grpc-stream-close@v1`| Half-close + drain an open gRPC stream    |
 //! | `std/check@v1`   | Assert properties of a previous step output      |
 //! | `std/sleep@v1`   | Wait N milliseconds                              |
 //! | `std/log@v1`     | Emit a log line                                  |
@@ -117,6 +124,25 @@ pub async fn execute_action(
         "std/ws-close@v1" | "ws-close" => {
             super::ws::ws_close_action(&resolved, ctx, step_name).await
         }
+        "std/grpc@v1" | "grpc" => super::grpc::grpc_unary_action(&resolved, step_name).await,
+        "std/grpc-connect@v1" | "grpc-connect" => {
+            super::grpc::grpc_connect_action(&resolved, ctx, step_name).await
+        }
+        "std/grpc-call@v1" | "grpc-call" => {
+            super::grpc::grpc_call_action(&resolved, ctx, step_name).await
+        }
+        "std/grpc-stream-open@v1" | "grpc-stream-open" => {
+            super::grpc::grpc_stream_open_action(&resolved, ctx, step_name).await
+        }
+        "std/grpc-stream-send@v1" | "grpc-stream-send" => {
+            super::grpc::grpc_stream_send_action(&resolved, ctx, step_name).await
+        }
+        "std/grpc-stream-recv@v1" | "grpc-stream-recv" => {
+            super::grpc::grpc_stream_recv_action(&resolved, ctx, step_name).await
+        }
+        "std/grpc-stream-close@v1" | "grpc-stream-close" => {
+            super::grpc::grpc_stream_close_action(&resolved, ctx, step_name).await
+        }
         "std/check@v1" | "check" => check_action(&resolved, ctx, step_name),
         "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name).await,
         "std/log@v1" | "log" => log_action(&resolved, step_name),
@@ -211,6 +237,9 @@ pub fn register_action(handler: Arc<dyn ActionHandler>) {
 //
 // Output:
 //   { "status": <u16>, "body": <string>, "duration_ms": <f64> }
+//   Binary responses (non-textual Content-Type) instead return an empty
+//   `body` plus `body_base64` — e.g. a fetched protobuf FileDescriptorSet
+//   can flow into a grpc step via `${{ fetch.body_base64 }}`.
 
 /// Process-wide HTTP client: connection pooling / keep-alive across
 /// iterations and VUs. A fresh client per request would open a new TCP
@@ -291,17 +320,46 @@ async fn http_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOu
             let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let status = resp.status().as_u16();
             let reason = resp.status().canonical_reason().unwrap_or("");
+            // Textual payloads keep the historic `body` string (reqwest's
+            // charset-aware decoding); binary payloads surface as
+            // `body_base64` so protobuf descriptor sets, images etc. can flow
+            // into later steps (`descriptor_set: "${{ fetch.body_base64 }}"`).
+            let textual = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(is_textual_content_type);
             let headers = header_map_to_json(resp.headers());
-            let body = resp.text().await.unwrap_or_default();
+            let (body, body_base64) = match textual {
+                Some(true) => (resp.text().await.unwrap_or_default(), None),
+                Some(false) => {
+                    let bytes = resp.bytes().await.unwrap_or_default();
+                    (String::new(), Some(base64_encode(&bytes)))
+                }
+                // No Content-Type: sniff — valid UTF-8 behaves as before,
+                // anything else is treated as binary.
+                None => {
+                    let bytes = resp.bytes().await.unwrap_or_default();
+                    match std::str::from_utf8(&bytes) {
+                        Ok(_) => (String::from_utf8_lossy(&bytes).into_owned(), None),
+                        Err(_) => (String::new(), Some(base64_encode(&bytes))),
+                    }
+                }
+            };
             let failed = status >= 400;
 
+            let mut value = json!({
+                "status": status,
+                "body": body,
+                "duration_ms": duration_ms,
+                "headers": headers,
+            });
+            if let Some(b64) = body_base64 {
+                value["body_base64"] = Value::String(b64);
+            }
+
             ActionOutput {
-                value: json!({
-                    "status": status,
-                    "body": body,
-                    "duration_ms": duration_ms,
-                    "headers": headers,
-                }),
+                value,
                 logs: vec![(
                     if failed { LogTag::Err } else { LogTag::Out },
                     format!("{method} {url} → {status} {reason} ({duration_ms:.2}ms)"),
@@ -437,6 +495,33 @@ fn header_map_to_json(headers: &reqwest::header::HeaderMap) -> serde_json::Map<S
         }
     }
     map
+}
+
+/// True for content types whose payload is meant to be read as text; anything
+/// else (octet-stream, protobuf, images, …) is surfaced as `body_base64`.
+fn is_textual_content_type(ct: &str) -> bool {
+    let mime = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    mime.starts_with("text/")
+        || mime == "application/json"
+        || mime.ends_with("+json")
+        || mime == "application/xml"
+        || mime.ends_with("+xml")
+        || mime == "application/javascript"
+        || mime == "application/x-javascript"
+        || mime == "application/x-www-form-urlencoded"
+        || mime == "application/yaml"
+        || mime == "application/x-yaml"
+}
+
+/// Standard base64 for binary response bodies.
+fn base64_encode(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 /// Flatten an error and its source chain into one line — reqwest's `Display`
@@ -1690,6 +1775,76 @@ mod tests {
         let out = execute_action("std/http@v1", &params, &ctx, "step").await;
         assert!(!out.success);
         assert!(out.logs[0].1.contains("TIMEOUT"));
+    }
+
+    #[tokio::test]
+    async fn http_action_binary_body_surfaces_as_base64() {
+        use base64::Engine as _;
+        let server = MockServer::start().await;
+        let payload: &[u8] = b"\x00\x01\x02\xff\xfe\xfd not utf-8";
+        Mock::given(method("GET"))
+            .and(path("/bin"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/octet-stream")
+                    .set_body_bytes(payload),
+            )
+            .mount(&server)
+            .await;
+
+        let ctx = Context::new();
+        let params = json!({ "url": format!("{}/bin", server.uri()) });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+        assert!(out.success);
+        assert_eq!(out.value["body"], "");
+        let b64 = out.value["body_base64"]
+            .as_str()
+            .expect("body_base64 present");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
+        assert_eq!(decoded, payload);
+    }
+
+    #[tokio::test]
+    async fn http_action_text_body_unchanged_without_base64() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json; charset=utf-8")
+                    .set_body_string(r#"{"ok":true}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let ctx = Context::new();
+        let params = json!({ "url": format!("{}/json", server.uri()) });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+        assert!(out.success);
+        assert_eq!(out.value["body"], r#"{"ok":true}"#);
+        assert!(
+            out.value.get("body_base64").is_none(),
+            "text has no body_base64"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_action_binary_without_content_type_is_sniffed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/raw"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"\xff\xfe\x00 binary"))
+            .mount(&server)
+            .await;
+
+        let ctx = Context::new();
+        let params = json!({ "url": format!("{}/raw", server.uri()) });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+        assert!(out.success);
+        assert_eq!(out.value["body"], "");
+        assert!(out.value["body_base64"].as_str().is_some());
     }
 
     // -----------------------------------------------------------------

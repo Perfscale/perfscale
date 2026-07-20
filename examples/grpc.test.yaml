@@ -1,0 +1,61 @@
+# yaml-language-server: $schema=../schema/test.schema.json
+#
+# gRPC load test — unary calls and a bidi stream over one live channel.
+#
+# Run against any echo server with reflection enabled, e.g.:
+#   cargo run -p perfscale-core --example grpc_echo_server   (listens on 50051)
+#   perfscale run -f examples/grpc.test.yaml
+#
+# The channel and its schema (server reflection, cached per URL) are paid once
+# per iteration; calls and stream messages ride the same HTTP/2 connection.
+
+steps:
+  - name: open channel
+    use: std/grpc-connect@v1
+    with:
+      url: grpc://127.0.0.1:50051
+      reflection: true
+    outputs: conn
+
+  - name: unary echo
+    use: std/grpc-call@v1
+    with:
+      id: "${{ conn.id }}"
+      method: "perfscale.test.v1.Echo/Unary"
+      # Single-brace ${…} tokens expand per call, as in ws payloads.
+      payload: { message: "ping-${seq}" }
+    check:
+      duration_ms_lt: 250
+    outputs: call
+
+  - name: open bidi stream
+    use: std/grpc-stream-open@v1
+    with:
+      id: "${{ conn.id }}"
+      method: "perfscale.test.v1.Echo/Bidi"
+    outputs: stream
+
+  - name: send events
+    use: std/grpc-stream-send@v1
+    with:
+      id: "${{ stream.id }}"
+      payload: { message: "evt-${seq}" }
+      repeat: 5
+      interval_ms: 20
+
+  - name: await echoes
+    use: std/grpc-stream-recv@v1
+    with:
+      id: "${{ stream.id }}"
+      until_contains: "evt-5"
+      timeout: 5000
+    check:
+      messages_count_gte: 5
+
+  - name: close stream
+    use: std/grpc-stream-close@v1
+    with: { id: "${{ stream.id }}" }
+
+  - name: pace
+    use: std/sleep@v1
+    with: { ms: 200 }

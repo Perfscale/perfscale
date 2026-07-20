@@ -151,14 +151,14 @@ fn resolve_profile(params: &Value) -> Result<Profile, String> {
 
 /// Accept `true` / `"true"` — interpolated `${{ … }}` values are always
 /// strings, so bool params must take both forms.
-fn bool_param(v: &Value) -> bool {
+pub(crate) fn bool_param(v: &Value) -> bool {
     v.as_bool()
         .or_else(|| v.as_str().map(|s| s.eq_ignore_ascii_case("true")))
         .unwrap_or(false)
 }
 
 /// Accept `10000` / `"10000"` (same rationale as [`bool_param`]).
-fn u64_param(v: &Value, default: u64) -> u64 {
+pub(crate) fn u64_param(v: &Value, default: u64) -> u64 {
     v.as_u64()
         .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         .unwrap_or(default)
@@ -306,15 +306,16 @@ fn frame_to_value(msg: &Message) -> Option<Value> {
 }
 
 /// The stopping rule of a receive: read until a message matches, or until
-/// `count` data messages arrived (when no match rule is given).
-enum Until {
+/// `count` data messages arrived (when no match rule is given). Shared with
+/// the gRPC family (`grpc-stream-recv` uses the same parameters).
+pub(crate) enum Until {
     Count(u64),
     Contains(String),
     Json(Value),
 }
 
 impl Until {
-    fn from_params(params: &Value) -> Result<Until, String> {
+    pub(crate) fn from_params(params: &Value) -> Result<Until, String> {
         match (params.get("until_contains"), params.get("until_json")) {
             (Some(_), Some(_)) => {
                 Err("'until_contains' and 'until_json' are mutually exclusive".into())

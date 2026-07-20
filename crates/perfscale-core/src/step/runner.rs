@@ -1032,6 +1032,105 @@ mod tests {
             .any(|l| l.text.starts_with("http_req_duration")));
     }
 
+    /// End-to-end gRPC flow through the VU loop: a Live Channel + stream are
+    /// usable across steps (schema via reflection), and the custom grpc
+    /// metrics fold into the summary lines.
+    #[tokio::test]
+    async fn run_steps_grpc_live_channel_and_metrics() {
+        let port = crate::testsupport::start_echo_server().await;
+        let url = format!("grpc://127.0.0.1:{port}");
+
+        let steps = vec![
+            Step {
+                name: Some("connect".into()),
+                action: "std/grpc-connect@v1".into(),
+                with: Some(json!({ "url": url, "reflection": true })),
+                check: None,
+                outputs: Some("conn".into()),
+            },
+            Step {
+                name: Some("unary".into()),
+                action: "std/grpc-call@v1".into(),
+                with: Some(json!({
+                    "id": "${{ conn.id }}",
+                    "method": "perfscale.test.v1.Echo/Unary",
+                    "payload": { "message": "ping-${seq}" },
+                })),
+                check: None,
+                outputs: None,
+            },
+            Step {
+                name: Some("open".into()),
+                action: "std/grpc-stream-open@v1".into(),
+                with: Some(json!({
+                    "id": "${{ conn.id }}",
+                    "method": "perfscale.test.v1.Echo/Bidi",
+                })),
+                check: None,
+                outputs: Some("stream".into()),
+            },
+            Step {
+                name: Some("send".into()),
+                action: "std/grpc-stream-send@v1".into(),
+                with: Some(json!({
+                    "id": "${{ stream.id }}",
+                    "payload": { "message": "evt-${seq}" },
+                    "repeat": 5,
+                })),
+                check: None,
+                outputs: None,
+            },
+            Step {
+                name: Some("recv".into()),
+                action: "std/grpc-stream-recv@v1".into(),
+                with: Some(json!({
+                    "id": "${{ stream.id }}",
+                    "until_contains": "evt-5",
+                    "timeout": 5000,
+                })),
+                check: Some(json!({ "messages_count_gte": 5 })),
+                outputs: None,
+            },
+            Step {
+                name: Some("close".into()),
+                action: "std/grpc-stream-close@v1".into(),
+                with: Some(json!({ "id": "${{ stream.id }}" })),
+                check: None,
+                outputs: None,
+            },
+        ];
+        let config = RunConfig {
+            vus: 1,
+            duration: "1s".into(),
+            ..Default::default()
+        };
+        let lines = run_and_collect(steps, config, false).await;
+
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.text.contains("[check]") && l.text.contains("FAIL")),
+            "no failing checks expected: {lines:?}"
+        );
+        for metric in [
+            "grpc_req_duration",
+            "grpc_msgs_sent",
+            "grpc_msgs_received",
+            "grpc_req_failed",
+        ] {
+            assert!(
+                lines.iter().any(|l| l.text.starts_with(metric)),
+                "{metric} in summary: {lines:?}"
+            );
+        }
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.starts_with("grpc_msg_rtt") && l.text.contains("count=")),
+            "RTT histogram in summary: {lines:?}"
+        );
+    }
+
     // -----------------------------------------------------------------
     // run_native — before / variables
     // -----------------------------------------------------------------

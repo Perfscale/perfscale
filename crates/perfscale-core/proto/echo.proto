@@ -1,0 +1,38 @@
+// Test-support service for the std/grpc*@v1 action family. Compiled by
+// build.rs (tonic-build); referenced only by #[cfg(test)] code and the
+// grpc_echo_server example — never by the shipped library.
+syntax = "proto3";
+
+package perfscale.test.v1;
+
+service Echo {
+  // One request → one response (message echoed back).
+  rpc Unary(EchoRequest) returns (EchoResponse);
+
+  // One request → `count` responses, seq 1..count.
+  rpc ServerStream(EchoRequest) returns (stream EchoResponse);
+
+  // N requests → one response summarizing them (after half-close).
+  rpc ClientStream(stream EchoRequest) returns (EchoResponse);
+
+  // Each request echoed back immediately, seq 1..N.
+  rpc Bidi(stream EchoRequest) returns (stream EchoResponse);
+
+  // Always fails with INVALID_ARGUMENT.
+  rpc Fail(EchoRequest) returns (EchoResponse);
+
+  // Responds with `size` bytes of zero padding — for max_recv_size tests.
+  rpc Large(EchoRequest) returns (EchoResponse);
+}
+
+message EchoRequest {
+  string message = 1;
+  int32 count = 2;
+  int32 size = 3;
+}
+
+message EchoResponse {
+  string message = 1;
+  int32 seq = 2;
+  bytes padding = 3;
+}
