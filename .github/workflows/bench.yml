@@ -20,9 +20,10 @@ on:
         description: "Suites to run (see scripts/bench.sh)"
         default: "overhead throughput startup scaling saturation yaml tls"
   schedule:
-    # Weekly drift check (Mondays 04:00 UTC) — catches perf regressions
-    # between releases without burning CI minutes on every push.
-    - cron: "0 4 * * 1"
+    # Daily drift check (04:23 UTC) — catches perf regressions between
+    # releases. ~30min per run ≈ ~900 Actions-min/month; off-:00 to dodge
+    # the top-of-hour scheduler herd.
+    - cron: "23 4 * * *"
 
 permissions:
   contents: read
