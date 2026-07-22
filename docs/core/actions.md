@@ -141,6 +141,9 @@ host. Set `read` (or `expect`) to actually validate a response.
 
 ## WebSocket: `std/ws@v1` and the `std/ws-*@v1` family
 
+> Concept-level walkthrough (styles, dynamic messages, assertions, metrics):
+> [WebSocket guide](websocket.md).
+
 Two ways to load-test a WebSocket endpoint:
 
 - **One-shot session** — `std/ws@v1` opens a connection, exchanges messages,
@@ -327,6 +330,9 @@ connection (and therefore the step reading it). Timeout values, `repeat`
 counts, and the `messages` list have no built-in caps.
 
 ## gRPC: `std/grpc@v1` and the `std/grpc-*@v1` family
+
+> Concept-level walkthrough (schema sources, streams, assertions, metrics):
+> [gRPC guide](grpc.md).
 
 Two ways to load-test a gRPC endpoint:
 

@@ -77,8 +77,72 @@ steps:
     with: { id: "${{ feed.id }}" }
 ```
 
-Run it against any echo server (`npx wscat --listen 9222`). See
+Run it against any echo server (`npx wscat --listen 9222`). See the
+[WebSocket guide](../core/websocket.md) for concepts and
 [Actions → WebSocket](../core/actions.md#websocket-stdwsv1-and-the-stdws-v1-family)
+for the full parameter and metrics reference.
+
+## Load-test a gRPC endpoint
+
+[`examples/grpc.test.yaml`](../../examples/grpc.test.yaml) drives unary calls
+and a bidi stream over one live channel. No protobuf codegen: the schema is
+loaded at run time via server reflection (or a base64 `descriptor_set`), and
+payloads are plain JSON mapped by protobuf-JSON rules. The channel and its
+schema are paid once per iteration — calls and streams ride the same HTTP/2
+connection:
+
+```yaml
+steps:
+  - name: open channel
+    use: std/grpc-connect@v1
+    with:
+      url: grpc://127.0.0.1:50051
+      reflection: true
+    outputs: conn
+
+  - name: unary echo
+    use: std/grpc-call@v1
+    with:
+      id: "${{ conn.id }}"
+      method: "perfscale.test.v1.Echo/Unary"
+      payload: { message: "ping-${seq}" }
+    check:
+      duration_ms_lt: 250
+
+  - name: open bidi stream
+    use: std/grpc-stream-open@v1
+    with:
+      id: "${{ conn.id }}"
+      method: "perfscale.test.v1.Echo/Bidi"
+    outputs: stream
+
+  - name: send events
+    use: std/grpc-stream-send@v1
+    with:
+      id: "${{ stream.id }}"
+      payload: { message: "evt-${seq}" }
+      repeat: 5
+      interval_ms: 20
+
+  - name: await echoes
+    use: std/grpc-stream-recv@v1
+    with:
+      id: "${{ stream.id }}"
+      until_contains: "evt-5"
+      timeout: 5000
+    check:
+      messages_count_gte: 5
+
+  - name: close stream
+    use: std/grpc-stream-close@v1
+    with: { id: "${{ stream.id }}" }
+```
+
+Run it against the bundled echo server
+(`cargo run -p perfscale-core --example grpc_echo_server`). For occasional
+probes there is also the one-shot `std/grpc@v1` (connect → schema → call →
+close in one step). See the [gRPC guide](../core/grpc.md) for concepts and
+[Actions → gRPC](../core/actions.md#grpc-stdgrpcv1-and-the-stdgrpc-v1-family)
 for the full parameter and metrics reference.
 
 ## Reuse an existing k6 script

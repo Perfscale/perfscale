@@ -12,7 +12,9 @@ expires, sharing a metrics collector.
 
 - Per-VU `Context` — step outputs and `${{ }}` interpolation are isolated
   between VUs, persistent across iterations of the same VU
-- HTTP timings from `std/http@v1` feed the shared metrics
+- HTTP timings from `std/http@v1` feed the shared metrics; other actions
+  (WebSocket, gRPC, TCP/UDP) contribute counters and latency histograms
+  (e.g. `ws_msg_rtt`, `grpc_req_duration`) through the same collector
 - Ends with the k6-compatible summary block + `Done — Xs wall clock`
 - `vus: 0` is clamped to 1; duration strings parse via `parse_duration_secs`
   (`"90"`, `"1m30s"`, `"1h"` — minimum 1s)

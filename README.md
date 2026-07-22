@@ -36,9 +36,10 @@ Or grab a binary from [GitHub Releases](https://github.com/Perfscale/perfscale/r
    summary at the end so all three engines report in the same shape.
 3. Native (`-f test.yaml -c config.yaml`) runs perfscale's own step engine — no
    external binary required — executing `std/http`, `std/tcp`, `std/udp`,
-   `std/ws*` (WebSocket sessions and live connections), `std/check`,
-   `std/sleep`, `std/log`, and `std/file-*` actions across N virtual users for
-   a given duration.
+   `std/ws*` (WebSocket sessions and live connections), `std/grpc*` (unary
+   calls and client/server/bidi streams, schema via reflection or descriptor
+   sets), `std/check`, `std/sleep`, `std/log`, and `std/file-*` actions across
+   N virtual users for a given duration.
 4. `--report <url>` optionally POSTs the aggregated summary to a `perfscale serve`
    instance running locally, for a shared view across multiple `run` invocations.
 5. `perfscale serve` is a minimal HTTP receiver + console printer — a stand-in dev
