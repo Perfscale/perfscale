@@ -126,7 +126,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )))
         .build_v1()?;
 
-    let addr = "127.0.0.1:50051".parse()?;
+    let addr = std::env::args()
+        .nth(1)
+        .or_else(|| std::env::var("ECHO_ADDR").ok())
+        .unwrap_or_else(|| "127.0.0.1:50051".to_string())
+        .parse()?;
     println!("gRPC echo server (with reflection) listening on {addr}");
     tonic::transport::Server::builder()
         .add_service(EchoServer::new(EchoSvc))

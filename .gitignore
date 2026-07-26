@@ -1,3 +1,6 @@
 /target
 .DS_Store
 *.csv
+
+# local build artifacts
+grpc-echo-amd64
