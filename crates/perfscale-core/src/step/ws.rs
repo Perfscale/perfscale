@@ -82,11 +82,29 @@ use crate::generate::Gen;
 // ---------------------------------------------------------------------------
 
 /// Resolved connection parameters — the profile merged with inline fields.
-struct Profile {
+/// Also constructed directly by [`crate::introspect::probe_ws`].
+pub(crate) struct Profile {
     url: String,
     headers: Vec<(String, String)>,
     subprotocols: Vec<String>,
     skip_tls_verify: bool,
+}
+
+impl Profile {
+    /// A profile for a one-off probe (no profile-merge machinery).
+    pub(crate) fn new(
+        url: &str,
+        headers: Vec<(String, String)>,
+        subprotocols: Vec<String>,
+        skip_tls_verify: bool,
+    ) -> Profile {
+        Profile {
+            url: url.to_string(),
+            headers,
+            subprotocols,
+            skip_tls_verify,
+        }
+    }
 }
 
 /// Merge the `connection` profile (object or JSON string) with inline
@@ -169,8 +187,9 @@ pub(crate) fn u64_param(v: &Value, default: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Open the WebSocket: TCP + (for `wss://`) TLS + upgrade handshake. Returns
-/// the stream and the server-negotiated subprotocol, if any.
-async fn ws_handshake(profile: &Profile) -> Result<(WsStream, Option<String>), String> {
+/// the stream and the server-negotiated subprotocol, if any. Shared with
+/// [`crate::introspect::probe_ws`].
+pub(crate) async fn ws_handshake(profile: &Profile) -> Result<(WsStream, Option<String>), String> {
     let mut request = profile
         .url
         .as_str()

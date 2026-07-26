@@ -474,8 +474,8 @@ fn pool_from_descriptor_set(profile: &Profile) -> Option<Result<DescriptorPool, 
 /// Fetch the server's schema via the v1 reflection protocol and assemble a
 /// pool. `FileDescriptorResponse` carries the transitive closure of each
 /// requested file, so one round trip per service suffices; files are
-/// deduplicated by name.
-async fn fetch_reflection_pool(channel: &Channel) -> Result<DescriptorPool, String> {
+/// deduplicated by name. Shared with [`crate::introspect::reflect_schema`].
+pub(crate) async fn fetch_reflection_pool(channel: &Channel) -> Result<DescriptorPool, String> {
     use prost::Message as _;
     use tonic_reflection::pb::v1::server_reflection_client::ServerReflectionClient;
     use tonic_reflection::pb::v1::server_reflection_request::MessageRequest;

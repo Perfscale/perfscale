@@ -9,6 +9,7 @@
 //! and [`yaml::ConfigFile`] via `serde`.
 
 pub mod generate;
+pub mod introspect;
 pub mod lint;
 pub mod models;
 pub mod runner;
