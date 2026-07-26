@@ -8,7 +8,7 @@ Full IDs carry a namespace and version (`std/http@v1`); the short aliases
 (`http`, `tcp`, `udp`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`,
 `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`,
 `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `check`, `sleep`,
-`log`, `file-read`, `file-write`) resolve to the
+`log`, `file-read`, `file-write`, `child_process`, `kill_process`) resolve to the
 same implementations.
 
 ## `std/http@v1`
@@ -672,6 +672,117 @@ Notes:
 - With `append: true` each call is a single `O_APPEND` write, so concurrent
   VUs do not interleave mid-content; ordering between VUs is unspecified.
 - Emits no per-iteration log lines.
+
+## `std/child_process@v1`
+
+Spawn a local OS process and keep it alive across the run — a mock server, a
+fixture database, a sidecar the system under test needs. Typical home is the
+config's `before:` block (start) paired with `after:` (stop); usable in test
+steps too. **Fail-closed**: the run must opt in with
+`allow_process_actions: true` in the config.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `command` | string | **required** | Executable to spawn |
+| `args` | array of strings | `[]` | Command arguments |
+| `env` | object | — | Extra environment variables (`{ "NAME": "value" }`, string values only) |
+| `cwd` | string | — | Working directory of the child |
+| `port` | integer | — | Port the process answers on (echoed to outputs); `0` auto-assigns a free port and exports it to the child as the `PORT` env var |
+| `restart` | string | `never` | Restart policy: `never`, `on-failure` (non-zero exit or signal), `always` |
+| `max_restarts` | integer | `3` | Restart budget for the policy |
+| `backoff_ms` | integer | `1000` | Delay before each restart |
+| `buffer_kb` | integer | `64` | Captured stdout/stderr tail size per stream (KiB) |
+| `waitUntil` | object \| string | — | Readiness gate — see below |
+
+**Output** (available via `outputs` / `__last__`):
+
+```json
+{ "pid": 12345, "ppid": 12300, "pgid": 12345, "port": 8080,
+  "stdout": "<tail>", "stderr": "<tail>", "restart_count": 0 }
+```
+
+`ppid` is the perfscale process itself; `pgid` is the child's process group —
+every child leads its own group, so a tree kill can never hit perfscale.
+`port` is present only when the step declared one. `pid`/`pgid`/
+`restart_count` are a **snapshot**: they move on restarts, so stop processes
+by registry name ([`std/kill_process@v1`](#stdkill_processv1)), not by a
+captured pid.
+
+The child keeps running after the step returns. Its output streams into the
+run log with a `{step}: ` prefix (same shape as the k6 runner) and accumulates
+in the bounded tail buffers behind `stdout`/`stderr`. A supervisor applies the
+restart policy for the rest of the run and logs each restart. Whatever is
+still alive when the run ends — normal finish, failed `before:`, or Ctrl-C —
+is **stopped automatically** (SIGTERM, escalated to SIGKILL after a grace
+period, whole process group), so a forgotten `kill_process` never leaks a
+server.
+
+### waitUntil — readiness gate
+
+Blocks the step until the process is ready; every listed matcher must hold.
+Object form:
+
+| Field | Type | Description |
+|---|---|---|
+| `stdout_contains` | string | Substring in captured stdout |
+| `stderr_contains` | string | Substring in captured stderr |
+| `stdout_matches` | string (regex) | Regex matched against captured stdout |
+| `stderr_matches` | string (regex) | Regex matched against captured stderr |
+| `port_open` | integer | A TCP connect to `127.0.0.1:<port>` succeeds; `0` probes the step's own `port` |
+| `timeout` | string | Duration like `30s`/`1m` (default `30s`) |
+| `on_timeout` | string | `fail` (default) fails the step; `continue` logs the miss and goes on |
+
+A process that exits before becoming ready fails the step with its exit code
+and an stderr tail. The string form covers the common one-matcher case:
+`waitUntil: 'contains(stdout, "Serving HTTP")'`, `'matches(stderr, "re")'`,
+`'port_open(8080)'`.
+
+```yaml
+allow_process_actions: true
+
+before:
+  - name: web
+    uses: std/child_process@v1
+    with:
+      command: python3
+      args: ["-m", "http.server", "8080"]
+      waitUntil:
+        port_open: 8080
+        timeout: 10s
+      restart: on-failure
+    outputs: web          # → ${{ config.web.pid }}, ${{ config.web.port }}
+```
+
+## `std/kill_process@v1`
+
+Stop a process started with `std/child_process@v1` — the `after:` counterpart.
+Same `allow_process_actions` gate.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | one of name/pid | Registry name of a managed process (its step name or `outputs` name). Preferred: the lookup always targets the *current* pid, even across restarts |
+| `pid` | integer | one of name/pid | Raw OS pid — best-effort fallback for processes outside the registry (unix only) |
+| `signal` | string | `TERM` | `TERM`, `KILL`, `INT`, `HUP`, `QUIT`, `USR1`, `USR2` (a `SIG` prefix is accepted) |
+| `grace_ms` | integer | `5000` | Wait this long for the process to die before escalating to SIGKILL |
+| `tree` | boolean | `true` | Signal the whole process group, not just the leader |
+
+**Output**: `{ "pid": 12345, "signal": "TERM", "exit_code": null, "waited_ms": 12 }`
+
+`exit_code` is `null` when the process died to a signal, and always `null`
+for raw pids (a non-child's exit status cannot be collected). Killing an
+already-stopped process is a no-op, not an error; the run's end-of-run
+auto-kill covers anything not stopped explicitly.
+
+```yaml
+after:
+  - name: stop web
+    uses: std/kill_process@v1
+    with: { name: web, signal: TERM }
+```
+
+On non-unix platforms there are no POSIX signals or process groups:
+`std/kill_process@v1` by `name` terminates the direct child only (`tree` has
+no effect), and `pid:` is unsupported.
 
 ## `std/check@v1`
 

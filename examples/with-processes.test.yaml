@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=../schema/test.schema.json
+#
+# Companion test for with-processes.config.yaml — hits the web server the
+# config's `before` block started, addressed via the step's outputs
+# (`${{ config.web.port }}`).
+steps:
+  - name: hit local server
+    uses: std/http@v1
+    with:
+      url: "http://127.0.0.1:${{ config.web.port }}/"
+    check:
+      status: 200
+
+  - uses: std/sleep@v1
+    with:
+      ms: 200

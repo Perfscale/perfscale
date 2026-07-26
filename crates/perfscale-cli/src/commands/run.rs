@@ -227,6 +227,7 @@ fn resolve_plan(
             test,
             config: cfg.run.clone(),
             before: cfg.before.clone(),
+            after: cfg.after.clone(),
             variables: cfg.variables.clone(),
             quiet: args.quiet,
         };
@@ -317,6 +318,7 @@ mod tests {
                 url: url.to_string(),
             }),
             before: Vec::new(),
+            after: Vec::new(),
             variables: serde_json::Map::new(),
         }
     }
@@ -473,6 +475,7 @@ mod tests {
                 ..Default::default()
             },
             before: Vec::new(),
+            after: Vec::new(),
             variables: serde_json::Map::new(),
             quiet: false,
         };

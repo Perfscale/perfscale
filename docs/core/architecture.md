@@ -73,8 +73,16 @@ use perfscale_core::yaml;
 let test = yaml::parse_test_file(&std::fs::read_to_string("test.yaml")?)?;
 let config = yaml::parse_config_file(&std::fs::read_to_string("config.yaml")?)?;
 
-let mut rx = runner::execute(ExecutionPlan::NativeSteps { test, config: config.run }).await?;
-while let Some(line) = rx.recv().await {
+let rx = runner::execute(ExecutionPlan::NativeSteps {
+    test,
+    config: config.run,
+    before: config.before,
+    after: config.after,
+    variables: config.variables,
+    quiet: false,
+})
+.await?;
+while let Some(line) = rx.lines.recv().await {
     println!("[{:?}] {}", line.source, line.text);
 }
 ```

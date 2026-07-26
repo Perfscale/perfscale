@@ -98,7 +98,7 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
     // definition (see `schema::relax_use_alias`); the older wording was
     // `"use" is a required property`.
     if problem.contains("\"use\" is a required property") || problem.contains("anyOf") {
-        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, or `std/file-write@v1`".into())
+        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, or `std/kill_process@v1`".into())
     } else if problem.contains("\"steps\" is a required property") {
         Some("a test definition is a mapping with a `steps:` list at the top level".into())
     } else if problem.contains("\"url\" is a required property") {
@@ -120,7 +120,15 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
 
 const TEST_TOP_FIELDS: [&str; 1] = ["steps"];
 const STEP_FIELDS: [&str; 6] = ["name", "use", "uses", "with", "check", "outputs"];
-const CONFIG_TOP_FIELDS: [&str; 5] = ["vus", "duration", "report", "before", "variables"];
+const CONFIG_TOP_FIELDS: [&str; 7] = [
+    "vus",
+    "duration",
+    "report",
+    "before",
+    "after",
+    "variables",
+    "allow_process_actions",
+];
 const REPORT_FIELDS: [&str; 1] = ["url"];
 const CHECK_FIELDS: [&str; 7] = [
     "on",
@@ -234,6 +242,30 @@ const SLEEP_WITH_FIELDS: [&str; 2] = ["ms", "seconds"];
 const LOG_WITH_FIELDS: [&str; 1] = ["message"];
 const FILE_READ_WITH_FIELDS: [&str; 2] = ["path", "encoding"];
 const FILE_WRITE_WITH_FIELDS: [&str; 4] = ["path", "content", "encoding", "append"];
+const CHILD_PROCESS_WITH_FIELDS: [&str; 10] = [
+    "command",
+    "args",
+    "env",
+    "cwd",
+    "port",
+    "restart",
+    "max_restarts",
+    "backoff_ms",
+    "waitUntil",
+    "buffer_kb",
+];
+const KILL_PROCESS_WITH_FIELDS: [&str; 5] = ["name", "pid", "signal", "grace_ms", "tree"];
+// Nested `waitUntil` object of std/child_process@v1 (the string form is not
+// linted — it carries no keys).
+const WAIT_UNTIL_FIELDS: [&str; 7] = [
+    "stdout_contains",
+    "stderr_contains",
+    "stdout_matches",
+    "stderr_matches",
+    "port_open",
+    "timeout",
+    "on_timeout",
+];
 
 fn lint_test_fields(value: &Value, issues: &mut Vec<LintIssue>) {
     if let Some(map) = value.as_object() {
@@ -300,11 +332,13 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
                     "std/log@v1",
                     "std/file-read@v1",
                     "std/file-write@v1",
+                    "std/child_process@v1",
+                    "std/kill_process@v1",
                 ],
             )
             .or_else(|| {
                 Some(
-                    "available actions: std/http@v1, std/tcp@v1, std/udp@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1"
+                    "available actions: std/http@v1, std/tcp@v1, std/udp@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1"
                         .into(),
                 )
             }),
@@ -335,11 +369,26 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             "std/log@v1" | "log" => Some(&LOG_WITH_FIELDS),
             "std/file-read@v1" | "file-read" => Some(&FILE_READ_WITH_FIELDS),
             "std/file-write@v1" | "file-write" => Some(&FILE_WRITE_WITH_FIELDS),
+            "std/child_process@v1" | "child_process" => Some(&CHILD_PROCESS_WITH_FIELDS),
+            "std/kill_process@v1" | "kill_process" => Some(&KILL_PROCESS_WITH_FIELDS),
             // pro/* and unknown actions: `with` is free-form, don't lint fields.
             _ => None,
         };
         if let Some(fields) = with_fields {
             unknown_field_issues(with, fields, &format!("{loc}/with"), issues);
+        }
+
+        // std/child_process@v1's `waitUntil` object gets its own nested lint
+        // (the string form carries no keys, so there is nothing to check).
+        if matches!(action, "std/child_process@v1" | "child_process") {
+            if let Some(wait_until) = with.get("waitUntil").and_then(|v| v.as_object()) {
+                unknown_field_issues(
+                    wait_until,
+                    &WAIT_UNTIL_FIELDS,
+                    &format!("{loc}/with/waitUntil"),
+                    issues,
+                );
+            }
         }
     }
 
@@ -356,10 +405,15 @@ fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
         unknown_field_issues(report, &REPORT_FIELDS, "/report", issues);
     }
 
-    // `before:` steps get the same per-step linting as test steps.
+    // `before:`/`after:` steps get the same per-step linting as test steps.
     if let Some(before) = map.get("before").and_then(|b| b.as_array()) {
         for (i, step) in before.iter().enumerate() {
             lint_step(step, &format!("/before/{i}"), issues);
+        }
+    }
+    if let Some(after) = map.get("after").and_then(|a| a.as_array()) {
+        for (i, step) in after.iter().enumerate() {
+            lint_step(step, &format!("/after/{i}"), issues);
         }
     }
 }
@@ -408,6 +462,10 @@ fn is_known_action(action: &str) -> bool {
             | "file-read"
             | "std/file-write@v1"
             | "file-write"
+            | "std/child_process@v1"
+            | "child_process"
+            | "std/kill_process@v1"
+            | "kill_process"
             | "log"
     )
 }
@@ -690,5 +748,139 @@ steps:
             .unwrap();
         assert_eq!(typo.location, "/steps/0/with");
         assert_eq!(typo.suggestion.as_deref(), Some("did you mean 'payload'?"));
+    }
+
+    // -----------------------------------------------------------------
+    // std/child_process@v1 / std/kill_process@v1 + config `after`
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn process_actions_and_after_section_lint_clean() {
+        let yaml = r#"
+vus: 5
+duration: 30s
+allow_process_actions: true
+before:
+  - name: web
+    uses: std/child_process@v1
+    with:
+      command: python3
+      args: ["-m", "http.server", "8080"]
+      env: { API_URL: http://localhost:8080 }
+      cwd: scripts/
+      port: 8080
+      restart: on-failure
+      max_restarts: 3
+      backoff_ms: 1000
+      buffer_kb: 128
+      waitUntil:
+        stdout_contains: "Serving HTTP"
+        stderr_contains: "warn"
+        stdout_matches: "listening on \\d+"
+        stderr_matches: "err\\d+"
+        port_open: 8080
+        timeout: 15s
+        on_timeout: fail
+    outputs: web
+after:
+  - name: stop web
+    uses: std/kill_process@v1
+    with:
+      name: web
+      signal: TERM
+      grace_ms: 5000
+      tree: true
+"#;
+        assert_eq!(lint(yaml, DocKind::Config), vec![]);
+    }
+
+    #[test]
+    fn process_action_aliases_lint_clean() {
+        let yaml = r#"
+allow_process_actions: true
+before:
+  - uses: child_process
+    with: { command: sh, args: ["-c", "sleep 5"], waitUntil: 'contains(stdout, "ready")' }
+after:
+  - uses: kill_process
+    with: { pid: 12345 }
+"#;
+        assert_eq!(lint(yaml, DocKind::Config), vec![]);
+    }
+
+    #[test]
+    fn typo_in_child_process_with_key_gets_did_you_mean() {
+        let yaml = "steps:\n  - use: std/child_process@v1\n    with:\n      comand: sh\n";
+        let issues = lint(yaml, DocKind::Test);
+        let typo = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown field 'comand'"))
+            .unwrap();
+        assert_eq!(typo.location, "/steps/0/with");
+        assert_eq!(typo.suggestion.as_deref(), Some("did you mean 'command'?"));
+    }
+
+    #[test]
+    fn typo_in_kill_process_with_key_gets_did_you_mean() {
+        let yaml = "steps:\n  - use: std/kill_process@v1\n    with:\n      name: web\n      siganl: TERM\n";
+        let issues = lint(yaml, DocKind::Test);
+        let typo = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown field 'siganl'"))
+            .unwrap();
+        assert_eq!(typo.location, "/steps/0/with");
+        assert_eq!(typo.suggestion.as_deref(), Some("did you mean 'signal'?"));
+    }
+
+    #[test]
+    fn typo_in_wait_until_key_gets_did_you_mean() {
+        let yaml = r#"
+steps:
+  - use: std/child_process@v1
+    with:
+      command: sh
+      waitUntil:
+        stdout_containz: ready
+"#;
+        let issues = lint(yaml, DocKind::Test);
+        let typo = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown field 'stdout_containz'"))
+            .unwrap();
+        assert_eq!(typo.location, "/steps/0/with/waitUntil");
+        assert_eq!(
+            typo.suggestion.as_deref(),
+            Some("did you mean 'stdout_contains'?")
+        );
+    }
+
+    #[test]
+    fn after_steps_are_linted_like_before_steps() {
+        let yaml = r#"
+after:
+  - use: std/htp@v1
+    with: { url: https://x }
+"#;
+        let issues = lint(yaml, DocKind::Config);
+        let bad = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown action"))
+            .unwrap();
+        assert_eq!(bad.location, "/after/0/use");
+        assert_eq!(
+            bad.suggestion.as_deref(),
+            Some("did you mean 'std/http@v1'?")
+        );
+    }
+
+    #[test]
+    fn unknown_config_field_near_after_gets_did_you_mean() {
+        let yaml = "vus: 1\naftr: []\n";
+        let issues = lint(yaml, DocKind::Config);
+        let typo = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown field 'aftr'"))
+            .unwrap();
+        assert_eq!(typo.suggestion.as_deref(), Some("did you mean 'after'?"));
     }
 }

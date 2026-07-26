@@ -13,8 +13,13 @@ serde_yaml = "0.9"
 uuid       = { version = "1", features = ["serde", "v4"] }
 
 # Async runtime + subprocess management (k6, locust). `net` powers the raw
-# transport actions (std/tcp@v1, std/udp@v1).
-tokio = { version = "1", features = ["time", "sync", "rt", "macros", "process", "io-util", "fs", "net"] }
+# transport actions (std/tcp@v1, std/udp@v1) and the waitUntil port_open probe;
+# `signal` powers the graceful SIGINT/SIGTERM shutdown of native runs.
+tokio = { version = "1", features = ["time", "sync", "rt", "macros", "process", "io-util", "fs", "net", "signal"] }
+
+# Regular expressions for the waitUntil stdout_matches/stderr_matches
+# readiness matchers of `std/child_process@v1`.
+regex = "1"
 
 # HTTP client for std/http@v1
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"], default-features = false }
@@ -57,6 +62,12 @@ tokio-stream = "0.1"
 # URI types for dynamic call paths (tonic's re-export sits behind its
 # `codegen` feature, which dynamic calls don't need).
 http = "1"
+
+# kill(2)/killpg(2) for the managed child processes of `std/child_process@v1`
+# and `std/kill_process@v1` (signal delivery + tree kill by process group).
+# Non-unix platforms degrade to `Child::kill` without process groups.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [build-dependencies]
 # Compiles proto/echo.proto for the in-crate gRPC test server (used only by

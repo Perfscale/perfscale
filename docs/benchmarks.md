@@ -38,7 +38,8 @@ isn't on `PATH` are skipped, not failed; `overhead`/`startup` need
 [hyperfine](https://github.com/sharkdp/hyperfine), the rest don't.
 
 Micro-benchmarks for the native engine's hot paths (YAML parse, `${{ ... }}`
-interpolation, metrics recording / percentile summary) live in
+interpolation, metrics recording / percentile summary, `RingBuf` process-output
+capture, `waitUntil` readiness matchers) live in
 `crates/perfscale-core/benches/` and run with `cargo bench -p perfscale-core`.
 
 ## Methodology

@@ -1,0 +1,41 @@
+# yaml-language-server: $schema=../schema/config.schema.json
+#
+# Config with a managed child process: a local web server is started once
+# before the load and stopped after it.
+# Run with: perfscale run -f examples/with-processes.test.yaml -c examples/with-processes.config.yaml
+vus: 5
+duration: 30s
+
+# Process actions are fail-closed — every run that spawns or signals OS
+# processes must opt in explicitly.
+allow_process_actions: true
+
+before:
+  # Starts `python3 -m http.server` and waits (waitUntil) until it accepts
+  # TCP connections on 127.0.0.1:8080 — the step fails the run when the server
+  # never becomes ready. The process keeps running for the whole run; its
+  # output streams into the run log with a `web: ` prefix, and a crash is met
+  # with a restart (restart: on-failure, up to 3 times by default). Whatever
+  # is still alive at the end of the run is stopped automatically — the
+  # explicit kill below is the clean, timed stop.
+  - name: web
+    uses: std/child_process@v1
+    with:
+      command: python3
+      args: ["-m", "http.server", "8080"]
+      port: 8080 # echoed to outputs as ${{ config.web.port }}; 0 auto-assigns
+      waitUntil:
+        port_open: 8080
+        timeout: 10s
+      restart: on-failure
+    outputs: web # → ${{ config.web.pid }}, ${{ config.web.port }} in test steps
+
+after:
+  # Runs once after the load stops — on a normal finish, on a failed run, and
+  # on Ctrl-C alike. `name` looks the process up in the run's registry, so it
+  # always targets the current pid even across restarts.
+  - name: stop web
+    uses: std/kill_process@v1
+    with:
+      name: web
+      signal: TERM

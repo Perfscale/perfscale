@@ -63,9 +63,22 @@
   },
   "description": "Top-level `-c config.yaml` document.",
   "properties": {
+    "after": {
+      "default": [],
+      "description": "Teardown steps run **once** after the load stops — on a normal finish, on a failed run, on a failed `before`, and on Ctrl-C/SIGTERM alike. They see `${{ config.* }}` and `${{ vars.* }}` like test steps do. Unlike `before`, a failing teardown step is logged but does not abort the remaining steps (best-effort cleanup).",
+      "items": {
+        "$ref": "#/definitions/Step"
+      },
+      "type": "array"
+    },
     "allow_file_actions": {
       "default": false,
       "description": "Allow filesystem-touching steps: `std/file-read@v1`, `std/file-write@v1`, and `file` parts in `std/http@v1` multipart uploads. Fail-closed: defaults to `false` so a step list from an untrusted source cannot read or write arbitrary paths.",
+      "type": "boolean"
+    },
+    "allow_process_actions": {
+      "default": false,
+      "description": "Allow process-touching steps: `std/child_process@v1` and `std/kill_process@v1`. Fail-closed: defaults to `false` so a step list from an untrusted source cannot spawn or signal OS processes.",
       "type": "boolean"
     },
     "before": {

@@ -22,7 +22,7 @@ tiny local dev server for collecting results.
 - [Runners](core/runners.md) — k6, locust, and the native engine
 - [Actions](core/actions.md) — `std/http`, `std/tcp`, `std/udp`, `std/ws*`
   (WebSocket), `std/grpc*` (gRPC), `std/check`, `std/sleep`, `std/log`,
-  `std/file-*`
+  `std/file-*`, `std/child_process`, `std/kill_process`
 - [WebSocket guide](core/websocket.md) — sessions, live connections, message
   RTT, assertions
 - [gRPC guide](core/grpc.md) — dynamic schemas (reflection / descriptor

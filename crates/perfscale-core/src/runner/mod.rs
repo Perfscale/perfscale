@@ -64,6 +64,10 @@ pub enum ExecutionPlan {
         config: RunConfig,
         /// One-time setup steps from the config file's `before:` block.
         before: Vec<Step>,
+        /// One-time teardown steps from the config file's `after:` block.
+        /// They run on every exit path — normal finish, failed `before`,
+        /// interrupted run — best-effort.
+        after: Vec<Step>,
         /// Static variables from the config file's `variables:` block, exposed
         /// to steps as `${{ vars.* }}`.
         variables: serde_json::Map<String, serde_json::Value>,
@@ -87,14 +91,17 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
             test,
             config,
             before,
+            after,
             variables,
             quiet,
         } => {
             let (tx, rx) = mpsc::channel(512);
             let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
-                crate::step::runner::run_native(test.steps, before, config, variables, quiet, tx)
-                    .await;
+                crate::step::runner::run_native(
+                    test.steps, before, after, config, variables, quiet, tx,
+                )
+                .await;
                 let _ = exit_tx.send(Some(0));
             });
             Ok(RunOutput {
@@ -164,6 +171,7 @@ mod tests {
             test,
             config,
             before: Vec::new(),
+            after: Vec::new(),
             variables: serde_json::Map::new(),
             quiet: false,
         })

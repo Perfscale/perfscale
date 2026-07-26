@@ -27,6 +27,7 @@
 pub mod actions;
 pub mod context;
 pub(crate) mod grpc;
+pub mod process;
 pub(crate) mod resources;
 pub mod runner;
 pub(crate) mod ws;
@@ -92,6 +93,12 @@ pub struct RunConfig {
     #[serde(default)]
     pub allow_file_actions: bool,
 
+    /// Allow process-touching steps: `std/child_process@v1` and
+    /// `std/kill_process@v1`. Fail-closed: defaults to `false` so a step list
+    /// from an untrusted source cannot spawn or signal OS processes.
+    #[serde(default)]
+    pub allow_process_actions: bool,
+
     /// Confinement root for file actions. When set, every file path a step
     /// touches is canonicalized and must stay under this directory (`../`
     /// escapes and symlink hops out of it are rejected). Never parsed from
@@ -115,6 +122,7 @@ impl Default for RunConfig {
             vus: default_vus(),
             duration: default_duration(),
             allow_file_actions: false,
+            allow_process_actions: false,
             fs_root: None,
         }
     }
@@ -236,8 +244,10 @@ mod tests {
         let cfg: RunConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(cfg.vus, 1);
         assert_eq!(cfg.duration, "1m");
-        // File actions are fail-closed, and fs_root is never wire-settable.
+        // File and process actions are fail-closed, and fs_root is never
+        // wire-settable.
         assert!(!cfg.allow_file_actions);
+        assert!(!cfg.allow_process_actions);
         assert!(cfg.fs_root.is_none());
     }
 

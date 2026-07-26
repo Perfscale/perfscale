@@ -5,7 +5,7 @@
 //! structure and summarised in a k6-compatible text format so downstream
 //! parsers (dashboards, `perfscale serve`) work the same for all three engines.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,7 @@ use crate::runner::{LogLine, LogSource};
 use crate::step::{
     actions::{execute_action, HttpSample, LogTag},
     context::Context,
+    process::ProcessRegistry,
     RunConfig, Step,
 };
 
@@ -250,19 +251,19 @@ impl Metrics {
 /// failing checks, and the final metric summary always come through.
 ///
 /// This is the no-setup entry point: equivalent to [`run_native`] with no
-/// `before` steps and no static variables. Kept for callers (and tests) that
-/// only have a step list and a run config.
+/// `before`/`after` steps and no static variables. Kept for callers (and
+/// tests) that only have a step list and a run config.
 pub async fn run_steps(
     steps: Vec<Step>,
     config: RunConfig,
     quiet: bool,
     tx: mpsc::Sender<LogLine>,
 ) {
-    run_native(steps, Vec::new(), config, Map::new(), quiet, tx).await
+    run_native(steps, Vec::new(), Vec::new(), config, Map::new(), quiet, tx).await
 }
 
-/// Execute a native test with optional one-time `before` setup and static
-/// `variables`.
+/// Execute a native test with optional one-time `before` setup and `after`
+/// teardown, plus static `variables`.
 ///
 /// `before` steps run once, in order, before any VU is spawned. Each step's
 /// `outputs` is collected into a `config` object exposed to every test step as
@@ -270,9 +271,19 @@ pub async fn run_steps(
 /// If any setup step fails, the run aborts before spawning VUs — a broken
 /// setup would make every iteration fail identically, so failing fast is
 /// clearer than a wall of downstream errors.
+///
+/// `after` steps run once on every exit path — normal finish, failed
+/// `before`, or interrupted run — best-effort: a failing teardown step is
+/// logged but does not abort the rest. After them, any managed child
+/// processes still alive are stopped automatically.
+///
+/// The first SIGINT/SIGTERM asks the VU loop to stop (it notices between
+/// steps) and the run proceeds through the usual teardown; a second signal
+/// exits the process immediately.
 pub async fn run_native(
     steps: Vec<Step>,
     before: Vec<Step>,
+    after: Vec<Step>,
     config: RunConfig,
     variables: Map<String, Value>,
     quiet: bool,
@@ -284,8 +295,18 @@ pub async fn run_native(
         Value::Object(variables)
     };
 
+    // Managed child processes live for the whole run — whether they were
+    // spawned in `before`, a test step or `after`, everything still alive at
+    // the end is stopped via `shutdown_all` on every exit path.
+    let registry = Arc::new(ProcessRegistry::new());
+
+    // First SIGINT/SIGTERM flips this flag (soft stop); a second one exits
+    // the process outright. The handler task is aborted when the run ends.
+    let stop = Arc::new(AtomicBool::new(false));
+    let interrupt_handler = spawn_interrupt_handler(Arc::clone(&stop), tx.clone());
+
     // --- One-time setup ---
-    let config_seed = match run_before(&before, &vars, &config, quiet, &tx).await {
+    let config_seed = match run_before(&before, &vars, &config, &registry, quiet, &tx).await {
         Ok(v) => v,
         Err(msg) => {
             emit(
@@ -294,7 +315,13 @@ pub async fn run_native(
                 &format!("Setup failed, aborting run: {msg}"),
             )
             .await;
+            // Teardown still runs: a `before` step may have started a process
+            // (or grabbed anything else `after` exists to clean up) before
+            // the one that failed.
+            run_after(&after, &Value::Null, &vars, &config, &registry, quiet, &tx).await;
+            registry.shutdown_all().await;
             emit(&tx, LogSource::System, "Done — setup error").await;
+            interrupt_handler.abort();
             return;
         }
     };
@@ -331,12 +358,18 @@ pub async fn run_native(
         let vars = Arc::clone(&vars);
         let fs_root = config.fs_root.clone();
         let allow_file_actions = config.allow_file_actions;
+        let allow_process_actions = config.allow_process_actions;
+        let processes = Arc::clone(&registry);
+        let stop = Arc::clone(&stop);
         let tx = tx.clone();
 
         handles.push(tokio::spawn(async move {
             let mut ctx = Context::new();
             ctx.allow_file_actions = allow_file_actions;
+            ctx.allow_process_actions = allow_process_actions;
             ctx.fs_root = fs_root;
+            ctx.processes = Some(processes);
+            ctx.log_tx = Some(tx.clone());
             if !config_seed.is_null() {
                 ctx.set("config", (*config_seed).clone());
             }
@@ -344,11 +377,11 @@ pub async fn run_native(
                 ctx.set("vars", (*vars).clone());
             }
 
-            while Instant::now() < deadline {
+            while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
                 iter_count.fetch_add(1, Ordering::Relaxed);
                 for step in steps_ref.iter() {
                     execute_step(step, &mut ctx, &tx, &metrics, quiet, vu_id).await;
-                    if Instant::now() >= deadline {
+                    if Instant::now() >= deadline || stop.load(Ordering::Relaxed) {
                         break;
                     }
                 }
@@ -395,6 +428,11 @@ pub async fn run_native(
     }
     reporter.abort();
 
+    // Teardown on every non-setup-failure path: `after` steps (best-effort),
+    // then stop whatever managed processes are still alive.
+    run_after(&after, &config_seed, &vars, &config, &registry, quiet, &tx).await;
+    registry.shutdown_all().await;
+
     let wall_secs = started.elapsed().as_secs_f64();
     let total_iters = iter_count.load(Ordering::Relaxed);
     let lines = metrics
@@ -410,6 +448,73 @@ pub async fn run_native(
         &format!("Done — {wall_secs:.1}s wall clock"),
     )
     .await;
+    interrupt_handler.abort();
+}
+
+// ---------------------------------------------------------------------------
+// Interrupt handling (SIGINT/SIGTERM)
+// ---------------------------------------------------------------------------
+
+/// Install the two-stage interrupt handler for a native run.
+///
+/// The first SIGINT/SIGTERM flips `stop`: the VU loop notices between steps
+/// and the run proceeds through the usual teardown (`after` steps, process
+/// shutdown, summary). A second signal exits the process immediately —
+/// teardown itself may be wedged, and the operator clearly wants out.
+///
+/// Returns the handler task; the caller aborts it when the run ends so a
+/// long-lived embedding process (agent mode) stops intercepting signals once
+/// perfscale is done.
+fn spawn_interrupt_handler(
+    stop: Arc<AtomicBool>,
+    tx: mpsc::Sender<LogLine>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        // SIGTERM only exists on unix; elsewhere Ctrl-C (SIGINT) is all we get.
+        #[cfg(unix)]
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+
+        loop {
+            #[cfg(unix)]
+            {
+                tokio::select! {
+                    r = tokio::signal::ctrl_c() => {
+                        if r.is_err() {
+                            return;
+                        }
+                    }
+                    r = async {
+                        match sigterm.as_mut() {
+                            Some(s) => s.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        if r.is_none() {
+                            return;
+                        }
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                if tokio::signal::ctrl_c().await.is_err() {
+                    return;
+                }
+            }
+
+            if stop.swap(true, Ordering::SeqCst) {
+                // Second interrupt: hard exit (128 + SIGINT).
+                std::process::exit(130);
+            }
+            emit(
+                &tx,
+                LogSource::System,
+                "Interrupt received — stopping load, running teardown (interrupt again to force-quit)",
+            )
+            .await;
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -425,12 +530,14 @@ pub async fn run_native(
 /// suppression. The first failing step short-circuits with an `Err` naming it.
 ///
 /// `config` carries the filesystem policy (`allow_file_actions`, `fs_root`)
-/// into setup steps — they run the same actions as test steps, so the same
-/// gate applies.
+/// and the process policy (`allow_process_actions`, shared `registry`) into
+/// setup steps — they run the same actions as test steps, so the same gates
+/// apply.
 async fn run_before(
     before: &[Step],
     vars: &Value,
     config: &RunConfig,
+    registry: &Arc<ProcessRegistry>,
     quiet: bool,
     tx: &mpsc::Sender<LogLine>,
 ) -> Result<Value, String> {
@@ -451,7 +558,10 @@ async fn run_before(
 
     let mut ctx = Context::new();
     ctx.allow_file_actions = config.allow_file_actions;
+    ctx.allow_process_actions = config.allow_process_actions;
     ctx.fs_root = config.fs_root.clone();
+    ctx.processes = Some(Arc::clone(registry));
+    ctx.log_tx = Some(tx.clone());
     if !vars.is_null() {
         ctx.set("vars", vars.clone());
     }
@@ -480,10 +590,92 @@ async fn run_before(
         if let Some(name) = &step.outputs {
             ctx.set(name, output.value.clone());
             config.insert(name.clone(), output.value);
+            // A process step becomes killable by its outputs name too.
+            registry.alias(step_name, name);
         }
     }
 
     Ok(Value::Object(config))
+}
+
+// ---------------------------------------------------------------------------
+// One-time teardown (`after`)
+// ---------------------------------------------------------------------------
+
+/// Run the `after` steps once, best-effort: a failing step is logged but does
+/// not abort the remaining ones — teardown exists for cleanup, and partial
+/// cleanup beats none.
+///
+/// The context sees the same `config` seed (from `run_before`) and `vars` as
+/// test steps did, plus the shared process registry — the typical `after`
+/// step is a `std/kill_process@v1` for a server that `before` started.
+async fn run_after(
+    after: &[Step],
+    config_seed: &Value,
+    vars: &Value,
+    config: &RunConfig,
+    registry: &Arc<ProcessRegistry>,
+    quiet: bool,
+    tx: &mpsc::Sender<LogLine>,
+) {
+    if after.is_empty() {
+        return;
+    }
+
+    emit(
+        tx,
+        LogSource::System,
+        &format!(
+            "Running {} teardown step{} (after)",
+            after.len(),
+            if after.len() == 1 { "" } else { "s" }
+        ),
+    )
+    .await;
+
+    let mut ctx = Context::new();
+    ctx.allow_file_actions = config.allow_file_actions;
+    ctx.allow_process_actions = config.allow_process_actions;
+    ctx.fs_root = config.fs_root.clone();
+    ctx.processes = Some(Arc::clone(registry));
+    ctx.log_tx = Some(tx.clone());
+    if !vars.is_null() {
+        ctx.set("vars", vars.clone());
+    }
+    if !config_seed.is_null() {
+        ctx.set("config", config_seed.clone());
+    }
+
+    for step in after {
+        let action = &step.action;
+        let step_name = step.name.as_deref().unwrap_or(action.as_str());
+        let empty = Value::Object(Default::default());
+        let params = step.with.as_ref().unwrap_or(&empty);
+
+        let output = execute_action(action, params, &ctx, step_name).await;
+
+        for (tag, text) in &output.logs {
+            if quiet && *tag != LogTag::Err {
+                continue;
+            }
+            emit(tx, LogSource::from(*tag), text).await;
+        }
+
+        if !output.success {
+            emit(
+                tx,
+                LogSource::Stderr,
+                &format!("teardown step '{step_name}' failed (continuing)"),
+            )
+            .await;
+        }
+
+        ctx.set("__last__", output.value.clone());
+        if let Some(name) = &step.outputs {
+            ctx.set(name, output.value.clone());
+            registry.alias(step_name, name);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +720,10 @@ async fn execute_step(
     // Store output for later interpolation / checks
     if let Some(ref name) = step.outputs {
         ctx.set(name, output.value.clone());
+        // A process step becomes killable by its outputs name too.
+        if let Some(reg) = &ctx.processes {
+            reg.alias(step_name, name);
+        }
     }
     // Always store as __last__ for inline checks
     ctx.set("__last__", output.value.clone());
@@ -1148,11 +1344,14 @@ mod tests {
     async fn run_native_and_collect(
         steps: Vec<Step>,
         before: Vec<Step>,
+        after: Vec<Step>,
         variables: Map<String, Value>,
         config: RunConfig,
     ) -> Vec<LogLine> {
         let (tx, mut rx) = mpsc::channel(512);
-        let handle = tokio::spawn(run_native(steps, before, config, variables, false, tx));
+        let handle = tokio::spawn(run_native(
+            steps, before, after, config, variables, false, tx,
+        ));
         let mut lines = Vec::new();
         while let Some(line) = rx.recv().await {
             lines.push(line);
@@ -1184,6 +1383,7 @@ mod tests {
         let lines = run_native_and_collect(
             steps,
             before,
+            Vec::new(),
             Map::new(),
             RunConfig {
                 vus: 1,
@@ -1212,6 +1412,7 @@ mod tests {
         let lines = run_native_and_collect(
             steps,
             Vec::new(),
+            Vec::new(),
             vars,
             RunConfig {
                 vus: 1,
@@ -1236,6 +1437,7 @@ mod tests {
         let lines = run_native_and_collect(
             steps,
             before,
+            Vec::new(),
             vars,
             RunConfig {
                 vus: 1,
@@ -1264,6 +1466,7 @@ mod tests {
         let lines = run_native_and_collect(
             steps,
             before,
+            Vec::new(),
             Map::new(),
             RunConfig {
                 vus: 5,
@@ -1302,5 +1505,268 @@ mod tests {
         .await;
         assert!(!lines.iter().any(|l| l.text.contains("setup step")));
         assert!(lines.iter().any(|l| l.text.starts_with("Starting 1 VU")));
+    }
+
+    // -----------------------------------------------------------------
+    // run_native — after / process cleanup
+    // -----------------------------------------------------------------
+
+    /// `after` steps run after the load, see `config.*` and `vars.*`, and a
+    /// failing teardown step is logged but does not abort the rest
+    /// (best-effort, unlike fail-fast `before`).
+    #[tokio::test]
+    async fn after_steps_run_after_load_with_config_and_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.txt");
+        std::fs::write(&path, "example.com").unwrap();
+
+        let before = vec![Step {
+            name: Some("load host".into()),
+            action: "std/file-read@v1".into(),
+            with: Some(json!({ "path": path.to_str().unwrap() })),
+            check: None,
+            outputs: Some("cfg".into()),
+        }];
+        let mut vars = Map::new();
+        vars.insert("region".into(), json!("eu"));
+        let after = vec![
+            log_step(
+                "teardown",
+                "after host=${{ config.cfg.content }} region=${{ vars.region }}",
+                None,
+            ),
+            // A failing teardown step must not abort the remaining ones.
+            Step {
+                name: Some("boom".into()),
+                action: "std/http@v1".into(),
+                with: Some(json!({ "url": "http://127.0.0.1:0/", "timeout": 500 })),
+                check: None,
+                outputs: None,
+            },
+            log_step("teardown-2", "AFTER STILL RUNS", None),
+        ];
+        let steps = vec![sleep_step(1)];
+
+        let lines = run_native_and_collect(
+            steps,
+            before,
+            after,
+            vars,
+            RunConfig {
+                vus: 1,
+                duration: "1s".into(),
+                // The `before` step reads a file — opt in explicitly.
+                allow_file_actions: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text == "after host=example.com region=eu"),
+            "after sees config and vars: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.contains("teardown step 'boom' failed (continuing)")),
+            "failing teardown is logged: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.text == "AFTER STILL RUNS"),
+            "teardown continues after a failure: {lines:?}"
+        );
+        // Order: teardown happens after the VUs ran, before the final marker.
+        let pos = |needle: &str| lines.iter().position(|l| l.text.contains(needle));
+        let started = pos("Starting 1 VU").unwrap();
+        let teardown = pos("after host=example.com").unwrap();
+        let done = pos("Done —").unwrap();
+        assert!(started < teardown && teardown < done);
+    }
+
+    /// `after` runs even when `before` fails — the failing setup may already
+    /// have started something the teardown exists to clean up.
+    #[tokio::test]
+    async fn after_runs_even_when_before_fails() {
+        let before = vec![Step {
+            name: Some("bad setup".into()),
+            action: "std/http@v1".into(),
+            with: Some(json!({ "url": "http://127.0.0.1:0/", "timeout": 500 })),
+            check: None,
+            outputs: None,
+        }];
+        let after = vec![log_step("teardown", "AFTER ON SETUP FAILURE", None)];
+
+        let lines = run_native_and_collect(
+            vec![sleep_step(1)],
+            before,
+            after,
+            Map::new(),
+            RunConfig {
+                vus: 1,
+                duration: "1s".into(),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        assert!(lines.iter().any(|l| l.text.contains("Setup failed")));
+        assert!(lines.iter().any(|l| l.text == "AFTER ON SETUP FAILURE"));
+        assert!(lines.iter().any(|l| l.text == "Done — setup error"));
+        // Still no VUs — teardown must not resurrect the run.
+        assert!(!lines.iter().any(|l| l.text.starts_with("Starting")));
+    }
+
+    /// Extract the pid a `sh -c 'echo pid=$$; ...'` child echoes into the run
+    /// log (lines arrive with the `{step}: ` prefix).
+    #[cfg(unix)]
+    fn echoed_pid(lines: &[LogLine], prefix: &str) -> i32 {
+        lines
+            .iter()
+            .find_map(|l| {
+                l.text
+                    .strip_prefix(prefix)
+                    .and_then(|p| p.trim().parse().ok())
+            })
+            .unwrap_or_else(|| panic!("child echoed its pid with prefix '{prefix}': {lines:?}"))
+    }
+
+    /// `kill(pid, 0)` liveness probe — ESRCH (or an error other than EPERM)
+    /// means the process is really gone, not a zombie.
+    #[cfg(unix)]
+    fn pid_alive(pid: i32) -> bool {
+        unsafe {
+            if libc::kill(pid, 0) == 0 {
+                true
+            } else {
+                std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+            }
+        }
+    }
+
+    /// A process started in `before` is stopped automatically at the end of
+    /// the run even without an explicit `kill_process` step.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_process_is_auto_killed_after_the_run() {
+        let before = vec![Step {
+            name: Some("keeper".into()),
+            action: "std/child_process@v1".into(),
+            with: Some(json!({
+                "command": "sh",
+                "args": ["-c", "echo pid=$$; sleep 300"],
+            })),
+            check: None,
+            outputs: Some("keeper".into()),
+        }];
+        let steps = vec![sleep_step(1)];
+
+        let lines = run_native_and_collect(
+            steps,
+            before,
+            Vec::new(),
+            Map::new(),
+            RunConfig {
+                vus: 1,
+                duration: "1s".into(),
+                allow_process_actions: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let pid = echoed_pid(&lines, "keeper: pid=");
+        assert!(!pid_alive(pid), "pid {pid} survived the run");
+        assert!(lines.iter().any(|l| l.text.starts_with("Done —")));
+    }
+
+    /// The typical process lifecycle: `before` starts a server, `after` stops
+    /// it by its `outputs` name (the runner aliases the registry entry).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn after_can_kill_a_process_by_its_outputs_name() {
+        let before = vec![Step {
+            name: Some("start server".into()),
+            action: "std/child_process@v1".into(),
+            with: Some(json!({
+                "command": "sh",
+                "args": ["-c", "echo pid=$$; sleep 300"],
+            })),
+            check: None,
+            outputs: Some("keeper".into()),
+        }];
+        let after = vec![Step {
+            name: Some("stop server".into()),
+            action: "std/kill_process@v1".into(),
+            with: Some(json!({ "name": "keeper" })),
+            check: None,
+            outputs: None,
+        }];
+        let steps = vec![sleep_step(1)];
+
+        let lines = run_native_and_collect(
+            steps,
+            before,
+            after,
+            Map::new(),
+            RunConfig {
+                vus: 1,
+                duration: "1s".into(),
+                allow_process_actions: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let pid = echoed_pid(&lines, "start server: pid=");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.contains("sent TERM to 'keeper'")),
+            "kill log line: {lines:?}"
+        );
+        assert!(!pid_alive(pid), "pid {pid} survived the run");
+    }
+
+    /// The run-level gate reaches `before` steps: without
+    /// `allow_process_actions` a `child_process` setup step fails (and thus
+    /// aborts the run before any VU).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_process_in_before_requires_the_gate() {
+        let before = vec![Step {
+            name: Some("keeper".into()),
+            action: "std/child_process@v1".into(),
+            with: Some(json!({
+                "command": "sh",
+                "args": ["-c", "sleep 300"],
+            })),
+            check: None,
+            outputs: None,
+        }];
+
+        let lines = run_native_and_collect(
+            vec![sleep_step(1)],
+            before,
+            Vec::new(),
+            Map::new(),
+            RunConfig {
+                vus: 1,
+                duration: "1s".into(),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.contains("allow_process_actions")),
+            "gate error: {lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.text.contains("Setup failed")));
+        assert!(!lines.iter().any(|l| l.text.starts_with("Starting")));
     }
 }

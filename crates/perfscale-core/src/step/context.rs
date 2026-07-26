@@ -1,8 +1,12 @@
 //! Per-VU execution context — variable store and `${{ ... }}` interpolation.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde_json::Value;
+
+use crate::runner::LogLine;
+use crate::step::process::ProcessRegistry;
 
 /// Execution context for a single VU iteration.
 ///
@@ -19,9 +23,21 @@ pub struct Context {
     /// context denies file access until the runner seeds it from
     /// [`crate::step::RunConfig::allow_file_actions`].
     pub(crate) allow_file_actions: bool,
+    /// Master switch for process-touching actions (`std/child_process@v1`,
+    /// `std/kill_process@v1`). Fail-closed: a fresh context denies process
+    /// access until the runner seeds it from
+    /// [`crate::step::RunConfig::allow_process_actions`].
+    pub(crate) allow_process_actions: bool,
     /// Optional confinement root: file action paths must stay under it
     /// (`std/file-read@v1`, `std/file-write@v1`, multipart `file` parts).
     pub(crate) fs_root: Option<std::path::PathBuf>,
+    /// Run-scoped registry of managed child processes, shared by every
+    /// context of the run. `None` outside a native run (unit tests that build
+    /// a context by hand) — process actions then fail with a clear error.
+    pub(crate) processes: Option<Arc<ProcessRegistry>>,
+    /// Live log stream of the run, for managed processes to mirror their
+    /// output into (prefixed `{step}: ` lines, like the k6 runner).
+    pub(crate) log_tx: Option<tokio::sync::mpsc::Sender<LogLine>>,
 }
 
 impl Context {

@@ -29,6 +29,14 @@ pub struct ConfigFile {
     #[serde(default)]
     pub before: Vec<Step>,
 
+    /// Teardown steps run **once** after the load stops — on a normal finish,
+    /// on a failed run, on a failed `before`, and on Ctrl-C/SIGTERM alike.
+    /// They see `${{ config.* }}` and `${{ vars.* }}` like test steps do.
+    /// Unlike `before`, a failing teardown step is logged but does not abort
+    /// the remaining steps (best-effort cleanup).
+    #[serde(default)]
+    pub after: Vec<Step>,
+
     /// Static variables exposed to `before` and test steps under the `vars`
     /// namespace, e.g. `${{ vars.region }}`. Values may themselves be objects.
     #[serde(default)]
@@ -228,6 +236,7 @@ steps:
                 url: "http://localhost:7999".into(),
             }),
             before: Vec::new(),
+            after: Vec::new(),
             variables: serde_json::Map::new(),
         };
         let json = serde_json::to_value(&cfg).unwrap();
@@ -263,7 +272,48 @@ before:
     fn config_without_before_or_variables_defaults_empty() {
         let cfg = parse_config_file("vus: 3\n").unwrap();
         assert!(cfg.before.is_empty());
+        assert!(cfg.after.is_empty());
         assert!(cfg.variables.is_empty());
+    }
+
+    #[test]
+    fn parses_config_with_after_section() {
+        let yaml = r#"
+vus: 10
+after:
+  - name: stop-keeper
+    uses: std/kill_process@v1
+    with:
+      name: keeper
+"#;
+        let cfg = parse_config_file(yaml).unwrap();
+        assert_eq!(cfg.after.len(), 1);
+        assert_eq!(cfg.after[0].action, "std/kill_process@v1");
+        assert_eq!(cfg.after[0].name.as_deref(), Some("stop-keeper"));
+        assert_eq!(cfg.after[0].with.as_ref().unwrap()["name"], "keeper");
+    }
+
+    #[test]
+    fn after_step_pro_action_survives_schema_validation() {
+        // pro/* actions are registered at runtime; the config schema must not
+        // reject an after step that uses one.
+        let yaml = r#"
+after:
+  - uses: pro/fix-close@v1
+    with:
+      host: example.com
+"#;
+        let cfg = parse_config_file(yaml).unwrap();
+        assert_eq!(cfg.after[0].action, "pro/fix-close@v1");
+    }
+
+    #[test]
+    fn parses_allow_process_actions_flag() {
+        let cfg = parse_config_file("allow_process_actions: true\n").unwrap();
+        assert!(cfg.run.allow_process_actions);
+        // Fail-closed default.
+        let cfg = parse_config_file("vus: 1\n").unwrap();
+        assert!(!cfg.run.allow_process_actions);
     }
 
     #[test]

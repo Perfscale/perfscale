@@ -475,20 +475,19 @@ before:
         .stderr(predicate::str::contains("`before:` setup"));
 }
 
-/// There is no `after:` section in a config — teardown belongs in the step
-/// list (`std/ws-close@v1` at the end of an iteration), and whatever is left
-/// open is dropped by the engine at iteration end. The linter names the
-/// unknown field instead of letting it be silently ignored.
+/// `after:` is a first-class config section (one-time teardown steps). The
+/// linter accepts a well-formed one — and still names problems inside its
+/// steps.
 #[test]
 #[file_serial(heavy_io)]
-fn config_after_section_is_flagged_by_lint() {
+fn config_after_section_lints_clean() {
     let config_file = write_temp(
         ".yaml",
         r#"vus: 1
 duration: 1s
 after:
-  - use: std/ws-close@v1
-    with: { id: "ws-1" }
+  - use: std/kill_process@v1
+    with: { name: web }
 "#,
     );
 
@@ -496,7 +495,7 @@ after:
         .args(["lint", config_file.path().to_str().unwrap()])
         .timeout(Duration::from_secs(30))
         .assert()
-        .stdout(predicate::str::contains("unknown field 'after'"));
+        .stdout(predicate::str::contains("ok"));
 }
 
 // ---------------------------------------------------------------------------

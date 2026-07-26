@@ -23,6 +23,8 @@
 //! | `std/log@v1`     | Emit a log line                                  |
 //! | `std/file-read@v1`  | Read a file (process-wide cached)            |
 //! | `std/file-write@v1` | Write content to a file                      |
+//! | `std/child_process@v1` | Spawn a managed OS process (restart, readiness gate, output capture) |
+//! | `std/kill_process@v1`  | Signal/stop a managed process by registry name or raw pid |
 //!
 //! # Extending with custom actions
 //!
@@ -148,6 +150,12 @@ pub async fn execute_action(
         "std/log@v1" | "log" => log_action(&resolved, step_name),
         "std/file-read@v1" | "file-read" => file_read_action(&resolved, step_name, ctx).await,
         "std/file-write@v1" | "file-write" => file_write_action(&resolved, step_name, ctx).await,
+        "std/child_process@v1" | "child_process" => {
+            child_process_action(&resolved, step_name, ctx).await
+        }
+        "std/kill_process@v1" | "kill_process" => {
+            kill_process_action(&resolved, step_name, ctx).await
+        }
         unknown => {
             // No built-in match — hand off to a downstream-registered handler
             // (proprietary `pro/*` actions live outside this OSS crate). The
@@ -1251,6 +1259,275 @@ async fn file_write_action(params: &Value, step_name: &str, ctx: &Context) -> Ac
         success: true,
         http_sample: None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// std/child_process@v1
+// ---------------------------------------------------------------------------
+//
+// Parameters:
+//   command      – required, executable to spawn
+//   args         – optional array of strings
+//   env          – optional object { "NAME": "value" }
+//   cwd          – optional working directory of the child
+//   port         – optional port the process answers on (echoed to outputs);
+//                  0 auto-assigns a free port and exports it as the PORT env
+//                  var (standard PaaS convention)
+//   restart      – "never" (default) | "on-failure" | "always"
+//   max_restarts – restart budget, default 3
+//   backoff_ms   – delay before each restart, default 1000
+//   buffer_kb    – captured stdout/stderr tail size, default 64 (KiB)
+//   waitUntil    – optional readiness gate. Object form:
+//                  { stdout_contains, stderr_contains, stdout_matches,
+//                    stderr_matches (regex), port_open, timeout ("30s"
+//                    default), on_timeout ("fail" default | "continue") };
+//                  or the string form 'contains(stdout, "...")' /
+//                  'matches(stderr, "re")' / 'port_open(8080)'.
+//
+// Output:
+//   { "pid": <u32>, "ppid": <u32>, "pgid": <u32>, "port": <u16>?,
+//     "stdout": <string>, "stderr": <string>, "restart_count": <u32> }
+//   ppid is the perfscale process itself; pgid is the child's process group
+//   (it leads its own group, so tree kills are safe). pid/pgid/restart_count
+//   are a snapshot — they move on restarts; kill by registry `name`, not by a
+//   captured pid.
+//
+// The child keeps running after the step: its output streams into the run
+// log with a `{step}: ` prefix, the supervisor applies the restart policy,
+// and whatever is still alive at the end of the run is stopped automatically
+// (see `ProcessRegistry::shutdown_all`).
+//
+// Process access is fail-closed: the run must opt in via
+// `RunConfig::allow_process_actions`.
+
+async fn child_process_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
+    use super::process::{ManagedProcess, ProcSpec, Restart, WaitUntil, DEFAULT_BUFFER_CAP};
+
+    if !ctx.allow_process_actions {
+        return err(
+            step_name,
+            "process actions disabled (allow_process_actions is false)",
+        );
+    }
+    let Some(registry) = ctx.processes.as_ref() else {
+        return err(
+            step_name,
+            "no process registry in this context — child_process needs a native run (before/after/steps)",
+        );
+    };
+
+    let Some(command) = params["command"].as_str() else {
+        return err(step_name, "'command' is required");
+    };
+    let args = match params.get("args") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| x.as_str().map(str::to_owned))
+            .collect(),
+        Some(_) => return err(step_name, "'args' must be an array of strings"),
+    };
+    let mut env = Vec::new();
+    if let Some(v) = params.get("env").filter(|v| !v.is_null()) {
+        let Some(obj) = v.as_object() else {
+            return err(step_name, "'env' must be an object { \"NAME\": \"value\" }");
+        };
+        for (k, val) in obj {
+            match val.as_str() {
+                Some(s) => env.push((k.clone(), s.to_string())),
+                None => return err(step_name, &format!("'env.{k}' must be a string")),
+            }
+        }
+    }
+    let cwd = params["cwd"].as_str().map(str::to_owned);
+    let port = match params.get("port").filter(|v| !v.is_null()) {
+        None => None,
+        Some(v) => match v.as_u64().filter(|p| *p <= 65535) {
+            Some(p) => Some(p as u16),
+            None => return err(step_name, "'port' must be an integer 0..=65535"),
+        },
+    };
+    let restart = match params["restart"].as_str() {
+        None => Restart::default(),
+        Some(s) => match Restart::parse(s) {
+            Some(r) => r,
+            None => {
+                return err(
+                    step_name,
+                    &format!("invalid restart '{s}' — use \"never\", \"on-failure\" or \"always\""),
+                )
+            }
+        },
+    };
+    let max_restarts = params["max_restarts"].as_u64().unwrap_or(3) as u32;
+    let backoff = Duration::from_millis(params["backoff_ms"].as_u64().unwrap_or(1000));
+    let buffer_cap = (params["buffer_kb"]
+        .as_u64()
+        .map(|kb| kb as usize)
+        .unwrap_or(DEFAULT_BUFFER_CAP / 1024))
+        * 1024;
+
+    // Parse the readiness gate before spawning anything — a broken gate spec
+    // must not leave a running child behind.
+    let wait = match params.get("waitUntil").filter(|v| !v.is_null()) {
+        None => None,
+        Some(v) => match WaitUntil::parse(v) {
+            Ok(w) => Some(w),
+            Err(msg) => return err(step_name, &msg),
+        },
+    };
+
+    let spec = ProcSpec {
+        command: command.to_string(),
+        args,
+        env,
+        cwd,
+        port,
+        restart,
+        max_restarts,
+        backoff,
+        buffer_cap,
+    };
+    let mp = match ManagedProcess::spawn(spec, step_name.to_string(), ctx.log_tx.clone()) {
+        Ok(mp) => mp,
+        Err(msg) => return err(step_name, &msg),
+    };
+    registry.insert(step_name, &mp);
+
+    let mut logs = Vec::new();
+    if let Some(w) = &wait {
+        match mp.wait_until(w).await {
+            Ok(()) => {}
+            Err(msg) if w.on_timeout_continue => {
+                logs.push((
+                    LogTag::Sys,
+                    format!("{step_name}: waitUntil: {msg} (on_timeout: continue)"),
+                ));
+            }
+            Err(msg) => {
+                // The run's shutdown (or a later kill_process) reaps the
+                // child — fail the step without leaving the registry dirty.
+                return err(step_name, &format!("waitUntil: {msg}"));
+            }
+        }
+    }
+
+    ActionOutput {
+        value: mp.snapshot(),
+        logs,
+        success: true,
+        http_sample: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// std/kill_process@v1
+// ---------------------------------------------------------------------------
+//
+// Parameters:
+//   name     – registry name of a process started with std/child_process@v1
+//              (its step name or `outputs` name). Preferred: the lookup
+//              always targets the *current* pid, even across restarts.
+//   pid      – raw OS pid, best-effort fallback for processes outside the
+//              registry. Exactly one of `name`/`pid` is required.
+//   signal   – TERM (default), KILL, INT, HUP, QUIT, USR1, USR2
+//              (a "SIG" prefix is accepted)
+//   grace_ms – wait this long for the process to die before escalating to
+//              SIGKILL, default 5000
+//   tree     – also signal the whole process group, default true
+//
+// Output:
+//   { "pid": <u32>, "signal": <string>, "exit_code": <i32|null>,
+//     "waited_ms": <u64> }
+//   exit_code is null when the process died to a signal (or, for raw pids,
+//   is always null — a non-child's status cannot be collected).
+//
+// Process access is fail-closed: the run must opt in via
+// `RunConfig::allow_process_actions`.
+
+async fn kill_process_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
+    if !ctx.allow_process_actions {
+        return err(
+            step_name,
+            "process actions disabled (allow_process_actions is false)",
+        );
+    }
+
+    let signal = params["signal"].as_str().unwrap_or("TERM");
+    let grace = Duration::from_millis(params["grace_ms"].as_u64().unwrap_or(5000));
+    let tree = params["tree"].as_bool().unwrap_or(true);
+
+    if let Some(name) = params["name"].as_str() {
+        let Some(registry) = ctx.processes.as_ref() else {
+            return err(
+                step_name,
+                "no process registry in this context — kill_process by name needs a native run",
+            );
+        };
+        let Some(mp) = registry.get(name) else {
+            return err(step_name, &format!("no managed process named '{name}'"));
+        };
+        let outcome = match mp.kill(signal, grace, tree).await {
+            Ok(o) => o,
+            Err(msg) => return err(step_name, &msg),
+        };
+        return ActionOutput {
+            value: json!({
+                "pid": outcome.pid,
+                "signal": outcome.signal,
+                "exit_code": outcome.exit_code,
+                "waited_ms": outcome.waited_ms,
+            }),
+            logs: vec![(
+                LogTag::Sys,
+                format!(
+                    "{step_name}: sent {} to '{name}' (pid {})",
+                    outcome.signal,
+                    outcome
+                        .pid
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "?".into())
+                ),
+            )],
+            success: true,
+            http_sample: None,
+        };
+    }
+
+    if let Some(pid) = params["pid"].as_u64() {
+        #[cfg(unix)]
+        {
+            let outcome = match super::process::kill_raw_pid(pid as u32, signal, grace, tree).await
+            {
+                Ok(o) => o,
+                Err(msg) => return err(step_name, &msg),
+            };
+            return ActionOutput {
+                value: json!({
+                    "pid": outcome.pid,
+                    "signal": outcome.signal,
+                    "exit_code": outcome.exit_code,
+                    "waited_ms": outcome.waited_ms,
+                }),
+                logs: vec![(
+                    LogTag::Sys,
+                    format!("{step_name}: sent {} to pid {pid}", outcome.signal),
+                )],
+                success: true,
+                http_sample: None,
+            };
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (pid, signal, grace, tree);
+            return err(
+                step_name,
+                "kill by raw 'pid' is not supported on this platform — use 'name'",
+            );
+        }
+    }
+
+    err(step_name, "'name' or 'pid' is required")
 }
 
 // ---------------------------------------------------------------------------
@@ -2887,5 +3164,338 @@ mod tests {
         )
         .await;
         assert_eq!(out.logs[0].1, "plain text with $ and { braces }");
+    }
+
+    // -----------------------------------------------------------------
+    // std/child_process@v1 / std/kill_process@v1
+    // -----------------------------------------------------------------
+
+    /// Process actions are fail-closed without `allow_process_actions`; the
+    /// tests below exercise the actions themselves, so they opt in and share
+    /// a real registry (like the runner seeds it).
+    #[cfg(unix)]
+    fn process_ctx() -> (
+        Context,
+        std::sync::Arc<crate::step::process::ProcessRegistry>,
+    ) {
+        let registry = std::sync::Arc::new(crate::step::process::ProcessRegistry::new());
+        let mut ctx = Context::new();
+        ctx.allow_process_actions = true;
+        ctx.processes = Some(std::sync::Arc::clone(&registry));
+        (ctx, registry)
+    }
+
+    #[tokio::test]
+    async fn child_process_rejected_when_process_actions_disabled() {
+        let ctx = Context::new();
+        let out = execute_action(
+            "std/child_process@v1",
+            &json!({ "command": "sh", "args": ["-c", "sleep 1"] }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("allow_process_actions"),
+            "{:?}",
+            out.logs
+        );
+    }
+
+    #[tokio::test]
+    async fn kill_process_rejected_when_process_actions_disabled() {
+        let ctx = Context::new();
+        let out = execute_action(
+            "std/kill_process@v1",
+            &json!({ "name": "anything" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("allow_process_actions"),
+            "{:?}",
+            out.logs
+        );
+    }
+
+    #[tokio::test]
+    async fn child_process_rejected_without_a_registry() {
+        // Opted in, but no native run seeded a registry into this context.
+        let mut ctx = Context::new();
+        ctx.allow_process_actions = true;
+        let out = execute_action(
+            "std/child_process@v1",
+            &json!({ "command": "sh", "args": ["-c", "sleep 1"] }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("no process registry"),
+            "{:?}",
+            out.logs
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_process_reports_output_shape_and_registers_by_step_name() {
+        let (ctx, registry) = process_ctx();
+        let out = execute_action(
+            "std/child_process@v1",
+            &json!({
+                "command": "sh",
+                "args": ["-c", "echo ready; sleep 60"],
+                "waitUntil": { "stdout_contains": "ready", "timeout": "5s" },
+            }),
+            &ctx,
+            "keeper",
+        )
+        .await;
+        assert!(out.success, "logs: {:?}", out.logs);
+
+        let pid = out.value["pid"].as_u64().unwrap() as u32;
+        assert!(pid > 0);
+        assert_eq!(out.value["ppid"], json!(std::process::id()));
+        assert_eq!(out.value["pgid"], out.value["pid"]);
+        assert!(out.value["stdout"].as_str().unwrap().contains("ready"));
+        assert_eq!(out.value["restart_count"], 0);
+        assert!(registry.get("keeper").is_some());
+
+        registry.shutdown_all().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_process_wait_until_timeout_continue_still_succeeds() {
+        let (ctx, registry) = process_ctx();
+        let out = execute_action(
+            "std/child_process@v1",
+            &json!({
+                "command": "sh",
+                "args": ["-c", "sleep 60"],
+                "waitUntil": {
+                    "stdout_contains": "never printed",
+                    "timeout": "1s",
+                    "on_timeout": "continue",
+                },
+            }),
+            &ctx,
+            "slow",
+        )
+        .await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert!(out
+            .logs
+            .iter()
+            .any(|(_, t)| t.contains("on_timeout: continue")));
+
+        registry.shutdown_all().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_process_wait_until_failure_fails_the_step() {
+        let (ctx, registry) = process_ctx();
+        let out = execute_action(
+            "std/child_process@v1",
+            &json!({
+                "command": "sh",
+                "args": ["-c", "echo boom >&2; exit 3"],
+                "waitUntil": { "stdout_contains": "never", "timeout": "10s" },
+            }),
+            &ctx,
+            "early",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("waitUntil"), "{:?}", out.logs);
+        assert!(out.logs[0].1.contains("exited"), "{:?}", out.logs);
+
+        registry.shutdown_all().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_process_validates_params_before_spawning() {
+        let (ctx, registry) = process_ctx();
+        for (params, needle) in [
+            (
+                json!({ "args": ["-c", "sleep 1"] }),
+                "'command' is required",
+            ),
+            (
+                json!({ "command": "sh", "restart": "sometimes" }),
+                "invalid restart",
+            ),
+            (json!({ "command": "sh", "port": 70000 }), "'port' must be"),
+            (
+                json!({ "command": "sh", "waitUntil": "nonsense" }),
+                "invalid waitUntil",
+            ),
+            (
+                json!({ "command": "perfscale-no-such-binary-xyz" }),
+                "failed to spawn",
+            ),
+        ] {
+            let out = execute_action("std/child_process@v1", &params, &ctx, "step").await;
+            assert!(!out.success, "params should fail: {params}");
+            assert!(out.logs[0].1.contains(needle), "{:?}", out.logs);
+        }
+        // None of the failures may have registered a process.
+        assert!(registry.get("step").is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_by_name_stops_the_registered_process() {
+        let (ctx, registry) = process_ctx();
+        let spawned = execute_action(
+            "std/child_process@v1",
+            &json!({ "command": "sleep", "args": ["300"] }),
+            &ctx,
+            "svc",
+        )
+        .await;
+        assert!(spawned.success, "logs: {:?}", spawned.logs);
+        let pid = spawned.value["pid"].as_u64().unwrap();
+
+        let out = execute_action(
+            "std/kill_process@v1",
+            &json!({ "name": "svc", "grace_ms": 5000 }),
+            &ctx,
+            "stop-svc",
+        )
+        .await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert_eq!(out.value["pid"], json!(pid));
+        assert_eq!(out.value["signal"], "TERM");
+        // SIGTERM kills → no exit code to collect.
+        assert!(out.value["exit_code"].is_null());
+
+        registry.shutdown_all().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_by_name_targets_the_current_pid_after_restart() {
+        let (ctx, registry) = process_ctx();
+        let spawned = execute_action(
+            "std/child_process@v1",
+            &json!({
+                "command": "sh",
+                "args": ["-c", "sleep 1"],
+                "restart": "always",
+                "max_restarts": 100,
+                "backoff_ms": 20,
+            }),
+            &ctx,
+            "svc",
+        )
+        .await;
+        assert!(spawned.success, "logs: {:?}", spawned.logs);
+        let first_pid = spawned.value["pid"].as_u64().unwrap();
+
+        // Wait for a restart so the registry pid differs from the snapshot's.
+        // The count flips before the backoff, the pid after the respawn —
+        // wait for both so we never sample the stale pid mid-restart.
+        let mp = registry.get("svc").unwrap();
+        let deadline = std::time::Instant::now() + StdDuration::from_secs(10);
+        loop {
+            let snap = mp.snapshot();
+            let count = snap["restart_count"].as_u64().unwrap();
+            let pid = snap["pid"].as_u64().unwrap();
+            if count >= 1 && pid != first_pid {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "never restarted");
+            tokio::time::sleep(StdDuration::from_millis(25)).await;
+        }
+        let current_pid = mp.snapshot()["pid"].as_u64().unwrap();
+        assert_ne!(current_pid, first_pid);
+
+        let out = execute_action(
+            "std/kill_process@v1",
+            &json!({ "name": "svc", "signal": "KILL" }),
+            &ctx,
+            "stop-svc",
+        )
+        .await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        // The kill hit the *current* pid, not the one captured at spawn time.
+        assert_eq!(out.value["pid"], json!(current_pid));
+
+        registry.shutdown_all().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_by_raw_pid_is_best_effort() {
+        let (ctx, registry) = process_ctx();
+        let spawned = execute_action(
+            "std/child_process@v1",
+            &json!({ "command": "sleep", "args": ["300"] }),
+            &ctx,
+            "svc",
+        )
+        .await;
+        let pid = spawned.value["pid"].as_u64().unwrap();
+
+        let out = execute_action(
+            "std/kill_process@v1",
+            &json!({ "pid": pid, "tree": false }),
+            &ctx,
+            "stop-raw",
+        )
+        .await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert_eq!(out.value["pid"], json!(pid));
+        assert!(out.value["exit_code"].is_null());
+
+        registry.shutdown_all().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_validates_params() {
+        let (ctx, registry) = process_ctx();
+        // Neither name nor pid.
+        let out = execute_action("std/kill_process@v1", &json!({}), &ctx, "step").await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("'name' or 'pid' is required"));
+        // Unknown registry name.
+        let out = execute_action(
+            "std/kill_process@v1",
+            &json!({ "name": "ghost" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("no managed process named 'ghost'"));
+        // Unknown signal name.
+        let spawned = execute_action(
+            "std/child_process@v1",
+            &json!({ "command": "sleep", "args": ["300"] }),
+            &ctx,
+            "svc",
+        )
+        .await;
+        assert!(spawned.success);
+        let out = execute_action(
+            "std/kill_process@v1",
+            &json!({ "name": "svc", "signal": "WAT" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("unknown signal"), "{:?}", out.logs);
+
+        registry.shutdown_all().await;
     }
 }

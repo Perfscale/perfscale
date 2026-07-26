@@ -35,7 +35,7 @@ steps:
 
 | Field | Required | Description |
 |---|---|---|
-| `use` | yes | Action ID: `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1` (short aliases `http`, `tcp`, `udp`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `check`, `sleep`, `log`, `file-read`, `file-write` also work). `uses:` is accepted as an alias for `use:` |
+| `use` | yes | Action ID: `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1` (short aliases `http`, `tcp`, `udp`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `check`, `sleep`, `log`, `file-read`, `file-write`, `child_process`, `kill_process` also work). `uses:` is accepted as an alias for `use:` |
 | `name` | no | Human-readable label shown in log lines |
 | `with` | no | Action parameters — see [Actions](core/actions.md) |
 | `check` | no | Assertions on this step's output — same keys as `std/check@v1` |
@@ -133,7 +133,9 @@ report:          # optional — forward the summary after the run
 | `duration` | `1m` | Wall-clock run length; bare numbers are seconds |
 | `report.url` | — | A `perfscale serve` base URL; the CLI `--report` flag overrides it |
 | `before` | `[]` | One-time setup steps — see [Setup and variables](#setup-and-variables) |
+| `after` | `[]` | One-time teardown steps — see [Teardown](#teardown-after) |
 | `variables` | `{}` | Static values exposed to steps as `${{ vars.* }}` |
+| `allow_process_actions` | `false` | Let steps spawn/signal OS processes (`std/child_process@v1`, `std/kill_process@v1`). Fail-closed: a step list from an untrusted source cannot touch processes until you opt in |
 
 ### Setup and variables
 
@@ -175,6 +177,41 @@ steps:
 - Interpolation always yields a **string**, so a numeric config value like
   `${{ config.fix_config.port }}` reaches the action as `"1111"`. Actions that
   take numbers accept the string form.
+
+### Teardown (`after:`)
+
+`after:` steps run **once** after the load stops — on a normal finish, on a
+failed run, on a failed `before:`, and on Ctrl-C/SIGTERM alike. They see the
+same `${{ config.* }}` and `${{ vars.* }}` as test steps. Unlike `before:`, a
+failing teardown step is logged but does not abort the remaining ones
+(best-effort cleanup). The typical `after:` step is a `std/kill_process@v1`
+for a server `before:` started:
+
+```yaml
+allow_process_actions: true
+
+before:
+  - name: web
+    uses: std/child_process@v1
+    with:
+      command: python3
+      args: ["-m", "http.server", "8080"]
+      port: 8080
+      waitUntil: { port_open: 8080, timeout: 10s }
+    outputs: web
+
+after:
+  - name: stop web
+    uses: std/kill_process@v1
+    with: { name: web, signal: TERM }
+```
+
+Processes still alive after the `after:` steps are stopped automatically, so
+the explicit kill is about a clean, timely stop rather than leak prevention.
+See [`std/child_process@v1`](core/actions.md#stdchild_processv1) for the full
+parameter list (restart policy, output capture, `waitUntil`) and
+[examples/with-processes.config.yaml](../examples/with-processes.config.yaml)
+for a runnable setup.
 
 With `--locust`, the same config maps to locust's `--users`/`--spawn-rate`/`--run-time`.
 With `--k6`, load config lives in the script's own `options` block and the
