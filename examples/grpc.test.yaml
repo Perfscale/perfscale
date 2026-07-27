@@ -4,7 +4,7 @@
 #
 # Run against any echo server with reflection enabled, e.g.:
 #   cargo run -p perfscale-core --example grpc_echo_server   (listens on 50051)
-#   perfscale run -f examples/grpc.test.yaml
+#   perfscale run -c examples/hello.config.yaml -f examples/grpc.test.yaml
 #
 # The channel and its schema (server reflection, cached per URL) are paid once
 # per iteration; calls and stream messages ride the same HTTP/2 connection.

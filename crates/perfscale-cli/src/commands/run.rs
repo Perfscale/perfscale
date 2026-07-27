@@ -150,7 +150,24 @@ fn is_summary_line(text: &str) -> bool {
         "checks",
     ];
     let trimmed = text.trim_start();
-    MARKERS.iter().any(|m| trimmed.starts_with(m))
+    if MARKERS.iter().any(|m| trimmed.starts_with(m)) {
+        return true;
+    }
+
+    // Native protocol metrics: e.g. `grpc_req_duration: avg=... count=...`,
+    // `ws_msgs_sent: 50 5.00/s`, `fix_messages_received: 100 10.00/s`.
+    // The name before the colon must be a valid metric identifier.
+    if let Some(colon) = trimmed.find(':') {
+        let name = &trimmed[..colon];
+        if !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            let after = trimmed[colon + 1..].trim_start();
+            return after.starts_with("avg=") || after.contains("/s");
+        }
+    }
+
+    false
 }
 
 fn load_config(path: Option<&Path>) -> Result<Option<ConfigFile>, CliError> {
@@ -582,6 +599,13 @@ mod tests {
         assert!(is_summary_line(
             "     checks.........................: 100.00% ✓ 1        ✗ 0"
         ));
+        // Native protocol metrics (gRPC, WebSocket, FIX, …).
+        assert!(is_summary_line(
+            "grpc_req_duration: avg=12.34ms p(50)=10.00ms count=100"
+        ));
+        assert!(is_summary_line("grpc_msgs_sent: 100 10.00/s"));
+        assert!(is_summary_line("ws_msg_rtt: avg=8.00ms count=50"));
+        assert!(is_summary_line("ws_msgs_sent: 50 5.00/s"));
     }
 
     #[test]

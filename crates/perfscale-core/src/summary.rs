@@ -13,7 +13,9 @@
 //! downstream consumers (dashboards, control planes, CI reporters) don't each
 //! hand-roll their own line parser.
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Structured metrics extracted from a k6-compatible summary.
 ///
@@ -50,7 +52,19 @@ pub struct RunSummary {
 /// (progress bars, warnings, `[err]` prefixes). Returns `None` when no
 /// request metrics were found at all — callers treat that as "the run
 /// produced no parseable summary" rather than a run with zero traffic.
+///
+/// HTTP metrics take precedence when present. For non-HTTP protocol runs
+/// (gRPC, WebSocket, FIX, …) the parser falls back to the native protocol
+/// summary lines emitted by the step engine.
 pub fn parse_summary(output: &str) -> Option<RunSummary> {
+    let s = parse_http_summary(output);
+    if s.total_requests > 0 || s.requests_per_sec > 0.0 {
+        return Some(s);
+    }
+    parse_protocol_summary(output)
+}
+
+fn parse_http_summary(output: &str) -> RunSummary {
     let mut s = RunSummary {
         avg_ms: None,
         med_ms: None,
@@ -98,11 +112,139 @@ pub fn parse_summary(output: &str) -> Option<RunSummary> {
         }
     }
 
-    if s.total_requests > 0 || s.requests_per_sec > 0.0 {
-        Some(s)
-    } else {
-        None
+    s
+}
+
+#[derive(Default)]
+struct LatencyTokens {
+    avg_ms: Option<f64>,
+    med_ms: Option<f64>,
+    p90_ms: Option<f64>,
+    p95_ms: Option<f64>,
+    p99_ms: Option<f64>,
+    min_ms: Option<f64>,
+    max_ms: Option<f64>,
+}
+
+#[derive(Default)]
+struct ProtocolMetrics {
+    latency: LatencyTokens,
+    total_from_hist: u64,
+    failed: f64,
+    error_rate_pct: f64,
+    total_from_counter: f64,
+    requests_per_sec: f64,
+    has_latency: bool,
+    has_throughput: bool,
+}
+
+/// Fallback parser for native protocol metrics.
+///
+/// The step engine emits protocol-specific counters and histograms when no
+/// HTTP samples were recorded — e.g. `grpc_req_duration`, `grpc_msgs_sent`,
+/// `ws_msg_rtt`. This pass groups metrics by prefix (`grpc`, `ws`, …) and
+/// builds a [`RunSummary`] from the richest protocol family found.
+fn parse_protocol_summary(output: &str) -> Option<RunSummary> {
+    let re = Regex::new(r"^([a-zA-Z_][a-zA-Z0-9_]*)_(req_duration|msg_rtt|req_failed|msgs_sent|reqs)\s*:\s*(.*)$").ok()?;
+    let mut by_prefix: BTreeMap<String, ProtocolMetrics> = BTreeMap::new();
+
+    for line in output.lines() {
+        let t = line.trim();
+        let caps = match re.captures(t) {
+            Some(c) => c,
+            None => continue,
+        };
+        let prefix = caps[1].to_string();
+        let suffix = &caps[2];
+        let rest = caps[3].trim();
+        let m = by_prefix.entry(prefix).or_default();
+
+        match suffix {
+            "req_duration" | "msg_rtt" => {
+                m.latency.avg_ms = extract_ms(rest, "avg=").or(m.latency.avg_ms);
+                m.latency.med_ms = extract_ms(rest, "p(50)=")
+                    .or_else(|| extract_ms(rest, "med="))
+                    .or(m.latency.med_ms);
+                m.latency.p90_ms = extract_ms(rest, "p(90)=").or(m.latency.p90_ms);
+                m.latency.p95_ms = extract_ms(rest, "p(95)=").or(m.latency.p95_ms);
+                m.latency.p99_ms = extract_ms(rest, "p(99)=").or(m.latency.p99_ms);
+                m.latency.min_ms = extract_ms(rest, "min=").or(m.latency.min_ms);
+                m.latency.max_ms = extract_ms(rest, "max=").or(m.latency.max_ms);
+                if let Some(n) = extract_count(rest) {
+                    m.total_from_hist = n;
+                }
+                m.has_latency = true;
+            }
+            "req_failed" => {
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                if let Some(first) = parts.first() {
+                    if first.ends_with('%') {
+                        m.error_rate_pct = first.trim_end_matches('%').parse::<f64>().unwrap_or(0.0);
+                    } else if let Some(n) = first.parse::<f64>().ok() {
+                        m.failed = n;
+                    }
+                }
+            }
+            "msgs_sent" | "reqs" => {
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                if let Some(first) = parts.first() {
+                    m.total_from_counter = first.parse::<f64>().unwrap_or(0.0);
+                }
+                if parts.len() >= 2 {
+                    m.requests_per_sec = parts[1]
+                        .trim_end_matches("/s")
+                        .parse::<f64>()
+                        .unwrap_or(0.0);
+                }
+                m.has_throughput = true;
+            }
+            _ => {}
+        }
     }
+
+    let best = by_prefix
+        .values()
+        .max_by_key(|m| (m.has_latency as u8) * 2 + (m.has_throughput as u8))?;
+
+    let total_requests = if best.total_from_hist > 0 {
+        best.total_from_hist
+    } else {
+        best.total_from_counter as u64
+    };
+
+    let error_rate = if best.error_rate_pct > 0.0 {
+        best.error_rate_pct / 100.0
+    } else if total_requests > 0 {
+        best.failed / total_requests as f64
+    } else {
+        0.0
+    };
+
+    if total_requests == 0 && !best.has_latency && !best.has_throughput {
+        return None;
+    }
+
+    Some(RunSummary {
+        avg_ms: best.latency.avg_ms,
+        med_ms: best.latency.med_ms,
+        p90_ms: best.latency.p90_ms,
+        p95_ms: best.latency.p95_ms,
+        p99_ms: best.latency.p99_ms,
+        min_ms: best.latency.min_ms,
+        max_ms: best.latency.max_ms,
+        error_rate,
+        total_requests,
+        requests_per_sec: best.requests_per_sec,
+    })
+}
+
+/// Extract a `count=<n>` token from a histogram summary line.
+fn extract_count(line: &str) -> Option<u64> {
+    let prefix = "count=";
+    let start = line.find(prefix)? + prefix.len();
+    let rest = &line[start..];
+    let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+    rest[..end].parse().ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +269,7 @@ pub struct ExportMeta {
 }
 
 /// The document written by `--summary-export`: run context plus parsed
-/// metrics. `summary` is `None` for runs that produced no HTTP metrics
+/// metrics. `summary` is `None` for runs that produced no parseable metrics
 /// (e.g. sleep-only step lists) — the file is still written so CI can tell
 /// "ran with no traffic" apart from "never ran".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -359,6 +501,77 @@ http_reqs..............: 10 1.00/s
         let json = serde_json::to_string(&s).unwrap();
         let back: RunSummary = serde_json::from_str(&json).unwrap();
         assert_eq!(back, s);
+    }
+
+    // -----------------------------------------------------------------
+    // Protocol-specific summaries (gRPC, WebSocket, …)
+    // -----------------------------------------------------------------
+
+    /// Native output for a pure gRPC unary run: no HTTP samples, but the
+    /// protocol histogram / counters are present.
+    const GRPC_OUTPUT: &str = "\
+vus....................: 2 min=1 max=2
+iterations..............: 40 4.00/s
+grpc_req_duration: avg=12.34ms p(50)=10.00ms p(90)=15.00ms p(95)=18.00ms p(99)=20.00ms min=5.00ms max=25.00ms count=100
+grpc_req_failed: 2 0.20/s
+grpc_msgs_sent: 100 10.00/s
+grpc_msgs_received: 100 10.00/s
+";
+
+    /// Native output for a WebSocket messaging run with no HTTP samples.
+    const WS_OUTPUT: &str = "\
+vus....................: 1 min=1 max=1
+iterations..............: 10 1.00/s
+ws_msg_rtt: avg=8.00ms p(50)=7.00ms p(90)=10.00ms p(95)=12.00ms p(99)=15.00ms min=3.00ms max=20.00ms count=50
+ws_msgs_sent: 50 5.00/s
+ws_msgs_received: 50 5.00/s
+";
+
+    #[test]
+    fn parses_grpc_summary_without_http_metrics() {
+        let s = parse_summary(GRPC_OUTPUT).unwrap();
+        assert_eq!(s.avg_ms, Some(12.34));
+        assert_eq!(s.med_ms, Some(10.00));
+        assert_eq!(s.p90_ms, Some(15.00));
+        assert_eq!(s.p95_ms, Some(18.00));
+        assert_eq!(s.p99_ms, Some(20.00));
+        assert_eq!(s.min_ms, Some(5.00));
+        assert_eq!(s.max_ms, Some(25.00));
+        assert_eq!(s.total_requests, 100);
+        assert!((s.requests_per_sec - 10.00).abs() < 1e-9);
+        assert!((s.error_rate - 0.02).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parses_websocket_summary_without_http_metrics() {
+        let s = parse_summary(WS_OUTPUT).unwrap();
+        assert_eq!(s.avg_ms, Some(8.00));
+        assert_eq!(s.total_requests, 50);
+        assert!((s.requests_per_sec - 5.00).abs() < 1e-9);
+    }
+
+    #[test]
+    fn http_metrics_take_precedence_over_protocol_metrics() {
+        let mixed = format!("{NATIVE_OUTPUT}\n{GRPC_OUTPUT}");
+        let s = parse_summary(&mixed).unwrap();
+        // The HTTP aggregate has 120 requests, the gRPC block has 100.
+        assert_eq!(s.total_requests, 120);
+        assert!((s.requests_per_sec - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stream_only_protocol_run_uses_counters_for_total() {
+        let out = "\
+vus....................: 1 min=1 max=1
+iterations..............: 5 0.50/s
+grpc_msgs_sent: 20 2.00/s
+grpc_msgs_received: 20 2.00/s
+grpc_req_failed: 1 0.10/s
+";
+        let s = parse_summary(out).unwrap();
+        assert_eq!(s.total_requests, 20);
+        assert!((s.requests_per_sec - 2.00).abs() < 1e-9);
+        assert!((s.error_rate - 0.05).abs() < 1e-9);
     }
 
     // -----------------------------------------------------------------

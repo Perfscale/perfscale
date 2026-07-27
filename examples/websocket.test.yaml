@@ -2,7 +2,7 @@
 #
 # Run against any echo server, e.g.:
 #   npx wscat --listen 9222   (or any ws echo endpoint)
-#   perfscale run -f examples/websocket.test.yaml
+#   perfscale run -c examples/hello.config.yaml -f examples/websocket.test.yaml
 #
 # Style 1: a Live Connection held across steps (connect → send → recv → close).
 # Style 2: a one-shot session (`std/ws@v1`) — connect, exchange, close in one
