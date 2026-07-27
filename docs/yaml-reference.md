@@ -178,6 +178,9 @@ steps:
   `${{ config.fix_config.port }}` reaches the action as `"1111"`. Actions that
   take numbers accept the string form.
 
+For the full lifecycle (including background processes started in `before:`),
+see [Setup and teardown](core/setup-teardown.md).
+
 ### Teardown (`after:`)
 
 `after:` steps run **once** after the load stops — on a normal finish, on a
@@ -209,9 +212,10 @@ after:
 Processes still alive after the `after:` steps are stopped automatically, so
 the explicit kill is about a clean, timely stop rather than leak prevention.
 See [`std/child_process@v1`](core/actions.md#stdchild_processv1) for the full
-parameter list (restart policy, output capture, `waitUntil`) and
+parameter list (restart policy, output capture, `waitUntil`),
 [examples/with-processes.config.yaml](../examples/with-processes.config.yaml)
-for a runnable setup.
+for a runnable setup, and [Setup and teardown](core/setup-teardown.md) for the
+whole lifecycle (interrupts, auto-kill, data flow).
 
 With `--locust`, the same config maps to locust's `--users`/`--spawn-rate`/`--run-time`.
 With `--k6`, load config lives in the script's own `options` block and the

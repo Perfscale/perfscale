@@ -23,6 +23,10 @@ tiny local dev server for collecting results.
 - [Actions](core/actions.md) — `std/http`, `std/tcp`, `std/udp`, `std/ws*`
   (WebSocket), `std/grpc*` (gRPC), `std/check`, `std/sleep`, `std/log`,
   `std/file-*`, `std/child_process`, `std/kill_process`
+- [Setup and teardown](core/setup-teardown.md) — `before:`/`after:` lifecycle,
+  `config.*`/`vars.*` data flow, background processes
+- [Metrics](core/metrics.md) — `http_req_*`, `[stats]` lines, custom
+  counters/histograms, `--quiet`, summary forwarding
 - [WebSocket guide](core/websocket.md) — sessions, live connections, message
   RTT, assertions
 - [gRPC guide](core/grpc.md) — dynamic schemas (reflection / descriptor
