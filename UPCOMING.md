@@ -11,5 +11,3 @@ Release notes for the next release, written as features land.
 - If this file has no entries at tag time, the release falls back to
   auto-generated notes and the workflow prints a warning.
 -->
-
-- **Man page**: the full CLI reference now ships as a real man page. `man perfscale` works after a global npm install (npm links `man/perfscale.1` from the package) or via `perfscale man --install` for other install methods. On Windows, where there is no `man(1)`, the new `perfscale man` subcommand prints the same manual as plain text (`--raw` gives the roff source).
