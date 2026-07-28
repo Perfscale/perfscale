@@ -1,0 +1,288 @@
+.\" perfscale(1) manual page
+.TH PERFSCALE 1 "2026-07-28" "perfscale 0.7" "User Commands"
+.SH NAME
+perfscale \- run k6, locust, or native load tests from one CLI
+.SH SYNOPSIS
+.B perfscale
+.RI < COMMAND >
+.RI [ OPTIONS ]
+.br
+.B perfscale run
+.BI \-\-k6 " FILE.js"
+.RI [ OPTIONS ]
+.br
+.B perfscale run
+.BI \-\-locust " FILE.py"
+.RI [ OPTIONS ]
+.br
+.B perfscale run
+.BI \-f " TEST.yaml"
+.BI \-c " CONFIG.yaml"
+.RI [ OPTIONS ]
+.SH DESCRIPTION
+.B perfscale
+is a load-testing CLI that runs existing k6 scripts and locustfiles, or its
+own native step engine driven by YAML test definitions. All three engines
+emit a k6-compatible metric summary, so downstream tooling (CI reporters,
+dashboards,
+.BR \-\-summary\-export )
+parses one format regardless of the engine that produced it.
+.SH COMMANDS
+.TP
+.B run
+Run a load test. Exactly one engine selector is required:
+.BR \-\-k6 ,
+.BR \-\-locust ,
+or
+.BR \-f /
+.BR \-c
+(native engine). See
+.B "RUN OPTIONS"
+below.
+.TP
+.B serve
+Start a local dev server that receives metric summaries from
+.B "perfscale run \-\-report"
+and prints them. Endpoints:
+.B GET /health
+(liveness, returns
+.IR ok )
+and
+.B POST /api/v1/metrics
+(accepts
+.IR {"lines": ["..."]} ).
+.TP
+.B lint
+Validate test/config YAML files without running them: JSON-Schema checks,
+unknown or typo'd field names with did-you-mean suggestions, unknown action
+IDs, and per-action
+.B with:
+parameter names. File kind is auto-detected (a top-level
+.B steps:
+key means test definition); override with
+.BR \-\-schema .
+.TP
+.B schema
+Print the JSON Schema perfscale validates YAML files against (the same
+schemas
+.B lint
+uses). Argument:
+.B test
+or
+.BR config .
+.TP
+.B man
+Print this manual as plain text (the Windows path, where no
+.B man
+binary exists). With
+.BR \-\-raw ,
+print the roff source; with
+.BR \-\-install ,
+install it so
+.B "man perfscale"
+works. See
+.B "MAN OPTIONS"
+below.
+.TP
+.B self\-update
+Download the release asset for this platform from GitHub Releases, verify
+its sha256 against the release's
+.IR sha256sums.txt ,
+and atomically replace the current executable.
+.B \-\-check
+only checks (exit code 10 when an update exists);
+.B \-\-force
+reinstalls even when up to date.
+.SH RUN OPTIONS
+Exactly one of
+.BR \-\-k6 ,
+.BR \-\-locust ,
+.BR \-f
+selects the engine.
+.TP
+.BI \-\-k6 " FILE.js"
+Run a k6 script (requires
+.B k6
+on PATH; load shape lives in the script's
+.IR options ).
+.TP
+.BI \-\-locust " FILE.py"
+Run a locustfile headless (requires
+.B locust
+on PATH; combine with
+.B \-\-host
+and
+.BR \-c ).
+.TP
+.BI \-f ", " \-\-file " TEST.yaml"
+Run a native perfscale test definition (YAML with a
+.B steps:
+list). Requires
+.BR \-c .
+.TP
+.BI \-c ", " \-\-config " CONFIG.yaml"
+Load config:
+.BR vus ,
+.BR duration ,
+optional
+.BR report.url ,
+.BR before: / after:
+setup/teardown steps, and
+.BR variables: .
+Required with
+.BR \-f ;
+optional load hint for
+.BR \-\-locust ;
+ignored by
+.BR \-\-k6 .
+.TP
+.BI \-\-host " URL"
+Target base URL for
+.B \-\-locust
+runs (passed through as locust's
+.BR \-\-host ).
+.TP
+.BI \-\-report " URL"
+After the run, POST the metric summary to a
+.B perfscale serve
+instance, e.g.
+.IR http://localhost:7999 .
+Overrides
+.B report.url
+from the config file.
+.TP
+.BR \-q ", " \-\-quiet
+Suppress per-request output; errors and the final metric summary still
+print. For the native engine the lines are dropped at the source, which also
+removes their formatting/IO cost under high load.
+.TP
+.BI \-\-summary\-export " FILE"
+After the run, write the parsed metric summary plus run metadata (engine,
+VUs, duration, timestamp) to
+.IR FILE .
+Repeatable. A
+.B .md
+or
+.B .json
+extension picks the format per file; otherwise
+.BR \-\-summary\-format
+(default: JSON).
+.TP
+.BI \-\-summary\-format " json|md"
+Format for
+.B \-\-summary\-export
+files without a recognized extension.
+.B md
+renders a Markdown table \(em handy for CI job summaries (e.g.
+.BR $GITHUB_STEP_SUMMARY ).
+.SH MAN OPTIONS
+.TP
+.B \-\-raw
+Print the roff source of this manual instead of the plain-text rendering.
+.TP
+.B \-\-install
+Install the man page so
+.B "man perfscale"
+works. Writes
+.I perfscale.1
+into the man directory (default:
+.IR ~/.local/share/man/man1 ,
+override with
+.BR \-\-dir )
+and runs
+.B mandb
+when available.
+.TP
+.BI \-\-dir " PATH"
+Man directory for
+.BR \-\-install .
+Use
+.IR /usr/local/share/man/man1
+for a system-wide install (may need elevated privileges).
+.SH ENVIRONMENT
+.TP
+.B PERFSCALE_NO_UPDATE_CHECK
+Set to
+.B 1
+to disable the passive "update available" hint printed by other commands
+(at most once per 24h, interactive terminals only).
+.TP
+.B MANPATH
+Standard
+.BR man (1)
+search path. When
+.B perfscale man \-\-install
+uses the default per-user directory, ensure
+.I ~/.local/share/man
+is on it (most Linux man-db setups include it automatically; on macOS add
+it to your shell profile).
+.SH EXIT STATUS
+.B perfscale run
+exits 0 even when checks fail (failed checks are load-test feedback, printed
+to stderr and the summary); it exits 1 when the run itself cannot execute
+(bad file, engine missing, invalid YAML).
+.B perfscale lint
+exits 0 when every file is valid, 1 otherwise.
+.B perfscale self-update \-\-check
+exits 10 when an update exists.
+.SH EXAMPLES
+Run an existing k6 script:
+.PP
+.nf
+.RS
+perfscale run --k6 script.js
+.RE
+.fi
+.PP
+Run a locustfile headless against a target:
+.PP
+.nf
+.RS
+perfscale run --locust locustfile.py --host https://target.example.com -c load.yaml
+.RE
+.fi
+.PP
+Run a native YAML test and export a Markdown summary for CI:
+.PP
+.nf
+.RS
+perfscale run -f test.yaml -c config.yaml \\
+    --summary-export "$GITHUB_STEP_SUMMARY" --summary-format md
+.RE
+.fi
+.PP
+Collect summaries locally:
+.PP
+.nf
+.RS
+perfscale serve &
+perfscale run -f test.yaml -c config.yaml --report http://localhost:7999
+.RE
+.fi
+.PP
+Read this manual without
+.BR man (1)
+(e.g. on Windows):
+.PP
+.nf
+.RS
+perfscale man
+.RE
+.fi
+.PP
+Install the man page:
+.PP
+.nf
+.RS
+perfscale man --install
+man perfscale
+.RE
+.fi
+.SH SEE ALSO
+Full documentation:
+.UR https://perfscale.su/docs/oss
+.UE
+.PP
+Source and issue tracker:
+.UR https://github.com/Perfscale/perfscale
+.UE

@@ -4,6 +4,7 @@
 perfscale run          Run a load test with k6, locust, or the native step engine
 perfscale serve        Start a local dev server that receives metrics from `run --report`
 perfscale lint         Validate test/config YAML files without running them
+perfscale man          Print the bundled man page (or install it for `man perfscale`)
 perfscale self-update  Update perfscale to the latest release for this platform
 ```
 
@@ -154,6 +155,38 @@ Made for anything that authors perfscale YAML programmatically:
   models the authoring contract
 
 Exit code: `0` on success.
+
+## `perfscale man`
+
+Prints the bundled man page — the full CLI reference, embedded into the
+binary at build time. This is the path for **Windows**, which has no
+`man(1)`:
+
+```sh
+perfscale man          # plain-text manual on stdout
+perfscale man --raw    # the roff source instead
+```
+
+On Unix, install the page once so `man perfscale` works:
+
+```sh
+perfscale man --install                                # → ~/.local/share/man/man1
+perfscale man --install --dir /usr/local/share/man/man1  # system-wide
+```
+
+`--install` writes `perfscale.1` into the chosen directory and refreshes the
+man index when `mandb` is available. If `man perfscale` can't find the page
+afterwards, add the parent directory to `MANPATH`:
+
+```sh
+export MANPATH="$HOME/.local/share/man:$MANPATH"
+```
+
+A global npm install (`npm install -g @perfscale/exe`) links the man page
+automatically — npm's `man` field puts it under
+`<prefix>/share/man/man1`.
+
+Exit code: `0` on success, `1` when `--install` can't write the directory.
 
 ## `perfscale self-update`
 

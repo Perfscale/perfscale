@@ -93,6 +93,11 @@ for (const t of TARGETS) {
 
 // ── Meta package: @perfscale/exe ─────────────────────────────────────────────
 
+// The man page ships in the meta package so a global npm install links it
+// into <prefix>/share/man/man1 (npm's `man` field), making `man perfscale`
+// work out of the box on Unix. Windows has no man — `perfscale man` covers it.
+const manPage = fs.readFileSync(new URL("../man/perfscale.1", import.meta.url));
+
 const shim = `#!/usr/bin/env node
 "use strict";
 // Thin launcher: resolves the platform package installed via
@@ -147,12 +152,14 @@ writePackage(
       "perfscale — load testing CLI (k6, Locust, and a native engine) as a standalone binary, installed via npm.",
     ...common,
     bin: { perfscale: "bin/perfscale.js" },
+    man: ["man/perfscale.1"],
     optionalDependencies: Object.fromEntries(
       TARGETS.map((t) => [`@perfscale/${t.pkg}`, version]),
     ),
   },
   {
     "bin/perfscale.js": { content: shim, mode: 0o755 },
+    "man/perfscale.1": { content: manPage },
     "README.md": {
       content: `# @perfscale/exe
 

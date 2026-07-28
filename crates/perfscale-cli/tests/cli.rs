@@ -127,6 +127,57 @@ fn errors_carry_hint_and_docs_sections() {
 }
 
 // ---------------------------------------------------------------------------
+// perfscale man
+// ---------------------------------------------------------------------------
+
+#[test]
+fn man_prints_plain_text_manual() {
+    cmd()
+        .arg("man")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("NAME"))
+        .stdout(predicate::str::contains("SYNOPSIS"))
+        .stdout(predicate::str::contains("perfscale - run k6"))
+        .stdout(predicate::str::contains("RUN OPTIONS"))
+        .stdout(predicate::str::contains("SEE ALSO"));
+}
+
+#[test]
+fn man_raw_prints_roff_source() {
+    cmd()
+        .args(["man", "--raw"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".TH PERFSCALE 1"))
+        .stdout(predicate::str::contains(".SH NAME"));
+}
+
+#[test]
+fn man_help_shows_windows_and_install_paths() {
+    cmd()
+        .args(["man", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Windows"))
+        .stdout(predicate::str::contains("--install"))
+        .stdout(predicate::str::contains("commands.md#perfscale-man"));
+}
+
+#[test]
+fn man_install_writes_page_into_given_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("man1");
+    cmd()
+        .args(["man", "--install", "--dir", target.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("installed man page"));
+    let written = std::fs::read_to_string(target.join("perfscale.1")).unwrap();
+    assert!(written.contains(".TH PERFSCALE 1"));
+}
+
+// ---------------------------------------------------------------------------
 // Deterministic "binary not found" paths (PATH pointed at an empty dir)
 // ---------------------------------------------------------------------------
 

@@ -23,6 +23,7 @@ async fn main() {
         Commands::Serve(args) => commands::serve::serve(args).await,
         Commands::Lint(args) => commands::lint::run(args).await,
         Commands::Schema(args) => commands::schema::run(args).await,
+        Commands::Man(args) => commands::man::run(args).await,
         Commands::SelfUpdate(args) => commands::self_update::self_update(args).await,
     };
 

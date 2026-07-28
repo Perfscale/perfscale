@@ -69,6 +69,8 @@ pub enum Commands {
     Lint(LintArgs),
     /// Print the JSON Schema for test or config YAML files.
     Schema(SchemaArgs),
+    /// Print the perfscale manual as plain text, or install it for `man perfscale`.
+    Man(ManArgs),
     /// Update perfscale to the latest release for this platform.
     #[command(name = "self-update")]
     SelfUpdate(SelfUpdateArgs),
@@ -98,6 +100,39 @@ pub struct SchemaArgs {
 pub enum SchemaDumpKind {
     Test,
     Config,
+}
+
+fn man_after_help() -> String {
+    format!(
+        "Prints the bundled man page as plain text — the path for Windows, which\n\
+         has no man(1). On Unix, install the page once so `man perfscale` works:\n\
+         `--install` writes perfscale.1 into ~/.local/share/man/man1 (override\n\
+         with --dir) and refreshes the man index when mandb is available.\n\n\
+         Examples:\n  \
+         perfscale man                          print the manual as plain text\n  \
+         perfscale man --raw                    print the roff source\n  \
+         perfscale man --install                install for `man perfscale`\n  \
+         perfscale man --install --dir /usr/local/share/man/man1\n\n\
+         Documentation: {DOCS_BASE}/cli/commands.md#perfscale-man"
+    )
+}
+
+#[derive(Args)]
+#[command(after_help = man_after_help())]
+pub struct ManArgs {
+    /// Print the roff (man source) instead of the plain-text rendering.
+    #[arg(long, conflicts_with_all = ["install", "dir"])]
+    pub raw: bool,
+
+    /// Install the man page so `man perfscale` works (default directory:
+    /// ~/.local/share/man/man1 — override with --dir).
+    #[arg(long)]
+    pub install: bool,
+
+    /// Man directory for --install (e.g. /usr/local/share/man/man1 for a
+    /// system-wide install).
+    #[arg(long, value_name = "PATH", requires = "install")]
+    pub dir: Option<PathBuf>,
 }
 
 fn self_update_after_help() -> String {
@@ -458,5 +493,41 @@ mod tests {
     #[test]
     fn unknown_subcommand_is_rejected() {
         assert!(parse(&["frobnicate"]).is_err());
+    }
+
+    #[test]
+    fn man_parses_bare() {
+        let cli = parse(&["man"]).unwrap();
+        match cli.command {
+            Commands::Man(args) => {
+                assert!(!args.raw);
+                assert!(!args.install);
+                assert!(args.dir.is_none());
+            }
+            _ => panic!("expected Man"),
+        }
+    }
+
+    #[test]
+    fn man_raw_conflicts_with_install_and_dir() {
+        assert!(parse(&["man", "--raw", "--install"]).is_err());
+        assert!(parse(&["man", "--raw", "--install", "--dir", "/tmp/x"]).is_err());
+    }
+
+    #[test]
+    fn man_dir_requires_install() {
+        assert!(parse(&["man", "--dir", "/tmp/x"]).is_err());
+    }
+
+    #[test]
+    fn man_install_with_dir_parses() {
+        let cli = parse(&["man", "--install", "--dir", "/tmp/x"]).unwrap();
+        match cli.command {
+            Commands::Man(args) => {
+                assert!(args.install);
+                assert_eq!(args.dir, Some(PathBuf::from("/tmp/x")));
+            }
+            _ => panic!("expected Man"),
+        }
     }
 }
