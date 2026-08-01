@@ -408,6 +408,12 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
         }
     }
 
+    // The DB family additionally lints MISSING required fields and the
+    // `driver` value: a db-query without `id`/`query` only fails mid-run, and
+    // a typo'd driver fails the whole scenario at its first step — both are
+    // cheap to catch here.
+    lint_db_with(action, map.get("with").and_then(|v| v.as_object()), loc, issues);
+
     if let Some(check) = map.get("check").and_then(|v| v.as_object()) {
         unknown_field_issues(check, &CHECK_FIELDS, &format!("{loc}/check"), issues);
     }
@@ -512,6 +518,60 @@ fn unknown_field_issues(
                 suggestion: did_you_mean(key, known)
                     .or_else(|| Some(format!("valid fields here: {}", known.join(", ")))),
             });
+        }
+    }
+}
+
+/// Required-`with`-field checks for the DB action family, plus validation of
+/// `db-connect`'s `driver` value. Other actions leave missing fields to
+/// runtime validation; the DB family is checked at lint time because a
+/// missing `id`/`query` or a typo'd driver only surfaces mid-run otherwise.
+/// `with: None` means the step has no `with:` block at all — every required
+/// field is missing.
+fn lint_db_with(
+    action: &str,
+    with: Option<&serde_json::Map<String, Value>>,
+    loc: &str,
+    issues: &mut Vec<LintIssue>,
+) {
+    let required: &[&str] = match action {
+        "std/db-connect@v1" | "db-connect" => &["driver", "dsn"],
+        "std/db-query@v1" | "db-query" => &["id", "query"],
+        "std/db-tx-begin@v1" | "db-tx-begin"
+        | "std/db-tx-commit@v1" | "db-tx-commit"
+        | "std/db-tx-rollback@v1" | "db-tx-rollback"
+        | "std/db-close@v1" | "db-close" => &["id"],
+        _ => return,
+    };
+    for field in required {
+        if with.is_some_and(|w| w.contains_key(*field)) {
+            continue;
+        }
+        let hint = match *field {
+            "driver" => "postgres, mysql, or sqlite",
+            "dsn" => "a driver-native connection string",
+            "id" => "the output of `std/db-connect@v1`, e.g. `${{ conn.id }}`",
+            "query" => "SQL text with driver-native placeholders",
+            _ => unreachable!("the required-fields table only lists the above"),
+        };
+        issues.push(LintIssue {
+            location: format!("{loc}/with"),
+            problem: format!("missing required field '{field}'"),
+            suggestion: Some(format!("`{action}` needs `{field}` — {hint}")),
+        });
+    }
+
+    // The driver value is checkable only when it is a literal — interpolated
+    // `${{ … }}` values resolve at runtime.
+    if matches!(action, "std/db-connect@v1" | "db-connect") {
+        if let Some(driver) = with.and_then(|w| w.get("driver")).and_then(Value::as_str) {
+            if !driver.contains("${{") && !matches!(driver, "postgres" | "mysql" | "sqlite") {
+                issues.push(LintIssue {
+                    location: format!("{loc}/with/driver"),
+                    problem: format!("unknown driver '{driver}'"),
+                    suggestion: Some("expected postgres, mysql, or sqlite".into()),
+                });
+            }
         }
     }
 }
@@ -910,5 +970,134 @@ after:
             .find(|i| i.problem.contains("unknown field 'aftr'"))
             .unwrap();
         assert_eq!(typo.suggestion.as_deref(), Some("did you mean 'after'?"));
+    }
+
+    // -----------------------------------------------------------------
+    // std/db-*@v1 family
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn db_family_lints_clean() {
+        let yaml = r#"
+steps:
+  - name: open db
+    use: std/db-connect@v1
+    with:
+      driver: sqlite
+      dsn: "sqlite::memory:"
+    outputs: db
+  - name: begin tx
+    use: std/db-tx-begin@v1
+    with: { id: "${{ db.id }}" }
+  - name: record
+    use: std/db-query@v1
+    with:
+      id: "${{ db.id }}"
+      query: INSERT INTO hits (path, status) VALUES (?, ?)
+      params: ["/api/checkout", 200]
+      max_rows: 100
+      timeout_ms: 5000
+  - name: commit
+    use: std/db-tx-commit@v1
+    with: { id: "${{ db.id }}" }
+  - name: hang up
+    use: std/db-close@v1
+    with: { id: "${{ db.id }}" }
+"#;
+        assert_eq!(lint(yaml, DocKind::Test), vec![]);
+    }
+
+    #[test]
+    fn db_query_missing_required_fields_is_reported() {
+        let yaml = "steps:\n  - use: std/db-query@v1\n    with:\n      timeout_ms: 500\n";
+        let issues = lint(yaml, DocKind::Test);
+        for field in ["id", "query"] {
+            let missing = issues
+                .iter()
+                .find(|i| i.problem == format!("missing required field '{field}'"))
+                .unwrap_or_else(|| panic!("no issue for missing '{field}': {issues:?}"));
+            assert_eq!(missing.location, "/steps/0/with");
+            assert!(missing.suggestion.is_some());
+        }
+    }
+
+    #[test]
+    fn db_query_without_with_block_reports_every_required_field() {
+        let yaml = "steps:\n  - use: std/db-query@v1\n";
+        let issues = lint(yaml, DocKind::Test);
+        for field in ["id", "query"] {
+            assert!(
+                issues.iter().any(|i| i.problem == format!("missing required field '{field}'")),
+                "no issue for missing '{field}': {issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn db_tx_and_close_missing_id_is_reported() {
+        let yaml = r#"
+steps:
+  - use: std/db-tx-begin@v1
+    with: { timeout_ms: 100 }
+  - use: std/db-tx-rollback@v1
+    with: {}
+  - use: std/db-close@v1
+"#;
+        let issues = lint(yaml, DocKind::Test);
+        for step in 0..3 {
+            let missing = issues
+                .iter()
+                .find(|i| i.problem == "missing required field 'id'" && i.location == format!("/steps/{step}/with"))
+                .unwrap_or_else(|| panic!("no missing-id issue for step {step}: {issues:?}"));
+            assert!(missing.suggestion.as_deref().unwrap().contains("db-connect"));
+        }
+    }
+
+    #[test]
+    fn db_connect_missing_driver_and_dsn_is_reported() {
+        let yaml = "steps:\n  - use: std/db-connect@v1\n    with:\n      pool_size: 4\n";
+        let issues = lint(yaml, DocKind::Test);
+        for field in ["driver", "dsn"] {
+            assert!(
+                issues.iter().any(|i| i.problem == format!("missing required field '{field}'")),
+                "no issue for missing '{field}': {issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn db_connect_unknown_driver_is_reported() {
+        let yaml = "steps:\n  - use: std/db-connect@v1\n    with:\n      driver: oracle\n      dsn: x\n";
+        let issues = lint(yaml, DocKind::Test);
+        let bad = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown driver 'oracle'"))
+            .unwrap();
+        assert_eq!(bad.location, "/steps/0/with/driver");
+        assert_eq!(
+            bad.suggestion.as_deref(),
+            Some("expected postgres, mysql, or sqlite")
+        );
+    }
+
+    #[test]
+    fn db_connect_interpolated_driver_is_not_flagged() {
+        // Interpolated values resolve at runtime — lint cannot know them.
+        let yaml = "steps:\n  - use: std/db-connect@v1\n    with:\n      driver: \"${{ vars.driver }}\"\n      dsn: \"${{ vars.dsn }}\"\n";
+        assert_eq!(lint(yaml, DocKind::Test), vec![]);
+    }
+
+    #[test]
+    fn typo_in_db_query_with_key_gets_did_you_mean() {
+        let yaml = "steps:\n  - use: std/db-query@v1\n    with:\n      id: db-1\n      qurey: SELECT 1\n";
+        let issues = lint(yaml, DocKind::Test);
+        let typo = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown field 'qurey'"))
+            .unwrap();
+        assert_eq!(typo.location, "/steps/0/with");
+        assert_eq!(typo.suggestion.as_deref(), Some("did you mean 'query'?"));
+        // …and the missing required field is still reported on its own.
+        assert!(issues.iter().any(|i| i.problem == "missing required field 'query'"));
     }
 }

@@ -31,15 +31,19 @@
 //! # SQL and bind parameters
 //!
 //! `query` is SQL text with **driver-native placeholders** (`$1`, `$2`, …
-//! for PostgreSQL, `?` for all three) and is **never interpolated** — a
-//! `${{` sequence inside the SQL text is passed to the database verbatim.
+//! for PostgreSQL, `?` for MySQL/MariaDB and SQLite) and is **never
+//! interpolated** — a `${{` sequence inside the SQL text is passed to the
+//! database verbatim.
 //! Values move through `params`, a positional array; each entry *is*
 //! interpolated by the engine's usual value interpolation, then bound:
 //! strings → text, numbers → i64/f64, booleans → bool, null → a typed NULL
 //! (text-typed on PostgreSQL — cast in SQL, e.g. `$1::int`, when inserting
 //! into a non-text column). Arrays/objects cannot be bound. INSERT, UPDATE,
 //! DELETE, and DDL are allowed by default. The SQL text is capped at 64 KiB
-//! (`max_query_bytes`, a hard limit).
+//! (`max_query_bytes`, a hard limit). One `query` may carry several
+//! `;`-separated statements: they run in order over a single stream,
+//! `rows_affected` sums across them, and SELECT rows from every statement
+//! collect into `data` (up to `max_rows`).
 //!
 //! # Rows
 //!
@@ -278,8 +282,36 @@ fn dsn_password(dsn: &str) -> Option<&str> {
 fn sanitize_detail(detail: &str, dsn: &str) -> String {
     let mut out = detail.replace(dsn, "[dsn]");
     if let Some(password) = dsn_password(dsn) {
-        out = out.replace(password, "[redacted]");
+        out = replace_whole_word(&out, password, "[redacted]");
     }
+    out
+}
+
+/// Replace whole-word occurrences of `needle` with `replacement`. A match
+/// counts as a word only when bounded by a non-alphanumeric character or a
+/// string edge — so scrubbing a one-character password cannot mangle
+/// unrelated words ("open" must not become "o[redacted]en"), while a
+/// password echoed on its own ("authentication failed for 's3cret'") is
+/// still scrubbed.
+fn replace_whole_word(haystack: &str, needle: &str, replacement: &str) -> String {
+    let mut out = String::with_capacity(haystack.len());
+    let mut rest = haystack;
+    while let Some(pos) = rest.find(needle) {
+        let after = &rest[pos + needle.len()..];
+        let bounded = rest[..pos]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric())
+            && after.chars().next().is_none_or(|c| !c.is_alphanumeric());
+        if bounded {
+            out.push_str(&rest[..pos]);
+            out.push_str(replacement);
+        } else {
+            out.push_str(&rest[..pos + needle.len()]);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
     out
 }
 
@@ -1323,7 +1355,7 @@ pub(crate) async fn db_tx_rollback_action(
 // Connections left open are closed implicitly at iteration end.
 
 pub(crate) async fn db_close_action(params: &Value, ctx: &Context, step_name: &str) -> ActionOutput {
-    let (id, conn) = match take_conn(params, ctx) {
+    let (id, mut conn) = match take_conn(params, ctx) {
         Ok(pair) => pair,
         Err(msg) => return err(step_name, &msg),
     };
@@ -1331,6 +1363,10 @@ pub(crate) async fn db_close_action(params: &Value, ctx: &Context, step_name: &s
     let target = conn.target.clone();
 
     let t0 = Instant::now();
+    // Drop a parked transaction BEFORE closing: dropping it starts its
+    // rollback and returns its connection to the pool, which `close()` waits
+    // for — awaiting `close()` with the transaction still checked out hangs.
+    drop(conn.tx.take());
     if let DbState::Pool(pool) = &conn.state {
         match pool {
             DbPool::Pg(p) => p.close().await,
@@ -1338,8 +1374,8 @@ pub(crate) async fn db_close_action(params: &Value, ctx: &Context, step_name: &s
             DbPool::Sqlite(p) => p.close().await,
         }
     }
-    // The id is not returned to the registry — it is closed. A parked
-    // transaction rolls back as it drops here.
+    // The id is not returned to the registry — it is closed. The transaction
+    // dropped above rolled back as it went.
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     ActionOutput {
@@ -2061,6 +2097,13 @@ mod tests {
         let out = run(&ctx, "std/db-tx-begin@v1", json!({ "id": id })).await;
         assert!(!out.success);
         assert!(out.logs[0].1.contains("mode: persistent"), "{:?}", out.logs);
+        // Commit/rollback likewise find no transaction to finish — a clean
+        // error, not a panic on the missing pool.
+        for action in ["std/db-tx-commit@v1", "std/db-tx-rollback@v1"] {
+            let out = run(&ctx, action, json!({ "id": id })).await;
+            assert!(!out.success, "{action} on per-query id must fail");
+            assert!(out.logs[0].1.contains("no open transaction"), "{action}: {:?}", out.logs);
+        }
 
         let out = run(&ctx, "std/db-close@v1", json!({ "id": id })).await;
         assert!(out.success);
@@ -2194,6 +2237,53 @@ mod tests {
         assert_eq!(out.value["error_kind"], "constraint", "{:?}", out.value);
         assert_eq!(out.value["metrics"]["db_errors_constraint"], 1);
 
+        // Bind-count mismatches are rejected server-side (unlike SQLite,
+        // which binds NULL/ignores extras) — a clean classified error.
+        let one_ph = if placeholder == "$1" {
+            "SELECT id FROM perfscale_db_test WHERE id = $1"
+        } else {
+            "SELECT id FROM perfscale_db_test WHERE id = ?"
+        };
+        for params in [json!([]), json!([1, 2])] {
+            let out = run(
+                &ctx,
+                "std/db-query@v1",
+                json!({ "id": id, "query": one_ph, "params": params }),
+            )
+            .await;
+            assert!(!out.success, "{driver} count mismatch {params} must fail");
+            assert_eq!(out.value["metrics"]["db_errors"], 1, "{params}: {:?}", out.value);
+        }
+
+        // Empty result set: rows 0, empty data, no error.
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT id FROM perfscale_db_test WHERE 1 = 0" }),
+        )
+        .await;
+        assert!(out.success, "empty select: {:?}", out.value);
+        assert_eq!(out.value["rows"], 0);
+        assert_eq!(out.value["data"], json!([]));
+
+        // Value decoding per the module doc's mapping: NULL → null, unicode
+        // text intact, binary → base64, i64-max integer, f64.
+        let decode_sql = if placeholder == "$1" {
+            "SELECT NULL::text AS n, 'héllo 🦀'::text AS u, '\\x00ff10'::bytea AS b, \
+             9223372036854775807::int8 AS big, 3.141592653589793::float8 AS f"
+        } else {
+            "SELECT NULL AS n, 'héllo 🦀' AS u, X'00FF10' AS b, \
+             9223372036854775807 AS big, 3.141592653589793 AS f"
+        };
+        let out = run(&ctx, "std/db-query@v1", json!({ "id": id, "query": decode_sql })).await;
+        assert!(out.success, "decode select: {:?}", out.value);
+        let row = &out.value["data"][0];
+        assert_eq!(row["n"], Value::Null, "{driver} NULL → null");
+        assert_eq!(row["u"], "héllo 🦀", "{driver} unicode intact");
+        assert_eq!(row["b"], "AP8Q", "{driver} binary → base64");
+        assert_eq!(row["big"], i64::MAX, "{driver} bigint");
+        assert_eq!(row["f"], std::f64::consts::PI, "{driver} float");
+
         let out = run(
             &ctx,
             "std/db-query@v1",
@@ -2221,5 +2311,461 @@ mod tests {
             return;
         };
         server_flow("mysql", &dsn, "?").await;
+    }
+
+    #[test]
+    fn connect_params_pool_size_is_clamped() {
+        // 0 would make a pool that can never hand out a connection; the
+        // ceiling keeps a typo from opening a thousand sockets.
+        for (given, want) in [(0, 1), (1, 1), (9999, 1024), (1024, 1024)] {
+            let cp = parse_connect_params(&json!({
+                "driver": "sqlite",
+                "dsn": "sqlite::memory:",
+                "pool_size": given,
+            }))
+            .unwrap();
+            assert_eq!(cp.pool_size, want, "pool_size {given}");
+        }
+        // Interpolated string form clamps the same way.
+        let cp = parse_connect_params(&json!({
+            "driver": "sqlite",
+            "dsn": "sqlite::memory:",
+            "pool_size": "0",
+        }))
+        .unwrap();
+        assert_eq!(cp.pool_size, 1);
+    }
+
+    #[test]
+    fn sanitize_detail_does_not_mangle_unrelated_words() {
+        // A one-character password must not substring-replace its way through
+        // the message ("open" → "o[redacted]en" was the bug): only whole-word
+        // occurrences are scrubbed.
+        let dsn = "postgres://u:p@h/db";
+        let detail = "unable to open database file";
+        assert_eq!(sanitize_detail(detail, dsn), detail);
+
+        // …while a password echoed on its own is still scrubbed — quotes and
+        // punctuation count as word boundaries.
+        let dsn = "postgres://u:s3cret@h/db";
+        assert_eq!(
+            sanitize_detail("authentication failed for 's3cret'", dsn),
+            "authentication failed for '[redacted]'"
+        );
+        assert_eq!(
+            sanitize_detail("pwd=s3cret, try again", dsn),
+            "pwd=[redacted], try again"
+        );
+        // A password that is only a substring of a longer word stays (it is
+        // not the password — a partial scrub would corrupt the message).
+        assert_eq!(
+            sanitize_detail("unknown database s3cretdb", dsn),
+            "unknown database s3cretdb"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // SQLite edge cases (no server needed)
+    // -----------------------------------------------------------------
+
+    /// Fresh in-memory connection, returning its id.
+    async fn connect_memory(ctx: &Context) -> String {
+        let out = run(
+            ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "sqlite", "dsn": "sqlite::memory:" }),
+        )
+        .await;
+        assert!(out.success, "connect: {:?}", out.logs);
+        out.value["id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn sqlite_bind_param_count_mismatch_does_not_panic() {
+        // SQLite semantics (sqlite3 C API): an unbound placeholder reads as
+        // NULL and extra binds are ignored — a count mismatch is NOT an
+        // error there. (PostgreSQL/MySQL reject mismatches server-side; see
+        // the gated server_flow.) What must never happen is a panic.
+        let ctx = Context::new();
+        let id = connect_memory(&ctx).await;
+
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT ? AS a, ? AS b", "params": [1] }),
+        )
+        .await;
+        assert!(out.success, "fewer binds than placeholders: {:?}", out.value);
+        assert_eq!(out.value["data"][0]["a"], 1);
+        assert_eq!(out.value["data"][0]["b"], Value::Null, "unbound placeholder is NULL");
+
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT ? AS a", "params": [1, 2] }),
+        )
+        .await;
+        assert!(out.success, "more binds than placeholders: {:?}", out.value);
+        assert_eq!(out.value["data"][0]["a"], 1);
+    }
+
+    #[tokio::test]
+    async fn sqlite_empty_result_set_is_ok() {
+        let ctx = Context::new();
+        let id = connect_memory(&ctx).await;
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "CREATE TABLE e (x INTEGER)" }),
+        )
+        .await;
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT x FROM e WHERE x > 100" }),
+        )
+        .await;
+        assert!(out.success, "empty select: {:?}", out.value);
+        assert_eq!(out.value["rows"], 0);
+        assert_eq!(out.value["data"], json!([]));
+        assert_eq!(out.value["truncated"], false);
+        // Metrics are still emitted; on a fresh connection the SQLite
+        // previous-DML change-count quirk is 0, so db_rows reads 0.
+        assert_eq!(out.value["metrics"]["db_rows"], 0);
+        assert!(out.value["metrics"]["db_query_duration"].is_array());
+    }
+
+    #[tokio::test]
+    async fn sqlite_row_value_decoding() {
+        let ctx = Context::new();
+        let id = connect_memory(&ctx).await;
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({
+                "id": id,
+                "query": "SELECT NULL AS n, 'héllo 🦀' AS u, X'00FF10' AS b, \
+                          9223372036854775807 AS big, -9223372036854775808 AS small, \
+                          3.141592653589793 AS f",
+            }),
+        )
+        .await;
+        assert!(out.success, "decode select: {:?}", out.value);
+        let row = &out.value["data"][0];
+        assert_eq!(row["n"], Value::Null, "NULL → null");
+        assert_eq!(row["u"], "héllo 🦀", "unicode text survives");
+        assert_eq!(row["b"], "AP8Q", "blob → base64");
+        assert_eq!(row["big"], i64::MAX);
+        assert_eq!(row["small"], i64::MIN);
+        assert_eq!(row["f"], std::f64::consts::PI, "f64 round-trips");
+
+        // The same mapping applies to values bound through params.
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT ? AS u, ? AS n", "params": ["🦀αβ", null] }),
+        )
+        .await;
+        assert!(out.success);
+        assert_eq!(out.value["data"][0]["u"], "🦀αβ");
+        assert_eq!(out.value["data"][0]["n"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn sqlite_query_timeout_is_classified() {
+        let ctx = Context::new();
+        let id = connect_memory(&ctx).await;
+        // A recursive CTE summing 10M rows cannot finish in 50ms on any
+        // hardware (that would need >200M rows/s through SQLite's CTE
+        // machinery), so the step timeout always fires first.
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({
+                "id": id,
+                "query": "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt LIMIT 10000000) SELECT sum(x) FROM cnt",
+                "timeout_ms": 50,
+            }),
+        )
+        .await;
+        assert!(!out.success, "heavy query must time out: {:?}", out.value);
+        assert_eq!(out.value["error_kind"], "timeout");
+        assert_eq!(out.value["metrics"]["db_errors"], 1);
+        assert_eq!(out.value["metrics"]["db_errors_timeout"], 1);
+        assert!(out.value["metrics"]["db_query_duration"].is_array());
+        assert!(out.value["error"].as_str().unwrap().contains("TIMEOUT"), "{:?}", out.value);
+    }
+
+    #[tokio::test]
+    async fn sqlite_multi_statement_in_one_query() {
+        let ctx = Context::new();
+        let id = connect_memory(&ctx).await;
+
+        // Documented behavior: one query text may carry several statements;
+        // they run in order over one stream.
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "CREATE TABLE a (x INTEGER); CREATE TABLE b (y INTEGER)" }),
+        )
+        .await;
+        assert!(out.success, "multi-ddl: {:?}", out.value);
+
+        // rows_affected sums across the statements; binds apply in order.
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({
+                "id": id,
+                "query": "INSERT INTO a VALUES (?); INSERT INTO b VALUES (?)",
+                "params": [10, 20],
+            }),
+        )
+        .await;
+        assert!(out.success, "multi-dml: {:?}", out.value);
+        assert_eq!(out.value["rows_affected"], 2);
+
+        // Rows from every SELECT in the text are collected into one `data`.
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT x AS v FROM a; SELECT y AS v FROM b" }),
+        )
+        .await;
+        assert!(out.success, "multi-select: {:?}", out.value);
+        let vals: Vec<&Value> = out.value["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| &r["v"])
+            .collect();
+        assert!(vals.contains(&&json!(10)) && vals.contains(&&json!(20)), "{vals:?}");
+    }
+
+    #[tokio::test]
+    async fn sqlite_max_rows_edge_values() {
+        let ctx = Context::new();
+        let id = connect_memory(&ctx).await;
+        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "CREATE TABLE m (n INTEGER)" })).await;
+        for n in 1..=3 {
+            run(
+                &ctx,
+                "std/db-query@v1",
+                json!({ "id": id, "query": "INSERT INTO m VALUES (?)", "params": [n] }),
+            )
+            .await;
+        }
+
+        // max_rows 0 collects nothing; the first row only flips `truncated`.
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT n FROM m", "max_rows": 0 }),
+        )
+        .await;
+        assert!(out.success, "max_rows 0: {:?}", out.value);
+        assert_eq!(out.value["rows"], 0);
+        assert_eq!(out.value["data"], json!([]));
+        assert_eq!(out.value["truncated"], true);
+
+        // A huge cap is just a cap — no overflow, no panic, all rows.
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT n FROM m", "max_rows": u64::MAX }),
+        )
+        .await;
+        assert!(out.success, "max_rows u64::MAX: {:?}", out.value);
+        assert_eq!(out.value["rows"], 3);
+        assert_eq!(out.value["truncated"], false);
+    }
+
+    #[tokio::test]
+    async fn sqlite_strict_table_rejects_type_mismatch() {
+        let ctx = Context::new();
+        let id = connect_memory(&ctx).await;
+
+        // Plain tables have type AFFINITY: a string into an INTEGER column
+        // is not an error (SQLite stores it as TEXT when it does not look
+        // numeric) — dynamic typing is documented SQLite behavior.
+        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "CREATE TABLE ns (n INTEGER)" })).await;
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "INSERT INTO ns VALUES (?)", "params": ["abc"] }),
+        )
+        .await;
+        assert!(out.success, "plain table accepts affinity mismatch: {:?}", out.value);
+
+        // STRICT tables turn the same insert into a datatype constraint
+        // violation (SQLITE_CONSTRAINT_DATATYPE, low byte 19 → constraint).
+        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "CREATE TABLE s (n INTEGER) STRICT" })).await;
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "INSERT INTO s VALUES (?)", "params": ["not-a-number"] }),
+        )
+        .await;
+        assert!(!out.success, "STRICT mismatch must fail: {:?}", out.value);
+        assert_eq!(out.value["error_kind"], "constraint");
+        assert_eq!(out.value["metrics"]["db_errors_constraint"], 1);
+
+        // The connection survives the failed statement.
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT count(*) AS c FROM s" }),
+        )
+        .await;
+        assert!(out.success);
+        assert_eq!(out.value["data"][0]["c"], 0);
+    }
+
+    #[tokio::test]
+    async fn sqlite_rollback_without_open_tx_errors() {
+        let ctx = Context::new();
+        let id = connect_memory(&ctx).await;
+        let out = run(&ctx, "std/db-tx-rollback@v1", json!({ "id": id })).await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("no open transaction"), "{:?}", out.logs);
+    }
+
+    #[tokio::test]
+    async fn sqlite_close_with_open_tx_rolls_back() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let dsn = format!("sqlite://{}?mode=rwc", file.path().display());
+        let ctx = Context::new();
+
+        let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+        let id = out.value["id"].as_str().unwrap().to_string();
+        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "CREATE TABLE t (x INTEGER)" })).await;
+
+        // Begin a tx, write inside it, then close WITHOUT committing.
+        run(&ctx, "std/db-tx-begin@v1", json!({ "id": id })).await;
+        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "INSERT INTO t VALUES (1)" })).await;
+        // db-close drops the open transaction (rolling it back) before
+        // closing the pool — awaiting the close with the tx still checked
+        // out used to hang, so bound the step: a regression fails here
+        // instead of sticking the whole test run.
+        let closed = tokio::time::timeout(
+            Duration::from_secs(10),
+            run(&ctx, "std/db-close@v1", json!({ "id": id })),
+        )
+        .await
+        .expect("db-close with an open transaction must not hang");
+        assert!(closed.success, "close: {:?}", closed.logs);
+        assert_eq!(closed.value["closed"], true);
+
+        // A fresh connection sees none of the uncommitted data.
+        let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+        let id2 = out.value["id"].as_str().unwrap().to_string();
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id2, "query": "SELECT count(*) AS c FROM t" }),
+        )
+        .await;
+        assert!(out.success, "reconnect: {:?}", out.logs);
+        assert_eq!(out.value["data"][0]["c"], 0, "uncommitted insert was rolled back");
+    }
+
+    #[tokio::test]
+    async fn sqlite_drain_with_open_tx_rolls_back() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let dsn = format!("sqlite://{}?mode=rwc", file.path().display());
+        let ctx = Context::new();
+
+        let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+        let id = out.value["id"].as_str().unwrap().to_string();
+        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "CREATE TABLE t (x INTEGER)" })).await;
+        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "INSERT INTO t VALUES (1)" })).await;
+
+        // Iteration-end cleanup with an uncommitted tx parked: the drain
+        // drops the connection, and SQLite rolls the tx back on drop.
+        run(&ctx, "std/db-tx-begin@v1", json!({ "id": id })).await;
+        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "INSERT INTO t VALUES (2)" })).await;
+        assert_eq!(ctx.resources.drain(), 1);
+
+        let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+        let id2 = out.value["id"].as_str().unwrap().to_string();
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id2, "query": "SELECT count(*) AS c FROM t" }),
+        )
+        .await;
+        assert!(out.success, "reconnect: {:?}", out.logs);
+        assert_eq!(out.value["data"][0]["c"], 1, "only the committed row survives");
+    }
+
+    #[tokio::test]
+    async fn sqlite_locked_write_is_classified_deadlock() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let dsn = format!("sqlite://{}?mode=rwc", file.path().display());
+        let ctx = Context::new();
+
+        let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+        let id_a = out.value["id"].as_str().unwrap().to_string();
+        let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+        let id_b = out.value["id"].as_str().unwrap().to_string();
+        run(&ctx, "std/db-query@v1", json!({ "id": id_a, "query": "CREATE TABLE l (x INTEGER)" })).await;
+
+        // No waiting on the loser: the lock conflict surfaces immediately as
+        // SQLITE_BUSY (low byte 5 → deadlock) instead of after a busy-timeout.
+        let out = run(&ctx, "std/db-query@v1", json!({ "id": id_b, "query": "PRAGMA busy_timeout = 0" })).await;
+        assert!(out.success, "pragma: {:?}", out.logs);
+
+        // A holds an open write transaction…
+        run(&ctx, "std/db-tx-begin@v1", json!({ "id": id_a })).await;
+        let out = run(&ctx, "std/db-query@v1", json!({ "id": id_a, "query": "INSERT INTO l VALUES (1)" })).await;
+        assert!(out.success);
+        // …so B's write conflicts with the held lock.
+        let out = tokio::time::timeout(
+            Duration::from_secs(10),
+            run(&ctx, "std/db-query@v1", json!({ "id": id_b, "query": "INSERT INTO l VALUES (2)" })),
+        )
+        .await
+        .expect("locked write must fail fast, not hang");
+        assert!(!out.success, "conflicting write must fail: {:?}", out.value);
+        assert_eq!(out.value["error_kind"], "deadlock", "{:?}", out.value);
+        assert_eq!(out.value["metrics"]["db_errors_deadlock"], 1);
+
+        // B's connection is still usable once A lets go.
+        run(&ctx, "std/db-tx-rollback@v1", json!({ "id": id_a })).await;
+        let out = run(&ctx, "std/db-query@v1", json!({ "id": id_b, "query": "INSERT INTO l VALUES (2)" })).await;
+        assert!(out.success, "write succeeds after rollback: {:?}", out.logs);
+    }
+
+    #[tokio::test]
+    async fn connect_malformed_dsn_errors_are_clean() {
+        let ctx = Context::new();
+
+        // sqlx-sqlite accepts a bare filename as a DSN, so garbage and
+        // wrong-scheme strings fail at open time rather than at parse — a
+        // clean, classified config error either way.
+        for dsn in ["garbage string with spaces", "postgres://u:p@h/db"] {
+            let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+            assert!(!out.success, "{dsn} must fail");
+            assert_eq!(out.value["error_kind"], "other", "{dsn}: {:?}", out.value);
+            assert_eq!(out.value["metrics"]["db_errors_other"], 1);
+            let detail = out.value["error"].as_str().unwrap();
+            assert!(detail.contains("unable to open database file"), "{dsn}: {detail}");
+            assert!(!detail.contains("postgres://"), "dsn leaked: {detail}");
+        }
+
+        // PostgreSQL rejects garbage at DSN parse time.
+        let out = run(
+            &ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "postgres", "dsn": "not a dsn at all" }),
+        )
+        .await;
+        assert!(!out.success);
+        assert_eq!(out.value["error_kind"], "other");
+        assert!(
+            out.value["error"].as_str().unwrap().contains("invalid dsn for driver 'postgres'"),
+            "{:?}",
+            out.value
+        );
     }
 }
