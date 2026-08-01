@@ -18,6 +18,10 @@
 //! | `std/grpc-stream-send@v1` | Send message(s) on an open gRPC stream    |
 //! | `std/grpc-stream-recv@v1` | Read from an open gRPC stream             |
 //! | `std/grpc-stream-close@v1`| Half-close + drain an open gRPC stream    |
+//! | `std/db-connect@v1` | Open a DB pool (or per-query profile), returns id |
+//! | `std/db-query@v1`   | Run a parameterized query on a parked connection |
+//! | `std/db-tx-begin@v1` / `std/db-tx-commit@v1` / `std/db-tx-rollback@v1` | Transaction on a persistent DB connection |
+//! | `std/db-close@v1`   | Close a parked DB connection                   |
 //! | `std/check@v1`   | Assert properties of a previous step output      |
 //! | `std/sleep@v1`   | Wait N milliseconds                              |
 //! | `std/log@v1`     | Emit a log line                                  |
@@ -87,7 +91,7 @@ pub struct HttpSample {
 
 /// True when any string leaf contains a `${{ ... }}` placeholder. Keys are
 /// never interpolated, so only values are scanned.
-fn has_placeholder(v: &Value) -> bool {
+pub(crate) fn has_placeholder(v: &Value) -> bool {
     match v {
         Value::String(s) => s.contains("${{"),
         Value::Object(m) => m.values().any(has_placeholder),
@@ -106,7 +110,12 @@ pub async fn execute_action(
     // Interpolation deep-clones the whole params tree; most steps have no
     // placeholders, and this runs once per step per iteration — a cheap
     // borrow-only scan skips the clone on the hot path.
-    let resolved: std::borrow::Cow<'_, Value> = if has_placeholder(params) {
+    let resolved: std::borrow::Cow<'_, Value> = if matches!(action_id, "std/db-query@v1" | "db-query")
+    {
+        // db-query interpolates everything EXCEPT the SQL text itself — the
+        // query is bound via `params`, never string-interpolated.
+        std::borrow::Cow::Owned(super::db::interpolate_query_params(params, ctx))
+    } else if has_placeholder(params) {
         std::borrow::Cow::Owned(ctx.interpolate_value(params))
     } else {
         std::borrow::Cow::Borrowed(params)
@@ -145,6 +154,20 @@ pub async fn execute_action(
         "std/grpc-stream-close@v1" | "grpc-stream-close" => {
             super::grpc::grpc_stream_close_action(&resolved, ctx, step_name).await
         }
+        "std/db-connect@v1" | "db-connect" => {
+            super::db::db_connect_action(&resolved, ctx, step_name).await
+        }
+        "std/db-query@v1" | "db-query" => super::db::db_query_action(&resolved, ctx, step_name).await,
+        "std/db-tx-begin@v1" | "db-tx-begin" => {
+            super::db::db_tx_begin_action(&resolved, ctx, step_name).await
+        }
+        "std/db-tx-commit@v1" | "db-tx-commit" => {
+            super::db::db_tx_commit_action(&resolved, ctx, step_name).await
+        }
+        "std/db-tx-rollback@v1" | "db-tx-rollback" => {
+            super::db::db_tx_rollback_action(&resolved, ctx, step_name).await
+        }
+        "std/db-close@v1" | "db-close" => super::db::db_close_action(&resolved, ctx, step_name).await,
         "std/check@v1" | "check" => check_action(&resolved, ctx, step_name),
         "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name).await,
         "std/log@v1" | "log" => log_action(&resolved, step_name),

@@ -38,7 +38,8 @@ Or grab a binary from [GitHub Releases](https://github.com/Perfscale/perfscale/r
    external binary required — executing `std/http`, `std/tcp`, `std/udp`,
    `std/ws*` (WebSocket sessions and live connections), `std/grpc*` (unary
    calls and client/server/bidi streams, schema via reflection or descriptor
-   sets), `std/check`, `std/sleep`, `std/log`, and `std/file-*` actions across
+   sets), `std/db-*` (PostgreSQL, MySQL/MariaDB, and SQLite queries and
+   transactions), `std/check`, `std/sleep`, `std/log`, and `std/file-*` actions across
    N virtual users for a given duration.
 4. `--report <url>` optionally POSTs the aggregated summary to a `perfscale serve`
    instance running locally, for a shared view across multiple `run` invocations.

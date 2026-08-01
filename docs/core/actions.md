@@ -7,7 +7,9 @@ action in `use`, passes parameters in `with`, and may assert on the result in
 Full IDs carry a namespace and version (`std/http@v1`); the short aliases
 (`http`, `tcp`, `udp`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`,
 `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`,
-`grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `check`, `sleep`,
+`grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`,
+`db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`,
+`check`, `sleep`,
 `log`, `file-read`, `file-write`, `child_process`, `kill_process`) resolve to the
 same implementations.
 
@@ -589,6 +591,122 @@ steps, so streams deliberately do not feed `grpc_req_duration` (only unary
 calls do); `grpc-stream-close` is what turns a stream's final status into
 `grpc_req_failed`. Timeouts, `repeat` counts, and drain lengths have no
 built-in caps.
+
+## Database: the `std/db-*@v1` family
+
+SQL load tests against **PostgreSQL**, **MySQL/MariaDB**, and **SQLite**.
+Two styles, mirroring the WebSocket family: a live connection held across
+steps (`db-connect` → `db-query` / transactions → `db-close`), and a
+`per-query` mode where every query pays connect + query (see
+[Connection modes](#db-connection-modes)).
+
+```yaml
+steps:
+  - name: open db
+    use: std/db-connect@v1
+    with:
+      driver: postgres
+      dsn: "${{ vars.db_dsn }}"      # keep the password out of the file
+    outputs: db
+
+  - name: begin tx
+    use: std/db-tx-begin@v1
+    with: { id: "${{ db.id }}" }
+
+  - name: write
+    use: std/db-query@v1
+    with:
+      id: "${{ db.id }}"
+      query: INSERT INTO hits (path, status) VALUES ($1, $2)
+      params: ["/api/checkout", 200]
+
+  - name: commit
+    use: std/db-tx-commit@v1
+    with: { id: "${{ db.id }}" }
+
+  - name: hang up
+    use: std/db-close@v1
+    with: { id: "${{ db.id }}" }
+```
+
+### `std/db-connect@v1`
+
+Opens a connection pool (persistent mode) or stores the parsed connect
+config (per-query mode), and returns the Connection ID.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `driver` | string | **required** | `postgres`, `mysql` (covers MariaDB), or `sqlite` |
+| `dsn` | string | **required** | Driver-native connection string, e.g. `postgres://user:pass@host:5432/db`, `mysql://user:pass@host:3306/db`, `sqlite://data.db?mode=rwc`, `sqlite::memory:`. May use `${{ … }}` interpolation for secrets |
+| `tls` | bool \| string | `true` | `true` verifies certificate + hostname; `false` is plaintext; `"skip-verify"` encrypts without verification. Ignored for sqlite |
+| `mode` | string | `persistent` | `persistent` (pool held across steps) or `per-query` (config only — each query connects fresh) |
+| `pool_size` | integer | `1` | Persistent-mode pool size (max 1024) |
+| `timeout_ms` | integer | `30000` | Connect timeout |
+
+**Output**: `{ "id": "db-1", "driver": "postgres", "mode": "persistent", "connected": true, "duration_ms": …, "metrics": … }`.
+In per-query mode `connected` is `false` — nothing is opened yet. The DSN
+and its password are never logged; log lines use a sanitized
+`host:port/database` label.
+
+### `std/db-query@v1`
+
+Runs one parameterized statement. INSERT/UPDATE/DELETE/DDL are allowed by
+default.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `id` | string | **required** | Connection ID from `std/db-connect@v1` (`id: "${{ db.id }}"`) |
+| `query` | string | **required** | SQL with driver-native placeholders (`$1`, `$2`, … for postgres; `?` for mysql/sqlite). **Never interpolated** — a `${{` in the SQL reaches the database verbatim. 64 KiB hard limit (`max_query_bytes`) |
+| `params` | array | `[]` | Positional bind values; each entry *is* interpolated. Strings → text, numbers → i64/f64, booleans → bool, null → typed NULL (text-typed on postgres — cast in SQL, e.g. `$1::int`). Arrays/objects cannot be bound |
+| `max_rows` | integer | `10000` | Hard cap on rows read into memory; extra rows only set `truncated: true` |
+| `timeout_ms` | integer | `30000` | Query timeout (per-query mode: connect + query) |
+
+**Output**: `{ "rows": <u64>, "rows_affected": <u64>, "truncated": <bool>, "data": [ … ], "duration_ms": …, "metrics": … }`.
+Row cells decode as booleans/integers/floats/text/JSON/base64 (binary);
+unmapped types (NUMERIC, temporal, UUID, arrays) surface as `null` — the
+row still counts. With a transaction open on the connection the query runs
+inside it. A failed query fails the step but leaves the connection — and
+any open transaction — parked.
+
+### `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`
+
+Transaction context on a persistent connection (`id` parameter;
+`timeout_ms` applies). Each step is timed as one unit (`duration_ms` +
+`db_query_duration`). One open transaction per connection — begin while one
+is open, or commit/rollback with none, fails the step. Transactions are
+rejected on per-query ids.
+
+### `std/db-close@v1`
+
+Closes the connection and releases its id (`id` parameter). An open
+transaction rolls back as it drops. Connections left open are closed
+implicitly at iteration end.
+
+### DB connection modes
+
+**persistent** (default): `db-connect` opens a pool (`pool_size`, default
+1 — steps within a VU run strictly sequentially) held across the VU's
+steps; `db_query_duration` measures the query alone.
+
+**per-query**: the connect step only validates and stores the config; every
+`db-query` opens a fresh connection, queries, and closes, so
+`db_query_duration` measures connect + query as one unit — the shape of
+serverless drivers and connect-time benchmarking. Transactions are
+unavailable. `sqlite::memory:` is pointless here (each fresh connection is
+an empty database) — use a file DSN; conversely an in-memory pool must
+stay at `pool_size: 1`.
+
+### DB metrics
+
+| Name | Type | Emitted by | Meaning |
+|---|---|---|---|
+| `db_connect_duration` | histogram | `std/db-connect@v1` (success) | Connect + pool setup latency |
+| `db_query_duration` | histogram | `std/db-query@v1`, tx steps | Query latency; includes the fresh connect in per-query mode |
+| `db_rows` | counter | `std/db-query@v1` | Rows returned, or rows affected when the statement returned none |
+| `db_errors` | counter | all DB steps (failure) | Failed DB steps, total |
+| `db_errors_{connection,constraint,deadlock,timeout,other}` | counter | all DB steps (failure) | Same, split by class (SQLSTATE / errno / SQLite result code; also in the step output's `error_kind`) |
+
+Metric labels carry the step name only — never raw SQL.
 
 ## `std/file-read@v1`
 

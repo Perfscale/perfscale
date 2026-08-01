@@ -1,0 +1,58 @@
+# Database load test — SQLite needs no server, so this runs as-is:
+#   perfscale run -c examples/hello.config.yaml -f examples/db-sqlite.test.yaml
+#
+# PostgreSQL / MySQL(MariaDB) work the same way — point `dsn` at the server:
+#   driver: postgres   dsn: postgres://user:pass@host:5432/dbname
+#   driver: mysql      dsn: mysql://user:pass@host:3306/dbname
+# Put the DSN in `variables:` (or your secret store's interpolation) rather
+# than inline; it is never logged.
+
+steps:
+  # --- Live connection held across steps (persistent pool, default) -------
+  - name: open db
+    use: std/db-connect@v1
+    with:
+      driver: sqlite
+      dsn: "sqlite::memory:"
+    outputs: db
+
+  - name: begin tx
+    use: std/db-tx-begin@v1
+    with: { id: "${{ db.id }}" }
+
+  - name: create table
+    use: std/db-query@v1
+    with:
+      id: "${{ db.id }}"
+      query: CREATE TABLE hits (path TEXT NOT NULL, status INTEGER)
+
+  - name: record hits
+    use: std/db-query@v1
+    with:
+      id: "${{ db.id }}"
+      # The SQL text is never interpolated — values move through `params`
+      # (driver-native placeholders: $1… for postgres, ? for mysql/sqlite).
+      query: INSERT INTO hits (path, status) VALUES (?, ?)
+      params: ["/api/checkout", 200]
+
+  - name: read back
+    use: std/db-query@v1
+    with:
+      id: "${{ db.id }}"
+      query: SELECT path, status FROM hits
+      max_rows: 100
+    check:
+      duration_ms_lt: 500
+    outputs: rows
+
+  - name: commit
+    use: std/db-tx-commit@v1
+    with: { id: "${{ db.id }}" }
+
+  - name: hang up
+    use: std/db-close@v1
+    with: { id: "${{ db.id }}" }
+
+  - name: pace
+    use: std/sleep@v1
+    with: { ms: 200 }

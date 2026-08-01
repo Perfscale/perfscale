@@ -28,6 +28,7 @@ says nothing about target latency would poison the shared percentiles:
 | `std/ws-ping@v1` | Transport RTT; bound it with `check: { duration_ms_lt: … }` instead |
 | `std/ws-send@v1`, `std/ws-close@v1` | No meaningful request latency |
 | `std/grpc*@v1` (whole family) | gRPC has its own histograms (`grpc_req_duration`, `grpc_msg_rtt`); stream lifetimes span user steps, so streams don't feed even those |
+| `std/db-*@v1` (whole family) | DB steps have their own histograms (`db_connect_duration`, `db_query_duration`) and counters (`db_rows`, `db_errors`) |
 | `std/child_process@v1`, `std/kill_process@v1` | Process lifecycle, not requests |
 | `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-*@v1` | No network I/O |
 
@@ -95,6 +96,11 @@ Built-in emitters:
 | `grpc_msgs_sent` | counter | `std/grpc-call@v1`, `std/grpc-stream-send@v1` | gRPC messages sent |
 | `grpc_msgs_received` | counter | `std/grpc-call@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1` | gRPC messages read |
 | `grpc_req_failed` | counter | `std/grpc-call@v1`, `std/grpc-stream-close@v1` | Calls that missed `expect_status` |
+| `db_connect_duration` | histogram | `std/db-connect@v1` (success) | Connect + pool setup latency |
+| `db_query_duration` | histogram | `std/db-query@v1`, `std/db-tx-*@v1` | Query latency; includes the fresh connect in per-query mode |
+| `db_rows` | counter | `std/db-query@v1` | Rows returned, or rows affected when the statement returned none |
+| `db_errors` | counter | `std/db-*@v1` (failure) | Failed DB steps, total |
+| `db_errors_connection` / `_constraint` / `_deadlock` / `_timeout` / `_other` | counter | `std/db-*@v1` (failure) | Same, split by class (SQLSTATE / errno / SQLite result code) |
 
 Downstream actions use the same channel — e.g. the proprietary FIX action
 emits `fix_messages_sent`.

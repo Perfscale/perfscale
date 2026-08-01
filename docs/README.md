@@ -21,7 +21,8 @@ tiny local dev server for collecting results.
 - [Architecture](core/architecture.md) — how the pieces fit together
 - [Runners](core/runners.md) — k6, locust, and the native engine
 - [Actions](core/actions.md) — `std/http`, `std/tcp`, `std/udp`, `std/ws*`
-  (WebSocket), `std/grpc*` (gRPC), `std/check`, `std/sleep`, `std/log`,
+  (WebSocket), `std/grpc*` (gRPC), `std/db-*` (SQL databases), `std/check`,
+  `std/sleep`, `std/log`,
   `std/file-*`, `std/child_process`, `std/kill_process`
 - [Setup and teardown](core/setup-teardown.md) — `before:`/`after:` lifecycle,
   `config.*`/`vars.*` data flow, background processes

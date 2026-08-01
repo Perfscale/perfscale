@@ -5,7 +5,9 @@
 //! park the socket/channel here and return a JSON-safe **Connection ID**
 //! (`"ws-1"`, `"grpc-1"`, …); later steps look it up by that id. The gRPC
 //! family additionally parks open streams (`"grpcs-1"`, …) and caches
-//! reflection-fetched schemas per URL.
+//! reflection-fetched schemas per URL. The DB family parks connection pools
+//! (`"db-1"`, …) — or, in `per-query` mode, just the parsed connect config
+//! (no live connection; each `std/db-query@v1` connects fresh).
 //!
 //! Scope: one VU iteration. The runner drains the registry after every
 //! iteration, dropping whatever a scenario left open — an abrupt TCP drop, no
@@ -101,6 +103,74 @@ pub(crate) struct GrpcStream {
     pub last_send: Option<Instant>,
 }
 
+/// Database driver of a parked DB connection — kept for log lines and for
+/// validating that a `dsn` matches the requested `driver`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DbDriver {
+    Postgres,
+    MySql,
+    Sqlite,
+}
+
+impl DbDriver {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            DbDriver::Postgres => "postgres",
+            DbDriver::MySql => "mysql",
+            DbDriver::Sqlite => "sqlite",
+        }
+    }
+}
+
+/// One live DB connection pool per driver (persistent mode). A pool of one
+/// suffices for the strictly sequential steps of a VU, but `pool_size` can
+/// raise it; `Pool::begin` yields a `'static` transaction handle, which is
+/// what makes cross-step transactions storable here.
+pub(crate) enum DbPool {
+    Pg(sqlx::PgPool),
+    My(sqlx::MySqlPool),
+    Sqlite(sqlx::SqlitePool),
+}
+
+/// Parsed connect config for `mode: per-query` — no live connection is
+/// held; every `std/db-query@v1` connects, runs, and closes.
+pub(crate) enum DbProfile {
+    Pg(sqlx::postgres::PgConnectOptions),
+    My(sqlx::mysql::MySqlConnectOptions),
+    Sqlite(sqlx::sqlite::SqliteConnectOptions),
+}
+
+/// An open transaction on a persistent connection, parked between
+/// `std/db-tx-begin@v1` and its commit/rollback.
+pub(crate) enum DbTx {
+    Pg(sqlx::Transaction<'static, sqlx::Postgres>),
+    My(sqlx::Transaction<'static, sqlx::MySql>),
+    Sqlite(sqlx::Transaction<'static, sqlx::Sqlite>),
+}
+
+/// One parked DB connection (or per-query profile) plus the state that must
+/// survive between steps.
+pub(crate) struct DbConn {
+    pub driver: DbDriver,
+    /// Sanitized `host:port/database` (or sqlite filename) for log lines —
+    /// never the raw DSN, which can carry a password.
+    pub target: String,
+    /// True for `mode: per-query` (transactions are rejected on these).
+    pub per_query: bool,
+    pub state: DbState,
+    /// Active transaction (persistent mode only); `std/db-query@v1` runs
+    /// inside it while set.
+    pub tx: Option<DbTx>,
+}
+
+/// What a parked DB id actually holds: a live pool (persistent) or just the
+/// connect config (per-query). The profile is boxed — connect options are
+/// ~350 bytes against a pool's 16.
+pub(crate) enum DbState {
+    Pool(DbPool),
+    Profile(Box<DbProfile>),
+}
+
 #[derive(Default)]
 struct Inner {
     next_id: u64,
@@ -112,6 +182,8 @@ struct Inner {
     /// Reflection-fetched schema, per URL — repeated `grpc-connect` steps to
     /// the same server within one iteration reuse it.
     reflection_pools: HashMap<String, DescriptorPool>,
+    next_db_id: u64,
+    db_conns: HashMap<String, DbConn>,
 }
 
 /// Shared handle to a VU's live connections. Cloning shares the same
@@ -212,16 +284,44 @@ impl Resources {
             .insert(url.to_string(), pool);
     }
 
+    /// Park a DB connection/profile and mint its Connection ID (`db-1`, …).
+    pub(crate) fn insert_db(&self, conn: DbConn) -> String {
+        let mut inner = self.inner.lock().unwrap();
+        inner.next_db_id += 1;
+        let id = format!("db-{}", inner.next_db_id);
+        inner.db_conns.insert(id.clone(), conn);
+        id
+    }
+
+    /// Remove a DB connection for exclusive use by one step.
+    pub(crate) fn take_db(&self, id: &str) -> Option<DbConn> {
+        self.inner.lock().unwrap().db_conns.remove(id)
+    }
+
+    /// Return a DB connection taken with [`take_db`](Self::take_db).
+    pub(crate) fn put_back_db(&self, id: &str, conn: DbConn) {
+        self.inner
+            .lock()
+            .unwrap()
+            .db_conns
+            .insert(id.to_string(), conn);
+    }
+
     /// Drop every parked connection (iteration-end auto-close). Returns how
     /// many were dropped so the caller can decide whether to log. gRPC
     /// channels close with their last handle; open streams are cancelled by
-    /// dropping their request sender and receiver.
+    /// dropping their request sender and receiver. DB pools close with their
+    /// last handle; a parked transaction rolls back as it drops.
     pub(crate) fn drain(&self) -> usize {
         let mut inner = self.inner.lock().unwrap();
-        let n = inner.conns.len() + inner.grpc_conns.len() + inner.grpc_streams.len();
+        let n = inner.conns.len()
+            + inner.grpc_conns.len()
+            + inner.grpc_streams.len()
+            + inner.db_conns.len();
         inner.conns.clear();
         inner.grpc_conns.clear();
         inner.grpc_streams.clear();
+        inner.db_conns.clear();
         n
     }
 }
@@ -231,10 +331,11 @@ impl std::fmt::Debug for Resources {
         let inner = self.inner.lock().unwrap();
         write!(
             f,
-            "Resources({} ws + {} grpc + {} streams live)",
+            "Resources({} ws + {} grpc + {} streams + {} db live)",
             inner.conns.len(),
             inner.grpc_conns.len(),
-            inner.grpc_streams.len()
+            inner.grpc_streams.len(),
+            inner.db_conns.len()
         )
     }
 }
@@ -379,5 +480,49 @@ mod tests {
         // iteration-end drain so the next iteration skips the round trip.
         res.drain();
         assert!(res.reflection_pool("grpc://x").is_some());
+    }
+
+    // -----------------------------------------------------------------
+    // DB registry
+    // -----------------------------------------------------------------
+
+    /// A `per-query` profile needs no live connection, so it can stand in
+    /// for a `DbConn` without a database.
+    fn sqlite_profile_conn() -> DbConn {
+        use std::str::FromStr as _;
+        DbConn {
+            driver: DbDriver::Sqlite,
+            target: ":memory:".into(),
+            per_query: true,
+            state: DbState::Profile(Box::new(DbProfile::Sqlite(
+                sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap(),
+            ))),
+            tx: None,
+        }
+    }
+
+    #[test]
+    fn db_insert_take_put_back_roundtrip() {
+        let res = Resources::default();
+
+        let id = res.insert_db(sqlite_profile_conn());
+        assert_eq!(id, "db-1");
+
+        let conn = res.take_db(&id).expect("present");
+        assert!(res.take_db(&id).is_none(), "take removes");
+        res.put_back_db(&id, conn);
+        assert!(res.take_db(&id).is_some(), "put_back restores");
+    }
+
+    #[test]
+    fn db_ids_are_unique_and_drain_covers_them() {
+        let res = Resources::default();
+
+        assert_eq!(res.insert_db(sqlite_profile_conn()), "db-1");
+        assert_eq!(res.insert_db(sqlite_profile_conn()), "db-2");
+
+        assert_eq!(res.drain(), 2);
+        assert_eq!(res.drain(), 0, "second drain finds nothing");
+        assert!(res.take_db("db-1").is_none());
     }
 }

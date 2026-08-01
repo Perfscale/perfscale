@@ -63,6 +63,12 @@ tokio-stream = "0.1"
 # `codegen` feature, which dynamic calls don't need).
 http = "1"
 
+# Database drivers for the `std/db-*@v1` action family (PostgreSQL,
+# MySQL/MariaDB, SQLite). Runtime is tokio and TLS stays on rustls/ring with
+# webpki roots, matching the WebSocket/gRPC families; no chrono/time/decimal
+# extras — unmapped column types decode as null (see step/db.rs).
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "mysql", "sqlite", "runtime-tokio", "tls-rustls-ring-webpki", "json"] }
+
 # kill(2)/killpg(2) for the managed child processes of `std/child_process@v1`
 # and `std/kill_process@v1` (signal delivery + tree kill by process group).
 # Non-unix platforms degrade to `Child::kill` without process groups.

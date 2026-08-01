@@ -26,6 +26,7 @@
 
 pub mod actions;
 pub mod context;
+pub(crate) mod db;
 pub(crate) mod grpc;
 pub mod process;
 pub(crate) mod resources;

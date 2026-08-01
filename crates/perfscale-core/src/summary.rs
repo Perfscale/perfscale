@@ -180,7 +180,7 @@ fn parse_protocol_summary(output: &str) -> Option<RunSummary> {
                 if let Some(first) = parts.first() {
                     if first.ends_with('%') {
                         m.error_rate_pct = first.trim_end_matches('%').parse::<f64>().unwrap_or(0.0);
-                    } else if let Some(n) = first.parse::<f64>().ok() {
+                    } else if let Ok(n) = first.parse::<f64>() {
                         m.failed = n;
                     }
                 }

@@ -145,6 +145,41 @@ close in one step). See the [gRPC guide](../core/grpc.md) for concepts and
 [Actions → gRPC](../core/actions.md#grpc-stdgrpcv1-and-the-stdgrpc-v1-family)
 for the full parameter and metrics reference.
 
+## Load-test a database
+
+[`examples/db-sqlite.test.yaml`](../../examples/db-sqlite.test.yaml) runs
+against in-memory SQLite — no server needed. PostgreSQL and MySQL/MariaDB
+work the same way; only `driver` and `dsn` change:
+
+```yaml
+steps:
+  - name: open db
+    use: std/db-connect@v1
+    with:
+      driver: postgres
+      dsn: "${{ vars.db_dsn }}"        # keep the password out of the file
+    outputs: db
+
+  - name: write
+    use: std/db-query@v1
+    with:
+      id: "${{ db.id }}"
+      # SQL is never interpolated — values move through bound params.
+      query: INSERT INTO hits (path, status) VALUES ($1, $2)
+      params: ["/api/checkout", 200]
+
+  - name: hang up
+    use: std/db-close@v1
+    with: { id: "${{ db.id }}" }
+```
+
+Transactions (`std/db-tx-begin@v1` / `commit` / `rollback`) bracket groups
+of queries on a persistent connection; `mode: per-query` instead connects
+fresh per query (measuring connect + query). Metrics land in
+`db_query_duration`, `db_rows`, and a classified `db_errors`. See
+[Actions → Database](../core/actions.md#database-the-stddb-v1-family) for
+the full parameter and metrics reference.
+
 ## Reuse an existing k6 script
 
 ```sh
