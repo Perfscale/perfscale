@@ -36,7 +36,7 @@ jobs:
 
       - name: Run the db example (SQLite, no server)
         run: |
-          ./perfscale run db-sqlite.test.yaml 2>&1 | tee run.log
+          ./perfscale run -f db-sqlite.test.yaml 2>&1 | tee run.log
           grep -q "db_connect_duration" run.log
           grep -q "db_query_duration" run.log
           grep -q "db_rows" run.log
