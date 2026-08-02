@@ -1,0 +1,43 @@
+name: Smoke test released binary
+
+# Downloads a released perfscale binary and runs the battery of example tests
+# against it (no servers needed — SQLite-based). Verifies the published
+# artifact, not just the source.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "release tag without v (e.g. 0.8.0)"
+        required: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download released binary
+        run: |
+          curl -sfL -o perfscale \
+            "https://github.com/Perfscale/perfscale/releases/download/v${{ inputs.version }}/perfscale-linux-amd64"
+          curl -sfL -o sha256sums.txt \
+            "https://github.com/Perfscale/perfscale/releases/download/v${{ inputs.version }}/sha256sums.txt"
+          grep " linux-amd64$" sha256sums.txt | awk '{print $1"  perfscale"}' > expected.sha256
+          sha256sum -c expected.sha256
+          chmod +x perfscale
+          ./perfscale --version
+
+      - name: Download the db example
+        run: |
+          curl -sfL -o db-sqlite.test.yaml \
+            "https://raw.githubusercontent.com/Perfscale/perfscale/v${{ inputs.version }}/examples/db-sqlite.test.yaml"
+
+      - name: Lint the example with the released binary
+        run: ./perfscale lint db-sqlite.test.yaml
+
+      - name: Run the db example (SQLite, no server)
+        run: |
+          ./perfscale run db-sqlite.test.yaml 2>&1 | tee run.log
+          grep -q "db_connect_duration" run.log
+          grep -q "db_query_duration" run.log
+          grep -q "db_rows" run.log
+          echo "db_* metrics present in run summary ✓"
