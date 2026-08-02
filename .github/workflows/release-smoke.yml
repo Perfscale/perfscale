@@ -21,7 +21,7 @@ jobs:
             "https://github.com/Perfscale/perfscale/releases/download/v${{ inputs.version }}/perfscale-linux-amd64"
           curl -sfL -o sha256sums.txt \
             "https://github.com/Perfscale/perfscale/releases/download/v${{ inputs.version }}/sha256sums.txt"
-          grep " linux-amd64$" sha256sums.txt | awk '{print $1"  perfscale"}' > expected.sha256
+          awk '$2 == "perfscale-linux-amd64" {print $1"  perfscale"}' sha256sums.txt > expected.sha256
           sha256sum -c expected.sha256
           chmod +x perfscale
           ./perfscale --version
