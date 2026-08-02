@@ -3,14 +3,16 @@
 //!
 //! These functions are **not** step actions: they are plain library calls
 //! sharing the engine's transport code paths (`step::grpc` for the gRPC
-//! reflection protocol, `step::ws` for the WebSocket handshake), so what a
-//! probe reports is what a run would do.
+//! reflection protocol, `step::ws` for the WebSocket handshake, `step::db`
+//! for database connections), so what a probe reports is what a run would do.
 //!
 //! - [`reflect_schema`] — connect to a gRPC server, fetch its schema via the
 //!   v1 reflection protocol, and render every service/method with JSON
 //!   skeletons for the request and response messages.
 //! - [`probe_ws`] — one WebSocket handshake with timing: reachability,
 //!   negotiated subprotocol, or the failure reason.
+//! - [`probe_db`] — one database connection + `SELECT 1` round-trip with
+//!   timing; errors are DSN-sanitized.
 
 use std::time::Instant;
 
@@ -23,6 +25,8 @@ use tonic::transport::Endpoint;
 use crate::step::actions::error_chain;
 use crate::step::grpc::fetch_reflection_pool;
 use crate::step::ws::{ws_handshake, Profile};
+
+pub use crate::step::db::probe_db;
 
 // ---------------------------------------------------------------------------
 // gRPC schema reflection

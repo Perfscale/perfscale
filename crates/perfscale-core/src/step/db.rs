@@ -903,6 +903,80 @@ async fn connect_inner(cp: &ConnectParams) -> Result<(DbState, String), DbFail> 
 }
 
 // ---------------------------------------------------------------------------
+// Connectivity probe (editor support — re-exported as crate::introspect::probe_db)
+// ---------------------------------------------------------------------------
+
+/// Validate `driver`/`tls`, open one connection, run a trivial round-trip
+/// (`SELECT 1`), and return the wall time in milliseconds. This is the
+/// `std/db-connect@v1` connect path minus the pool, so what the probe
+/// reports is what a run would do. `timeout_ms` wraps connect + round-trip.
+/// Errors are DSN-sanitized exactly like connect errors (see
+/// [`sanitize_detail`]) — no DSN or password ever leaks into the string.
+pub async fn probe_db(driver: &str, dsn: &str, tls: &str, timeout_ms: u64) -> Result<u128, String> {
+    let driver = match driver {
+        "postgres" => DbDriver::Postgres,
+        "mysql" => DbDriver::MySql,
+        "sqlite" => DbDriver::Sqlite,
+        other => {
+            return Err(format!(
+                "unknown driver '{other}' — expected postgres, mysql, or sqlite"
+            ))
+        }
+    };
+    let tls = parse_tls(&Value::String(tls.to_string()))?;
+    let cp = ConnectParams {
+        driver,
+        dsn: dsn.to_string(),
+        tls,
+        per_query: false,
+        timeout_ms,
+        pool_size: 1,
+    };
+
+    let t0 = Instant::now();
+    match tokio::time::timeout(Duration::from_millis(timeout_ms), probe_roundtrip(&cp)).await {
+        Ok(Ok(())) => Ok(t0.elapsed().as_millis()),
+        Ok(Err(detail)) => Err(detail),
+        Err(_) => Err(format!("probe timeout after {}ms", t0.elapsed().as_millis())),
+    }
+}
+
+/// One connect + `SELECT 1` per driver, on a single bare connection (no pool).
+async fn probe_roundtrip(cp: &ConnectParams) -> Result<(), String> {
+    /// DSN-sanitized error detail, same as a failed db-connect reports.
+    fn detail(e: &sqlx::Error, cp: &ConnectParams) -> String {
+        sanitize_detail(&error_chain(e), &cp.dsn)
+    }
+    match cp.driver {
+        DbDriver::Postgres => {
+            let (opts, _) = pg_options(cp)?;
+            let mut conn = opts.connect().await.map_err(|e| detail(&e, cp))?;
+            sqlx::query("SELECT 1")
+                .execute(&mut conn)
+                .await
+                .map_err(|e| detail(&e, cp))?;
+        }
+        DbDriver::MySql => {
+            let (opts, _) = mysql_options(cp)?;
+            let mut conn = opts.connect().await.map_err(|e| detail(&e, cp))?;
+            sqlx::query("SELECT 1")
+                .execute(&mut conn)
+                .await
+                .map_err(|e| detail(&e, cp))?;
+        }
+        DbDriver::Sqlite => {
+            let (opts, _) = sqlite_options(cp)?;
+            let mut conn = opts.connect().await.map_err(|e| detail(&e, cp))?;
+            sqlx::query("SELECT 1")
+                .execute(&mut conn)
+                .await
+                .map_err(|e| detail(&e, cp))?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // std/db-query@v1
 // ---------------------------------------------------------------------------
 //
@@ -2767,5 +2841,61 @@ mod tests {
             "{:?}",
             out.value
         );
+    }
+
+    // -----------------------------------------------------------------
+    // probe_db — the editor connectivity probe (crate::introspect)
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn probe_db_sqlite_memory_ok() {
+        let latency = probe_db("sqlite", "sqlite::memory:", "false", 5_000)
+            .await
+            .expect("memory probe connects");
+        assert!(latency < 5_000, "{latency}");
+    }
+
+    #[tokio::test]
+    async fn probe_db_sqlite_file_ok() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let dsn = format!("sqlite://{}?mode=rwc", file.path().display());
+        let latency = probe_db("sqlite", &dsn, "true", 5_000)
+            .await
+            .expect("file probe connects (tls is ignored for sqlite)");
+        assert!(latency < 5_000, "{latency}");
+    }
+
+    #[tokio::test]
+    async fn probe_db_rejects_bad_driver_and_tls() {
+        let err = probe_db("oracle", "sqlite::memory:", "false", 5_000)
+            .await
+            .expect_err("unknown driver");
+        assert!(err.contains("unknown driver 'oracle'"), "{err}");
+
+        let err = probe_db("sqlite", "sqlite::memory:", "maybe", 5_000)
+            .await
+            .expect_err("bad tls value");
+        assert!(err.contains("'tls' must be"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn probe_db_bad_dsn_error_is_sanitized() {
+        let dsn = "postgres://user:sup3rs3cret@?bad dsn";
+        let err = probe_db("postgres", dsn, "false", 5_000)
+            .await
+            .expect_err("garbage dsn fails at parse");
+        assert!(err.contains("invalid dsn for driver 'postgres'"), "{err}");
+        assert!(!err.contains("sup3rs3cret"), "password leaked: {err}");
+        assert!(!err.contains(dsn), "dsn leaked: {err}");
+    }
+
+    #[tokio::test]
+    async fn probe_db_refused_connection_errors_without_leaking() {
+        let dsn = "postgres://user:sup3rs3cret@127.0.0.1:1/db";
+        let err = probe_db("postgres", dsn, "false", 2_000)
+            .await
+            .expect_err("nothing listens on port 1");
+        assert!(!err.is_empty());
+        assert!(!err.contains("sup3rs3cret"), "password leaked: {err}");
     }
 }
