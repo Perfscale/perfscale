@@ -1,9 +1,36 @@
-//! Native load runner.
+//! Native load runner — the VU loop and metrics heart of the engine.
 //!
-//! Spawns N virtual users (tokio tasks), each running the step list in a loop
-//! until the configured duration expires.  Metrics are collected in a shared
-//! structure and summarised in a k6-compatible text format so downstream
-//! parsers (dashboards, `perfscale serve`) work the same for all three engines.
+//! # Role in the pipeline
+//!
+//! [`run_native`] drives a whole run: one-time `before:` setup steps, the VU
+//! loop, then `after:` teardown steps on every exit path (normal finish,
+//! failed setup, interrupt). It returns a [`NativeRunOutcome`] carrying the
+//! combined `std/thresholds@v1` gate result, which the CLI turns into the
+//! process exit code. [`run_steps`] is the same thing without setup/teardown
+//! or static variables.
+//!
+//! # The VU loop
+//!
+//! `config.vus` tokio tasks each repeat the step list until the configured
+//! duration expires. One context (`step::context::Context`) per VU is seeded
+//! once with the `before:` outputs (`${{ config.* }}`), static
+//! `${{ vars.* }}`, the fail-closed file/process permissions, and the VU's
+//! HTTP client shard — each VU keeps exactly one warm connection pool (see
+//! the sharded clients in `step::actions`). Steps run strictly sequentially
+//! via `step::actions::execute_action`, interpolating `${{ … }}` against the
+//! context as they go. After every iteration the context's parked
+//! connections are drained, so a Live Connection never outlives its
+//! iteration (see `step::resources` and the `perfscale-connection` crate).
+//!
+//! # Metrics and summary
+//!
+//! Every step's timing and failure folds into the shared [`Metrics`] —
+//! fixed-size HDR histograms, not per-request samples — which is summarised
+//! at the end in a k6-compatible text format so downstream parsers
+//! (dashboards, `perfscale serve`) work the same for all three engines.
+//! The first SIGINT/SIGTERM asks the VU loop to stop (it notices between
+//! steps) and the run still proceeds through `after:` and the summary; a
+//! second signal exits the process immediately.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -481,6 +508,8 @@ pub async fn run_native(
 
         handles.push(tokio::spawn(async move {
             let mut ctx = Context::new();
+            ctx.http_client_shard =
+                (vu_id as usize - 1) % crate::step::actions::client_shard_count();
             ctx.allow_file_actions = allow_file_actions;
             ctx.allow_process_actions = allow_process_actions;
             ctx.fs_root = fs_root;

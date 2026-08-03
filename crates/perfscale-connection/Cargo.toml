@@ -1,0 +1,12 @@
+[package]
+name = "perfscale-connection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Named-connection registry: park live protocol handles under minted Connection IDs between the steps of a load-test iteration"
+
+[dependencies]
+# Intentionally none — the registry stores generic, user-defined handle
+# types, so it needs nothing but std. See the crate-level docs for the
+# rationale (and why handles are not boxed trait objects).

@@ -58,11 +58,79 @@ so downstream parsers are engine-agnostic:
 | `runner::locust` | locust subprocess: headless flags, CSV → summary conversion |
 | `step` | Test model: `TestDef`, `Step`, `RunConfig`, duration parsing, presets |
 | `step::runner` | Native VU scheduler and metrics collection |
-| `step::actions` | Built-in actions (`std/http`, `std/check`, `std/sleep`, `std/log`) |
+| `step::actions` | Built-in action dispatch (`std/*`) + custom-action registry |
 | `step::context` | Per-VU variable store + `${{ }}` interpolation |
+| `step::resources` | Family handle types + gRPC reflection cache over the connection registries |
+| `step::ws` / `step::grpc` / `step::db` | Live-connection protocol families |
+| `step::thresholds` | `std/thresholds@v1` run-level SLO gates |
+| `step::process` | Managed child processes (`std/child_process`, `std/kill_process`) |
 | `yaml` | Schema-validated parsing of test/config files, `ConfigFile` |
 | `schema` | JSON Schema generation (schemars) for both file formats |
 | `models` | `RunResult` (oneshot subprocess result) |
+
+Sibling workspace crate: **`perfscale-connection`** — the generic
+named-connection registry (`Connection` trait + `ConnectionRegistry`) that
+`step::resources` builds on. Zero dependencies; usable by any step engine
+with the connect → park → use → close lifecycle.
+
+## Native engine pipeline
+
+A native run flows through these pieces in order:
+
+```text
+ test.yaml + config.yaml (step::yaml, schema-validated)
+        │  steps, before/after, vars, run config (vus, duration)
+        ▼
+ step::runner::run_native ── before: steps once (outputs → ${{ config.* }})
+        │
+        │  spawn config.vus tokio tasks, each loops until duration expires:
+        ▼
+ step::context::Context     per VU: vars + ${{ }} interpolation,
+        │                   per-VU generator, HTTP client shard
+        ▼
+ step::actions::execute_action   per step, strictly sequential:
+        │   std/http·tcp·udp·ws*·grpc*·db-*·check·sleep·log·file-*·…
+        ▼
+ step::resources            live handles parked under Connection IDs
+        │   (ws-1, grpc-1, grpcs-1, db-1) via perfscale-connection;
+        │   drained after every iteration — nothing outlives it
+        ▼
+ step::runner::Metrics      HDR histograms (fixed memory), counters,
+        │                   rates, threshold results
+        ▼
+ summary + thresholds       k6-compatible text summary streamed as
+        │                   LogLines; NativeRunOutcome.thresholds
+        ▼
+ CLI exit code              non-zero when a severity:fail gate trips
+```
+
+Where things plug in:
+
+- **k6 / locust** are sibling *engines*, not steps: `runner::execute`
+  dispatches the `ExecutionPlan` to their subprocess runners, which reduce
+  to the same `LogLine` stream (diagram above).
+- **gRPC / WebSocket / DB families** plug in as `std/*` actions in
+  `step::actions`, with their live handles parked in `step::resources`
+  (backed by the `perfscale-connection` crate) — connect steps mint the
+  `ws-1` / `grpc-1` / `db-1` ids users reference in later steps.
+- **Thresholds** run as `std/thresholds@v1` steps in `after:`, evaluating
+  gates over the run's collected metrics (`step::thresholds`); the combined
+  result becomes the CLI exit code.
+- **Custom actions** (e.g. downstream `pro/*`) register an `ActionHandler`
+  via `step::actions::register_action` and can use `perfscale-connection`
+  for their own parked handles.
+
+Key files, one line each:
+
+| File | Role |
+|---|---|
+| `crates/perfscale-core/src/runner/mod.rs` | Engine dispatch, `LogLine` |
+| `crates/perfscale-core/src/step/runner.rs` | VU loop, HDR metrics, summary, exit-code source |
+| `crates/perfscale-core/src/step/context.rs` | `${{ }}` interpolation, per-VU state |
+| `crates/perfscale-core/src/step/actions.rs` | `std/*` action dispatch |
+| `crates/perfscale-core/src/step/resources.rs` | Family handle types, registry glue |
+| `crates/perfscale-connection/src/lib.rs` | The connection-registry pattern, documented |
+| `crates/perfscale-cli/src/main.rs` | CLI: parse args, run plan, print stream, exit code |
 
 ## Embedding example
 

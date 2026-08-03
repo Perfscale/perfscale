@@ -9,6 +9,13 @@
 //! (`"db-1"`, …) — or, in `per-query` mode, just the parsed connect config
 //! (no live connection; each `std/db-query@v1` connects fresh).
 //!
+//! The parking itself — id minting, take/put_back, iteration-end drain — is
+//! generic over the handle type and lives in the [`perfscale-connection`]
+//! crate ([`ConnectionRegistry`]); this module keeps the family handle
+//! types, their [`Connection`] glue (labels for log lines), and the
+//! reflection schema cache, which is not connection state and must survive
+//! the drain.
+//!
 //! Scope: one VU iteration. The runner drains the registry after every
 //! iteration, dropping whatever a scenario left open — an abrupt TCP drop, no
 //! Close handshake (use `std/ws-close@v1` for a graceful shutdown). A Live
@@ -25,6 +32,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use perfscale_connection::{Connection, ConnectionRegistry};
 use prost_reflect::{DescriptorPool, DynamicMessage, MethodDescriptor};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -52,6 +60,12 @@ pub(crate) struct WsConn {
     pub pending: std::collections::VecDeque<serde_json::Value>,
 }
 
+impl Connection for WsConn {
+    fn label(&self) -> &str {
+        &self.url
+    }
+}
+
 /// One live gRPC channel (one HTTP/2 connection) plus its message schema.
 ///
 /// gRPC has no sub-protocol negotiation, but the channel carries the
@@ -72,6 +86,12 @@ pub(crate) struct GrpcConn {
     pub metadata: Vec<(String, String)>,
     /// Inbound message cap (bytes) for calls on this channel.
     pub max_recv_size: usize,
+}
+
+impl Connection for GrpcConn {
+    fn label(&self) -> &str {
+        &self.url
+    }
 }
 
 /// One open gRPC stream (client-streaming, bidi, or an in-progress
@@ -101,6 +121,12 @@ pub(crate) struct GrpcStream {
     /// `grpc-stream-recv` with an until-condition can report the
     /// send→match Message RTT.
     pub last_send: Option<Instant>,
+}
+
+impl Connection for GrpcStream {
+    fn label(&self) -> &str {
+        &self.url
+    }
 }
 
 /// Database driver of a parked DB connection — kept for log lines and for
@@ -163,6 +189,12 @@ pub(crate) struct DbConn {
     pub tx: Option<DbTx>,
 }
 
+impl Connection for DbConn {
+    fn label(&self) -> &str {
+        &self.target
+    }
+}
+
 /// What a parked DB id actually holds: a live pool (persistent) or just the
 /// connect config (per-query). The profile is boxed — connect options are
 /// ~350 bytes against a pool's 16.
@@ -171,140 +203,110 @@ pub(crate) enum DbState {
     Profile(Box<DbProfile>),
 }
 
-#[derive(Default)]
-struct Inner {
-    next_id: u64,
-    conns: HashMap<String, WsConn>,
-    next_grpc_id: u64,
-    grpc_conns: HashMap<String, GrpcConn>,
-    next_grpc_stream_id: u64,
-    grpc_streams: HashMap<String, GrpcStream>,
+/// Shared handle to a VU's live connections — one [`ConnectionRegistry`]
+/// per family plus the gRPC reflection schema cache. Cloning shares the
+/// same registries (the `Context` derives `Clone`; both copies must see one
+/// pool).
+#[derive(Clone)]
+pub(crate) struct Resources {
+    ws: ConnectionRegistry<WsConn>,
+    grpc: ConnectionRegistry<GrpcConn>,
+    grpc_streams: ConnectionRegistry<GrpcStream>,
+    db: ConnectionRegistry<DbConn>,
     /// Reflection-fetched schema, per URL — repeated `grpc-connect` steps to
-    /// the same server within one iteration reuse it.
-    reflection_pools: HashMap<String, DescriptorPool>,
-    next_db_id: u64,
-    db_conns: HashMap<String, DbConn>,
+    /// the same server reuse it. Not connection state: deliberately survives
+    /// `drain`, so the next iteration skips the round trip.
+    reflection_pools: Arc<Mutex<HashMap<String, DescriptorPool>>>,
 }
 
-/// Shared handle to a VU's live connections. Cloning shares the same
-/// registry (the `Context` derives `Clone`; both copies must see one pool).
-#[derive(Clone, Default)]
-pub(crate) struct Resources {
-    inner: Arc<Mutex<Inner>>,
+impl Default for Resources {
+    fn default() -> Self {
+        Self {
+            // The prefixes are user-visible (step outputs, log lines) —
+            // changing one breaks id compatibility.
+            ws: ConnectionRegistry::new("ws"),
+            grpc: ConnectionRegistry::new("grpc"),
+            grpc_streams: ConnectionRegistry::new("grpcs"),
+            db: ConnectionRegistry::new("db"),
+            reflection_pools: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
 }
 
 impl Resources {
     /// Park a connection and mint its Connection ID.
     pub(crate) fn insert(&self, conn: WsConn) -> String {
-        let mut inner = self.inner.lock().unwrap();
-        inner.next_id += 1;
-        let id = format!("ws-{}", inner.next_id);
-        inner.conns.insert(id.clone(), conn);
-        id
+        self.ws.insert(conn)
     }
 
     /// Remove a connection for exclusive use by one step. Must be returned
     /// via [`put_back`](Self::put_back) unless the step closes it.
     pub(crate) fn take(&self, id: &str) -> Option<WsConn> {
-        self.inner.lock().unwrap().conns.remove(id)
+        self.ws.take(id)
     }
 
     /// Return a connection taken with [`take`](Self::take).
     pub(crate) fn put_back(&self, id: &str, conn: WsConn) {
-        self.inner
-            .lock()
-            .unwrap()
-            .conns
-            .insert(id.to_string(), conn);
+        self.ws.put_back(id, conn);
     }
 
     /// Park a gRPC channel and mint its Connection ID (`grpc-1`, `grpc-2`, …).
     pub(crate) fn insert_grpc(&self, conn: GrpcConn) -> String {
-        let mut inner = self.inner.lock().unwrap();
-        inner.next_grpc_id += 1;
-        let id = format!("grpc-{}", inner.next_grpc_id);
-        inner.grpc_conns.insert(id.clone(), conn);
-        id
+        self.grpc.insert(conn)
     }
 
     /// Remove a gRPC channel for exclusive use by one step.
     pub(crate) fn take_grpc(&self, id: &str) -> Option<GrpcConn> {
-        self.inner.lock().unwrap().grpc_conns.remove(id)
+        self.grpc.take(id)
     }
 
     /// Return a gRPC channel taken with [`take_grpc`](Self::take_grpc).
     pub(crate) fn put_back_grpc(&self, id: &str, conn: GrpcConn) {
-        self.inner
-            .lock()
-            .unwrap()
-            .grpc_conns
-            .insert(id.to_string(), conn);
+        self.grpc.put_back(id, conn);
     }
 
     /// Park an open gRPC stream and mint its Stream ID (`grpcs-1`, …).
     pub(crate) fn insert_grpc_stream(&self, stream: GrpcStream) -> String {
-        let mut inner = self.inner.lock().unwrap();
-        inner.next_grpc_stream_id += 1;
-        let id = format!("grpcs-{}", inner.next_grpc_stream_id);
-        inner.grpc_streams.insert(id.clone(), stream);
-        id
+        self.grpc_streams.insert(stream)
     }
 
     /// Remove a gRPC stream for exclusive use by one step.
     pub(crate) fn take_grpc_stream(&self, id: &str) -> Option<GrpcStream> {
-        self.inner.lock().unwrap().grpc_streams.remove(id)
+        self.grpc_streams.take(id)
     }
 
     /// Return a gRPC stream taken with
     /// [`take_grpc_stream`](Self::take_grpc_stream).
     pub(crate) fn put_back_grpc_stream(&self, id: &str, stream: GrpcStream) {
-        self.inner
-            .lock()
-            .unwrap()
-            .grpc_streams
-            .insert(id.to_string(), stream);
+        self.grpc_streams.put_back(id, stream);
     }
 
     /// Schema cached from an earlier reflection fetch to the same URL.
     pub(crate) fn reflection_pool(&self, url: &str) -> Option<DescriptorPool> {
-        self.inner
-            .lock()
-            .unwrap()
-            .reflection_pools
-            .get(url)
-            .cloned()
+        self.reflection_pools.lock().unwrap().get(url).cloned()
     }
 
     /// Cache a reflection-fetched schema under its URL.
     pub(crate) fn cache_reflection_pool(&self, url: &str, pool: DescriptorPool) {
-        self.inner
+        self.reflection_pools
             .lock()
             .unwrap()
-            .reflection_pools
             .insert(url.to_string(), pool);
     }
 
     /// Park a DB connection/profile and mint its Connection ID (`db-1`, …).
     pub(crate) fn insert_db(&self, conn: DbConn) -> String {
-        let mut inner = self.inner.lock().unwrap();
-        inner.next_db_id += 1;
-        let id = format!("db-{}", inner.next_db_id);
-        inner.db_conns.insert(id.clone(), conn);
-        id
+        self.db.insert(conn)
     }
 
     /// Remove a DB connection for exclusive use by one step.
     pub(crate) fn take_db(&self, id: &str) -> Option<DbConn> {
-        self.inner.lock().unwrap().db_conns.remove(id)
+        self.db.take(id)
     }
 
     /// Return a DB connection taken with [`take_db`](Self::take_db).
     pub(crate) fn put_back_db(&self, id: &str, conn: DbConn) {
-        self.inner
-            .lock()
-            .unwrap()
-            .db_conns
-            .insert(id.to_string(), conn);
+        self.db.put_back(id, conn);
     }
 
     /// Drop every parked connection (iteration-end auto-close). Returns how
@@ -313,29 +315,21 @@ impl Resources {
     /// dropping their request sender and receiver. DB pools close with their
     /// last handle; a parked transaction rolls back as it drops.
     pub(crate) fn drain(&self) -> usize {
-        let mut inner = self.inner.lock().unwrap();
-        let n = inner.conns.len()
-            + inner.grpc_conns.len()
-            + inner.grpc_streams.len()
-            + inner.db_conns.len();
-        inner.conns.clear();
-        inner.grpc_conns.clear();
-        inner.grpc_streams.clear();
-        inner.db_conns.clear();
-        n
+        // The reflection pool cache intentionally survives: it is not
+        // connection state.
+        self.ws.drain() + self.grpc.drain() + self.grpc_streams.drain() + self.db.drain()
     }
 }
 
 impl std::fmt::Debug for Resources {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let inner = self.inner.lock().unwrap();
         write!(
             f,
             "Resources({} ws + {} grpc + {} streams + {} db live)",
-            inner.conns.len(),
-            inner.grpc_conns.len(),
-            inner.grpc_streams.len(),
-            inner.db_conns.len()
+            self.ws.len(),
+            self.grpc.len(),
+            self.grpc_streams.len(),
+            self.db.len()
         )
     }
 }
