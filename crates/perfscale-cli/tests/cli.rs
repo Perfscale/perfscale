@@ -288,6 +288,82 @@ fn run_native_sleep_only_test_succeeds() {
         .stdout(predicate::str::contains("hello-from-test"));
 }
 
+// ---------------------------------------------------------------------------
+// std/thresholds@v1 — SLO gates and exit codes
+// ---------------------------------------------------------------------------
+
+/// SQLite test definition (one failing or passing query per iteration) plus
+/// a config with a thresholds gate in `after:`. Returns both temp files.
+fn sqlite_threshold_files(query: &str, gate: &str) -> (tempfile::NamedTempFile, tempfile::NamedTempFile) {
+    let mut test_file = tempfile::Builder::new().suffix(".yaml").tempfile().unwrap();
+    writeln!(
+        test_file,
+        "steps:\n  - use: std/db-connect@v1\n    with:\n      driver: sqlite\n      dsn: \"sqlite::memory:\"\n    outputs: conn\n  - use: std/db-query@v1\n    with:\n      id: \"${{{{ conn.id }}}}\"\n      query: \"{query}\"\n  - use: std/sleep@v1\n    with:\n      ms: 20\n"
+    )
+    .unwrap();
+    let mut config_file = tempfile::Builder::new().suffix(".yaml").tempfile().unwrap();
+    writeln!(config_file, "vus: 1\nduration: 1s\nafter:\n{gate}").unwrap();
+    (test_file, config_file)
+}
+
+#[test]
+#[file_serial(heavy_io)]
+fn run_native_failing_thresholds_gate_exits_nonzero() {
+    let gate = "  - name: slo gate\n    use: std/thresholds@v1\n    with:\n      db_errors: [\"count==0\"]\n      db_query_failed: [\"rate<0.05\"]\n";
+    let (test_file, config_file) = sqlite_threshold_files("SELECT * FROM missing_table", gate);
+
+    cmd()
+        .args([
+            "run",
+            "-f",
+            test_file.path().to_str().unwrap(),
+            "-c",
+            config_file.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("thresholds failed"))
+        .stdout(predicate::str::contains("\"status\":\"fail\""));
+}
+
+#[test]
+#[file_serial(heavy_io)]
+fn run_native_warn_thresholds_gate_exits_zero() {
+    let gate = "  - name: slo gate\n    use: std/thresholds@v1\n    with:\n      db_errors: [\"count==0\"]\n    severity: warn\n";
+    let (test_file, config_file) = sqlite_threshold_files("SELECT * FROM missing_table", gate);
+
+    cmd()
+        .args([
+            "run",
+            "-f",
+            test_file.path().to_str().unwrap(),
+            "-c",
+            config_file.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\":\"warn\""));
+}
+
+#[test]
+#[file_serial(heavy_io)]
+fn run_native_passing_thresholds_gate_exits_zero() {
+    let gate = "  - name: slo gate\n    use: std/thresholds@v1\n    with:\n      db_errors: [\"count==0\"]\n      db_query_failed: [\"rate<0.05\"]\n      db_query_duration: [\"p95<5000\"]\n";
+    let (test_file, config_file) = sqlite_threshold_files("SELECT 1", gate);
+
+    cmd()
+        .args([
+            "run",
+            "-f",
+            test_file.path().to_str().unwrap(),
+            "-c",
+            config_file.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\":\"pass\""));
+}
+
 #[tokio::test]
 #[file_serial(heavy_io)]
 async fn run_native_with_report_forwards_summary_to_url() {

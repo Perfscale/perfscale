@@ -99,11 +99,55 @@ Built-in emitters:
 | `db_connect_duration` | histogram | `std/db-connect@v1` (success) | Connect + pool setup latency |
 | `db_query_duration` | histogram | `std/db-query@v1`, `std/db-tx-*@v1` | Query latency; includes the fresh connect in per-query mode |
 | `db_rows` | counter | `std/db-query@v1` | Rows returned, or rows affected when the statement returned none |
-| `db_errors` | counter | `std/db-*@v1` (failure) | Failed DB steps, total |
+| `db_errors` | counter | `std/db-*@v1` (failure) | Failed DB steps, total. Successful DB steps emit `db_errors: 0`, so the counter exists (at 0) on fully healthy runs — gates like `db_errors: ["count==0"]` work either way |
 | `db_errors_connection` / `_constraint` / `_deadlock` / `_timeout` / `_other` | counter | `std/db-*@v1` (failure) | Same, split by class (SQLSTATE / errno / SQLite result code) |
 
 Downstream actions use the same channel — e.g. the proprietary FIX action
 emits `fix_messages_sent`.
+
+## Failure-rate metrics (`<family>_failed`)
+
+Alongside the `metrics` payload, the runner derives per-invocation failure
+samples generically: for every histogram (array-valued) metric an invocation
+emits, it records one 0/1 sample — 1 when the step invocation failed, 0 when
+it succeeded — under the metric's family name with a trailing
+`_duration`/`_rtt` replaced by `_failed`:
+
+| Duration metric | Derived failure metric |
+|---|---|
+| `http_req_duration` | `http_req_failed` (native to the HTTP path) |
+| `db_query_duration` | `db_query_failed` |
+| `db_connect_duration` | `db_connect_failed` |
+| `grpc_req_duration` | `grpc_req_failed` |
+| `ws_msg_rtt` | `ws_msg_failed` |
+
+These print as `<name>: <pct>%` (k6's `http_req_failed` shape). Because one
+sample is recorded **per invocation** (not per duration sample),
+`failed/total` over them is exactly the step family's failure rate — that is
+what `std/thresholds@v1` evaluates with `rate`, e.g.
+`db_query_failed: ["rate<0.05"]`. Note a failed step that emits no duration
+sample (e.g. `db-connect` that never connected) records no sample either, so
+its family rate covers completed invocations.
+
+When a family already has a same-named counter (the gRPC actions emit a
+`grpc_req_failed` counter for `expect_status` misses), the rate metric
+shadows it in the summary and in threshold evaluation.
+
+## Run-level gates (`std/thresholds@v1`)
+
+A `std/thresholds@v1` step (typically in `after:`) evaluates k6-style
+expressions against the run aggregates and prints one machine-readable line
+after the metric summary:
+
+```text
+thresholds: {"status":"fail","message":"db_query_failed rate=1 ≥ 0.05; checkout SLO","violations":[{"metric":"db_query_failed","expr":"rate<0.05","actual":1.0}]}
+```
+
+Aggregates come from the same HDR histograms/counters as the text summary,
+so gate numbers match what the summary prints. The line is collected into
+`perfscale run --summary-export` output under `thresholds`
+(`{status, message, violations}`), and a `fail` status makes the CLI exit
+non-zero. See [actions.md](actions.md#stdthresholdsv1).
 
 ## `--quiet`
 

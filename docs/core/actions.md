@@ -902,6 +902,70 @@ On non-unix platforms there are no POSIX signals or process groups:
 `std/kill_process@v1` by `name` terminates the direct child only (`tree` has
 no effect), and `pid:` is unsupported.
 
+## `std/thresholds@v1`
+
+Run-level SLO gates over the metrics a run collected — k6-style threshold
+expressions evaluated **once**, after every VU has stopped. Its home is the
+config's `after:` block:
+
+```yaml
+after:
+  - name: slo gate
+    use: std/thresholds@v1
+    with:
+      db_query_duration: ["p95<500", "max<2000"]
+      db_query_failed: ["rate<0.05"]
+      db_errors: ["count==0"]
+      http_req_duration: ["avg<300"]
+    severity: fail            # fail (default) | warn | info
+    message: "checkout SLO"   # optional, interpolated
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `with.<metric>` | string or array of strings | **required (≥1)** | Threshold expressions for a run metric |
+| `severity` | string | `fail` | Step-level field: what a violated gate becomes — `fail` (the run exits non-zero), `warn`, or `info` (both exit zero) |
+| `message` | string | — | Step-level field: custom label appended to the violation summary; interpolated |
+
+**Expressions** are `<agg><op><number>`: agg ∈ `avg`, `min`, `max`, `p50`,
+`p90`, `p95`, `p99`, `count`, `rate`; op ∈ `<`, `<=`, `>`, `>=`, `==`, `!=`;
+the number is a plain float (int or decimal, no units). Whitespace around the
+parts is tolerated (`p95 < 500` parses).
+
+**Which aggregates apply** depends on the metric kind:
+
+- *Sample metrics* (`db_query_duration`, `http_req_duration`, `ws_msg_rtt`, …):
+  `avg`/`min`/`max`/`p50`/`p90`/`p95`/`p99` are computed over **all** samples
+  emitted during the run, from the same HDR histograms the end-of-run summary
+  prints — gate numbers match the summary. `count` is the number of samples.
+- *Counter metrics* (`db_errors`, `db_rows`, …): only `count`, the counter's
+  final value.
+- *Failure metrics* (`http_req_failed`, `db_query_failed`, …): `rate` is
+  failed/total invocations in `0.0..=1.0`; `count` is the invocation count.
+  The runner derives these automatically — every step invocation records a
+  0/1 sample under `<family>_failed` for each duration metric it emitted
+  (`db_query_duration` → `db_query_failed`). See
+  [metrics.md](metrics.md#failure-rate-metrics).
+
+**Errors are hard.** An unknown metric name fails the gate — and the run —
+with an error listing the metrics that *are* present; so does an empty
+`with:`, an unparseable expression, or an aggregate that doesn't apply to the
+metric kind. A broken gate never silently passes CI.
+
+**Output** (available via `outputs` / `__last__`):
+
+```json
+{ "status": "fail",
+  "message": "db_query_duration p95=612ms ≥ 500ms; checkout SLO",
+  "violations": [{ "metric": "db_query_duration", "expr": "p95<500", "actual": 612.0 }] }
+```
+
+`status` is `pass` when every expression holds, else the `severity` value.
+`message` is the violation summary joined with `; ` plus the custom message,
+truncated at 200 chars with `…`. The run summary JSON
+(`perfscale run --summary-export`) gains a `thresholds` field with the same
+shape (several gates combine: worst status wins).
+
 ## `std/check@v1`
 
 Assert properties of a previous step's output. Usually written as a step's

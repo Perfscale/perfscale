@@ -38,6 +38,10 @@ pub struct Context {
     /// Live log stream of the run, for managed processes to mirror their
     /// output into (prefixed `{step}: ` lines, like the k6 runner).
     pub(crate) log_tx: Option<tokio::sync::mpsc::Sender<LogLine>>,
+    /// Shared run metrics, seeded by the runner for `after:` steps so
+    /// `std/thresholds@v1` can evaluate gates over everything the run
+    /// collected. `None` in per-iteration and `before` contexts.
+    pub(crate) run_metrics: Option<std::sync::Arc<std::sync::Mutex<crate::step::runner::Metrics>>>,
 }
 
 impl Context {

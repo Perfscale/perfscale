@@ -271,11 +271,32 @@ pub struct ExportMeta {
 /// The document written by `--summary-export`: run context plus parsed
 /// metrics. `summary` is `None` for runs that produced no parseable metrics
 /// (e.g. sleep-only step lists) — the file is still written so CI can tell
-/// "ran with no traffic" apart from "never ran".
+/// "ran with no traffic" apart from "never ran". `thresholds` is `None` when
+/// the run had no `std/thresholds@v1` gate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SummaryExport {
     pub meta: ExportMeta,
     pub summary: Option<RunSummary>,
+    /// Result of the run's `std/thresholds@v1` gate(s), parsed from the
+    /// `thresholds: {...}` line the native engine emits after the metric
+    /// summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thresholds: Option<crate::step::thresholds::ThresholdsSummary>,
+}
+
+/// Extract the `thresholds: {...}` line the native engine emits at the end of
+/// a run with `std/thresholds@v1` gates (see
+/// [`crate::step::runner::run_native`]). Returns `None` when no gate ran.
+pub fn parse_thresholds(output: &str) -> Option<crate::step::thresholds::ThresholdsSummary> {
+    for line in output.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("thresholds:") {
+            if let Ok(parsed) = serde_json::from_str(rest.trim()) {
+                return Some(parsed);
+            }
+        }
+    }
+    None
 }
 
 impl SummaryExport {
@@ -317,6 +338,10 @@ impl SummaryExport {
                 row("min / max", format!("{} / {}", ms(s.min_ms), ms(s.max_ms)));
             }
             None => row("Requests", "0 (no HTTP metrics)".into()),
+        }
+
+        if let Some(ref t) = self.thresholds {
+            row("Thresholds", format!("{} — {}", t.status, t.message));
         }
 
         md.push_str(&format!(
@@ -588,6 +613,7 @@ grpc_req_failed: 1 0.10/s
                 timestamp: "2026-07-08T12:00:00Z".into(),
             },
             summary: with_summary.then(|| parse_summary(NATIVE_OUTPUT).unwrap()),
+            thresholds: None,
         }
     }
 
@@ -636,5 +662,45 @@ grpc_req_failed: 1 0.10/s
         assert_eq!(iso8601_utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso8601_utc(951_782_400), "2000-02-29T00:00:00Z"); // leap day
         assert_eq!(iso8601_utc(1_782_950_399), "2026-07-01T23:59:59Z");
+    }
+
+    // -----------------------------------------------------------------
+    // Thresholds (std/thresholds@v1 run gates)
+    // -----------------------------------------------------------------
+
+    const THRESHOLDS_LINE: &str = r#"thresholds: {"status":"fail","message":"db_errors count=3 ≠ 0; checkout SLO","violations":[{"metric":"db_errors","expr":"count==0","actual":3.0}]}"#;
+
+    #[test]
+    fn parse_thresholds_extracts_gate_result() {
+        let out = format!("{NATIVE_OUTPUT}\n{THRESHOLDS_LINE}\n");
+        let t = parse_thresholds(&out).expect("thresholds line parsed");
+        assert_eq!(t.status, "fail");
+        assert!(t.message.contains("checkout SLO"));
+        assert_eq!(t.violations.len(), 1);
+        assert_eq!(t.violations[0].metric, "db_errors");
+        assert_eq!(t.violations[0].expr, "count==0");
+        assert_eq!(t.violations[0].actual, 3.0);
+
+        assert!(parse_thresholds(NATIVE_OUTPUT).is_none());
+        assert!(parse_thresholds("").is_none());
+    }
+
+    #[test]
+    fn export_json_carries_thresholds_when_present() {
+        let mut export = sample_export(true);
+        export.thresholds = parse_thresholds(THRESHOLDS_LINE);
+        let json = export.to_json();
+        assert!(json.contains("\"thresholds\""), "{json}");
+        assert!(json.contains("\"status\": \"fail\""), "{json}");
+        let back: SummaryExport = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, export);
+
+        // Without a gate the field is omitted entirely.
+        let json = sample_export(true).to_json();
+        assert!(!json.contains("\"thresholds\""), "{json}");
+
+        // …and the markdown summary surfaces the gate result.
+        let md = export.to_markdown();
+        assert!(md.contains("| Thresholds | fail —"), "{md}");
     }
 }

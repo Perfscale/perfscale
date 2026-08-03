@@ -74,7 +74,10 @@
 //!   `db_errors_deadlock`, `db_errors_timeout`, `db_errors_other`.
 //!   Classification maps sqlx error kinds and SQLSTATE class (PostgreSQL),
 //!   errno (MySQL/MariaDB), or result code (SQLite). The failing step output
-//!   also carries `error_kind` with the same class.
+//!   also carries `error_kind` with the same class. Successful DB steps emit
+//!   `db_errors: 0` explicitly, so the counter exists (at 0) even on fully
+//!   healthy runs — `std/thresholds@v1` gates like `db_errors: ["count==0"]`
+//!   can assert a clean run instead of erroring on an unknown metric.
 //!
 //! Step-name labels only — raw SQL never appears in metrics.
 //!
@@ -804,7 +807,7 @@ pub(crate) async fn db_connect_action(
             "mode": if cp.per_query { "per-query" } else { "persistent" },
             "connected": !cp.per_query,
             "duration_ms": duration_ms,
-            "metrics": { "db_connect_duration": [duration_ms] },
+            "metrics": { "db_connect_duration": [duration_ms], "db_errors": 0 },
         }),
         logs: vec![(
             LogTag::Out,
@@ -1133,6 +1136,7 @@ pub(crate) async fn db_query_action(params: &Value, ctx: &Context, step_name: &s
                     "metrics": {
                         "db_query_duration": [duration_ms],
                         "db_rows": db_rows,
+                        "db_errors": 0,
                     },
                 }),
                 logs: vec![(LogTag::Out, log)],
@@ -1276,7 +1280,7 @@ pub(crate) async fn db_tx_begin_action(
                     "id": id,
                     "tx": true,
                     "duration_ms": duration_ms,
-                    "metrics": { "db_query_duration": [duration_ms] },
+                    "metrics": { "db_query_duration": [duration_ms], "db_errors": 0 },
                 }),
                 logs: vec![(
                     LogTag::Out,
@@ -1358,7 +1362,7 @@ async fn db_tx_finish_action(
             let mut value = json!({
                 "id": id,
                 "duration_ms": duration_ms,
-                "metrics": { "db_query_duration": [duration_ms] },
+                "metrics": { "db_query_duration": [duration_ms], "db_errors": 0 },
             });
             value[if commit { "committed" } else { "rolled_back" }] = Value::Bool(true);
             ActionOutput {

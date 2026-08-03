@@ -35,6 +35,9 @@ summary
   registry is **stopped automatically** (SIGTERM, escalated to SIGKILL after
   a grace period, whole process group). A forgotten `kill_process` never
   leaks a server.
+- Besides cleanup, `after:` is where run-level SLO gates live: a
+  `std/thresholds@v1` step sees everything the run collected and gates the
+  exit code on it (see [actions.md](actions.md#stdthresholdsv1)).
 - The metric summary prints last.
 
 ## Data flow: `vars.*` and `config.*`

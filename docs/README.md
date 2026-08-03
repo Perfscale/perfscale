@@ -23,7 +23,7 @@ tiny local dev server for collecting results.
 - [Actions](core/actions.md) — `std/http`, `std/tcp`, `std/udp`, `std/ws*`
   (WebSocket), `std/grpc*` (gRPC), `std/db-*` (SQL databases), `std/check`,
   `std/sleep`, `std/log`,
-  `std/file-*`, `std/child_process`, `std/kill_process`
+  `std/file-*`, `std/child_process`, `std/kill_process`, `std/thresholds`
 - [Setup and teardown](core/setup-teardown.md) — `before:`/`after:` lifecycle,
   `config.*`/`vars.*` data flow, background processes
 - [Metrics](core/metrics.md) — `http_req_*`, `[stats]` lines, custom

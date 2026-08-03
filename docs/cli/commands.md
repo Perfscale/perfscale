@@ -35,6 +35,9 @@ Exactly one engine flag is required: `--k6`, `--locust`, or `-f`.
   not found, or the engine crashed before producing any results (non-zero
   exit with zero metrics — a script error or broken install, not test
   feedback): `error: engine exited with code 1 before producing any results`.
+  Also: a native run whose [`std/thresholds@v1`](../core/actions.md#stdthresholdsv1)
+  gate evaluated to `fail` (`error: thresholds failed: …`) — gates are how CI
+  turns SLO violations into a failing build, like k6 thresholds.
 - `2` — invalid command-line arguments.
 
 ### Output streams
@@ -64,7 +67,23 @@ Exactly one engine flag is required: `--k6`, `--locust`, or `-f`.
 ```
 
 `vus`/`duration` are `null` for `--k6` runs (the load shape lives in the
-script); `summary` is `null` when the run produced no HTTP metrics. With
+script); `summary` is `null` when the run produced no HTTP metrics. When the
+config had a [`std/thresholds@v1`](../core/actions.md#stdthresholdsv1) gate,
+the export gains a `thresholds` field with the gate result:
+
+```json
+{
+  "thresholds": {
+    "status": "fail",
+    "message": "db_query_failed rate=1 ≥ 0.05; checkout SLO",
+    "violations": [{ "metric": "db_query_failed", "expr": "rate<0.05", "actual": 1.0 }]
+  }
+}
+```
+
+`status` is `pass` when every expression held, else the gate's `severity`
+(`fail`/`warn`/`info`). A `fail` status also makes `perfscale run` exit
+non-zero, so CI fails on the gate itself. With
 `--summary-format md` the same data renders as a Markdown table — pointed at
 `$GITHUB_STEP_SUMMARY`, it lands directly in the GitHub Actions job summary.
 A failed export write is a CLI error (exit 1) even though the run itself

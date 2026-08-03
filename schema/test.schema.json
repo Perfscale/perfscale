@@ -19,6 +19,13 @@
         "check": {
           "description": "Post-execution assertions.  Keys are assertion names; values are expected values.  Example: `{ \"status\": 200, \"duration_ms_lt\": 500 }`."
         },
+        "message": {
+          "description": "Custom message for `std/thresholds@v1` steps (interpolated, appended to the auto-generated violation summary). Meaningless for other actions.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "name": {
           "description": "Human-readable label shown in log output.",
           "type": [
@@ -28,6 +35,13 @@
         },
         "outputs": {
           "description": "Variable name to store step output under for `${{ name.field }}` use.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "description": "Gate severity for `std/thresholds@v1` steps: `fail` (default), `warn`, or `info`. Meaningless for other actions.",
           "type": [
             "string",
             "null"

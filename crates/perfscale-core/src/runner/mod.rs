@@ -41,7 +41,8 @@ pub enum LogSource {
 pub struct RunOutput {
     pub lines: mpsc::Receiver<LogLine>,
     /// Engine process exit code. `None` if the process was killed by a
-    /// signal; the native engine always reports `Some(0)`.
+    /// signal; the native engine reports `Some(1)` when a `severity: fail`
+    /// thresholds gate was violated, `Some(0)` otherwise.
     pub exit: tokio::sync::oneshot::Receiver<Option<i32>>,
     /// OS process ID of the spawned engine binary, while it's running — lets
     /// callers sample its CPU/memory/IO usage. `None` for the native step
@@ -98,11 +99,13 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
             let (tx, rx) = mpsc::channel(512);
             let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
-                crate::step::runner::run_native(
+                let outcome = crate::step::runner::run_native(
                     test.steps, before, after, config, variables, quiet, tx,
                 )
                 .await;
-                let _ = exit_tx.send(Some(0));
+                // Like k6, a violated `severity: fail` thresholds gate exits
+                // non-zero — test feedback, not a crash.
+                let _ = exit_tx.send(Some(if outcome.thresholds_failed() { 1 } else { 0 }));
             });
             Ok(RunOutput {
                 lines: rx,
@@ -157,9 +160,10 @@ mod tests {
                 with: Some(serde_json::json!({ "message": "via dispatcher" })),
                 check: None,
                 outputs: None,
+                severity: None,
+                message: None,
             }],
-        };
-        let config = RunConfig {
+        };        let config = RunConfig {
             vus: 1,
             duration: "1s".into(),
             ..Default::default()
@@ -247,5 +251,91 @@ mod tests {
         let missing = std::env::temp_dir().join("perfscale-does-not-exist.js");
         let err = execute(ExecutionPlan::K6Script(missing)).await.unwrap_err();
         assert!(err.contains("failed to read"));
+    }
+
+    // -----------------------------------------------------------------
+    // Thresholds → exit code
+    // -----------------------------------------------------------------
+
+    fn sqlite_threshold_plan(gate: serde_json::Value, severity: Option<&str>) -> ExecutionPlan {
+        let step = |action: &str, with: serde_json::Value| crate::step::Step {
+            name: None,
+            action: action.into(),
+            with: Some(with),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+        };
+        ExecutionPlan::NativeSteps {
+            test: TestDef {
+                steps: vec![
+                    crate::step::Step {
+                        outputs: Some("conn".into()),
+                        ..step(
+                            "std/db-connect@v1",
+                            serde_json::json!({ "driver": "sqlite", "dsn": "sqlite::memory:" }),
+                        )
+                    },
+                    step(
+                        "std/db-query@v1",
+                        serde_json::json!({ "id": "${{ conn.id }}", "query": "SELECT 1" }),
+                    ),
+                    step("std/sleep@v1", serde_json::json!({ "ms": 20 })),
+                ],
+            },
+            config: RunConfig {
+                vus: 1,
+                duration: "1s".into(),
+                ..Default::default()
+            },
+            before: Vec::new(),
+            after: vec![crate::step::Step {
+                severity: severity.map(str::to_owned),
+                ..step("std/thresholds@v1", gate)
+            }],
+            variables: serde_json::Map::new(),
+            quiet: true,
+        }
+    }
+
+    async fn exit_code_of(plan: ExecutionPlan) -> Option<i32> {
+        let RunOutput {
+            mut lines, exit, ..
+        } = execute(plan).await.unwrap();
+        while lines.recv().await.is_some() {}
+        exit.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn execute_native_failing_thresholds_exit_nonzero() {
+        // Every query succeeds, so db_errors==0 passes but p95<0 is
+        // impossible → violated fail gate → exit 1 (like k6 thresholds).
+        let code = exit_code_of(sqlite_threshold_plan(
+            serde_json::json!({ "db_query_duration": ["p95<0"] }),
+            None,
+        ))
+        .await;
+        assert_eq!(code, Some(1));
+    }
+
+    #[tokio::test]
+    async fn execute_native_warn_thresholds_exit_zero() {
+        let code = exit_code_of(sqlite_threshold_plan(
+            serde_json::json!({ "db_query_duration": ["p95<0"] }),
+            Some("warn"),
+        ))
+        .await;
+        assert_eq!(code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn execute_native_passing_thresholds_exit_zero() {
+        let code = exit_code_of(sqlite_threshold_plan(
+            serde_json::json!({ "db_errors": ["count==0"], "db_query_failed": ["rate<0.05"] }),
+            None,
+        ))
+        .await;
+        assert_eq!(code, Some(0));
     }
 }

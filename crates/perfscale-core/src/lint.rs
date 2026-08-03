@@ -98,7 +98,7 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
     // definition (see `schema::relax_use_alias`); the older wording was
     // `"use" is a required property`.
     if problem.contains("\"use\" is a required property") || problem.contains("anyOf") {
-        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, or `std/kill_process@v1`".into())
+        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, or `std/thresholds@v1`".into())
     } else if problem.contains("\"steps\" is a required property") {
         Some("a test definition is a mapping with a `steps:` list at the top level".into())
     } else if problem.contains("\"url\" is a required property") {
@@ -119,7 +119,16 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 const TEST_TOP_FIELDS: [&str; 1] = ["steps"];
-const STEP_FIELDS: [&str; 6] = ["name", "use", "uses", "with", "check", "outputs"];
+const STEP_FIELDS: [&str; 8] = [
+    "name",
+    "use",
+    "uses",
+    "with",
+    "check",
+    "outputs",
+    "severity",
+    "message",
+];
 const CONFIG_TOP_FIELDS: [&str; 7] = [
     "vus",
     "duration",
@@ -345,11 +354,12 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
                     "std/file-write@v1",
                     "std/child_process@v1",
                     "std/kill_process@v1",
+                    "std/thresholds@v1",
                 ],
             )
             .or_else(|| {
                 Some(
-                    "available actions: std/http@v1, std/tcp@v1, std/udp@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/db-connect@v1, std/db-query@v1, std/db-tx-begin@v1, std/db-tx-commit@v1, std/db-tx-rollback@v1, std/db-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1"
+                    "available actions: std/http@v1, std/tcp@v1, std/udp@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/db-connect@v1, std/db-query@v1, std/db-tx-begin@v1, std/db-tx-commit@v1, std/db-tx-rollback@v1, std/db-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1, std/thresholds@v1"
                         .into(),
                 )
             }),
@@ -500,6 +510,8 @@ fn is_known_action(action: &str) -> bool {
             | "child_process"
             | "std/kill_process@v1"
             | "kill_process"
+            | "std/thresholds@v1"
+            | "thresholds"
             | "log"
     )
 }
@@ -970,6 +982,25 @@ after:
             .find(|i| i.problem.contains("unknown field 'aftr'"))
             .unwrap();
         assert_eq!(typo.suggestion.as_deref(), Some("did you mean 'after'?"));
+    }
+
+    #[test]
+    fn thresholds_gate_with_step_level_severity_and_message_lints_clean() {
+        let yaml = r#"
+vus: 1
+duration: 30s
+after:
+  - name: slo gate
+    use: std/thresholds@v1
+    with:
+      db_query_duration: ["p95<500", "max<2000"]
+      db_query_failed: ["rate<0.05"]
+      db_errors: ["count==0"]
+    severity: warn
+    message: "checkout SLO"
+"#;
+        let issues = lint(yaml, DocKind::Config);
+        assert!(issues.is_empty(), "{issues:?}");
     }
 
     // -----------------------------------------------------------------

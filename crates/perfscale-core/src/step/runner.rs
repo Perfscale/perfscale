@@ -69,6 +69,17 @@ pub struct Metrics {
     /// settings as the request-duration histogram and summarised in the same
     /// `avg/p(..)/min/max` shape, plus a sample count.
     hists: std::collections::BTreeMap<String, hdrhistogram::Histogram<u64>>,
+    /// Per-invocation failure samples as `(total, failed)` pairs, recorded by
+    /// the runner for every histogram metric a step emits (see
+    /// [`execute_step`]): `db_query_duration` → `db_query_failed`. These are
+    /// NOT stored in `hists` — the HDR histogram clamps samples to ≥1µs,
+    /// which would turn every 0 (success) into a 1 (failure). Summarised as
+    /// `<name>: <pct>%` like k6's `http_req_failed`, and the source of the
+    /// `rate` aggregate for `std/thresholds@v1`.
+    rates: std::collections::BTreeMap<String, (u64, u64)>,
+    /// Outcomes of `std/thresholds@v1` steps (run in `after:`), combined into
+    /// the run summary's `thresholds` field at the end of the run.
+    threshold_results: Vec<crate::step::thresholds::ThresholdsSummary>,
 }
 
 impl Default for Metrics {
@@ -84,6 +95,8 @@ impl Default for Metrics {
             total: 0,
             counters: std::collections::BTreeMap::new(),
             hists: std::collections::BTreeMap::new(),
+            rates: std::collections::BTreeMap::new(),
+            threshold_results: Vec::new(),
         }
     }
 }
@@ -131,6 +144,66 @@ impl Metrics {
         }
     }
 
+    /// Record one invocation outcome for a failure-rate metric: `failed`
+    /// is 1 when the step invocation failed, 0 when it succeeded. `rate`
+    /// over these samples is exactly failed/total invocations.
+    pub fn record_rate(&mut self, name: &str, failed: bool) {
+        let e = self.rates.entry(name.to_string()).or_insert((0, 0));
+        e.0 += 1;
+        if failed {
+            e.1 += 1;
+        }
+    }
+
+    /// Store the outcome of a `std/thresholds@v1` step for the run summary.
+    pub fn record_threshold_result(&mut self, result: crate::step::thresholds::ThresholdsSummary) {
+        self.threshold_results.push(result);
+    }
+
+    /// All gate outcomes combined (worst status wins), for the run summary's
+    /// `thresholds` field. `None` when no thresholds step ran.
+    pub fn thresholds_summary(&self) -> Option<crate::step::thresholds::ThresholdsSummary> {
+        crate::step::thresholds::combine(self.threshold_results.clone())
+    }
+
+    /// Snapshot every metric the run collected, for `std/thresholds@v1`
+    /// evaluation. Percentiles come from the same HDR histograms (and the
+    /// same accessors) as [`Metrics::summary_lines`], so gate numbers match
+    /// the printed summary.
+    ///
+    /// A counter is shadowed by a same-named failure-rate metric (the gRPC
+    /// actions emit a `grpc_req_failed` counter AND the runner derives
+    /// `grpc_req_failed` rate samples from `grpc_req_duration`): the rate
+    /// view wins, since `rate`/`count` on it answer both use cases.
+    pub fn metric_snapshot(
+        &self,
+    ) -> std::collections::BTreeMap<String, crate::step::thresholds::MetricAgg> {
+        use crate::step::thresholds::MetricAgg;
+        let mut out = std::collections::BTreeMap::new();
+        if self.total > 0 {
+            out.insert(
+                "http_req_duration".to_string(),
+                MetricAgg::sample(&self.durations_micros),
+            );
+            out.insert(
+                "http_req_failed".to_string(),
+                MetricAgg::rate(self.total, self.failures),
+            );
+        }
+        for (name, h) in &self.hists {
+            out.insert(name.clone(), MetricAgg::sample(h));
+        }
+        for (name, v) in &self.counters {
+            if !self.rates.contains_key(name) {
+                out.insert(name.clone(), MetricAgg::counter(*v));
+            }
+        }
+        for (name, (total, failed)) in &self.rates {
+            out.insert(name.clone(), MetricAgg::rate(*total, *failed));
+        }
+        out
+    }
+
     /// Emit k6-compatible summary lines.
     ///
     /// ```text
@@ -150,10 +223,22 @@ impl Metrics {
         ));
 
         // Custom action counters (e.g. FIX message rates) — emitted whether or
-        // not the run made HTTP-style requests.
+        // not the run made HTTP-style requests. A counter shadowed by a
+        // same-named failure-rate metric (e.g. `grpc_req_failed`) is skipped:
+        // the rate line below carries the same information in k6's `%` shape.
         for (name, total) in &self.counters {
+            if self.rates.contains_key(name) {
+                continue;
+            }
             let rate = total / wall_secs.max(0.001);
             lines.push(format!("{name}: {total:.0} {rate:.2}/s"));
+        }
+
+        // Failure-rate metrics (`db_query_failed`, …) — k6's
+        // `http_req_failed: 0.00%` shape.
+        for (name, (total, failed)) in &self.rates {
+            let pct = *failed as f64 / (*total).max(1) as f64 * 100.0;
+            lines.push(format!("{name}: {pct:.2}%"));
         }
 
         // Custom action histograms (e.g. `ws_msg_rtt`) — same shape as
@@ -240,6 +325,24 @@ impl Metrics {
 // Public entry point
 // ---------------------------------------------------------------------------
 
+/// What a native run concluded, beyond the streamed log lines.
+#[derive(Debug, Default)]
+pub struct NativeRunOutcome {
+    /// Combined result of every `std/thresholds@v1` gate that ran in
+    /// `after:` — `None` when the config had no thresholds step.
+    pub thresholds: Option<crate::step::thresholds::ThresholdsSummary>,
+}
+
+impl NativeRunOutcome {
+    /// True when a thresholds gate evaluated to `fail` — the CLI turns this
+    /// into a non-zero exit code for CI.
+    pub fn thresholds_failed(&self) -> bool {
+        self.thresholds
+            .as_ref()
+            .is_some_and(|t| t.status == "fail")
+    }
+}
+
 /// Execute `steps` under `config` load and stream [`LogLine`]s through `tx`.
 ///
 /// Returns once the configured duration has elapsed and all VUs have finished
@@ -259,7 +362,7 @@ pub async fn run_steps(
     quiet: bool,
     tx: mpsc::Sender<LogLine>,
 ) {
-    run_native(steps, Vec::new(), Vec::new(), config, Map::new(), quiet, tx).await
+    run_native(steps, Vec::new(), Vec::new(), config, Map::new(), quiet, tx).await;
 }
 
 /// Execute a native test with optional one-time `before` setup and `after`
@@ -280,6 +383,10 @@ pub async fn run_steps(
 /// The first SIGINT/SIGTERM asks the VU loop to stop (it notices between
 /// steps) and the run proceeds through the usual teardown; a second signal
 /// exits the process immediately.
+///
+/// Returns a [`NativeRunOutcome`]: the combined `std/thresholds@v1` gate
+/// result, so the caller (CLI) can exit non-zero when a `severity: fail`
+/// gate was violated.
 pub async fn run_native(
     steps: Vec<Step>,
     before: Vec<Step>,
@@ -288,7 +395,7 @@ pub async fn run_native(
     variables: Map<String, Value>,
     quiet: bool,
     tx: mpsc::Sender<LogLine>,
-) {
+) -> NativeRunOutcome {
     let vars = if variables.is_empty() {
         Value::Null
     } else {
@@ -300,10 +407,20 @@ pub async fn run_native(
     // the end is stopped via `shutdown_all` on every exit path.
     let registry = Arc::new(ProcessRegistry::new());
 
+    // Created up front (not after setup) so `after:` thresholds steps get a
+    // metrics handle on every exit path — including a failed `before`, where
+    // it is simply empty.
+    let metrics = Arc::new(Mutex::new(Metrics::default()));
+
     // First SIGINT/SIGTERM flips this flag (soft stop); a second one exits
     // the process outright. The handler task is aborted when the run ends.
     let stop = Arc::new(AtomicBool::new(false));
     let interrupt_handler = spawn_interrupt_handler(Arc::clone(&stop), tx.clone());
+
+    let after_shared = AfterShared {
+        registry: Arc::clone(&registry),
+        metrics: Arc::clone(&metrics),
+    };
 
     // --- One-time setup ---
     let config_seed = match run_before(&before, &vars, &config, &registry, quiet, &tx).await {
@@ -318,18 +435,17 @@ pub async fn run_native(
             // Teardown still runs: a `before` step may have started a process
             // (or grabbed anything else `after` exists to clean up) before
             // the one that failed.
-            run_after(&after, &Value::Null, &vars, &config, &registry, quiet, &tx).await;
+            run_after(&after, &Value::Null, &vars, &config, &after_shared, quiet, &tx).await;
             registry.shutdown_all().await;
             emit(&tx, LogSource::System, "Done — setup error").await;
             interrupt_handler.abort();
-            return;
+            return NativeRunOutcome::default();
         }
     };
 
     let duration_secs = config.duration_secs();
     let vus = config.vus.max(1);
     let deadline = Instant::now() + Duration::from_secs(duration_secs);
-    let metrics = Arc::new(Mutex::new(Metrics::default()));
     let iter_count = Arc::new(AtomicU64::new(0));
     let started = Instant::now();
 
@@ -430,17 +546,30 @@ pub async fn run_native(
 
     // Teardown on every non-setup-failure path: `after` steps (best-effort),
     // then stop whatever managed processes are still alive.
-    run_after(&after, &config_seed, &vars, &config, &registry, quiet, &tx).await;
+    run_after(&after, &config_seed, &vars, &config, &after_shared, quiet, &tx).await;
     registry.shutdown_all().await;
 
     let wall_secs = started.elapsed().as_secs_f64();
     let total_iters = iter_count.load(Ordering::Relaxed);
-    let lines = metrics
-        .lock()
-        .unwrap()
-        .summary_lines(wall_secs, total_iters, vus);
+    let (lines, thresholds) = {
+        let m = metrics.lock().unwrap();
+        (m.summary_lines(wall_secs, total_iters, vus), m.thresholds_summary())
+    };
     for line in &lines {
         emit(&tx, LogSource::Stdout, line).await;
+    }
+    // Machine-readable gate result for the run summary JSON / CI: one line,
+    // consumed like the other summary lines downstream.
+    if let Some(ref t) = thresholds {
+        emit(
+            &tx,
+            LogSource::Stdout,
+            &format!(
+                "thresholds: {}",
+                serde_json::to_string(t).expect("thresholds summary is always serializable")
+            ),
+        )
+        .await;
     }
     emit(
         &tx,
@@ -449,6 +578,7 @@ pub async fn run_native(
     )
     .await;
     interrupt_handler.abort();
+    NativeRunOutcome { thresholds }
 }
 
 // ---------------------------------------------------------------------------
@@ -570,10 +700,9 @@ async fn run_before(
     for step in before {
         let action = &step.action;
         let step_name = step.name.as_deref().unwrap_or(action.as_str());
-        let empty = Value::Object(Default::default());
-        let params = step.with.as_ref().unwrap_or(&empty);
+        let params = step_params(step);
 
-        let output = execute_action(action, params, &ctx, step_name).await;
+        let output = execute_action(action, &params, &ctx, step_name).await;
 
         for (tag, text) in &output.logs {
             if quiet && *tag != LogTag::Err {
@@ -602,6 +731,14 @@ async fn run_before(
 // One-time teardown (`after`)
 // ---------------------------------------------------------------------------
 
+/// Run-scoped shared state handed to `after:` steps: the managed-process
+/// registry (a typical teardown step kills what `before` started) and the
+/// run's metrics (what `std/thresholds@v1` gates evaluate over).
+struct AfterShared {
+    registry: Arc<ProcessRegistry>,
+    metrics: Arc<Mutex<Metrics>>,
+}
+
 /// Run the `after` steps once, best-effort: a failing step is logged but does
 /// not abort the remaining ones — teardown exists for cleanup, and partial
 /// cleanup beats none.
@@ -609,12 +746,16 @@ async fn run_before(
 /// The context sees the same `config` seed (from `run_before`) and `vars` as
 /// test steps did, plus the shared process registry — the typical `after`
 /// step is a `std/kill_process@v1` for a server that `before` started.
+///
+/// The run's shared [`Metrics`] handle is seeded into the context so
+/// `std/thresholds@v1` gates can evaluate over everything the run collected
+/// (empty when setup failed before any VU ran).
 async fn run_after(
     after: &[Step],
     config_seed: &Value,
     vars: &Value,
     config: &RunConfig,
-    registry: &Arc<ProcessRegistry>,
+    shared: &AfterShared,
     quiet: bool,
     tx: &mpsc::Sender<LogLine>,
 ) {
@@ -637,8 +778,9 @@ async fn run_after(
     ctx.allow_file_actions = config.allow_file_actions;
     ctx.allow_process_actions = config.allow_process_actions;
     ctx.fs_root = config.fs_root.clone();
-    ctx.processes = Some(Arc::clone(registry));
+    ctx.processes = Some(Arc::clone(&shared.registry));
     ctx.log_tx = Some(tx.clone());
+    ctx.run_metrics = Some(Arc::clone(&shared.metrics));
     if !vars.is_null() {
         ctx.set("vars", vars.clone());
     }
@@ -649,10 +791,9 @@ async fn run_after(
     for step in after {
         let action = &step.action;
         let step_name = step.name.as_deref().unwrap_or(action.as_str());
-        let empty = Value::Object(Default::default());
-        let params = step.with.as_ref().unwrap_or(&empty);
+        let params = step_params(step);
 
-        let output = execute_action(action, params, &ctx, step_name).await;
+        let output = execute_action(action, &params, &ctx, step_name).await;
 
         for (tag, text) in &output.logs {
             if quiet && *tag != LogTag::Err {
@@ -673,7 +814,7 @@ async fn run_after(
         ctx.set("__last__", output.value.clone());
         if let Some(name) = &step.outputs {
             ctx.set(name, output.value.clone());
-            registry.alias(step_name, name);
+            shared.registry.alias(step_name, name);
         }
     }
 }
@@ -692,10 +833,9 @@ async fn execute_step(
 ) {
     let action = &step.action;
     let step_name = step.name.as_deref().unwrap_or(action.as_str());
-    let empty = Value::Object(Default::default());
-    let params = step.with.as_ref().unwrap_or(&empty);
+    let params = step_params(step);
 
-    let output = execute_action(action, params, ctx, step_name).await;
+    let output = execute_action(action, &params, ctx, step_name).await;
 
     // Collect HTTP timing and any custom counters the action exposed under the
     // reserved `metrics` key of its output value.
@@ -706,6 +846,22 @@ async fn execute_step(
         }
         if let Some(obj) = output.value.get("metrics").and_then(|v| v.as_object()) {
             m.add_counters(obj);
+            // Failure sampling: one 0/1 sample per invocation for every
+            // family-duration metric the invocation emitted, so
+            // `std/thresholds@v1` can compute `rate` = failed/total
+            // invocations. `db_query_duration` → `db_query_failed`,
+            // `ws_msg_rtt` → `ws_msg_failed`, matching the HTTP family's
+            // native `http_req_failed`.
+            let failed = !output.success;
+            for (name, v) in obj {
+                if v.is_array() {
+                    let family = name
+                        .strip_suffix("_duration")
+                        .or_else(|| name.strip_suffix("_rtt"))
+                        .unwrap_or(name);
+                    m.record_rate(&format!("{family}_failed"), failed);
+                }
+            }
         }
     }
 
@@ -744,6 +900,32 @@ async fn execute_step(
 // Helper
 // ---------------------------------------------------------------------------
 
+/// The params handed to an action: the step's `with` object, with the
+/// step-level `severity`/`message` fields (used by `std/thresholds@v1`)
+/// merged in so actions read one flat parameter set. Borrows unless a merge
+/// is actually needed, keeping the per-iteration hot path allocation-free.
+fn step_params(step: &Step) -> std::borrow::Cow<'_, Value> {
+    if step.severity.is_none() && step.message.is_none() {
+        return match &step.with {
+            Some(w) => std::borrow::Cow::Borrowed(w),
+            None => std::borrow::Cow::Owned(Value::Object(Map::new())),
+        };
+    }
+    let mut obj = step
+        .with
+        .as_ref()
+        .and_then(|w| w.as_object())
+        .cloned()
+        .unwrap_or_default();
+    if let Some(severity) = &step.severity {
+        obj.insert("severity".to_string(), Value::String(severity.clone()));
+    }
+    if let Some(message) = &step.message {
+        obj.insert("message".to_string(), Value::String(message.clone()));
+    }
+    std::borrow::Cow::Owned(Value::Object(obj))
+}
+
 async fn emit(tx: &mpsc::Sender<LogLine>, source: LogSource, text: &str) {
     let _ = tx
         .send(LogLine {
@@ -768,6 +950,8 @@ mod tests {
             with: Some(json!({ "ms": ms })),
             check: None,
             outputs: None,
+            severity: None,
+            message: None,
         }
     }
 
@@ -962,6 +1146,8 @@ mod tests {
                 with: Some(json!({ "url": format!("{}/ok", server.uri()) })),
                 check: None,
                 outputs: None,
+                severity: None,
+                message: None,
             },
             // Throttle the loop so a 1s run makes a handful of requests, not
             // thousands — the suite runs many tests in parallel.
@@ -999,6 +1185,8 @@ mod tests {
             with: Some(json!({ "url": format!("{}/fail", server.uri()) })),
             check: Some(json!({ "status": 200 })),
             outputs: None,
+            severity: None,
+            message: None,
         }];
         let config = RunConfig {
             vus: 1,
@@ -1031,6 +1219,8 @@ mod tests {
                 with: Some(json!({ "url": format!("{}/ok", server.uri()) })),
                 check: None,
                 outputs: None,
+                severity: None,
+                message: None,
             },
             sleep_step(50),
         ];
@@ -1070,6 +1260,8 @@ mod tests {
             with: Some(json!({ "url": format!("{}/fail", server.uri()) })),
             check: Some(json!({ "status": 200 })),
             outputs: None,
+            severity: None,
+            message: None,
         }];
         let config = RunConfig {
             vus: 1,
@@ -1115,6 +1307,8 @@ mod tests {
                 with: Some(json!({ "url": format!("{}/data", server.uri()) })),
                 check: None,
                 outputs: Some("resp".into()),
+                severity: None,
+                message: None,
             },
             Step {
                 name: Some("report".into()),
@@ -1122,6 +1316,8 @@ mod tests {
                 with: Some(json!({ "message": "status was ${{ resp.status }}" })),
                 check: None,
                 outputs: None,
+                severity: None,
+                message: None,
             },
         ];
         let config = RunConfig {
@@ -1181,6 +1377,8 @@ mod tests {
                 with: Some(json!({ "url": url })),
                 check: None,
                 outputs: Some("feed".into()),
+                severity: None,
+                message: None,
             },
             Step {
                 name: Some("sub".into()),
@@ -1188,6 +1386,8 @@ mod tests {
                 with: Some(json!({ "id": "${{ feed.id }}", "send": "sub-${seq}" })),
                 check: None,
                 outputs: None,
+                severity: None,
+                message: None,
             },
             Step {
                 name: Some("wait".into()),
@@ -1195,6 +1395,8 @@ mod tests {
                 with: Some(json!({ "id": "${{ feed.id }}", "until_contains": "sub-1" })),
                 check: Some(json!({ "message_contains": "sub-1" })),
                 outputs: None,
+                severity: None,
+                message: None,
             },
             // No explicit close — the iteration-end drain must handle it.
             sleep_step(50),
@@ -1243,6 +1445,8 @@ mod tests {
                 with: Some(json!({ "url": url, "reflection": true })),
                 check: None,
                 outputs: Some("conn".into()),
+                severity: None,
+                message: None,
             },
             Step {
                 name: Some("unary".into()),
@@ -1254,6 +1458,8 @@ mod tests {
                 })),
                 check: None,
                 outputs: None,
+                severity: None,
+                message: None,
             },
             Step {
                 name: Some("open".into()),
@@ -1264,6 +1470,8 @@ mod tests {
                 })),
                 check: None,
                 outputs: Some("stream".into()),
+                severity: None,
+                message: None,
             },
             Step {
                 name: Some("send".into()),
@@ -1275,6 +1483,8 @@ mod tests {
                 })),
                 check: None,
                 outputs: None,
+                severity: None,
+                message: None,
             },
             Step {
                 name: Some("recv".into()),
@@ -1286,6 +1496,8 @@ mod tests {
                 })),
                 check: Some(json!({ "messages_count_gte": 5 })),
                 outputs: None,
+                severity: None,
+                message: None,
             },
             Step {
                 name: Some("close".into()),
@@ -1293,6 +1505,8 @@ mod tests {
                 with: Some(json!({ "id": "${{ stream.id }}" })),
                 check: None,
                 outputs: None,
+                severity: None,
+                message: None,
             },
         ];
         let config = RunConfig {
@@ -1338,6 +1552,8 @@ mod tests {
             with: Some(json!({ "message": message })),
             check: None,
             outputs: outputs.map(str::to_owned),
+            severity: None,
+            message: None,
         }
     }
 
@@ -1348,6 +1564,18 @@ mod tests {
         variables: Map<String, Value>,
         config: RunConfig,
     ) -> Vec<LogLine> {
+        run_native_full(steps, before, after, variables, config).await.0
+    }
+
+    /// Like [`run_native_and_collect`] but also returns the run outcome
+    /// (thresholds gate results).
+    async fn run_native_full(
+        steps: Vec<Step>,
+        before: Vec<Step>,
+        after: Vec<Step>,
+        variables: Map<String, Value>,
+        config: RunConfig,
+    ) -> (Vec<LogLine>, NativeRunOutcome) {
         let (tx, mut rx) = mpsc::channel(512);
         let handle = tokio::spawn(run_native(
             steps, before, after, config, variables, false, tx,
@@ -1356,8 +1584,8 @@ mod tests {
         while let Some(line) = rx.recv().await {
             lines.push(line);
         }
-        handle.await.unwrap();
-        lines
+        let outcome = handle.await.unwrap();
+        (lines, outcome)
     }
 
     /// A `before` step's `outputs` is exposed to test steps under `config.<name>`.
@@ -1376,6 +1604,8 @@ mod tests {
             with: Some(json!({ "path": path.to_str().unwrap() })),
             check: None,
             outputs: Some("cfg".into()),
+            severity: None,
+            message: None,
         }];
         // Test step logs the config value interpolated from the before output.
         let steps = vec![log_step("show", "host=${{ config.cfg.content }}", None)];
@@ -1460,6 +1690,8 @@ mod tests {
             with: Some(json!({ "url": "http://127.0.0.1:0/", "timeout": 1000 })),
             check: None,
             outputs: None,
+            severity: None,
+            message: None,
         }];
         let steps = vec![log_step("should-not-run", "MUST NOT APPEAR", None)];
 
@@ -1526,6 +1758,8 @@ mod tests {
             with: Some(json!({ "path": path.to_str().unwrap() })),
             check: None,
             outputs: Some("cfg".into()),
+            severity: None,
+            message: None,
         }];
         let mut vars = Map::new();
         vars.insert("region".into(), json!("eu"));
@@ -1542,6 +1776,8 @@ mod tests {
                 with: Some(json!({ "url": "http://127.0.0.1:0/", "timeout": 500 })),
                 check: None,
                 outputs: None,
+                severity: None,
+                message: None,
             },
             log_step("teardown-2", "AFTER STILL RUNS", None),
         ];
@@ -1596,6 +1832,8 @@ mod tests {
             with: Some(json!({ "url": "http://127.0.0.1:0/", "timeout": 500 })),
             check: None,
             outputs: None,
+            severity: None,
+            message: None,
         }];
         let after = vec![log_step("teardown", "AFTER ON SETUP FAILURE", None)];
 
@@ -1660,6 +1898,8 @@ mod tests {
             })),
             check: None,
             outputs: Some("keeper".into()),
+            severity: None,
+            message: None,
         }];
         let steps = vec![sleep_step(1)];
 
@@ -1696,6 +1936,8 @@ mod tests {
             })),
             check: None,
             outputs: Some("keeper".into()),
+            severity: None,
+            message: None,
         }];
         let after = vec![Step {
             name: Some("stop server".into()),
@@ -1703,6 +1945,8 @@ mod tests {
             with: Some(json!({ "name": "keeper" })),
             check: None,
             outputs: None,
+            severity: None,
+            message: None,
         }];
         let steps = vec![sleep_step(1)];
 
@@ -1745,6 +1989,8 @@ mod tests {
             })),
             check: None,
             outputs: None,
+            severity: None,
+            message: None,
         }];
 
         let lines = run_native_and_collect(
@@ -1769,4 +2015,310 @@ mod tests {
         assert!(lines.iter().any(|l| l.text.contains("Setup failed")));
         assert!(!lines.iter().any(|l| l.text.starts_with("Starting")));
     }
+
+    // -----------------------------------------------------------------
+    // run_native — std/thresholds@v1 gates (SQLite end to end)
+    // -----------------------------------------------------------------
+
+    /// Rate metrics are 0/1 invocation outcomes, NOT histogram samples (the
+    /// HDR clamp would turn every 0 into a 1): they accumulate as
+    /// total/failed pairs and print in k6's `http_req_failed` shape.
+    #[test]
+    fn metrics_rate_lines_and_counter_shadowing() {
+        let mut m = Metrics::default();
+        for failed in [false, false, false, true] {
+            m.record_rate("db_query_failed", failed);
+        }
+        // A counter sharing the name is shadowed by the rate line.
+        m.add_counters(json!({ "grpc_req_failed": 1.0 }).as_object().unwrap());
+        m.record_rate("grpc_req_failed", true);
+
+        let lines = m.summary_lines(2.0, 4, 1);
+        assert!(
+            lines.iter().any(|l| l == "db_query_failed: 25.00%"),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l == "grpc_req_failed: 100.00%"),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.starts_with("grpc_req_failed: 1 ")),
+            "shadowed counter line must be skipped: {lines:?}"
+        );
+    }
+
+    /// The thresholds snapshot sees every metric kind: sample aggregates from
+    /// the same histograms the summary prints, counters, and rate metrics.
+    #[test]
+    fn metric_snapshot_covers_samples_counters_and_rates() {
+        let mut m = Metrics::default();
+        m.record(&HttpSample {
+            duration_ms: 10.0,
+            status: 500,
+            failed: true,
+        });
+        m.record(&HttpSample {
+            duration_ms: 30.0,
+            status: 200,
+            failed: false,
+        });
+        m.add_counters(
+            json!({ "db_query_duration": [12.0, 24.0], "db_errors": 2.0 })
+                .as_object()
+                .unwrap(),
+        );
+        m.record_rate("db_query_failed", false);
+        m.record_rate("db_query_failed", true);
+
+        let snap = m.metric_snapshot();
+        let http = &snap["http_req_duration"];
+        assert_eq!(http.kind, crate::step::thresholds::MetricKind::Sample);
+        assert_eq!(http.count, 2.0);
+        assert!((http.avg - 20.0).abs() < 0.5, "{http:?}");
+        assert_eq!(snap["http_req_failed"].rate, 0.5);
+        assert_eq!(snap["db_query_duration"].count, 2.0);
+        assert_eq!(snap["db_errors"].count, 2.0);
+        let rate = &snap["db_query_failed"];
+        assert_eq!(rate.rate, 0.5);
+        assert_eq!(rate.count, 2.0);
+    }
+
+    /// Per-invocation failure samples: the runner derives `db_query_failed`
+    /// from `db_query_duration` emissions, 1 on failure / 0 on success.
+    #[test]
+    fn failed_samples_track_invocation_outcomes() {
+        let mut m = Metrics::default();
+        // 3 successes, 1 failure — the rate must equal failed/total
+        // invocations, not anything sample-weighted.
+        for failed in [false, false, false, true] {
+            m.record_rate("db_query_failed", failed);
+        }
+        let snap = m.metric_snapshot();
+        assert_eq!(snap["db_query_failed"].rate, 0.25);
+        assert_eq!(snap["db_query_failed"].count, 4.0);
+    }
+
+    /// A `std/db-*` scenario on in-memory SQLite: connect + query per
+    /// iteration. `query` is the SQL every iteration runs.
+    fn sqlite_db_steps(query: &str) -> Vec<Step> {
+        let step = |action: &str, with: Value, outputs: Option<&str>| Step {
+            name: None,
+            action: action.into(),
+            with: Some(with),
+            check: None,
+            outputs: outputs.map(str::to_owned),
+            severity: None,
+            message: None,
+        };
+        vec![
+            step(
+                "std/db-connect@v1",
+                json!({ "driver": "sqlite", "dsn": "sqlite::memory:" }),
+                Some("conn"),
+            ),
+            step(
+                "std/db-query@v1",
+                json!({ "id": "${{ conn.id }}", "query": query }),
+                None,
+            ),
+            // Throttle the loop so a 1s run makes dozens, not thousands, of
+            // queries — the suite runs many tests in parallel.
+            sleep_step(20),
+        ]
+    }
+
+    fn thresholds_step(with: Value, severity: Option<&str>, message: Option<&str>) -> Step {
+        Step {
+            name: Some("slo gate".into()),
+            action: "std/thresholds@v1".into(),
+            with: Some(with),
+            check: None,
+            outputs: None,
+            severity: severity.map(str::to_owned),
+            message: message.map(str::to_owned),
+        }
+    }
+
+    fn one_second() -> RunConfig {
+        RunConfig {
+            vus: 1,
+            duration: "1s".into(),
+            ..Default::default()
+        }
+    }
+
+    /// Passing gate: all queries succeed, every threshold met, the run
+    /// summary gains a `thresholds: {"status":"pass",…}` line.
+    #[tokio::test]
+    async fn thresholds_passing_gate_on_sqlite() {
+        let after = vec![thresholds_step(
+            json!({
+                "db_query_duration": ["p95<5000", "max<5000"],
+                "db_query_failed": ["rate<0.05"],
+                "db_errors": ["count==0"],
+            }),
+            None,
+            None,
+        )];
+        let (lines, outcome) =
+            run_native_full(sqlite_db_steps("SELECT 1"), Vec::new(), after, Map::new(), one_second())
+                .await;
+
+        let t = outcome.thresholds.as_ref().expect("gate outcome present");
+        assert_eq!(t.status, "pass", "{}", t.message);
+        assert!(!outcome.thresholds_failed());
+        assert!(t.violations.is_empty());
+
+        // The failure-rate metric the runner derived is in the text summary…
+        assert!(
+            lines.iter().any(|l| l.text == "db_query_failed: 0.00%"),
+            "{lines:?}"
+        );
+        // …and the machine-readable gate result follows the metric summary.
+        let tline = lines
+            .iter()
+            .find(|l| l.text.starts_with("thresholds: "))
+            .expect("thresholds summary line");
+        let parsed = crate::summary::parse_thresholds(&tline.text).unwrap();
+        assert_eq!(parsed.status, "pass");
+        assert!(lines.iter().any(|l| l.text.contains("thresholds PASS")));
+    }
+
+    /// Failing gate: every query errors, so `rate<0.05` and `count==0` are
+    /// violated — the outcome fails and the summary JSON carries status,
+    /// message (with the custom suffix) and structured violations.
+    #[tokio::test]
+    async fn thresholds_failing_gate_fails_the_run() {
+        let after = vec![thresholds_step(
+            json!({
+                "db_query_failed": ["rate<0.05"],
+                "db_errors": ["count==0"],
+            }),
+            None, // default severity: fail
+            Some("checkout SLO"),
+        )];
+        let (lines, outcome) = run_native_full(
+            sqlite_db_steps("SELECT * FROM missing_table"),
+            Vec::new(),
+            after,
+            Map::new(),
+            one_second(),
+        )
+        .await;
+
+        let t = outcome.thresholds.as_ref().expect("gate outcome present");
+        assert_eq!(t.status, "fail");
+        assert!(outcome.thresholds_failed());
+        assert_eq!(t.violations.len(), 2, "{:?}", t.violations);
+        // rate over the derived db_query_failed samples is exactly
+        // failed/total invocations — every invocation failed → 1.0.
+        let rate_violation = t
+            .violations
+            .iter()
+            .find(|v| v.metric == "db_query_failed")
+            .unwrap();
+        assert_eq!(rate_violation.expr, "rate<0.05");
+        assert_eq!(rate_violation.actual, 1.0);
+        assert!(t.message.contains("db_query_failed rate=1 ≥ 0.05"), "{}", t.message);
+        assert!(t.message.contains("checkout SLO"), "{}", t.message);
+
+        let tline = lines
+            .iter()
+            .find(|l| l.text.starts_with("thresholds: "))
+            .expect("thresholds summary line");
+        let parsed = crate::summary::parse_thresholds(&tline.text).unwrap();
+        assert_eq!(parsed.status, "fail");
+        assert_eq!(parsed.violations.len(), 2);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text == "db_query_failed: 100.00%"),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.text.contains("thresholds FAIL")),
+            "{lines:?}"
+        );
+    }
+
+    /// Warn gate: violations are reported but the run does not fail (exit
+    /// zero semantics for CI advisories).
+    #[tokio::test]
+    async fn thresholds_warn_gate_does_not_fail_the_run() {
+        let after = vec![thresholds_step(
+            json!({ "db_errors": ["count==0"] }),
+            Some("warn"),
+            None,
+        )];
+        let (_lines, outcome) = run_native_full(
+            sqlite_db_steps("SELECT * FROM missing_table"),
+            Vec::new(),
+            after,
+            Map::new(),
+            one_second(),
+        )
+        .await;
+
+        let t = outcome.thresholds.as_ref().expect("gate outcome present");
+        assert_eq!(t.status, "warn");
+        assert!(!outcome.thresholds_failed(), "warn must exit zero");
+    }
+
+    /// A gate on a metric the run never emitted is a hard config error — it
+    /// fails the run rather than silently passing.
+    #[tokio::test]
+    async fn thresholds_unknown_metric_fails_the_run() {
+        let after = vec![thresholds_step(
+            json!({ "no_such_metric": ["p95<1"] }),
+            None,
+            None,
+        )];
+        let (lines, outcome) = run_native_full(
+            sqlite_db_steps("SELECT 1"),
+            Vec::new(),
+            after,
+            Map::new(),
+            one_second(),
+        )
+        .await;
+
+        let t = outcome.thresholds.as_ref().expect("gate outcome present");
+        assert_eq!(t.status, "fail");
+        assert!(outcome.thresholds_failed());
+        assert!(t.message.contains("unknown metric 'no_such_metric'"), "{}", t.message);
+        // The error lists the metrics that ARE present.
+        assert!(t.message.contains("db_query_duration"), "{}", t.message);
+        assert!(
+            lines.iter().any(|l| l.text.contains("unknown metric")),
+            "{lines:?}"
+        );
+    }
+
+    /// The `severity`/`message` step-level fields reach the action (merged
+    /// into its params by the runner), and `message` is interpolated.
+    #[tokio::test]
+    async fn thresholds_step_level_severity_and_interpolated_message() {
+        let mut vars = Map::new();
+        vars.insert("gate_name".into(), json!("nightly SLO"));
+        let after = vec![thresholds_step(
+            json!({ "db_errors": ["count==0"] }),
+            Some("info"),
+            Some("${{ vars.gate_name }}"),
+        )];
+        let (_lines, outcome) = run_native_full(
+            sqlite_db_steps("SELECT * FROM missing_table"),
+            Vec::new(),
+            after,
+            vars,
+            one_second(),
+        )
+        .await;
+
+        let t = outcome.thresholds.as_ref().expect("gate outcome present");
+        assert_eq!(t.status, "info");
+        assert!(!outcome.thresholds_failed());
+        assert!(t.message.contains("nightly SLO"), "{}", t.message);
+    }
 }
+

@@ -31,6 +31,7 @@ pub(crate) mod grpc;
 pub mod process;
 pub(crate) mod resources;
 pub mod runner;
+pub mod thresholds;
 pub(crate) mod ws;
 
 use schemars::JsonSchema;
@@ -70,6 +71,17 @@ pub struct Step {
 
     /// Variable name to store step output under for `${{ name.field }}` use.
     pub outputs: Option<String>,
+
+    /// Gate severity for `std/thresholds@v1` steps: `fail` (default),
+    /// `warn`, or `info`. Meaningless for other actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+
+    /// Custom message for `std/thresholds@v1` steps (interpolated, appended
+    /// to the auto-generated violation summary). Meaningless for other
+    /// actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

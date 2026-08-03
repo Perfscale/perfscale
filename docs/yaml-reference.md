@@ -35,11 +35,13 @@ steps:
 
 | Field | Required | Description |
 |---|---|---|
-| `use` | yes | Action ID: `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1` (short aliases `http`, `tcp`, `udp`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`, `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`, `check`, `sleep`, `log`, `file-read`, `file-write`, `child_process`, `kill_process` also work). `uses:` is accepted as an alias for `use:` |
+| `use` | yes | Action ID: `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1` (short aliases `http`, `tcp`, `udp`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`, `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`, `check`, `sleep`, `log`, `file-read`, `file-write`, `child_process`, `kill_process`, `thresholds` also work). `uses:` is accepted as an alias for `use:` |
 | `name` | no | Human-readable label shown in log lines |
 | `with` | no | Action parameters — see [Actions](core/actions.md) |
 | `check` | no | Assertions on this step's output — same keys as `std/check@v1` |
 | `outputs` | no | Variable name to store the step output under |
+| `severity` | no | `std/thresholds@v1` only: what a violated gate becomes — `fail` (default; the run exits non-zero), `warn`, or `info` |
+| `message` | no | `std/thresholds@v1` only: custom label appended to the violation summary (interpolated) |
 
 ### Variables (`${{ ... }}`)
 
@@ -216,6 +218,26 @@ parameter list (restart policy, output capture, `waitUntil`),
 [examples/with-processes.config.yaml](../examples/with-processes.config.yaml)
 for a runnable setup, and [Setup and teardown](core/setup-teardown.md) for the
 whole lifecycle (interrupts, auto-kill, data flow).
+
+`after:` is also the home of run-level SLO gates: `std/thresholds@v1`
+evaluates k6-style expressions (`p95<500`, `rate<0.05`, `count==0`) against
+the metrics the whole run collected, once, and fails the run (non-zero exit)
+when a `severity: fail` gate is violated:
+
+```yaml
+after:
+  - name: slo gate
+    use: std/thresholds@v1
+    with:
+      db_query_duration: ["p95<500", "max<2000"]
+      db_query_failed: ["rate<0.05"]
+      db_errors: ["count==0"]
+    severity: fail            # fail (default) | warn | info
+    message: "checkout SLO"   # optional, interpolated
+```
+
+See [`std/thresholds@v1`](core/actions.md#stdthresholdsv1) for the expression
+grammar, metric kinds, and the `thresholds` field in the run summary JSON.
 
 With `--locust`, the same config maps to locust's `--users`/`--spawn-rate`/`--run-time`.
 With `--k6`, load config lives in the script's own `options` block and the

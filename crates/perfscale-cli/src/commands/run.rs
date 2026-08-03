@@ -59,6 +59,16 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
         }
     }
 
+    // A violated `severity: fail` thresholds gate fails the run for CI.
+    // Checked last so the report/summary export above still happen.
+    if let Some(t) = perfscale_core::summary::parse_thresholds(&summary_lines.join("\n")) {
+        if t.status == "fail" {
+            return Err(CliError::new(format!("thresholds failed: {}", t.message))
+                .hint("one or more `std/thresholds@v1` gates evaluated to `fail` — the violations above name the metric, the threshold, and the actual value")
+                .docs("core/actions.md#stdthresholdsv1"));
+        }
+    }
+
     Ok(())
 }
 
@@ -96,6 +106,7 @@ fn build_export(
             timestamp: iso8601_utc(secs),
         },
         summary: perfscale_core::summary::parse_summary(&summary_lines.join("\n")),
+        thresholds: perfscale_core::summary::parse_thresholds(&summary_lines.join("\n")),
     }
 }
 
@@ -139,7 +150,7 @@ fn write_summary_export(
 /// to hundreds of thousands of lines and would blow past any collector's
 /// request-size limit.
 fn is_summary_line(text: &str) -> bool {
-    const MARKERS: [&str; 8] = [
+    const MARKERS: [&str; 9] = [
         "vus",
         "iterations",
         "iteration_duration",
@@ -148,6 +159,7 @@ fn is_summary_line(text: &str) -> bool {
         "data_received",
         "data_sent",
         "checks",
+        "thresholds",
     ];
     let trimmed = text.trim_start();
     if MARKERS.iter().any(|m| trimmed.starts_with(m)) {
@@ -556,6 +568,25 @@ mod tests {
         let lines = vec!["iterations..............: 10 1.00/s".to_string()];
         let export = build_export("native", Some(1), Some("1s".into()), &lines);
         assert!(export.summary.is_none());
+    }
+
+    #[test]
+    fn build_export_picks_up_thresholds_line() {
+        let lines = vec![
+            "http_reqs..............: 120 2.00/s".to_string(),
+            r#"thresholds: {"status":"fail","message":"db_errors count=3 ≠ 0","violations":[{"metric":"db_errors","expr":"count==0","actual":3.0}]}"#.to_string(),
+        ];
+        let export = build_export("native", Some(1), Some("1s".into()), &lines);
+        let t = export.thresholds.expect("thresholds parsed from summary lines");
+        assert_eq!(t.status, "fail");
+        assert_eq!(t.violations.len(), 1);
+    }
+
+    #[test]
+    fn is_summary_line_accepts_thresholds_lines() {
+        assert!(is_summary_line(
+            r#"thresholds: {"status":"pass","message":"all thresholds met"}"#
+        ));
     }
 
     #[test]

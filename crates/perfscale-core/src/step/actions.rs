@@ -29,6 +29,7 @@
 //! | `std/file-write@v1` | Write content to a file                      |
 //! | `std/child_process@v1` | Spawn a managed OS process (restart, readiness gate, output capture) |
 //! | `std/kill_process@v1`  | Signal/stop a managed process by registry name or raw pid |
+//! | `std/thresholds@v1` | Run-level SLO gates over collected metrics (for `after:` blocks) |
 //!
 //! # Extending with custom actions
 //!
@@ -178,6 +179,9 @@ pub async fn execute_action(
         }
         "std/kill_process@v1" | "kill_process" => {
             kill_process_action(&resolved, step_name, ctx).await
+        }
+        "std/thresholds@v1" | "thresholds" => {
+            super::thresholds::thresholds_action(&resolved, ctx, step_name)
         }
         unknown => {
             // No built-in match — hand off to a downstream-registered handler
