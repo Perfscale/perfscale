@@ -1962,6 +1962,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "perfscale-connection"
+version = "0.8.1"
+
+[[package]]
 name = "perfscale-core"
 version = "0.8.1"
 dependencies = [
@@ -1973,6 +1977,7 @@ dependencies = [
  "http",
  "jsonschema",
  "libc",
+ "perfscale-connection",
  "prost",
  "prost-reflect",
  "prost-types",

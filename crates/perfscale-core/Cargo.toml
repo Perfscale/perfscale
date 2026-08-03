@@ -7,6 +7,10 @@ repository.workspace = true
 description = "Generic load-testing engine for perfscale: k6/locust runners, native step engine, YAML test/config parsing"
 
 [dependencies]
+# Named-connection registry backing `step::resources` (parking of live
+# ws/gRPC/DB handles under minted Connection IDs).
+perfscale-connection = { path = "../perfscale-connection" }
+
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

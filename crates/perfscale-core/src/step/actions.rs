@@ -1,4 +1,25 @@
-//! Built-in action implementations.
+//! Built-in action implementations — the dispatch layer of the native engine.
+//!
+//! # Role in the pipeline
+//!
+//! The runner (`step::runner`) calls [`execute_action`] once per step, after
+//! the context (`step::context`) has interpolated `${{ … }}` placeholders in
+//! the step's `with` parameters. This module matches the step's `use` id
+//! against the built-ins below and runs the implementation, returning an
+//! [`ActionOutput`]: a JSON value stored under the step's `outputs:` name,
+//! log lines, a success flag, and an optional HTTP timing sample that the
+//! runner folds into the run metrics.
+//!
+//! The protocol families with *live* connections (`std/ws-connect`,
+//! `std/grpc-connect`, `std/db-connect` and their per-step companions) are
+//! thin dispatch targets here; the implementations live in `step::ws`,
+//! `step::grpc`, and `step::db`. A connect step parks its handle in
+//! `step::resources` (registries from the `perfscale-connection` crate) and
+//! returns a JSON Connection ID (`"ws-1"`, …); later steps reference the
+//! handle by that id, and the runner drains whatever is still parked at the
+//! end of each iteration.
+//!
+//! # Built-in actions
 //!
 //! | Action ID        | What it does                                     |
 //! |------------------|--------------------------------------------------|
@@ -276,26 +297,52 @@ pub fn register_action(handler: Arc<dyn ActionHandler>) {
 //   `body` plus `body_base64` — e.g. a fetched protobuf FileDescriptorSet
 //   can flow into a grpc step via `${{ fetch.body_base64 }}`.
 
-/// Process-wide HTTP client: connection pooling / keep-alive across
-/// iterations and VUs. A fresh client per request would open a new TCP
-/// connection every time and exhaust ephemeral ports under load. The
-/// per-request `timeout` parameter is applied on the request builder, so the
-/// shared client itself carries no default timeout.
-fn shared_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
+/// HTTP client shards: a fixed set of `reqwest::Client`s, one per available
+/// CPU (capped at 16). Each VU is pinned to one shard via
+/// [`Context::http_client_shard`], so connection pooling / keep-alive across
+/// iterations and VUs is preserved exactly as with a single client — but a
+/// *single* process-global client made hundreds of VUs contend on one hyper
+/// pool mutex (the top lock in CPU profiles under load). Sharding by VU
+/// rather than by calling thread matters: tokio work-stealing migrates VU
+/// tasks across workers, and thread-keyed shards let every VU accumulate an
+/// idle connection in every shard pool (400 VUs × N shards sockets), which
+/// stalls the target under load. The per-request `timeout` parameter is
+/// applied on the request builder, so the shared clients themselves carry no
+/// default timeout.
+fn shared_client(shard: usize) -> &'static reqwest::Client {
+    static CLIENTS: OnceLock<Vec<reqwest::Client>> = OnceLock::new();
+    let clients = CLIENTS
+        .get_or_init(|| (0..client_shard_count()).map(|_| reqwest::Client::new()).collect());
+    &clients[shard % clients.len()]
 }
 
 /// Like [`shared_client`], but skips TLS certificate verification — used only
-/// when a step opts in with `insecure: true`. A separate client so secure
+/// when a step opts in with `insecure: true`. A separate shard set so secure
 /// requests never share a connection pool with unverified ones.
-fn shared_insecure_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .build()
-            .expect("insecure client construction cannot fail")
+fn shared_insecure_client(shard: usize) -> &'static reqwest::Client {
+    static CLIENTS: OnceLock<Vec<reqwest::Client>> = OnceLock::new();
+    let clients = CLIENTS.get_or_init(|| {
+        (0..client_shard_count())
+            .map(|_| {
+                reqwest::Client::builder()
+                    .danger_accept_invalid_certs(true)
+                    .build()
+                    .expect("insecure client construction cannot fail")
+            })
+            .collect()
+    });
+    &clients[shard % clients.len()]
+}
+
+/// Number of client shards: available parallelism, capped — more shards than
+/// worker threads only fragments the connection pools.
+pub(crate) fn client_shard_count() -> usize {
+    static N: OnceLock<usize> = OnceLock::new();
+    *N.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(1, 16)
     })
 }
 
@@ -314,9 +361,9 @@ async fn http_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOu
     };
 
     let client = if insecure {
-        shared_insecure_client()
+        shared_insecure_client(ctx.http_client_shard)
     } else {
-        shared_client()
+        shared_client(ctx.http_client_shard)
     };
     let mut req = client
         .request(reqwest_method, &url)

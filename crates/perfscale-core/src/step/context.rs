@@ -42,6 +42,10 @@ pub struct Context {
     /// `std/thresholds@v1` can evaluate gates over everything the run
     /// collected. `None` in per-iteration and `before` contexts.
     pub(crate) run_metrics: Option<std::sync::Arc<std::sync::Mutex<crate::step::runner::Metrics>>>,
+    /// Which HTTP client shard this VU uses (see the sharded clients in
+    /// `step::actions`). Seeded by the runner from the VU id so every VU
+    /// keeps exactly one warm connection pool; 0 in hand-built contexts.
+    pub(crate) http_client_shard: usize,
 }
 
 impl Context {
@@ -62,27 +66,34 @@ impl Context {
     /// - `${{ name.a.b }}`            → nested path, one JSON level per `.`
     ///   (e.g. `${{ resp.headers.x-request-id }}`)
     pub fn interpolate(&self, s: &str) -> String {
-        let mut result = s.to_string();
-        let mut offset = 0usize;
-
+        // Single pass: literals stream into one output buffer, so each
+        // placeholder costs a lookup and a push instead of a `replace_range`
+        // (memmove + possible realloc) per placeholder; a placeholder-free
+        // string costs one scan and no extra copies. Text produced by a
+        // substitution is never re-scanned, as before.
+        let mut rest = s;
+        let Some(mut start) = rest.find("${{") else {
+            return s.to_string();
+        };
+        let mut out = String::with_capacity(s.len() + 16);
         loop {
-            let search = &result[offset..];
-            let Some(start) = search.find("${{") else {
-                break;
+            out.push_str(&rest[..start]);
+            let after = &rest[start + 3..];
+            let Some(end) = after.find("}}") else {
+                // Unterminated opener: the remainder stays verbatim.
+                out.push_str(&rest[start..]);
+                return out;
             };
-            let abs_start = offset + start;
-            let after = &result[abs_start + 3..];
-            let Some(end_rel) = after.find("}}") else {
-                break;
-            };
-
-            let expr = after[..end_rel].trim().to_string();
-            let value = self.resolve_expr(&expr);
-            let full_len = 3 + end_rel + 2; // "${{".len() + content + "}}".len()
-            result.replace_range(abs_start..abs_start + full_len, &value);
-            offset = abs_start + value.len();
+            out.push_str(&self.resolve_expr(after[..end].trim()));
+            rest = &after[end + 2..];
+            match rest.find("${{") {
+                Some(next) => start = next,
+                None => {
+                    out.push_str(rest);
+                    return out;
+                }
+            }
         }
-        result
     }
 
     /// Resolve an expression like `"resp"`, `"resp.status"`, or a nested

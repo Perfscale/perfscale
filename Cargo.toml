@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/perfscale-core", "crates/perfscale-cli"]
+members = [
+    "crates/perfscale-cli",
+    "crates/perfscale-connection",
+    "crates/perfscale-core",
+]
 resolver = "2"
 
 [workspace.package]
@@ -7,3 +11,11 @@ version = "0.8.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Perfscale/perfscale"
+
+[profile.release]
+# Thin LTO + a single codegen unit: measurable hot-path win (cross-crate
+# inlining) for the engine at an acceptable clean-build cost. Unwind is kept
+# (tests rely on unwinding); no target-cpu — binaries stay universal and
+# ring already does runtime AES-NI dispatch.
+lto = "thin"
+codegen-units = 1
