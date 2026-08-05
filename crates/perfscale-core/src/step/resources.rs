@@ -187,6 +187,12 @@ pub(crate) struct DbConn {
     /// Active transaction (persistent mode only); `std/db-query@v1` runs
     /// inside it while set.
     pub tx: Option<DbTx>,
+    /// Learned at runtime (Postgres autocommit only): the endpoint is a
+    /// transaction-mode pooler (PgBouncer/Supavisor) that splits one
+    /// extended-protocol exchange across backends, so autocommit queries on
+    /// this connection run inside BEGIN/COMMIT to pin the backend. Set on
+    /// the first pooler-split error; never set for direct connections.
+    pub wrap_tx: bool,
 }
 
 impl Connection for DbConn {
@@ -492,6 +498,7 @@ mod tests {
                 sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap(),
             ))),
             tx: None,
+            wrap_tx: false,
         }
     }
 

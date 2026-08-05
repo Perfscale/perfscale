@@ -28,6 +28,22 @@
 //! DSN. Likewise an in-memory SQLite pool must stay at `pool_size: 1` (the
 //! default): a second pooled connection would be a *different* database.
 //!
+//! # Connection poolers (PgBouncer, Supabase/Supavisor)
+//!
+//! Every statement executes **unnamed** ([`step_query`] sets
+//! `persistent(false)`), so a transaction-mode pooler never trips over a
+//! cached named statement on the shared backend (`prepared statement
+//! "sqlx_s_1" already exists`). sqlx still flushes Parse+Sync and
+//! Bind+Execute+Sync as separate batches, and such a pooler may reassign
+//! the backend at the Sync under concurrency; when that happens
+//! ([`is_pg_pooler_split`] — always a pre-execution error, so the statement
+//! provably never ran), the query retries once inside BEGIN/COMMIT, which
+//! pins the backend, and the connection wraps its remaining autocommit
+//! queries the same way (`DbConn::wrap_tx`). Direct connections never pay
+//! for this. For Supabase: use the pooler DSN (port 6543, IPv4) with
+//! `tls: "skip-verify"` (their CA chain is not in webpki-roots) or install
+//! their CA.
+//!
 //! # SQL and bind parameters
 //!
 //! `query` is SQL text with **driver-native placeholders** (`$1`, `$2`, …
@@ -464,6 +480,21 @@ struct QueryOutcome {
     data: Vec<Value>,
 }
 
+/// The query one step executes. Statements are always **non-persistent**
+/// (unnamed): behind a transaction-mode pooler (PgBouncer, Supabase's :6543
+/// pooler) the server-side backend changes underneath the client connection,
+/// so a named statement cached per client connection collides on the shared
+/// backend — `prepared statement "sqlx_s_1" already exists` on every query
+/// after the first. Unnamed statements are re-parsed per execution, which
+/// costs a Parse round trip and works everywhere: poolers, direct
+/// connections, and (a no-op conceptually) mysql/sqlite.
+fn step_query<'q, DB>(sql: &'q str) -> sqlx::query::Query<'q, DB, <DB as sqlx::Database>::Arguments<'q>>
+where
+    DB: sqlx::Database + sqlx::database::HasStatementCache,
+{
+    sqlx::query::<DB>(sql).persistent(false)
+}
+
 /// Bind `params`, run `sql`, and collect rows up to `max_rows`. Works on
 /// every executor shape the family uses: a pool reference (persistent
 /// queries), a live transaction, or a fresh connection (per-query mode).
@@ -480,7 +511,7 @@ async fn run_query<'c, E, DB>(
 ) -> Result<QueryOutcome, sqlx::Error>
 where
     E: sqlx::Executor<'c, Database = DB>,
-    DB: sqlx::Database,
+    DB: sqlx::Database + sqlx::database::HasStatementCache,
     for<'q> bool: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
     for<'q> i64: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
     for<'q> f64: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
@@ -488,7 +519,7 @@ where
     for<'q> Option<String>: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
     for<'q> <DB as sqlx::Database>::Arguments<'q>: sqlx::IntoArguments<'q, DB>,
 {
-    let mut q = sqlx::query::<DB>(sql);
+    let mut q = step_query::<DB>(sql);
     for (i, p) in params.iter().enumerate() {
         q = match p {
             // A typed NULL (text on PostgreSQL — see the module doc).
@@ -546,6 +577,128 @@ where
         truncated,
         data,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Transaction-mode poolers (PgBouncer, Supabase's Supavisor)
+// ---------------------------------------------------------------------------
+
+/// SQLSTATEs a transaction-mode pooler produces when it splits one
+/// extended-protocol exchange across backends: the Parse lands on one
+/// backend, the Bind on another (sqlx flushes Parse+Sync and Bind+Execute+
+/// Sync as separate batches, and a Sync is exactly where such a pooler may
+/// reassign). All three fire BEFORE the statement executes, so re-running
+/// the statement is exactly-once safe — even for writes.
+///
+/// - 42P05 duplicate_prepared_statement ("sqlx_s_1 already exists")
+/// - 26000 invalid_sql_statement_name ("unnamed prepared statement does not
+///   exist")
+/// - 08P01 protocol_violation ("bind message supplies N parameters, but
+///   prepared statement requires M")
+fn is_pg_pooler_split(e: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(db_err) = e else {
+        return false;
+    };
+    matches!(
+        db_err.code().as_deref(),
+        Some("42P05") | Some("26000") | Some("08P01")
+    )
+}
+
+/// One query inside BEGIN/COMMIT on a single acquired connection — the only
+/// shape a transaction-mode pooler cannot split, because an open transaction
+/// pins the backend until COMMIT/ROLLBACK. sqlx's own Transaction gives the
+/// cleanup semantics (drop rolls back) for free.
+async fn run_pg_wrapped<'c, A>(
+    acq: A,
+    sql: &str,
+    params: &[Value],
+    max_rows: usize,
+) -> Result<QueryOutcome, sqlx::Error>
+where
+    A: sqlx::Acquire<'c, Database = sqlx::Postgres>,
+{
+    let mut tx = acq.begin().await?;
+    let out = run_query(&mut *tx, sql, params, max_rows, pg_row_to_json, |r| {
+        r.rows_affected()
+    })
+    .await;
+    match out {
+        Ok(o) => {
+            tx.commit().await?;
+            Ok(o)
+        }
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
+        }
+    }
+}
+
+/// Autocommit query on a Postgres pool, learning pooler compatibility on
+/// the fly. The returned flag tells the caller to route every later query
+/// on this connection straight to the wrapped path.
+///
+/// Plain path first — one exchange, no distortion on direct connections. A
+/// pooler split ([`is_pg_pooler_split`], always a pre-execution failure)
+/// retries once inside BEGIN/COMMIT: an open transaction pins the backend,
+/// so Parse and Bind cannot be separated. The retry is invisible in
+/// metrics — the step simply succeeds. A genuine user error (a real
+/// bind-count mismatch is also 08P01) fails the wrapped retry too: it is
+/// reported unchanged and the flag stays off.
+async fn run_pg_pool_autocommit(
+    pool: &sqlx::PgPool,
+    wrap_tx: bool,
+    sql: &str,
+    params: &[Value],
+    max_rows: usize,
+) -> (Result<QueryOutcome, sqlx::Error>, bool) {
+    if !wrap_tx {
+        let plain = run_query(pool, sql, params, max_rows, pg_row_to_json, |r| {
+            r.rows_affected()
+        })
+        .await;
+        match plain {
+            Err(e) if is_pg_pooler_split(&e) => {} // fall through into the wrapped retry
+            other => return (other, false),
+        }
+    }
+    let out = run_pg_wrapped(pool, sql, params, max_rows).await;
+    let learned = out.is_ok();
+    (out, learned)
+}
+
+/// The per-query-mode twin: connect fresh for the plain attempt, and on a
+/// pooler split retry on a NEW connection inside BEGIN/COMMIT (the split
+/// connection's stream state cannot be trusted).
+async fn run_pg_profile_autocommit(
+    opts: &sqlx::postgres::PgConnectOptions,
+    wrap_tx: bool,
+    sql: &str,
+    params: &[Value],
+    max_rows: usize,
+) -> (Result<QueryOutcome, sqlx::Error>, bool) {
+    if !wrap_tx {
+        let plain = match opts.connect().await {
+            Ok(mut fresh) => {
+                run_query(&mut fresh, sql, params, max_rows, pg_row_to_json, |r| {
+                    r.rows_affected()
+                })
+                .await
+            }
+            Err(e) => Err(e),
+        };
+        match plain {
+            Err(e) if is_pg_pooler_split(&e) => {} // retry wrapped, on a fresh connection
+            other => return (other, false),
+        }
+    }
+    let out = match opts.connect().await {
+        Ok(mut fresh) => run_pg_wrapped(&mut fresh, sql, params, max_rows).await,
+        Err(e) => Err(e),
+    };
+    let learned = out.is_ok();
+    (out, learned)
 }
 
 // ---------------------------------------------------------------------------
@@ -798,6 +951,7 @@ pub(crate) async fn db_connect_action(
         per_query: cp.per_query,
         state,
         tx: None,
+        wrap_tx: false,
     });
 
     ActionOutput {
@@ -944,7 +1098,10 @@ pub async fn probe_db(driver: &str, dsn: &str, tls: &str, timeout_ms: u64) -> Re
     }
 }
 
-/// One connect + `SELECT 1` per driver, on a single bare connection (no pool).
+/// One connect + `SELECT 1` per driver, on a single bare connection (no
+/// pool). The probe uses the same unnamed statements as every other query
+/// ([`step_query`]) — against a transaction-mode pooler a named statement
+/// would collide on the shared backend just the same.
 async fn probe_roundtrip(cp: &ConnectParams) -> Result<(), String> {
     /// DSN-sanitized error detail, same as a failed db-connect reports.
     fn detail(e: &sqlx::Error, cp: &ConnectParams) -> String {
@@ -954,7 +1111,7 @@ async fn probe_roundtrip(cp: &ConnectParams) -> Result<(), String> {
         DbDriver::Postgres => {
             let (opts, _) = pg_options(cp)?;
             let mut conn = opts.connect().await.map_err(|e| detail(&e, cp))?;
-            sqlx::query("SELECT 1")
+            step_query::<sqlx::Postgres>("SELECT 1")
                 .execute(&mut conn)
                 .await
                 .map_err(|e| detail(&e, cp))?;
@@ -962,7 +1119,7 @@ async fn probe_roundtrip(cp: &ConnectParams) -> Result<(), String> {
         DbDriver::MySql => {
             let (opts, _) = mysql_options(cp)?;
             let mut conn = opts.connect().await.map_err(|e| detail(&e, cp))?;
-            sqlx::query("SELECT 1")
+            step_query::<sqlx::MySql>("SELECT 1")
                 .execute(&mut conn)
                 .await
                 .map_err(|e| detail(&e, cp))?;
@@ -970,7 +1127,7 @@ async fn probe_roundtrip(cp: &ConnectParams) -> Result<(), String> {
         DbDriver::Sqlite => {
             let (opts, _) = sqlite_options(cp)?;
             let mut conn = opts.connect().await.map_err(|e| detail(&e, cp))?;
-            sqlx::query("SELECT 1")
+            step_query::<sqlx::Sqlite>("SELECT 1")
                 .execute(&mut conn)
                 .await
                 .map_err(|e| detail(&e, cp))?;
@@ -1019,16 +1176,20 @@ pub(crate) async fn db_query_action(params: &Value, ctx: &Context, step_name: &s
     let target = conn.target.clone();
 
     let t0 = Instant::now();
+    // Pooler state learned by earlier queries on this connection (Postgres
+    // autocommit only — see the pooler section above).
+    let wrap_tx = conn.wrap_tx;
+    let mut wrap_tx_learned = false;
     let run = tokio::time::timeout(Duration::from_millis(spec.timeout_ms), async {
         let sql = spec.sql;
         let binds = spec.binds;
         let max_rows = spec.max_rows;
         match (&mut conn.state, conn.tx.as_mut()) {
             (DbState::Pool(DbPool::Pg(pool)), None) => {
-                run_query(&*pool, sql, binds, max_rows, pg_row_to_json, |r| {
-                    r.rows_affected()
-                })
-                .await
+                let (outcome, learned) =
+                    run_pg_pool_autocommit(pool, wrap_tx, sql, binds, max_rows).await;
+                wrap_tx_learned = learned;
+                outcome
             }
             (DbState::Pool(DbPool::Pg(_)), Some(DbTx::Pg(tx))) => {
                 run_query(&mut **tx, sql, binds, max_rows, pg_row_to_json, |r| {
@@ -1062,11 +1223,10 @@ pub(crate) async fn db_query_action(params: &Value, ctx: &Context, step_name: &s
             }
             (DbState::Profile(profile), None) => match &mut **profile {
                 DbProfile::Pg(opts) => {
-                    let mut fresh = opts.connect().await?;
-                    run_query(&mut fresh, sql, binds, max_rows, pg_row_to_json, |r| {
-                        r.rows_affected()
-                    })
-                    .await
+                    let (outcome, learned) =
+                        run_pg_profile_autocommit(opts, wrap_tx, sql, binds, max_rows).await;
+                    wrap_tx_learned = learned;
+                    outcome
                 }
                 DbProfile::My(opts) => {
                     let mut fresh = opts.connect().await?;
@@ -1097,6 +1257,9 @@ pub(crate) async fn db_query_action(params: &Value, ctx: &Context, step_name: &s
     .await;
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
+    if wrap_tx_learned {
+        conn.wrap_tx = true;
+    }
     // Whatever happened, the connection survives a query error — a failed
     // statement no more kills a pool than a failed RPC kills a channel.
     ctx.resources.put_back_db(&id, conn);
@@ -2391,6 +2554,75 @@ mod tests {
         server_flow("mysql", &dsn, "?").await;
     }
 
+    /// The BEGIN/COMMIT wrap machinery, exercised against a direct server.
+    /// The pooler-split detection that triggers it live needs a real
+    /// transaction-mode pooler (PgBouncer/Supavisor) and is covered by live
+    /// runs only — no fake can reproduce a backend swap.
+    #[tokio::test]
+    async fn postgres_pooler_wrap_gated() {
+        let Some(dsn) = gated_dsn("PERFSCALE_TEST_PG_DSN") else {
+            eprintln!("skipped: PERFSCALE_TEST_PG_DSN not set (see step/db.rs module doc)");
+            return;
+        };
+        let opts = sqlx::postgres::PgConnectOptions::from_str(&dsn)
+            .unwrap()
+            .ssl_mode(sqlx::postgres::PgSslMode::Disable);
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        // QueryOutcome has no Debug — unwrap with the sqlx error as context.
+        fn unwrap_outcome(r: Result<QueryOutcome, sqlx::Error>) -> QueryOutcome {
+            r.unwrap_or_else(|e| panic!("query failed: {e}"))
+        }
+
+        // Plain path on a direct server: works, and never learns the wrap.
+        let (out, learned) =
+            run_pg_pool_autocommit(&pool, false, "DROP TABLE IF EXISTS perfscale_wrap_test", &[], 10)
+                .await;
+        unwrap_outcome(out);
+        assert!(!learned, "direct server must not learn the wrap");
+        let (out, learned) = run_pg_pool_autocommit(
+            &pool,
+            false,
+            "CREATE TABLE perfscale_wrap_test (n INTEGER)",
+            &[],
+            10,
+        )
+        .await;
+        unwrap_outcome(out);
+        assert!(!learned);
+
+        // Forced wrap (the state learned on a pooler): insert + read back.
+        let (out, learned) = run_pg_pool_autocommit(
+            &pool,
+            true,
+            "INSERT INTO perfscale_wrap_test VALUES ($1)",
+            &[json!(1)],
+            10,
+        )
+        .await;
+        unwrap_outcome(out);
+        assert!(learned);
+        let (out, learned) =
+            run_pg_pool_autocommit(&pool, true, "SELECT n FROM perfscale_wrap_test", &[], 10).await;
+        assert!(learned);
+        let out = unwrap_outcome(out);
+        assert_eq!(out.rows, 1);
+        assert_eq!(out.data[0]["n"], 1);
+
+        // A genuine error still errors when wrapped — and is never learned.
+        let (out, learned) =
+            run_pg_pool_autocommit(&pool, true, "SELECT * FROM no_such_table", &[], 10).await;
+        assert!(out.is_err());
+        assert!(!learned);
+
+        let (out, _) =
+            run_pg_pool_autocommit(&pool, false, "DROP TABLE perfscale_wrap_test", &[], 10).await;
+        unwrap_outcome(out);
+    }
+
     #[test]
     fn connect_params_pool_size_is_clamped() {
         // 0 would make a pool that can never hand out a connection; the
@@ -2440,6 +2672,76 @@ mod tests {
             sanitize_detail("unknown database s3cretdb", dsn),
             "unknown database s3cretdb"
         );
+    }
+
+    #[test]
+    fn queries_use_unnamed_statements() {
+        // PgBouncer-style transaction poolers swap server backends under the
+        // client connection, so a cached NAMED statement collides on the
+        // shared backend ("prepared statement \"sqlx_s_1\" already exists").
+        // step_query must therefore build non-persistent (unnamed)
+        // statements — observable via the Execute::persistent flag. (The
+        // backend-split retry this enables is covered by live pooler runs;
+        // it cannot be reproduced with a local server.)
+        fn is_persistent<DB>(sql: &str) -> bool
+        where
+            DB: sqlx::Database + sqlx::database::HasStatementCache,
+            for<'q> <DB as sqlx::Database>::Arguments<'q>: sqlx::IntoArguments<'q, DB>,
+        {
+            sqlx::Execute::persistent(&step_query::<DB>(sql))
+        }
+        assert!(!is_persistent::<sqlx::Postgres>("SELECT $1"));
+        assert!(!is_persistent::<sqlx::MySql>("SELECT ?"));
+        assert!(!is_persistent::<sqlx::Sqlite>("SELECT ?"));
+    }
+
+    /// Minimal `DatabaseError` with a settable code, for classification
+    /// tests that need no server.
+    #[derive(Debug)]
+    struct FakeDbErr(&'static str);
+
+    impl std::fmt::Display for FakeDbErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for FakeDbErr {}
+
+    impl sqlx::error::DatabaseError for FakeDbErr {
+        fn message(&self) -> &str {
+            "fake db error"
+        }
+        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+            Some(std::borrow::Cow::Borrowed(self.0))
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> ErrorKind {
+            ErrorKind::Other
+        }
+    }
+
+    #[test]
+    fn pooler_split_sqlstates_are_recognized() {
+        let db_err = |code| sqlx::Error::Database(Box::new(FakeDbErr(code)));
+        // The three pre-execution pooler-split signatures…
+        assert!(is_pg_pooler_split(&db_err("42P05"))); // already exists
+        assert!(is_pg_pooler_split(&db_err("26000"))); // does not exist
+        assert!(is_pg_pooler_split(&db_err("08P01"))); // bind param mismatch
+        // …and nothing else: real SQL/user errors must NOT trigger a retry.
+        assert!(!is_pg_pooler_split(&db_err("42601"))); // syntax error
+        assert!(!is_pg_pooler_split(&db_err("23505"))); // unique violation
+        assert!(!is_pg_pooler_split(&db_err("57014"))); // query canceled
+        assert!(!is_pg_pooler_split(&sqlx::Error::RowNotFound));
+        assert!(!is_pg_pooler_split(&sqlx::Error::PoolTimedOut));
     }
 
     // -----------------------------------------------------------------
