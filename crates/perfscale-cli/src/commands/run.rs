@@ -171,9 +171,7 @@ fn is_summary_line(text: &str) -> bool {
     // The name before the colon must be a valid metric identifier.
     if let Some(colon) = trimmed.find(':') {
         let name = &trimmed[..colon];
-        if !name.is_empty()
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
+        if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             let after = trimmed[colon + 1..].trim_start();
             return after.starts_with("avg=") || after.contains("/s");
         }
@@ -577,7 +575,9 @@ mod tests {
             r#"thresholds: {"status":"fail","message":"db_errors count=3 ≠ 0","violations":[{"metric":"db_errors","expr":"count==0","actual":3.0}]}"#.to_string(),
         ];
         let export = build_export("native", Some(1), Some("1s".into()), &lines);
-        let t = export.thresholds.expect("thresholds parsed from summary lines");
+        let t = export
+            .thresholds
+            .expect("thresholds parsed from summary lines");
         assert_eq!(t.status, "fail");
         assert_eq!(t.violations.len(), 1);
     }

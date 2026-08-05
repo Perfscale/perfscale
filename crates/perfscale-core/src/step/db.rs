@@ -200,7 +200,11 @@ fn parse_connect_params(params: &Value) -> Result<ConnectParams, String> {
         .filter(|s| !s.is_empty())
         .ok_or("'dsn' is required (a driver-native connection string)")?
         .to_string();
-    let tls = params.get("tls").map(parse_tls).transpose()?.unwrap_or(TlsMode::Verify);
+    let tls = params
+        .get("tls")
+        .map(parse_tls)
+        .transpose()?
+        .unwrap_or(TlsMode::Verify);
     let per_query = match params.get("mode") {
         None | Some(Value::Null) => false,
         Some(Value::String(s)) if s == "persistent" => false,
@@ -488,7 +492,9 @@ struct QueryOutcome {
 /// after the first. Unnamed statements are re-parsed per execution, which
 /// costs a Parse round trip and works everywhere: poolers, direct
 /// connections, and (a no-op conceptually) mysql/sqlite.
-fn step_query<'q, DB>(sql: &'q str) -> sqlx::query::Query<'q, DB, <DB as sqlx::Database>::Arguments<'q>>
+fn step_query<'q, DB>(
+    sql: &'q str,
+) -> sqlx::query::Query<'q, DB, <DB as sqlx::Database>::Arguments<'q>>
 where
     DB: sqlx::Database + sqlx::database::HasStatementCache,
 {
@@ -532,8 +538,11 @@ where
                     q.bind(float)
                 } else {
                     return Err(sqlx::Error::Encode(
-                        format!("bind param #{}: unsigned integer does not fit in i64", i + 1)
-                            .into(),
+                        format!(
+                            "bind param #{}: unsigned integer does not fit in i64",
+                            i + 1
+                        )
+                        .into(),
                     ));
                 }
             }
@@ -897,8 +906,8 @@ pub(crate) async fn db_connect_action(
     };
 
     let t0 = Instant::now();
-    let outcome = tokio::time::timeout(Duration::from_millis(cp.timeout_ms), connect_inner(&cp))
-        .await;
+    let outcome =
+        tokio::time::timeout(Duration::from_millis(cp.timeout_ms), connect_inner(&cp)).await;
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let (state, target) = match outcome {
@@ -937,7 +946,10 @@ pub(crate) async fn db_connect_action(
                 }),
                 logs: vec![(
                     LogTag::Err,
-                    format!("{step_name}: {} connect failed (timeout): {detail}", cp.driver.as_str()),
+                    format!(
+                        "{step_name}: {} connect failed (timeout): {detail}",
+                        cp.driver.as_str()
+                    ),
                 )],
                 success: false,
                 http_sample: None,
@@ -1094,7 +1106,10 @@ pub async fn probe_db(driver: &str, dsn: &str, tls: &str, timeout_ms: u64) -> Re
     match tokio::time::timeout(Duration::from_millis(timeout_ms), probe_roundtrip(&cp)).await {
         Ok(Ok(())) => Ok(t0.elapsed().as_millis()),
         Ok(Err(detail)) => Err(detail),
-        Err(_) => Err(format!("probe timeout after {}ms", t0.elapsed().as_millis())),
+        Err(_) => Err(format!(
+            "probe timeout after {}ms",
+            t0.elapsed().as_millis()
+        )),
     }
 }
 
@@ -1163,7 +1178,11 @@ async fn probe_roundtrip(cp: &ConnectParams) -> Result<(), String> {
 // step but leaves the connection (and any open transaction) parked — the
 // scenario decides whether to roll back.
 
-pub(crate) async fn db_query_action(params: &Value, ctx: &Context, step_name: &str) -> ActionOutput {
+pub(crate) async fn db_query_action(
+    params: &Value,
+    ctx: &Context,
+    step_name: &str,
+) -> ActionOutput {
     let spec = match parse_query_spec(params) {
         Ok(s) => s,
         Err(msg) => return err(step_name, &msg),
@@ -1324,14 +1343,7 @@ pub(crate) async fn db_query_action(params: &Value, ctx: &Context, step_name: &s
                 driver,
                 target: &target,
             };
-            db_fail_ref(
-                step_name,
-                fail_conn,
-                &id,
-                "timeout",
-                &detail,
-                duration_ms,
-            )
+            db_fail_ref(step_name, fail_conn, &id, "timeout", &detail, duration_ms)
         }
     }
 }
@@ -1447,7 +1459,10 @@ pub(crate) async fn db_tx_begin_action(
                 }),
                 logs: vec![(
                     LogTag::Out,
-                    format!("{} {target} [{id}] → BEGIN ({duration_ms:.2}ms)", driver.as_str()),
+                    format!(
+                        "{} {target} [{id}] → BEGIN ({duration_ms:.2}ms)",
+                        driver.as_str()
+                    ),
                 )],
                 success: true,
                 http_sample: None,
@@ -1470,14 +1485,7 @@ pub(crate) async fn db_tx_begin_action(
                 target: &target,
             };
             ctx.resources.put_back_db(&id, conn);
-            db_fail_ref(
-                step_name,
-                fail_conn,
-                &id,
-                "timeout",
-                &detail,
-                duration_ms,
-            )
+            db_fail_ref(step_name, fail_conn, &id, "timeout", &detail, duration_ms)
         }
     }
 }
@@ -1532,7 +1540,10 @@ async fn db_tx_finish_action(
                 value,
                 logs: vec![(
                     LogTag::Out,
-                    format!("{} {target} [{id}] → {verb} ({duration_ms:.2}ms)", driver.as_str()),
+                    format!(
+                        "{} {target} [{id}] → {verb} ({duration_ms:.2}ms)",
+                        driver.as_str()
+                    ),
                 )],
                 success: true,
                 http_sample: None,
@@ -1553,14 +1564,7 @@ async fn db_tx_finish_action(
                 driver,
                 target: &target,
             };
-            db_fail_ref(
-                step_name,
-                fail_conn,
-                &id,
-                "timeout",
-                &detail,
-                duration_ms,
-            )
+            db_fail_ref(step_name, fail_conn, &id, "timeout", &detail, duration_ms)
         }
     }
 }
@@ -1595,7 +1599,11 @@ pub(crate) async fn db_tx_rollback_action(
 // close) and releases the id. An open transaction rolls back as it drops.
 // Connections left open are closed implicitly at iteration end.
 
-pub(crate) async fn db_close_action(params: &Value, ctx: &Context, step_name: &str) -> ActionOutput {
+pub(crate) async fn db_close_action(
+    params: &Value,
+    ctx: &Context,
+    step_name: &str,
+) -> ActionOutput {
     let (id, mut conn) = match take_conn(params, ctx) {
         Ok(pair) => pair,
         Err(msg) => return err(step_name, &msg),
@@ -1627,13 +1635,15 @@ pub(crate) async fn db_close_action(params: &Value, ctx: &Context, step_name: &s
         }),
         logs: vec![(
             LogTag::Out,
-            format!("{} {target} [{id}] → closed ({duration_ms:.2}ms)", driver.as_str()),
+            format!(
+                "{} {target} [{id}] → closed ({duration_ms:.2}ms)",
+                driver.as_str()
+            ),
         )],
         success: true,
         http_sample: None,
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1701,10 +1711,16 @@ mod tests {
         // `.err()` avoids the `T: Debug` bound of `unwrap_err` — and a
         // derived Debug on ConnectParams would print the DSN on failure.
         let missing_driver = parse_connect_params(&json!({ "dsn": "sqlite::memory:" }));
-        assert!(missing_driver.err().unwrap().contains("'driver' is required"));
+        assert!(missing_driver
+            .err()
+            .unwrap()
+            .contains("'driver' is required"));
 
         let bad_driver = parse_connect_params(&json!({ "driver": "oracle", "dsn": "x" }));
-        assert!(bad_driver.err().unwrap().contains("unknown driver 'oracle'"));
+        assert!(bad_driver
+            .err()
+            .unwrap()
+            .contains("unknown driver 'oracle'"));
 
         let missing_dsn = parse_connect_params(&json!({ "driver": "sqlite" }));
         assert!(missing_dsn.err().unwrap().contains("'dsn' is required"));
@@ -1726,7 +1742,10 @@ mod tests {
         assert_eq!(parse_tls(&json!("true")).unwrap(), TlsMode::Verify);
         assert_eq!(parse_tls(&json!(false)).unwrap(), TlsMode::Off);
         assert_eq!(parse_tls(&json!("FALSE")).unwrap(), TlsMode::Off);
-        assert_eq!(parse_tls(&json!("skip-verify")).unwrap(), TlsMode::SkipVerify);
+        assert_eq!(
+            parse_tls(&json!("skip-verify")).unwrap(),
+            TlsMode::SkipVerify
+        );
         assert!(parse_tls(&json!(1)).is_err());
         assert!(parse_tls(&json!("require")).is_err());
     }
@@ -1755,15 +1774,20 @@ mod tests {
     fn query_spec_rejections() {
         // Inline assertions: the spec borrows the params, so the Result
         // must be consumed within the same statement.
-        assert!(parse_query_spec(&json!({})).err().unwrap().contains("'query' is required"));
+        assert!(parse_query_spec(&json!({}))
+            .err()
+            .unwrap()
+            .contains("'query' is required"));
         assert!(parse_query_spec(&json!({ "query": "   " }))
             .err()
             .unwrap()
             .contains("'query' is required"));
-        assert!(parse_query_spec(&json!({ "query": "SELECT 1", "params": "x" }))
-            .err()
-            .unwrap()
-            .contains("'params' must be an array"));
+        assert!(
+            parse_query_spec(&json!({ "query": "SELECT 1", "params": "x" }))
+                .err()
+                .unwrap()
+                .contains("'params' must be an array")
+        );
     }
 
     #[test]
@@ -1772,7 +1796,9 @@ mod tests {
         assert!(parse_query_spec(&json!({ "query": at_limit })).is_ok());
 
         let over_limit = "x".repeat(MAX_QUERY_BYTES + 1);
-        let err = parse_query_spec(&json!({ "query": over_limit })).err().unwrap();
+        let err = parse_query_spec(&json!({ "query": over_limit }))
+            .err()
+            .unwrap();
         assert!(err.contains("64 KiB hard limit"), "unexpected: {err}");
     }
 
@@ -1784,55 +1810,133 @@ mod tests {
     fn classify_constraint_via_sqlx_kind() {
         // ErrorKind is neither Copy nor Clone — construct fresh values.
         for driver in [DbDriver::Postgres, DbDriver::MySql, DbDriver::Sqlite] {
-            assert_eq!(classify_db_error(ErrorKind::UniqueViolation, None, driver), "constraint");
-            assert_eq!(classify_db_error(ErrorKind::ForeignKeyViolation, None, driver), "constraint");
-            assert_eq!(classify_db_error(ErrorKind::NotNullViolation, None, driver), "constraint");
-            assert_eq!(classify_db_error(ErrorKind::CheckViolation, None, driver), "constraint");
+            assert_eq!(
+                classify_db_error(ErrorKind::UniqueViolation, None, driver),
+                "constraint"
+            );
+            assert_eq!(
+                classify_db_error(ErrorKind::ForeignKeyViolation, None, driver),
+                "constraint"
+            );
+            assert_eq!(
+                classify_db_error(ErrorKind::NotNullViolation, None, driver),
+                "constraint"
+            );
+            assert_eq!(
+                classify_db_error(ErrorKind::CheckViolation, None, driver),
+                "constraint"
+            );
         }
     }
 
     #[test]
     fn classify_postgres_sqlstate() {
         let pg = DbDriver::Postgres;
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("40P01"), pg), "deadlock");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("40001"), pg), "deadlock");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("57014"), pg), "timeout");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("08006"), pg), "connection");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("08P01"), pg), "connection");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("23505"), pg), "constraint");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("42P01"), pg), "other");
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("40P01"), pg),
+            "deadlock"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("40001"), pg),
+            "deadlock"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("57014"), pg),
+            "timeout"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("08006"), pg),
+            "connection"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("08P01"), pg),
+            "connection"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("23505"), pg),
+            "constraint"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("42P01"), pg),
+            "other"
+        );
         assert_eq!(classify_db_error(ErrorKind::Other, None, pg), "other");
     }
 
     #[test]
     fn classify_mysql_errno() {
         let my = DbDriver::MySql;
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("1213"), my), "deadlock");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("1205"), my), "timeout");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("1062"), my), "constraint");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("1452"), my), "constraint");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("1045"), my), "connection");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("1040"), my), "connection");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("1146"), my), "other");
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("1213"), my),
+            "deadlock"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("1205"), my),
+            "timeout"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("1062"), my),
+            "constraint"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("1452"), my),
+            "constraint"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("1045"), my),
+            "connection"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("1040"), my),
+            "connection"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("1146"), my),
+            "other"
+        );
     }
 
     #[test]
     fn classify_sqlite_result_code() {
         let lite = DbDriver::Sqlite;
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("5"), lite), "deadlock"); // BUSY
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("6"), lite), "deadlock"); // LOCKED
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("19"), lite), "constraint");
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("1555"), lite), "constraint"); // PK
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("2067"), lite), "constraint"); // UNIQUE
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("787"), lite), "constraint"); // FK
-        assert_eq!(classify_db_error(ErrorKind::Other, Some("1"), lite), "other");
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("5"), lite),
+            "deadlock"
+        ); // BUSY
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("6"), lite),
+            "deadlock"
+        ); // LOCKED
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("19"), lite),
+            "constraint"
+        );
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("1555"), lite),
+            "constraint"
+        ); // PK
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("2067"), lite),
+            "constraint"
+        ); // UNIQUE
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("787"), lite),
+            "constraint"
+        ); // FK
+        assert_eq!(
+            classify_db_error(ErrorKind::Other, Some("1"), lite),
+            "other"
+        );
         assert_eq!(classify_db_error(ErrorKind::Other, None, lite), "other");
     }
 
     #[test]
     fn classify_outer_variants() {
         let pg = DbDriver::Postgres;
-        let io_err = sqlx::Error::Io(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "x"));
+        let io_err = sqlx::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "x",
+        ));
         assert_eq!(classify(&io_err, pg), "connection");
         assert_eq!(classify(&sqlx::Error::PoolTimedOut, pg), "timeout");
         assert_eq!(classify(&sqlx::Error::PoolClosed, pg), "connection");
@@ -1847,7 +1951,10 @@ mod tests {
 
     #[test]
     fn dsn_password_extraction() {
-        assert_eq!(dsn_password("postgres://u:s3cret@h:5432/db"), Some("s3cret"));
+        assert_eq!(
+            dsn_password("postgres://u:s3cret@h:5432/db"),
+            Some("s3cret")
+        );
         assert_eq!(dsn_password("mysql://root:p%40ss@h/db"), Some("p%40ss"));
         // A password may itself contain '@' — userinfo ends at the last one.
         assert_eq!(dsn_password("postgres://u:p@ss@h/db"), Some("p@ss"));
@@ -1911,13 +2018,23 @@ mod tests {
     #[tokio::test]
     async fn query_missing_id_or_query_fails_fast() {
         let ctx = Context::new();
-        let out = execute_action("std/db-query@v1", &json!({ "query": "SELECT 1" }), &ctx, "q").await;
+        let out = execute_action(
+            "std/db-query@v1",
+            &json!({ "query": "SELECT 1" }),
+            &ctx,
+            "q",
+        )
+        .await;
         assert!(!out.success);
         assert!(out.logs[0].1.contains("'id' is required"), "{:?}", out.logs);
 
         let out = execute_action("std/db-query@v1", &json!({ "id": "db-1" }), &ctx, "q").await;
         assert!(!out.success);
-        assert!(out.logs[0].1.contains("'query' is required"), "{:?}", out.logs);
+        assert!(
+            out.logs[0].1.contains("'query' is required"),
+            "{:?}",
+            out.logs
+        );
     }
 
     #[tokio::test]
@@ -1932,7 +2049,11 @@ mod tests {
         )
         .await;
         assert!(!out.success);
-        assert!(out.logs[0].1.contains("64 KiB hard limit"), "{:?}", out.logs);
+        assert!(
+            out.logs[0].1.contains("64 KiB hard limit"),
+            "{:?}",
+            out.logs
+        );
     }
 
     #[tokio::test]
@@ -1971,7 +2092,11 @@ mod tests {
         )
         .await;
         assert!(!out.success);
-        assert!(out.logs[0].1.contains("unknown driver 'oracle'"), "{:?}", out.logs);
+        assert!(
+            out.logs[0].1.contains("unknown driver 'oracle'"),
+            "{:?}",
+            out.logs
+        );
     }
 
     #[tokio::test]
@@ -1990,7 +2115,11 @@ mod tests {
         assert!(!out.success);
         let detail = out.value["error"].as_str().unwrap_or("");
         assert!(!detail.contains("s3cret"), "password leaked: {detail}");
-        assert!(!out.logs[0].1.contains("s3cret"), "log leaked: {:?}", out.logs);
+        assert!(
+            !out.logs[0].1.contains("s3cret"),
+            "log leaked: {:?}",
+            out.logs
+        );
     }
 
     // -----------------------------------------------------------------
@@ -2022,7 +2151,12 @@ mod tests {
         ctx.set("conn", out.value.clone());
 
         // tx-begin
-        let out = run(&ctx, "std/db-tx-begin@v1", json!({ "id": "${{ conn.id }}" })).await;
+        let out = run(
+            &ctx,
+            "std/db-tx-begin@v1",
+            json!({ "id": "${{ conn.id }}" }),
+        )
+        .await;
         assert!(out.success, "tx-begin: {:?}", out.logs);
         assert_eq!(out.value["tx"], true);
         assert!(out.value["metrics"]["db_query_duration"].is_array());
@@ -2100,7 +2234,12 @@ mod tests {
         assert_eq!(out.value["metrics"]["db_rows"], 2);
 
         // commit
-        let out = run(&ctx, "std/db-tx-commit@v1", json!({ "id": "${{ conn.id }}" })).await;
+        let out = run(
+            &ctx,
+            "std/db-tx-commit@v1",
+            json!({ "id": "${{ conn.id }}" }),
+        )
+        .await;
         assert!(out.success, "commit: {:?}", out.logs);
         assert_eq!(out.value["committed"], true);
 
@@ -2141,14 +2280,22 @@ mod tests {
         assert!(out.success);
         let out = run(&ctx, "std/db-tx-begin@v1", json!({ "id": id })).await;
         assert!(!out.success);
-        assert!(out.logs[0].1.contains("already has an open transaction"), "{:?}", out.logs);
+        assert!(
+            out.logs[0].1.contains("already has an open transaction"),
+            "{:?}",
+            out.logs
+        );
         let out = run(&ctx, "std/db-tx-rollback@v1", json!({ "id": id })).await;
         assert!(out.success);
 
         // commit without an open tx is a clear error
         let out = run(&ctx, "std/db-tx-commit@v1", json!({ "id": id })).await;
         assert!(!out.success);
-        assert!(out.logs[0].1.contains("no open transaction"), "{:?}", out.logs);
+        assert!(
+            out.logs[0].1.contains("no open transaction"),
+            "{:?}",
+            out.logs
+        );
 
         // close, then the id is gone
         let out = run(&ctx, "std/db-close@v1", json!({ "id": id })).await;
@@ -2161,7 +2308,11 @@ mod tests {
         )
         .await;
         assert!(!out.success);
-        assert!(out.logs[0].1.contains("unknown connection id"), "{:?}", out.logs);
+        assert!(
+            out.logs[0].1.contains("unknown connection id"),
+            "{:?}",
+            out.logs
+        );
     }
 
     #[tokio::test]
@@ -2343,7 +2494,11 @@ mod tests {
         for action in ["std/db-tx-commit@v1", "std/db-tx-rollback@v1"] {
             let out = run(&ctx, action, json!({ "id": id })).await;
             assert!(!out.success, "{action} on per-query id must fail");
-            assert!(out.logs[0].1.contains("no open transaction"), "{action}: {:?}", out.logs);
+            assert!(
+                out.logs[0].1.contains("no open transaction"),
+                "{action}: {:?}",
+                out.logs
+            );
         }
 
         let out = run(&ctx, "std/db-close@v1", json!({ "id": id })).await;
@@ -2368,7 +2523,14 @@ mod tests {
         )
         .await;
         assert!(!out.success);
-        assert!(out.value["error"].as_str().unwrap().contains("cannot be bound"), "{:?}", out.value);
+        assert!(
+            out.value["error"]
+                .as_str()
+                .unwrap()
+                .contains("cannot be bound"),
+            "{:?}",
+            out.value
+        );
         assert_eq!(out.value["error_kind"], "other");
     }
 
@@ -2493,7 +2655,11 @@ mod tests {
             )
             .await;
             assert!(!out.success, "{driver} count mismatch {params} must fail");
-            assert_eq!(out.value["metrics"]["db_errors"], 1, "{params}: {:?}", out.value);
+            assert_eq!(
+                out.value["metrics"]["db_errors"], 1,
+                "{params}: {:?}",
+                out.value
+            );
         }
 
         // Empty result set: rows 0, empty data, no error.
@@ -2516,7 +2682,12 @@ mod tests {
             "SELECT NULL AS n, 'héllo 🦀' AS u, X'00FF10' AS b, \
              9223372036854775807 AS big, 3.141592653589793 AS f"
         };
-        let out = run(&ctx, "std/db-query@v1", json!({ "id": id, "query": decode_sql })).await;
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": decode_sql }),
+        )
+        .await;
         assert!(out.success, "decode select: {:?}", out.value);
         let row = &out.value["data"][0];
         assert_eq!(row["n"], Value::Null, "{driver} NULL → null");
@@ -2578,9 +2749,14 @@ mod tests {
         }
 
         // Plain path on a direct server: works, and never learns the wrap.
-        let (out, learned) =
-            run_pg_pool_autocommit(&pool, false, "DROP TABLE IF EXISTS perfscale_wrap_test", &[], 10)
-                .await;
+        let (out, learned) = run_pg_pool_autocommit(
+            &pool,
+            false,
+            "DROP TABLE IF EXISTS perfscale_wrap_test",
+            &[],
+            10,
+        )
+        .await;
         unwrap_outcome(out);
         assert!(!learned, "direct server must not learn the wrap");
         let (out, learned) = run_pg_pool_autocommit(
@@ -2736,7 +2912,7 @@ mod tests {
         assert!(is_pg_pooler_split(&db_err("42P05"))); // already exists
         assert!(is_pg_pooler_split(&db_err("26000"))); // does not exist
         assert!(is_pg_pooler_split(&db_err("08P01"))); // bind param mismatch
-        // …and nothing else: real SQL/user errors must NOT trigger a retry.
+                                                       // …and nothing else: real SQL/user errors must NOT trigger a retry.
         assert!(!is_pg_pooler_split(&db_err("42601"))); // syntax error
         assert!(!is_pg_pooler_split(&db_err("23505"))); // unique violation
         assert!(!is_pg_pooler_split(&db_err("57014"))); // query canceled
@@ -2775,9 +2951,17 @@ mod tests {
             json!({ "id": id, "query": "SELECT ? AS a, ? AS b", "params": [1] }),
         )
         .await;
-        assert!(out.success, "fewer binds than placeholders: {:?}", out.value);
+        assert!(
+            out.success,
+            "fewer binds than placeholders: {:?}",
+            out.value
+        );
         assert_eq!(out.value["data"][0]["a"], 1);
-        assert_eq!(out.value["data"][0]["b"], Value::Null, "unbound placeholder is NULL");
+        assert_eq!(
+            out.value["data"][0]["b"],
+            Value::Null,
+            "unbound placeholder is NULL"
+        );
 
         let out = run(
             &ctx,
@@ -2873,7 +3057,11 @@ mod tests {
         assert_eq!(out.value["metrics"]["db_errors"], 1);
         assert_eq!(out.value["metrics"]["db_errors_timeout"], 1);
         assert!(out.value["metrics"]["db_query_duration"].is_array());
-        assert!(out.value["error"].as_str().unwrap().contains("TIMEOUT"), "{:?}", out.value);
+        assert!(
+            out.value["error"].as_str().unwrap().contains("TIMEOUT"),
+            "{:?}",
+            out.value
+        );
     }
 
     #[tokio::test]
@@ -2919,14 +3107,22 @@ mod tests {
             .iter()
             .map(|r| &r["v"])
             .collect();
-        assert!(vals.contains(&&json!(10)) && vals.contains(&&json!(20)), "{vals:?}");
+        assert!(
+            vals.contains(&&json!(10)) && vals.contains(&&json!(20)),
+            "{vals:?}"
+        );
     }
 
     #[tokio::test]
     async fn sqlite_max_rows_edge_values() {
         let ctx = Context::new();
         let id = connect_memory(&ctx).await;
-        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "CREATE TABLE m (n INTEGER)" })).await;
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "CREATE TABLE m (n INTEGER)" }),
+        )
+        .await;
         for n in 1..=3 {
             run(
                 &ctx,
@@ -2968,18 +3164,32 @@ mod tests {
         // Plain tables have type AFFINITY: a string into an INTEGER column
         // is not an error (SQLite stores it as TEXT when it does not look
         // numeric) — dynamic typing is documented SQLite behavior.
-        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "CREATE TABLE ns (n INTEGER)" })).await;
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "CREATE TABLE ns (n INTEGER)" }),
+        )
+        .await;
         let out = run(
             &ctx,
             "std/db-query@v1",
             json!({ "id": id, "query": "INSERT INTO ns VALUES (?)", "params": ["abc"] }),
         )
         .await;
-        assert!(out.success, "plain table accepts affinity mismatch: {:?}", out.value);
+        assert!(
+            out.success,
+            "plain table accepts affinity mismatch: {:?}",
+            out.value
+        );
 
         // STRICT tables turn the same insert into a datatype constraint
         // violation (SQLITE_CONSTRAINT_DATATYPE, low byte 19 → constraint).
-        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "CREATE TABLE s (n INTEGER) STRICT" })).await;
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "CREATE TABLE s (n INTEGER) STRICT" }),
+        )
+        .await;
         let out = run(
             &ctx,
             "std/db-query@v1",
@@ -3007,7 +3217,11 @@ mod tests {
         let id = connect_memory(&ctx).await;
         let out = run(&ctx, "std/db-tx-rollback@v1", json!({ "id": id })).await;
         assert!(!out.success);
-        assert!(out.logs[0].1.contains("no open transaction"), "{:?}", out.logs);
+        assert!(
+            out.logs[0].1.contains("no open transaction"),
+            "{:?}",
+            out.logs
+        );
     }
 
     #[tokio::test]
@@ -3016,13 +3230,28 @@ mod tests {
         let dsn = format!("sqlite://{}?mode=rwc", file.path().display());
         let ctx = Context::new();
 
-        let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+        let out = run(
+            &ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "sqlite", "dsn": dsn }),
+        )
+        .await;
         let id = out.value["id"].as_str().unwrap().to_string();
-        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "CREATE TABLE t (x INTEGER)" })).await;
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "CREATE TABLE t (x INTEGER)" }),
+        )
+        .await;
 
         // Begin a tx, write inside it, then close WITHOUT committing.
         run(&ctx, "std/db-tx-begin@v1", json!({ "id": id })).await;
-        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "INSERT INTO t VALUES (1)" })).await;
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "INSERT INTO t VALUES (1)" }),
+        )
+        .await;
         // db-close drops the open transaction (rolling it back) before
         // closing the pool — awaiting the close with the tx still checked
         // out used to hang, so bound the step: a regression fails here
@@ -3037,7 +3266,12 @@ mod tests {
         assert_eq!(closed.value["closed"], true);
 
         // A fresh connection sees none of the uncommitted data.
-        let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+        let out = run(
+            &ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "sqlite", "dsn": dsn }),
+        )
+        .await;
         let id2 = out.value["id"].as_str().unwrap().to_string();
         let out = run(
             &ctx,
@@ -3046,7 +3280,10 @@ mod tests {
         )
         .await;
         assert!(out.success, "reconnect: {:?}", out.logs);
-        assert_eq!(out.value["data"][0]["c"], 0, "uncommitted insert was rolled back");
+        assert_eq!(
+            out.value["data"][0]["c"], 0,
+            "uncommitted insert was rolled back"
+        );
     }
 
     #[tokio::test]
@@ -3055,18 +3292,43 @@ mod tests {
         let dsn = format!("sqlite://{}?mode=rwc", file.path().display());
         let ctx = Context::new();
 
-        let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+        let out = run(
+            &ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "sqlite", "dsn": dsn }),
+        )
+        .await;
         let id = out.value["id"].as_str().unwrap().to_string();
-        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "CREATE TABLE t (x INTEGER)" })).await;
-        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "INSERT INTO t VALUES (1)" })).await;
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "CREATE TABLE t (x INTEGER)" }),
+        )
+        .await;
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "INSERT INTO t VALUES (1)" }),
+        )
+        .await;
 
         // Iteration-end cleanup with an uncommitted tx parked: the drain
         // drops the connection, and SQLite rolls the tx back on drop.
         run(&ctx, "std/db-tx-begin@v1", json!({ "id": id })).await;
-        run(&ctx, "std/db-query@v1", json!({ "id": id, "query": "INSERT INTO t VALUES (2)" })).await;
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "INSERT INTO t VALUES (2)" }),
+        )
+        .await;
         assert_eq!(ctx.resources.drain(), 1);
 
-        let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+        let out = run(
+            &ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "sqlite", "dsn": dsn }),
+        )
+        .await;
         let id2 = out.value["id"].as_str().unwrap().to_string();
         let out = run(
             &ctx,
@@ -3075,7 +3337,10 @@ mod tests {
         )
         .await;
         assert!(out.success, "reconnect: {:?}", out.logs);
-        assert_eq!(out.value["data"][0]["c"], 1, "only the committed row survives");
+        assert_eq!(
+            out.value["data"][0]["c"], 1,
+            "only the committed row survives"
+        );
     }
 
     #[tokio::test]
@@ -3084,25 +3349,54 @@ mod tests {
         let dsn = format!("sqlite://{}?mode=rwc", file.path().display());
         let ctx = Context::new();
 
-        let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+        let out = run(
+            &ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "sqlite", "dsn": dsn }),
+        )
+        .await;
         let id_a = out.value["id"].as_str().unwrap().to_string();
-        let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+        let out = run(
+            &ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "sqlite", "dsn": dsn }),
+        )
+        .await;
         let id_b = out.value["id"].as_str().unwrap().to_string();
-        run(&ctx, "std/db-query@v1", json!({ "id": id_a, "query": "CREATE TABLE l (x INTEGER)" })).await;
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id_a, "query": "CREATE TABLE l (x INTEGER)" }),
+        )
+        .await;
 
         // No waiting on the loser: the lock conflict surfaces immediately as
         // SQLITE_BUSY (low byte 5 → deadlock) instead of after a busy-timeout.
-        let out = run(&ctx, "std/db-query@v1", json!({ "id": id_b, "query": "PRAGMA busy_timeout = 0" })).await;
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id_b, "query": "PRAGMA busy_timeout = 0" }),
+        )
+        .await;
         assert!(out.success, "pragma: {:?}", out.logs);
 
         // A holds an open write transaction…
         run(&ctx, "std/db-tx-begin@v1", json!({ "id": id_a })).await;
-        let out = run(&ctx, "std/db-query@v1", json!({ "id": id_a, "query": "INSERT INTO l VALUES (1)" })).await;
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id_a, "query": "INSERT INTO l VALUES (1)" }),
+        )
+        .await;
         assert!(out.success);
         // …so B's write conflicts with the held lock.
         let out = tokio::time::timeout(
             Duration::from_secs(10),
-            run(&ctx, "std/db-query@v1", json!({ "id": id_b, "query": "INSERT INTO l VALUES (2)" })),
+            run(
+                &ctx,
+                "std/db-query@v1",
+                json!({ "id": id_b, "query": "INSERT INTO l VALUES (2)" }),
+            ),
         )
         .await
         .expect("locked write must fail fast, not hang");
@@ -3112,7 +3406,12 @@ mod tests {
 
         // B's connection is still usable once A lets go.
         run(&ctx, "std/db-tx-rollback@v1", json!({ "id": id_a })).await;
-        let out = run(&ctx, "std/db-query@v1", json!({ "id": id_b, "query": "INSERT INTO l VALUES (2)" })).await;
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id_b, "query": "INSERT INTO l VALUES (2)" }),
+        )
+        .await;
         assert!(out.success, "write succeeds after rollback: {:?}", out.logs);
     }
 
@@ -3124,12 +3423,20 @@ mod tests {
         // wrong-scheme strings fail at open time rather than at parse — a
         // clean, classified config error either way.
         for dsn in ["garbage string with spaces", "postgres://u:p@h/db"] {
-            let out = run(&ctx, "std/db-connect@v1", json!({ "driver": "sqlite", "dsn": dsn })).await;
+            let out = run(
+                &ctx,
+                "std/db-connect@v1",
+                json!({ "driver": "sqlite", "dsn": dsn }),
+            )
+            .await;
             assert!(!out.success, "{dsn} must fail");
             assert_eq!(out.value["error_kind"], "other", "{dsn}: {:?}", out.value);
             assert_eq!(out.value["metrics"]["db_errors_other"], 1);
             let detail = out.value["error"].as_str().unwrap();
-            assert!(detail.contains("unable to open database file"), "{dsn}: {detail}");
+            assert!(
+                detail.contains("unable to open database file"),
+                "{dsn}: {detail}"
+            );
             assert!(!detail.contains("postgres://"), "dsn leaked: {detail}");
         }
 
@@ -3143,7 +3450,10 @@ mod tests {
         assert!(!out.success);
         assert_eq!(out.value["error_kind"], "other");
         assert!(
-            out.value["error"].as_str().unwrap().contains("invalid dsn for driver 'postgres'"),
+            out.value["error"]
+                .as_str()
+                .unwrap()
+                .contains("invalid dsn for driver 'postgres'"),
             "{:?}",
             out.value
         );

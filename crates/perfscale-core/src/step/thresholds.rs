@@ -212,7 +212,9 @@ pub fn parse_expr(input: &str) -> Result<ThresholdExpr, String> {
 
     let value_str = rest[op_name.unwrap().len()..].trim();
     if value_str.is_empty() {
-        return Err(format!("missing value in \"{s}\" — expected e.g. \"p95<500\""));
+        return Err(format!(
+            "missing value in \"{s}\" — expected e.g. \"p95<500\""
+        ));
     }
     let value: f64 = value_str.parse().map_err(|_| {
         format!("invalid value '{value_str}' in \"{s}\" — expected a plain number, no units")
@@ -572,10 +574,7 @@ pub fn combine(mut results: Vec<ThresholdsSummary>) -> Option<ThresholdsSummary>
             .collect::<Vec<_>>()
             .join("; "),
     );
-    let violations = results
-        .into_iter()
-        .flat_map(|r| r.violations)
-        .collect();
+    let violations = results.into_iter().flat_map(|r| r.violations).collect();
     Some(ThresholdsSummary {
         status,
         message,
@@ -770,8 +769,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     fn sample_hist(values_ms: &[f64]) -> hdrhistogram::Histogram<u64> {
-        let mut h =
-            hdrhistogram::Histogram::new_with_bounds(1, 3_600_000_000, 2).unwrap();
+        let mut h = hdrhistogram::Histogram::new_with_bounds(1, 3_600_000_000, 2).unwrap();
         for v in values_ms {
             h.record(((v * 1000.0).round() as u64).clamp(1, 3_600_000_000))
                 .unwrap();
@@ -950,15 +948,13 @@ mod tests {
 
     #[test]
     fn aggregate_applicability_is_enforced_per_metric_kind() {
-        let e = evaluate(&json!({ "db_query_duration": ["rate<0.1"] }), &snapshot())
-            .unwrap_err();
+        let e = evaluate(&json!({ "db_query_duration": ["rate<0.1"] }), &snapshot()).unwrap_err();
         assert!(e.contains("duration metric"), "{e}");
 
         let e = evaluate(&json!({ "db_errors": ["avg<1"] }), &snapshot()).unwrap_err();
         assert!(e.contains("counter"), "{e}");
 
-        let e = evaluate(&json!({ "db_query_failed": ["p95<1"] }), &snapshot())
-            .unwrap_err();
+        let e = evaluate(&json!({ "db_query_failed": ["p95<1"] }), &snapshot()).unwrap_err();
         assert!(e.contains("failure-rate"), "{e}");
     }
 
@@ -1015,7 +1011,9 @@ mod tests {
 
     use std::sync::{Arc, Mutex};
 
-    fn ctx_with_metrics(m: crate::step::runner::Metrics) -> (Context, Arc<Mutex<crate::step::runner::Metrics>>) {
+    fn ctx_with_metrics(
+        m: crate::step::runner::Metrics,
+    ) -> (Context, Arc<Mutex<crate::step::runner::Metrics>>) {
         let shared = Arc::new(Mutex::new(m));
         let mut ctx = Context::new();
         ctx.run_metrics = Some(Arc::clone(&shared));
@@ -1025,11 +1023,7 @@ mod tests {
     fn metrics_with_db_samples(samples: &[(f64, bool)]) -> crate::step::runner::Metrics {
         let mut m = crate::step::runner::Metrics::default();
         for (ms, failed) in samples {
-            m.add_counters(
-                json!({ "db_query_duration": [ms] })
-                    .as_object()
-                    .unwrap(),
-            );
+            m.add_counters(json!({ "db_query_duration": [ms] }).as_object().unwrap());
             m.record_rate("db_query_failed", *failed);
         }
         m
@@ -1069,17 +1063,17 @@ mod tests {
         assert_eq!(out.value["violations"][0]["metric"], "db_query_failed");
 
         // A fail gate is a step failure.
-        let out = thresholds_action(
-            &json!({ "db_query_failed": ["rate<0.05"] }),
-            &ctx,
-            "gate",
-        );
+        let out = thresholds_action(&json!({ "db_query_failed": ["rate<0.05"] }), &ctx, "gate");
         assert_eq!(out.value["status"], "fail");
         assert!(!out.success);
 
         let combined = shared.lock().unwrap().thresholds_summary().unwrap();
         assert_eq!(combined.status, "fail", "worst of pass/warn/fail wins");
-        assert_eq!(combined.violations.len(), 2, "warn + fail violations concat");
+        assert_eq!(
+            combined.violations.len(),
+            2,
+            "warn + fail violations concat"
+        );
     }
 
     #[test]
@@ -1087,11 +1081,26 @@ mod tests {
         let (ctx, shared) = ctx_with_metrics(metrics_with_db_samples(&[(10.0, false)]));
         let out = thresholds_action(&json!({ "nope": ["p95<1"] }), &ctx, "gate");
         assert!(!out.success);
-        assert!(out.logs[0].1.contains("unknown metric 'nope'"), "{:?}", out.logs);
-        assert!(out.logs[0].1.contains("db_query_duration"), "{:?}", out.logs);
+        assert!(
+            out.logs[0].1.contains("unknown metric 'nope'"),
+            "{:?}",
+            out.logs
+        );
+        assert!(
+            out.logs[0].1.contains("db_query_duration"),
+            "{:?}",
+            out.logs
+        );
 
         let summary = shared.lock().unwrap().thresholds_summary().unwrap();
-        assert_eq!(summary.status, "fail", "a broken gate must not silently pass");
-        assert!(summary.message.contains("config error"), "{}", summary.message);
+        assert_eq!(
+            summary.status, "fail",
+            "a broken gate must not silently pass"
+        );
+        assert!(
+            summary.message.contains("config error"),
+            "{}",
+            summary.message
+        );
     }
 }

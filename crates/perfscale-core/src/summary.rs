@@ -145,7 +145,10 @@ struct ProtocolMetrics {
 /// `ws_msg_rtt`. This pass groups metrics by prefix (`grpc`, `ws`, …) and
 /// builds a [`RunSummary`] from the richest protocol family found.
 fn parse_protocol_summary(output: &str) -> Option<RunSummary> {
-    let re = Regex::new(r"^([a-zA-Z_][a-zA-Z0-9_]*)_(req_duration|msg_rtt|req_failed|msgs_sent|reqs)\s*:\s*(.*)$").ok()?;
+    let re = Regex::new(
+        r"^([a-zA-Z_][a-zA-Z0-9_]*)_(req_duration|msg_rtt|req_failed|msgs_sent|reqs)\s*:\s*(.*)$",
+    )
+    .ok()?;
     let mut by_prefix: BTreeMap<String, ProtocolMetrics> = BTreeMap::new();
 
     for line in output.lines() {
@@ -179,7 +182,8 @@ fn parse_protocol_summary(output: &str) -> Option<RunSummary> {
                 let parts: Vec<&str> = rest.split_whitespace().collect();
                 if let Some(first) = parts.first() {
                     if first.ends_with('%') {
-                        m.error_rate_pct = first.trim_end_matches('%').parse::<f64>().unwrap_or(0.0);
+                        m.error_rate_pct =
+                            first.trim_end_matches('%').parse::<f64>().unwrap_or(0.0);
                     } else if let Ok(n) = first.parse::<f64>() {
                         m.failed = n;
                     }

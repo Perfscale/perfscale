@@ -294,7 +294,10 @@ fn run_native_sleep_only_test_succeeds() {
 
 /// SQLite test definition (one failing or passing query per iteration) plus
 /// a config with a thresholds gate in `after:`. Returns both temp files.
-fn sqlite_threshold_files(query: &str, gate: &str) -> (tempfile::NamedTempFile, tempfile::NamedTempFile) {
+fn sqlite_threshold_files(
+    query: &str,
+    gate: &str,
+) -> (tempfile::NamedTempFile, tempfile::NamedTempFile) {
     let mut test_file = tempfile::Builder::new().suffix(".yaml").tempfile().unwrap();
     writeln!(
         test_file,

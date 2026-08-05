@@ -120,14 +120,7 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
 
 const TEST_TOP_FIELDS: [&str; 1] = ["steps"];
 const STEP_FIELDS: [&str; 8] = [
-    "name",
-    "use",
-    "uses",
-    "with",
-    "check",
-    "outputs",
-    "severity",
-    "message",
+    "name", "use", "uses", "with", "check", "outputs", "severity", "message",
 ];
 const CONFIG_TOP_FIELDS: [&str; 7] = [
     "vus",
@@ -387,8 +380,12 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             }
             "std/db-connect@v1" | "db-connect" => Some(&DB_CONNECT_WITH_FIELDS),
             "std/db-query@v1" | "db-query" => Some(&DB_QUERY_WITH_FIELDS),
-            "std/db-tx-begin@v1" | "db-tx-begin" | "std/db-tx-commit@v1" | "db-tx-commit"
-            | "std/db-tx-rollback@v1" | "db-tx-rollback" => Some(&DB_TX_WITH_FIELDS),
+            "std/db-tx-begin@v1"
+            | "db-tx-begin"
+            | "std/db-tx-commit@v1"
+            | "db-tx-commit"
+            | "std/db-tx-rollback@v1"
+            | "db-tx-rollback" => Some(&DB_TX_WITH_FIELDS),
             "std/db-close@v1" | "db-close" => Some(&DB_CLOSE_WITH_FIELDS),
             "std/check@v1" | "check" => Some(&CHECK_FIELDS),
             "std/sleep@v1" | "sleep" => Some(&SLEEP_WITH_FIELDS),
@@ -422,7 +419,12 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
     // `driver` value: a db-query without `id`/`query` only fails mid-run, and
     // a typo'd driver fails the whole scenario at its first step — both are
     // cheap to catch here.
-    lint_db_with(action, map.get("with").and_then(|v| v.as_object()), loc, issues);
+    lint_db_with(
+        action,
+        map.get("with").and_then(|v| v.as_object()),
+        loc,
+        issues,
+    );
 
     if let Some(check) = map.get("check").and_then(|v| v.as_object()) {
         unknown_field_issues(check, &CHECK_FIELDS, &format!("{loc}/check"), issues);
@@ -549,10 +551,14 @@ fn lint_db_with(
     let required: &[&str] = match action {
         "std/db-connect@v1" | "db-connect" => &["driver", "dsn"],
         "std/db-query@v1" | "db-query" => &["id", "query"],
-        "std/db-tx-begin@v1" | "db-tx-begin"
-        | "std/db-tx-commit@v1" | "db-tx-commit"
-        | "std/db-tx-rollback@v1" | "db-tx-rollback"
-        | "std/db-close@v1" | "db-close" => &["id"],
+        "std/db-tx-begin@v1"
+        | "db-tx-begin"
+        | "std/db-tx-commit@v1"
+        | "db-tx-commit"
+        | "std/db-tx-rollback@v1"
+        | "db-tx-rollback"
+        | "std/db-close@v1"
+        | "db-close" => &["id"],
         _ => return,
     };
     for field in required {
@@ -1058,7 +1064,9 @@ steps:
         let issues = lint(yaml, DocKind::Test);
         for field in ["id", "query"] {
             assert!(
-                issues.iter().any(|i| i.problem == format!("missing required field '{field}'")),
+                issues
+                    .iter()
+                    .any(|i| i.problem == format!("missing required field '{field}'")),
                 "no issue for missing '{field}': {issues:?}"
             );
         }
@@ -1078,9 +1086,16 @@ steps:
         for step in 0..3 {
             let missing = issues
                 .iter()
-                .find(|i| i.problem == "missing required field 'id'" && i.location == format!("/steps/{step}/with"))
+                .find(|i| {
+                    i.problem == "missing required field 'id'"
+                        && i.location == format!("/steps/{step}/with")
+                })
                 .unwrap_or_else(|| panic!("no missing-id issue for step {step}: {issues:?}"));
-            assert!(missing.suggestion.as_deref().unwrap().contains("db-connect"));
+            assert!(missing
+                .suggestion
+                .as_deref()
+                .unwrap()
+                .contains("db-connect"));
         }
     }
 
@@ -1090,7 +1105,9 @@ steps:
         let issues = lint(yaml, DocKind::Test);
         for field in ["driver", "dsn"] {
             assert!(
-                issues.iter().any(|i| i.problem == format!("missing required field '{field}'")),
+                issues
+                    .iter()
+                    .any(|i| i.problem == format!("missing required field '{field}'")),
                 "no issue for missing '{field}': {issues:?}"
             );
         }
@@ -1098,7 +1115,8 @@ steps:
 
     #[test]
     fn db_connect_unknown_driver_is_reported() {
-        let yaml = "steps:\n  - use: std/db-connect@v1\n    with:\n      driver: oracle\n      dsn: x\n";
+        let yaml =
+            "steps:\n  - use: std/db-connect@v1\n    with:\n      driver: oracle\n      dsn: x\n";
         let issues = lint(yaml, DocKind::Test);
         let bad = issues
             .iter()
@@ -1120,7 +1138,8 @@ steps:
 
     #[test]
     fn typo_in_db_query_with_key_gets_did_you_mean() {
-        let yaml = "steps:\n  - use: std/db-query@v1\n    with:\n      id: db-1\n      qurey: SELECT 1\n";
+        let yaml =
+            "steps:\n  - use: std/db-query@v1\n    with:\n      id: db-1\n      qurey: SELECT 1\n";
         let issues = lint(yaml, DocKind::Test);
         let typo = issues
             .iter()
@@ -1129,6 +1148,8 @@ steps:
         assert_eq!(typo.location, "/steps/0/with");
         assert_eq!(typo.suggestion.as_deref(), Some("did you mean 'query'?"));
         // …and the missing required field is still reported on its own.
-        assert!(issues.iter().any(|i| i.problem == "missing required field 'query'"));
+        assert!(issues
+            .iter()
+            .any(|i| i.problem == "missing required field 'query'"));
     }
 }

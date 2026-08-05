@@ -15,13 +15,13 @@ const MAN_SOURCE: &str = include_str!("../../../../man/perfscale.1");
 
 pub async fn run(args: ManArgs) -> Result<(), CliError> {
     if args.install {
-        let dir = match args.dir.clone().or_else(default_man_dir) {
-            Some(d) => d,
-            None => {
-                return Err(CliError::new("could not locate your home directory")
-                    .hint("pass the target directory explicitly: perfscale man --install --dir <path>"))
-            }
-        };
+        let dir =
+            match args.dir.clone().or_else(default_man_dir) {
+                Some(d) => d,
+                None => return Err(CliError::new("could not locate your home directory").hint(
+                    "pass the target directory explicitly: perfscale man --install --dir <path>",
+                )),
+            };
         return install(&dir);
     }
 
@@ -229,7 +229,12 @@ fn flush_fill(out: &mut String, fill: &mut Vec<String>, indent: usize) {
     }
     let words: Vec<String> = fill
         .drain(..)
-        .flat_map(|piece| piece.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
+        .flat_map(|piece| {
+            piece
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
         .collect();
     let width = 78usize.saturating_sub(indent).max(20);
 
@@ -409,7 +414,10 @@ mod tests {
         assert_eq!(render_font_macro(".BR \\-\\-k6 ,"), Some("--k6,".into()));
         // roff alternates fonts per token and concatenates — `< COMMAND >`
         // becomes `<COMMAND>` in real man output too.
-        assert_eq!(render_font_macro(".RI < COMMAND >"), Some("<COMMAND>".into()));
+        assert_eq!(
+            render_font_macro(".RI < COMMAND >"),
+            Some("<COMMAND>".into())
+        );
         assert_eq!(render_font_macro(".Bold x"), None);
     }
 

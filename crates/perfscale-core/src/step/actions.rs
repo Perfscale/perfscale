@@ -132,16 +132,16 @@ pub async fn execute_action(
     // Interpolation deep-clones the whole params tree; most steps have no
     // placeholders, and this runs once per step per iteration — a cheap
     // borrow-only scan skips the clone on the hot path.
-    let resolved: std::borrow::Cow<'_, Value> = if matches!(action_id, "std/db-query@v1" | "db-query")
-    {
-        // db-query interpolates everything EXCEPT the SQL text itself — the
-        // query is bound via `params`, never string-interpolated.
-        std::borrow::Cow::Owned(super::db::interpolate_query_params(params, ctx))
-    } else if has_placeholder(params) {
-        std::borrow::Cow::Owned(ctx.interpolate_value(params))
-    } else {
-        std::borrow::Cow::Borrowed(params)
-    };
+    let resolved: std::borrow::Cow<'_, Value> =
+        if matches!(action_id, "std/db-query@v1" | "db-query") {
+            // db-query interpolates everything EXCEPT the SQL text itself — the
+            // query is bound via `params`, never string-interpolated.
+            std::borrow::Cow::Owned(super::db::interpolate_query_params(params, ctx))
+        } else if has_placeholder(params) {
+            std::borrow::Cow::Owned(ctx.interpolate_value(params))
+        } else {
+            std::borrow::Cow::Borrowed(params)
+        };
 
     match action_id {
         "std/http@v1" | "http" => http_action(&resolved, step_name, ctx).await,
@@ -179,7 +179,9 @@ pub async fn execute_action(
         "std/db-connect@v1" | "db-connect" => {
             super::db::db_connect_action(&resolved, ctx, step_name).await
         }
-        "std/db-query@v1" | "db-query" => super::db::db_query_action(&resolved, ctx, step_name).await,
+        "std/db-query@v1" | "db-query" => {
+            super::db::db_query_action(&resolved, ctx, step_name).await
+        }
         "std/db-tx-begin@v1" | "db-tx-begin" => {
             super::db::db_tx_begin_action(&resolved, ctx, step_name).await
         }
@@ -189,7 +191,9 @@ pub async fn execute_action(
         "std/db-tx-rollback@v1" | "db-tx-rollback" => {
             super::db::db_tx_rollback_action(&resolved, ctx, step_name).await
         }
-        "std/db-close@v1" | "db-close" => super::db::db_close_action(&resolved, ctx, step_name).await,
+        "std/db-close@v1" | "db-close" => {
+            super::db::db_close_action(&resolved, ctx, step_name).await
+        }
         "std/check@v1" | "check" => check_action(&resolved, ctx, step_name),
         "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name).await,
         "std/log@v1" | "log" => log_action(&resolved, step_name),
@@ -311,8 +315,11 @@ pub fn register_action(handler: Arc<dyn ActionHandler>) {
 /// default timeout.
 fn shared_client(shard: usize) -> &'static reqwest::Client {
     static CLIENTS: OnceLock<Vec<reqwest::Client>> = OnceLock::new();
-    let clients = CLIENTS
-        .get_or_init(|| (0..client_shard_count()).map(|_| reqwest::Client::new()).collect());
+    let clients = CLIENTS.get_or_init(|| {
+        (0..client_shard_count())
+            .map(|_| reqwest::Client::new())
+            .collect()
+    });
     &clients[shard % clients.len()]
 }
 

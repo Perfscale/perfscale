@@ -364,9 +364,7 @@ impl NativeRunOutcome {
     /// True when a thresholds gate evaluated to `fail` — the CLI turns this
     /// into a non-zero exit code for CI.
     pub fn thresholds_failed(&self) -> bool {
-        self.thresholds
-            .as_ref()
-            .is_some_and(|t| t.status == "fail")
+        self.thresholds.as_ref().is_some_and(|t| t.status == "fail")
     }
 }
 
@@ -462,7 +460,16 @@ pub async fn run_native(
             // Teardown still runs: a `before` step may have started a process
             // (or grabbed anything else `after` exists to clean up) before
             // the one that failed.
-            run_after(&after, &Value::Null, &vars, &config, &after_shared, quiet, &tx).await;
+            run_after(
+                &after,
+                &Value::Null,
+                &vars,
+                &config,
+                &after_shared,
+                quiet,
+                &tx,
+            )
+            .await;
             registry.shutdown_all().await;
             emit(&tx, LogSource::System, "Done — setup error").await;
             interrupt_handler.abort();
@@ -575,14 +582,26 @@ pub async fn run_native(
 
     // Teardown on every non-setup-failure path: `after` steps (best-effort),
     // then stop whatever managed processes are still alive.
-    run_after(&after, &config_seed, &vars, &config, &after_shared, quiet, &tx).await;
+    run_after(
+        &after,
+        &config_seed,
+        &vars,
+        &config,
+        &after_shared,
+        quiet,
+        &tx,
+    )
+    .await;
     registry.shutdown_all().await;
 
     let wall_secs = started.elapsed().as_secs_f64();
     let total_iters = iter_count.load(Ordering::Relaxed);
     let (lines, thresholds) = {
         let m = metrics.lock().unwrap();
-        (m.summary_lines(wall_secs, total_iters, vus), m.thresholds_summary())
+        (
+            m.summary_lines(wall_secs, total_iters, vus),
+            m.thresholds_summary(),
+        )
     };
     for line in &lines {
         emit(&tx, LogSource::Stdout, line).await;
@@ -1593,7 +1612,9 @@ mod tests {
         variables: Map<String, Value>,
         config: RunConfig,
     ) -> Vec<LogLine> {
-        run_native_full(steps, before, after, variables, config).await.0
+        run_native_full(steps, before, after, variables, config)
+            .await
+            .0
     }
 
     /// Like [`run_native_and_collect`] but also returns the run outcome
@@ -2190,9 +2211,14 @@ mod tests {
             None,
             None,
         )];
-        let (lines, outcome) =
-            run_native_full(sqlite_db_steps("SELECT 1"), Vec::new(), after, Map::new(), one_second())
-                .await;
+        let (lines, outcome) = run_native_full(
+            sqlite_db_steps("SELECT 1"),
+            Vec::new(),
+            after,
+            Map::new(),
+            one_second(),
+        )
+        .await;
 
         let t = outcome.thresholds.as_ref().expect("gate outcome present");
         assert_eq!(t.status, "pass", "{}", t.message);
@@ -2249,7 +2275,11 @@ mod tests {
             .unwrap();
         assert_eq!(rate_violation.expr, "rate<0.05");
         assert_eq!(rate_violation.actual, 1.0);
-        assert!(t.message.contains("db_query_failed rate=1 ≥ 0.05"), "{}", t.message);
+        assert!(
+            t.message.contains("db_query_failed rate=1 ≥ 0.05"),
+            "{}",
+            t.message
+        );
         assert!(t.message.contains("checkout SLO"), "{}", t.message);
 
         let tline = lines
@@ -2260,9 +2290,7 @@ mod tests {
         assert_eq!(parsed.status, "fail");
         assert_eq!(parsed.violations.len(), 2);
         assert!(
-            lines
-                .iter()
-                .any(|l| l.text == "db_query_failed: 100.00%"),
+            lines.iter().any(|l| l.text == "db_query_failed: 100.00%"),
             "{lines:?}"
         );
         assert!(
@@ -2315,7 +2343,11 @@ mod tests {
         let t = outcome.thresholds.as_ref().expect("gate outcome present");
         assert_eq!(t.status, "fail");
         assert!(outcome.thresholds_failed());
-        assert!(t.message.contains("unknown metric 'no_such_metric'"), "{}", t.message);
+        assert!(
+            t.message.contains("unknown metric 'no_such_metric'"),
+            "{}",
+            t.message
+        );
         // The error lists the metrics that ARE present.
         assert!(t.message.contains("db_query_duration"), "{}", t.message);
         assert!(
@@ -2350,4 +2382,3 @@ mod tests {
         assert!(t.message.contains("nightly SLO"), "{}", t.message);
     }
 }
-

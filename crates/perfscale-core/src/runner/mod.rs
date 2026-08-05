@@ -163,7 +163,8 @@ mod tests {
                 severity: None,
                 message: None,
             }],
-        };        let config = RunConfig {
+        };
+        let config = RunConfig {
             vus: 1,
             duration: "1s".into(),
             ..Default::default()
