@@ -11,6 +11,16 @@ Release notes for the next release, written as features land.
 - If this file has no entries at tag time, the release falls back to
   auto-generated notes and the workflow prints a warning.
 -->
+## Fix: Postgres through connection poolers (Supabase, PgBouncer)
+
+`std/db-query@v1` against a transaction-mode pooler failed after the first
+iteration with `prepared statement "sqlx_s_1" already exists`. Queries now
+use unnamed statements, and when the pooler swaps backends mid-exchange
+(recognized SQLSTATEs, all before execution) the query is retried once
+inside an explicit transaction — invisible in metrics, and never engaged on
+direct connections. Supabase users: prefer the pooler DSN (IPv4) with
+`tls: "skip-verify"` or Supabase's CA cert.
+
 ## Faster engine + `perfscale-connection` crate
 
 Profiling-driven performance work (400 VUs against a local echo):
