@@ -696,6 +696,19 @@ unavailable. `sqlite::memory:` is pointless here (each fresh connection is
 an empty database) — use a file DSN; conversely an in-memory pool must
 stay at `pool_size: 1`.
 
+### Connection poolers (PgBouncer, Supabase)
+
+Queries are executed with **unnamed statements**, so transaction-mode
+poolers (PgBouncer, Supabase's Supavisor on port 6543) are supported — a
+cached named statement would collide on the shared backend
+(`prepared statement "sqlx_s_1" already exists`). If such a pooler splits a
+query's protocol exchange across backends under concurrency, the step
+transparently retries inside a transaction (which pins the backend) and the
+connection keeps wrapping from then on; direct connections never pay for
+this. For Supabase: use the pooler DSN (port 6543, IPv4) with
+`tls: "skip-verify"` (their CA chain is not in webpki-roots) or install
+their CA.
+
 ### DB metrics
 
 | Name | Type | Emitted by | Meaning |
