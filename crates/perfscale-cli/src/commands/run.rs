@@ -1,19 +1,25 @@
 use std::path::Path;
 use std::time::Duration;
 
+use perfscale_core::import::{self, ImportOptions};
 use perfscale_core::runner::locust::LocustOpts;
 use perfscale_core::runner::{self, ExecutionPlan, LogLine, LogSource, RunOutput};
 use perfscale_core::step::TestDef;
 use perfscale_core::summary::{iso8601_utc, ExportMeta, SummaryExport};
-use perfscale_core::yaml::{self, ConfigFile};
+use perfscale_core::yaml::ConfigFile;
 
 use crate::cli::{RunArgs, SummaryFormat};
 use crate::error::CliError;
 
 pub async fn run(args: RunArgs) -> Result<(), CliError> {
-    let config = load_config(args.config.as_deref())?;
+    let import_opts = ImportOptions {
+        allow_remote: args.allow_remote_import,
+        refresh: args.refresh_imports,
+        cache_dir: None,
+    };
+    let config = load_config(args.config.as_deref(), &import_opts).await?;
     let native_test = match &args.file {
-        Some(path) => Some(load_test_def(path)?),
+        Some(path) => Some(load_test_def(path, &import_opts).await?),
         None => None,
     };
 
@@ -180,19 +186,35 @@ fn is_summary_line(text: &str) -> bool {
     false
 }
 
-fn load_config(path: Option<&Path>) -> Result<Option<ConfigFile>, CliError> {
+/// Hint for import failures: only the remote-blocked error needs the flag
+/// callout; everything else keeps the generic document hint.
+fn import_hint(err: &str, fallback: &'static str) -> &'static str {
+    if err.contains("--allow-remote-import") {
+        "network imports are opt-in: add --allow-remote-import if you trust every import in the chain"
+    } else {
+        fallback
+    }
+}
+
+async fn load_config(
+    path: Option<&Path>,
+    opts: &ImportOptions,
+) -> Result<Option<ConfigFile>, CliError> {
     match path {
         Some(path) => {
-            let text = std::fs::read_to_string(path).map_err(|e| {
-                CliError::new(format!("failed to read config file '{}'", path.display()))
-                    .cause(e.to_string())
-                    .hint("`-c` expects a YAML load config, e.g. `vus: 10` + `duration: 30s`")
-                    .docs("yaml-reference.md#config--c-configyaml")
-            })?;
-            let config = yaml::parse_config_file(&text).map_err(|e| {
-                CliError::new(format!("invalid config file '{}'", path.display()))
+            let config = import::load_config_file(path, opts).await.map_err(|e| {
+                let title = if e.starts_with("failed to read") {
+                    format!("failed to read config file '{}'", path.display())
+                } else {
+                    format!("invalid config file '{}'", path.display())
+                };
+                let hint = import_hint(
+                    &e,
+                    "valid fields: `vus` (integer), `duration` (\"30s\"/\"5m\"/\"1h\"), optional `report.url`, optional `import`",
+                );
+                CliError::new(title)
                     .cause(e)
-                    .hint("valid fields: `vus` (integer), `duration` (\"30s\"/\"5m\"/\"1h\"), optional `report.url`")
+                    .hint(hint)
                     .docs("yaml-reference.md#config--c-configyaml")
             })?;
             Ok(Some(config))
@@ -201,20 +223,21 @@ fn load_config(path: Option<&Path>) -> Result<Option<ConfigFile>, CliError> {
     }
 }
 
-fn load_test_def(path: &Path) -> Result<TestDef, CliError> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        CliError::new(format!("failed to read test file '{}'", path.display()))
-            .cause(e.to_string())
-            .hint("`-f` expects a YAML test definition with a `steps:` list")
-            .docs("yaml-reference.md#test-definition--f-testyaml")
-    })?;
-    yaml::parse_test_file(&text).map_err(|e| {
-        CliError::new(format!("invalid test file '{}'", path.display()))
+async fn load_test_def(path: &Path, opts: &ImportOptions) -> Result<TestDef, CliError> {
+    import::load_test_file(path, opts).await.map_err(|e| {
+        let title = if e.starts_with("failed to read") {
+            format!("failed to read test file '{}'", path.display())
+        } else {
+            format!("invalid test file '{}'", path.display())
+        };
+        let hint = import_hint(
+            &e,
+            "each step needs `use:` naming an action (std/http@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1); \
+             parameters go under `with:`",
+        );
+        CliError::new(title)
             .cause(e)
-            .hint(
-                "each step needs `use:` naming an action (std/http@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1); \
-                 parameters go under `with:`",
-            )
+            .hint(hint)
             .docs("yaml-reference.md#test-definition--f-testyaml")
     })
 }
@@ -327,15 +350,21 @@ mod tests {
             quiet: false,
             summary_export: Vec::new(),
             summary_format: None,
+            allow_remote_import: false,
+            refresh_imports: false,
         }
     }
 
     fn sample_test() -> TestDef {
-        TestDef { steps: vec![] }
+        TestDef {
+            import: None,
+            steps: vec![],
+        }
     }
 
     fn sample_config(report_url: Option<&str>) -> ConfigFile {
         ConfigFile {
+            import: None,
             run: RunConfig {
                 vus: 4,
                 duration: "2m".into(),

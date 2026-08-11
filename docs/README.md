@@ -26,6 +26,9 @@ tiny local dev server for collecting results.
   `std/file-*`, `std/child_process`, `std/kill_process`, `std/thresholds`
 - [Setup and teardown](core/setup-teardown.md) — `before:`/`after:` lifecycle,
   `config.*`/`vars.*` data flow, background processes
+- [Imports](core/imports.md) — compose test/config documents from a shared
+  base: local paths, HTTP URLs, git repos; merge semantics, caching, and the
+  `--allow-remote-import` security gate
 - [Metrics](core/metrics.md) — `http_req_*`, `[stats]` lines, custom
   counters/histograms, `--quiet`, summary forwarding
 - [WebSocket guide](core/websocket.md) — sessions, live connections, message

@@ -1,6 +1,47 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "GitImport": {
+      "additionalProperties": false,
+      "description": "`import: { git, ref, file }` — fetch `file` from `git` at `ref`.",
+      "properties": {
+        "file": {
+          "description": "Path of the YAML document inside the repository.",
+          "type": "string"
+        },
+        "git": {
+          "description": "Git remote, e.g. `git@gitlab.example.com:group/repo.git` or `https://github.com/org/repo.git`.",
+          "type": "string"
+        },
+        "ref": {
+          "description": "Tag, branch, or commit SHA. Tags/SHAs cache forever; branches revalidate against the remote after a short TTL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "git",
+        "ref"
+      ],
+      "type": "object"
+    },
+    "ImportSpec": {
+      "anyOf": [
+        {
+          "description": "A relative filesystem path, or an `http(s)://` URL with the ref already pinned in the path.",
+          "type": "string"
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/GitImport"
+            }
+          ],
+          "description": "A file at a ref of an arbitrary git remote (SSH or HTTPS)."
+        }
+      ],
+      "description": "The value of a top-level `import:` key."
+    },
     "Step": {
       "anyOf": [
         {
@@ -64,6 +105,17 @@
   },
   "description": "Top-level test definition — a list of steps executed per VU iteration.",
   "properties": {
+    "import": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ImportSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Base document to inherit from — a relative path, an `http(s)://` URL, or `{ git, ref, file }`. The base loads first (recursively), then this document deep-merges on top; a local `steps:` list replaces the base's. Remote sources require the caller's `--allow-remote-import`."
+    },
     "steps": {
       "items": {
         "$ref": "#/definitions/Step"

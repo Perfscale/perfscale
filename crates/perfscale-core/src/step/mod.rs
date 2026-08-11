@@ -46,6 +46,13 @@ use serde::{Deserialize, Serialize};
 /// Top-level test definition — a list of steps executed per VU iteration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TestDef {
+    /// Base document to inherit from — a relative path, an `http(s)://` URL,
+    /// or `{ git, ref, file }`. The base loads first (recursively), then this
+    /// document deep-merges on top; a local `steps:` list replaces the base's.
+    /// Remote sources require the caller's `--allow-remote-import`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import: Option<crate::import::ImportSpec>,
+
     pub steps: Vec<Step>,
 }
 

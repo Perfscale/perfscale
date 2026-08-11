@@ -154,6 +154,7 @@ mod tests {
     #[tokio::test]
     async fn execute_native_steps_runs_the_step_engine() {
         let test = TestDef {
+            import: None,
             steps: vec![Step {
                 name: None,
                 action: "std/log@v1".into(),
@@ -270,6 +271,7 @@ mod tests {
         };
         ExecutionPlan::NativeSteps {
             test: TestDef {
+                import: None,
                 steps: vec![
                     crate::step::Step {
                         outputs: Some("conn".into()),

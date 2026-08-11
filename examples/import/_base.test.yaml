@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=../../schema/test.schema.json
+steps:
+  - name: ping
+    use: std/http@v1
+    with:
+      url: ${{ vars.base_url }}
+    check:
+      status: 200

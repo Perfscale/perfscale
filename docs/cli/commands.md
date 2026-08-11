@@ -23,6 +23,8 @@ Exactly one engine flag is required: `--k6`, `--locust`, or `-f`.
 | `-q, --quiet` | — | Suppress per-request output; errors and the final metric summary still print. The native engine drops the lines at the source, which also removes their formatting/IO cost under high load |
 | `--summary-export <FILE>` | path, repeatable | After the run, write the parsed metric summary (requests, RPS, latency percentiles, error rate) plus run metadata (engine, VUs, duration, timestamp, perfscale version) to this file. Repeat the flag to write several exports from one run. A `.md`/`.json` extension picks the format per file (default JSON) |
 | `--summary-format <json\|md>` | with `--summary-export` | Format for export files without a recognized extension. `md` renders a table for CI job summaries: `--summary-export "$GITHUB_STEP_SUMMARY" --summary-format md` |
+| `--allow-remote-import` | — | Let `import:` in `-f`/`-c` documents fetch over the network (http(s) URLs, git remotes). Fail-closed by default — a document cannot grant itself network access. See [imports](../core/imports.md) |
+| `--refresh-imports` | — | Refetch cached tag/branch git imports instead of trusting the cache (commit-SHA imports are immutable and never refetch) |
 
 ### Exit code semantics
 
@@ -137,9 +139,15 @@ perfscale lint --schema config load.yaml
 | `FILE...` | required | One or more YAML files |
 | `--schema <auto\|test\|config>` | `auto` | `auto` detects per file: a top-level `steps:` key means test definition, anything else is a config |
 | `--offline` | off | Skip the network pass (GraphQL introspection) — validate offline only |
+| `--allow-remote-import` | off | Let `import:` in the linted documents fetch over the network so the merged result can be validated |
+| `--refresh-imports` | off | Refetch cached tag/branch git imports instead of trusting the cache |
 
 What it checks:
 
+0. **Imports** — documents with an `import:` key are resolved and merged
+   first, so validation sees what would actually run. Resolution problems
+   (missing base, cycle, remote import without `--allow-remote-import`)
+   are reported as findings at `/import`
 1. **YAML syntax** — parse errors with an indentation/quoting hint
 2. **JSON Schema** — required fields, types (same validation `run` performs)
 3. **Unknown/typo'd fields** — with did-you-mean suggestions (`chek` → `check`),

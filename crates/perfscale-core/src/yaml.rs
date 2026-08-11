@@ -17,6 +17,13 @@ pub struct ReportConfig {
 /// Top-level `-c config.yaml` document.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ConfigFile {
+    /// Base document to inherit from — a relative path, an `http(s)://` URL,
+    /// or `{ git, ref, file }`. The base loads first (recursively), then this
+    /// document deep-merges on top: objects merge, scalars/arrays here win.
+    /// Remote sources require the caller's `--allow-remote-import`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import: Option<crate::import::ImportSpec>,
+
     #[serde(flatten)]
     pub run: RunConfig,
     pub report: Option<ReportConfig>,
@@ -53,13 +60,29 @@ pub fn parse_config_file(yaml: &str) -> Result<ConfigFile, String> {
     parse_with_schema(yaml, crate::schema::config_schema())
 }
 
+/// Validate an already-parsed (import-merged) JSON value as a test definition.
+pub fn test_from_value(value: serde_json::Value) -> Result<TestDef, String> {
+    validate_with_schema(value, crate::schema::test_schema())
+}
+
+/// Validate an already-parsed (import-merged) JSON value as a config document.
+pub fn config_from_value(value: serde_json::Value) -> Result<ConfigFile, String> {
+    validate_with_schema(value, crate::schema::config_schema())
+}
+
 fn parse_with_schema<T: serde::de::DeserializeOwned>(
     yaml: &str,
     schema: serde_json::Value,
 ) -> Result<T, String> {
     let value: serde_json::Value =
         serde_yaml::from_str(yaml).map_err(|e| format!("invalid YAML: {e}"))?;
+    validate_with_schema(value, schema)
+}
 
+fn validate_with_schema<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+    schema: serde_json::Value,
+) -> Result<T, String> {
     let compiled = jsonschema::JSONSchema::compile(&schema)
         .map_err(|e| format!("internal schema error: {e}"))?;
     if let Err(errors) = compiled.validate(&value) {
@@ -227,6 +250,7 @@ steps:
     #[test]
     fn config_file_round_trips_through_serde() {
         let cfg = ConfigFile {
+            import: None,
             run: RunConfig {
                 vus: 7,
                 duration: "2m".into(),

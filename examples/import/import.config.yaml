@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../../schema/config.schema.json
+#
+# Inherits examples/import/_base.config.yaml and overrides one variable.
+# Objects merge key-by-key (region flips to us, base_url survives);
+# scalars/arrays in this file replace the base's.
+#
+# The same key also accepts remote sources — these need the caller's
+# explicit --allow-remote-import flag:
+#
+#   import: "https://raw.githubusercontent.com/org/repo/v1.2.0/perf/_base.yaml"
+#
+#   import:
+#     git: git@gitlab.example.com:group/repo.git
+#     ref: v1.2.0
+#     file: perf/config/_base.yaml
+import: ./_base.config.yaml
+duration: 10s
+variables:
+  region: us

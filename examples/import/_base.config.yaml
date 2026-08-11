@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=../../schema/config.schema.json
+#
+# Shared base config — teams inherit the load shape and common variables,
+# and override only what differs (see import.config.yaml).
+vus: 5
+duration: 30s
+variables:
+  region: eu
+  base_url: https://example.com

@@ -219,6 +219,18 @@ pub struct RunArgs {
     /// (e.g. `--summary-export "$GITHUB_STEP_SUMMARY" --summary-format md`).
     #[arg(long, value_enum, requires = "summary_export")]
     pub summary_format: Option<SummaryFormat>,
+
+    /// Allow `import:` in -f/-c documents to fetch over the network
+    /// (http(s) URLs and git remotes). Off by default: a document must not
+    /// be able to grant itself network access. Local-path imports are
+    /// always allowed.
+    #[arg(long)]
+    pub allow_remote_import: bool,
+
+    /// Refetch cached tag/branch git imports instead of trusting the cache
+    /// (commit-SHA imports are immutable and never refetched).
+    #[arg(long)]
+    pub refresh_imports: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -281,6 +293,15 @@ pub struct LintArgs {
     /// Skip the network pass (GraphQL introspection): validate offline only.
     #[arg(long)]
     pub offline: bool,
+
+    /// Allow `import:` in the linted documents to fetch over the network
+    /// (http(s) URLs and git remotes) so the merged result can be validated.
+    #[arg(long)]
+    pub allow_remote_import: bool,
+
+    /// Refetch cached tag/branch git imports instead of trusting the cache.
+    #[arg(long)]
+    pub refresh_imports: bool,
 }
 
 #[cfg(test)]

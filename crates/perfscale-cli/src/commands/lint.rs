@@ -17,6 +17,7 @@
 
 use std::path::Path;
 
+use perfscale_core::import::{self, ImportOptions};
 use perfscale_core::lint::{detect_kind, lint, DocKind, LintIssue};
 
 use crate::cli::{LintArgs, SchemaKind};
@@ -24,30 +25,32 @@ use crate::error::{CliError, DOCS_BASE};
 
 pub async fn run(args: LintArgs) -> Result<(), CliError> {
     let mut any_problems = false;
+    let import_opts = ImportOptions {
+        allow_remote: args.allow_remote_import,
+        refresh: args.refresh_imports,
+        cache_dir: None,
+    };
 
     for path in &args.files {
-        match lint_file(path, args.schema) {
-            Ok(issues) if issues.is_empty() => {
+        match lint_file(path, args.schema, &import_opts).await {
+            Ok((kind, effective, issues)) if issues.is_empty() => {
                 // The offline pass is clean; the GraphQL network pass may
-                // still find schema-level problems.
-                let (remote, notes) = graphql_remote_pass(path, args.schema, args.offline).await;
+                // still find schema-level problems. It runs on the merged
+                // text so imported steps are covered too.
+                let (remote, notes) = graphql_remote_pass(&effective, kind, args.offline).await;
                 for note in &notes {
                     println!("  note: {note}");
                 }
                 if remote.is_empty() {
-                    println!(
-                        "✓ {} ({}) — ok",
-                        path.display(),
-                        kind_label(effective_kind(path, args.schema))
-                    );
+                    println!("✓ {} ({}) — ok", path.display(), kind_label(kind));
                 } else {
                     any_problems = true;
-                    print_issues(path, effective_kind(path, args.schema), &remote);
+                    print_issues(path, kind, &remote);
                 }
             }
-            Ok(issues) => {
+            Ok((kind, _, issues)) => {
                 any_problems = true;
-                print_issues(path, effective_kind(path, args.schema), &issues);
+                print_issues(path, kind, &issues);
             }
             Err(e) => return Err(e),
         }
@@ -63,54 +66,83 @@ pub async fn run(args: LintArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-fn lint_file(path: &Path, schema: SchemaKind) -> Result<Vec<LintIssue>, CliError> {
+/// Lint one file. Returns the effective document kind, the effective
+/// (import-merged) text, and any findings.
+async fn lint_file(
+    path: &Path,
+    schema: SchemaKind,
+    import_opts: &ImportOptions,
+) -> Result<(DocKind, String, Vec<LintIssue>), CliError> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         CliError::new(format!("failed to read '{}'", path.display()))
             .cause(e.to_string())
             .hint("`perfscale lint` expects YAML test-definition or config files")
             .docs("yaml-reference.md")
     })?;
+
+    // Documents with an `import:` key lint the *merged* result — that is
+    // what would actually run. Resolution failures (cycle, missing base,
+    // remote blocked without --allow-remote-import) surface as findings.
+    let effective = if has_import_key(&text) {
+        match import::load_document(path, import_opts).await {
+            Ok((value, _)) => serde_yaml::to_string(&value).unwrap_or_else(|_| text.clone()),
+            Err(e) => {
+                let suggestion = if e.contains("--allow-remote-import") {
+                    Some("network imports are opt-in: add --allow-remote-import".to_string())
+                } else {
+                    None
+                };
+                let kind = match schema {
+                    SchemaKind::Auto => detect_kind(&text),
+                    SchemaKind::Test => DocKind::Test,
+                    SchemaKind::Config => DocKind::Config,
+                };
+                return Ok((
+                    kind,
+                    text,
+                    vec![LintIssue {
+                        location: "/import".into(),
+                        problem: e,
+                        suggestion,
+                    }],
+                ));
+            }
+        }
+    } else {
+        text
+    };
+
     let kind = match schema {
-        SchemaKind::Auto => detect_kind(&text),
+        SchemaKind::Auto => detect_kind(&effective),
         SchemaKind::Test => DocKind::Test,
         SchemaKind::Config => DocKind::Config,
     };
-    Ok(lint(&text, kind))
+    let issues = lint(&effective, kind);
+    Ok((kind, effective, issues))
 }
 
-/// The kind actually used for a file (mirrors `lint_file`'s choice, for labels).
-fn effective_kind(path: &Path, schema: SchemaKind) -> DocKind {
-    match schema {
-        SchemaKind::Auto => std::fs::read_to_string(path)
-            .map(|t| detect_kind(&t))
-            .unwrap_or(DocKind::Config),
-        SchemaKind::Test => DocKind::Test,
-        SchemaKind::Config => DocKind::Config,
-    }
+/// Cheap check whether a document has a top-level `import` key (avoids the
+/// resolve path — with its canonicalize/network cost — for plain files).
+fn has_import_key(text: &str) -> bool {
+    serde_yaml::from_str::<serde_json::Value>(text)
+        .map(|v| v.get("import").is_some())
+        .unwrap_or(false)
 }
 
 /// The GraphQL schema pass: steps with a `schema_file` validate against the
 /// local SDL (offline by nature); the rest introspect the endpoint, unless
-/// `--offline` is given. Skipped for config documents and unreadable files
-/// (the sync pass already reported those). Never fails the command by
-/// itself — findings come back as issues.
+/// `--offline` is given. Runs on the effective (import-merged) text so
+/// imported steps are validated too. Skipped for config documents. Never
+/// fails the command by itself — findings come back as issues.
 async fn graphql_remote_pass(
-    path: &Path,
-    schema: SchemaKind,
+    effective: &str,
+    kind: DocKind,
     offline: bool,
 ) -> (Vec<LintIssue>, Vec<String>) {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return (Vec::new(), Vec::new());
-    };
-    let kind = match schema {
-        SchemaKind::Auto => detect_kind(&text),
-        SchemaKind::Test => DocKind::Test,
-        SchemaKind::Config => DocKind::Config,
-    };
     if kind != DocKind::Test {
         return (Vec::new(), Vec::new());
     }
-    perfscale_core::lint::lint_graphql_remote(&text, offline).await
+    perfscale_core::lint::lint_graphql_remote(effective, offline).await
 }
 
 fn kind_label(kind: DocKind) -> &'static str {

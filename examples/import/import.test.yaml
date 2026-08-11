@@ -1,0 +1,5 @@
+# yaml-language-server: $schema=../../schema/test.schema.json
+#
+# A test definition can import a base too. This one only inherits:
+# the steps come entirely from the base document.
+import: ./_base.test.yaml

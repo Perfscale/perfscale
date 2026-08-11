@@ -42,6 +42,11 @@ base64 = "0.22"
 schemars   = "0.8"
 jsonschema = "0.18"
 
+# Stable cache keys for `import:` git clones (~/.cache/perfscale/imports/<hash>).
+# std's DefaultHasher is not stable across releases, so it can't address a
+# cache that outlives the binary.
+sha2 = "0.10"
+
 # GraphQL query parsing (syntax validation, operation-name extraction) and SDL
 # schema parsing for the `std/graphql@v1` action family. The schema the query
 # is validated against arrives at run time (server introspection or an SDL

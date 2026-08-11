@@ -44,9 +44,15 @@ Or grab a binary from [GitHub Releases](https://github.com/Perfscale/perfscale/r
    N virtual users for a given duration. Run-level SLO gates (`std/thresholds@v1`
    in the config's `after:` block) evaluate k6-style threshold expressions over
    the run's metrics and fail the run (non-zero exit) on violation.
-4. `--report <url>` optionally POSTs the aggregated summary to a `perfscale serve`
+4. Test and config documents compose: a top-level `import:` inherits a shared
+   base — a relative path, an HTTP(S) URL, or a file at a ref of any git
+   remote — with deep-merge overrides. Remote imports are fail-closed behind
+   `--allow-remote-import`; git refs cache under `~/.cache/perfscale`
+   (tags/SHAs forever, branches with revalidation). See
+   [docs/core/imports.md](docs/core/imports.md).
+5. `--report <url>` optionally POSTs the aggregated summary to a `perfscale serve`
    instance running locally, for a shared view across multiple `run` invocations.
-5. `perfscale serve` is a minimal HTTP receiver + console printer — a stand-in dev
+6. `perfscale serve` is a minimal HTTP receiver + console printer — a stand-in dev
    dashboard, not a control-plane.
 
 ## Commands

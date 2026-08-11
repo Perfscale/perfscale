@@ -14,7 +14,9 @@ the offending field path, not a raw parser dump. The schemas live in
 ## Test definition (`-f test.yaml`)
 
 A single `steps` array. Each virtual user (VU) executes the whole list in a
-loop until the configured duration expires.
+loop until the configured duration expires. An optional top-level `import:`
+inherits a base document — see
+[Composing documents](#composing-documents-import).
 
 ```yaml
 steps:
@@ -138,6 +140,57 @@ report:          # optional — forward the summary after the run
 | `after` | `[]` | One-time teardown steps — see [Teardown](#teardown-after) |
 | `variables` | `{}` | Static values exposed to steps as `${{ vars.* }}` |
 | `allow_process_actions` | `false` | Let steps spawn/signal OS processes (`std/child_process@v1`, `std/kill_process@v1`). Fail-closed: a step list from an untrusted source cannot touch processes until you opt in |
+| `import` | — | Base document to inherit from — see [Composing documents](#composing-documents-import) |
+
+### Composing documents: `import`
+
+Both test definitions and configs accept a top-level `import:` naming a base
+document. The base loads first (it may import its own base, recursively),
+then the current document deep-merges on top: **objects merge key-by-key,
+scalars and arrays (including `steps:`) are replaced** by the importing side.
+
+```yaml
+# team config — inherits the org-wide base, overrides one variable
+import: ../shared/_base.yaml
+variables:
+  region: us
+```
+
+Three source forms:
+
+```yaml
+# relative filesystem path (resolved against the importing file's directory)
+import: ../shared/_base.yaml
+
+# raw HTTP(S) URL — pin the ref in the path
+import: "https://raw.githubusercontent.com/org/repo/v1.2.0/perf/config/_base.yaml"
+
+# any git host (SSH or HTTPS remotes, self-hosted included)
+import:
+  git: git@gitlab.example.com:group/repo.git
+  ref: v1.2.0          # tag, branch, or commit SHA
+  file: perf/config/_base.yaml
+```
+
+Remote imports (URL and git) are **fail-closed**: they run only when the
+caller passes `--allow-remote-import`. The permission belongs to the caller
+because import resolution happens before the `allow_file_actions` /
+`allow_process_actions` gates — a remote base could otherwise grant itself
+those rights and pull in a `std/child_process@v1` step. A document can never
+opt itself into the network.
+
+Origins stay confined: a document fetched from a URL resolves relative
+imports against its own URL; a document from a git repo may only import
+files inside that same clone (`../` escapes are rejected). A remote document
+can never read your local filesystem. Import cycles fail with the chain
+printed.
+
+Git imports clone with `--depth 1` through your system `git` (SSH keys and
+credential helpers apply) and cache under `~/.cache/perfscale/imports/`.
+Tags and commit SHAs are immutable — cached forever. Branches revalidate
+against the remote after a short TTL, so `ref: main` follows the branch;
+`--refresh-imports` forces a refetch. The full guide lives in
+[docs/core/imports.md](core/imports.md).
 
 ### Setup and variables
 
