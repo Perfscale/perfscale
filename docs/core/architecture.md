@@ -59,9 +59,11 @@ so downstream parsers are engine-agnostic:
 | `step` | Test model: `TestDef`, `Step`, `RunConfig`, duration parsing, presets |
 | `step::runner` | Native VU scheduler and metrics collection |
 | `step::actions` | Built-in action dispatch (`std/*`) + custom-action registry |
+| `step::http` | `std/http@v1` + shared HTTP transport (client pools, timed exchange, reporting) |
 | `step::context` | Per-VU variable store + `${{ }}` interpolation |
 | `step::resources` | Family handle types + gRPC reflection cache over the connection registries |
 | `step::ws` / `step::grpc` / `step::db` | Live-connection protocol families |
+| `step::graphql` | `std/graphql@v1`: HTTP GraphQL + introspection/SDL schema validation |
 | `step::thresholds` | `std/thresholds@v1` run-level SLO gates |
 | `step::process` | Managed child processes (`std/child_process`, `std/kill_process`) |
 | `yaml` | Schema-validated parsing of test/config files, `ConfigFile` |

@@ -35,7 +35,8 @@ Or grab a binary from [GitHub Releases](https://github.com/Perfscale/perfscale/r
    their stdout/stderr live; locust's `--csv` output is parsed into a k6-compatible
    summary at the end so all three engines report in the same shape.
 3. Native (`-f test.yaml -c config.yaml`) runs perfscale's own step engine — no
-   external binary required — executing `std/http`, `std/tcp`, `std/udp`,
+   external binary required — executing `std/http`, `std/graphql` (queries and
+   mutations with introspection/SDL schema validation), `std/tcp`, `std/udp`,
    `std/ws*` (WebSocket sessions and live connections), `std/grpc*` (unary
    calls and client/server/bidi streams, schema via reflection or descriptor
    sets), `std/db-*` (PostgreSQL, MySQL/MariaDB, and SQLite queries and

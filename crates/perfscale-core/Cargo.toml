@@ -42,6 +42,12 @@ base64 = "0.22"
 schemars   = "0.8"
 jsonschema = "0.18"
 
+# GraphQL query parsing (syntax validation, operation-name extraction) and SDL
+# schema parsing for the `std/graphql@v1` action family. The schema the query
+# is validated against arrives at run time (server introspection or an SDL
+# file), so no codegen — same dynamic posture as the gRPC family.
+graphql-parser = "0.4"
+
 tracing = "0.1"
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
@@ -100,6 +106,13 @@ tonic = { version = "0.14.6", features = ["transport"] }
 tonic-prost = "0.14.6"
 tonic-reflection = "0.14.6"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+# Real GraphQL test server for `std/graphql@v1` integration tests (query/
+# mutation resolvers + introspection), served over axum. Default features are
+# off: `graphiql` pulls handlebars, whose preserve_json_order flips
+# serde_json's Map to insertion order and breaks ordering-sensitive tests.
+async-graphql = { version = "7", default-features = false }
+async-graphql-axum = "7"
+axum = "0.7"
 
 [[bench]]
 name = "engine"

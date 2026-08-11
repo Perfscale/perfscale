@@ -136,6 +136,7 @@ perfscale lint --schema config load.yaml
 |---|---|---|
 | `FILE...` | required | One or more YAML files |
 | `--schema <auto\|test\|config>` | `auto` | `auto` detects per file: a top-level `steps:` key means test definition, anything else is a config |
+| `--offline` | off | Skip the network pass (GraphQL introspection) — validate offline only |
 
 What it checks:
 
@@ -145,6 +146,11 @@ What it checks:
    at every level: step fields, per-action `with:` parameters, `check:` keys,
    config fields, `report:` fields
 4. **Unknown action IDs** — `std/htp@v1` → `did you mean 'std/http@v1'?`
+5. **GraphQL documents** — `std/graphql@v1` queries are parsed (syntax errors
+   point at `/steps/N/with/query`) and, when the endpoint is reachable,
+   validated against its introspected schema. `schema_file` steps validate
+   against the local SDL instead, and unreachable endpoints produce an
+   advisory note, never a failure. `--offline` skips the network pass
 
 Every finding shows *where* (`/steps/0/with`), *what*, and *what to use
 instead*, and the output ends with a link to the

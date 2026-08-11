@@ -277,6 +277,10 @@ pub struct LintArgs {
     /// Which schema to validate against.
     #[arg(long, value_enum, default_value_t = SchemaKind::Auto)]
     pub schema: SchemaKind,
+
+    /// Skip the network pass (GraphQL introspection): validate offline only.
+    #[arg(long)]
+    pub offline: bool,
 }
 
 #[cfg(test)]

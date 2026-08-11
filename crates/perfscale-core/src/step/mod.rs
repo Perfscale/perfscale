@@ -27,7 +27,9 @@
 pub mod actions;
 pub mod context;
 pub(crate) mod db;
+pub mod graphql;
 pub(crate) mod grpc;
+pub(crate) mod http;
 pub mod process;
 pub(crate) mod resources;
 pub mod runner;

@@ -59,6 +59,147 @@ pub fn lint(yaml: &str, kind: DocKind) -> Vec<LintIssue> {
     issues
 }
 
+/// Network pass for `std/graphql@v1` steps, run by `perfscale lint` after the
+/// offline checks: fetch each endpoint's schema via introspection and
+/// validate the step's literal query against it — the same gate the run
+/// itself applies. Steps with a `schema_file` are validated against the local
+/// SDL instead; that part is offline by nature and runs even when `offline`
+/// is set (only introspection fetching is skipped then).
+///
+/// Returns `(issues, notes)`: notes are advisory lines for endpoints that
+/// could not be introspected (target down, introspection disabled) and never
+/// affect the lint exit code. Interpolated `${{ … }}` values skip the step —
+/// they resolve only at run time.
+pub async fn lint_graphql_remote(yaml: &str, offline: bool) -> (Vec<LintIssue>, Vec<String>) {
+    use crate::step::graphql::{
+        introspect_schema, schema_from_sdl, validate_against_schema, GraphqlSchema,
+    };
+
+    let mut issues = Vec::new();
+    let mut notes = Vec::new();
+    let Ok(value) = serde_yaml::from_str::<Value>(yaml) else {
+        return (issues, notes);
+    };
+    let Some(steps) = value.get("steps").and_then(|s| s.as_array()) else {
+        return (issues, notes);
+    };
+
+    fn literal<'a>(with: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'a str> {
+        with.get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.contains("${{"))
+    }
+
+    let client = reqwest::Client::new();
+    // One fetch per endpoint URL, shared across steps of the file.
+    let mut schemas: std::collections::HashMap<String, Option<GraphqlSchema>> =
+        std::collections::HashMap::new();
+
+    for (i, step) in steps.iter().enumerate() {
+        let action = step
+            .get("use")
+            .or_else(|| step.get("uses"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !matches!(action, "std/graphql@v1" | "graphql") {
+            continue;
+        }
+        let Some(with) = step.get("with").and_then(Value::as_object) else {
+            continue;
+        };
+
+        // The document under lint: inline `query`, or the `query_file` read
+        // from disk (relative to the lint process CWD, as at run time).
+        let query = match literal(with, "query") {
+            Some(q) => Some(q.to_string()),
+            None => match literal(with, "query_file") {
+                Some(path) => match std::fs::read_to_string(path) {
+                    Ok(q) => Some(q),
+                    Err(e) => {
+                        notes.push(format!("/steps/{i}: cannot read query_file '{path}': {e}"));
+                        None
+                    }
+                },
+                None => None,
+            },
+        };
+
+        // SDL source: fully offline validation.
+        if let Some(path) = literal(with, "schema_file") {
+            match std::fs::read_to_string(path)
+                .map_err(|e| e.to_string())
+                .and_then(|sdl| schema_from_sdl(&sdl))
+            {
+                Ok(schema) => {
+                    if let Some(q) = &query {
+                        if let Err(msg) = validate_against_schema(&schema, q) {
+                            issues.push(LintIssue {
+                                location: format!("/steps/{i}/with/query"),
+                                problem: format!("query fails schema validation: {msg}"),
+                                suggestion: None,
+                            });
+                        }
+                    }
+                }
+                Err(msg) => issues.push(LintIssue {
+                    location: format!("/steps/{i}/with/schema_file"),
+                    problem: format!("schema_file '{path}': {msg}"),
+                    suggestion: Some("expected a valid GraphQL SDL file".into()),
+                }),
+            }
+            continue;
+        }
+
+        if with.get("introspection").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        if offline {
+            continue;
+        }
+        let Some(url) = literal(with, "url") else {
+            continue;
+        };
+
+        let schema = match schemas.get(url) {
+            Some(s) => s.clone(),
+            None => {
+                let headers: Vec<(String, String)> = with
+                    .get("headers")
+                    .and_then(Value::as_object)
+                    .map(|h| {
+                        h.iter()
+                            .filter_map(|(k, v)| {
+                                v.as_str()
+                                    .filter(|s| !s.contains("${{"))
+                                    .map(|s| (k.clone(), s.to_string()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let fetched = introspect_schema(&client, url, &headers, 5_000).await.ok();
+                if fetched.is_none() {
+                    notes.push(format!(
+                        "/steps/{i}: could not introspect {url} — schema validation skipped"
+                    ));
+                }
+                schemas.insert(url.to_string(), fetched.clone());
+                fetched
+            }
+        };
+
+        if let (Some(schema), Some(q)) = (&schema, &query) {
+            if let Err(msg) = validate_against_schema(schema, q) {
+                issues.push(LintIssue {
+                    location: format!("/steps/{i}/with/query"),
+                    problem: format!("query fails schema validation: {msg}"),
+                    suggestion: None,
+                });
+            }
+        }
+    }
+    (issues, notes)
+}
+
 // ---------------------------------------------------------------------------
 // Schema validation → issues with suggestions
 // ---------------------------------------------------------------------------
@@ -98,7 +239,7 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
     // definition (see `schema::relax_use_alias`); the older wording was
     // `"use" is a required property`.
     if problem.contains("\"use\" is a required property") || problem.contains("anyOf") {
-        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, or `std/thresholds@v1`".into())
+        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, or `std/thresholds@v1`".into())
     } else if problem.contains("\"steps\" is a required property") {
         Some("a test definition is a mapping with a `steps:` list at the top level".into())
     } else if problem.contains("\"url\" is a required property") {
@@ -141,7 +282,7 @@ const CHECK_FIELDS: [&str; 7] = [
     "message_matches",
     "messages_count_gte",
 ];
-const HTTP_WITH_FIELDS: [&str; 7] = [
+const HTTP_WITH_FIELDS: [&str; 8] = [
     "method",
     "url",
     "headers",
@@ -149,6 +290,21 @@ const HTTP_WITH_FIELDS: [&str; 7] = [
     "timeout",
     "insecure",
     "multipart",
+    "pool",
+];
+const GRAPHQL_WITH_FIELDS: [&str; 12] = [
+    "url",
+    "query",
+    "query_file",
+    "variables",
+    "operation",
+    "method",
+    "headers",
+    "timeout",
+    "insecure",
+    "introspection",
+    "schema_file",
+    "pool",
 ];
 // TCP and UDP share the same `with` fields; `read`/`expect` gate the reply.
 const RAW_NET_WITH_FIELDS: [&str; 9] = [
@@ -319,6 +475,7 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
                 action,
                 &[
                     "std/http@v1",
+                    "std/graphql@v1",
                     "std/tcp@v1",
                     "std/udp@v1",
                     "std/ws@v1",
@@ -352,7 +509,7 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             )
             .or_else(|| {
                 Some(
-                    "available actions: std/http@v1, std/tcp@v1, std/udp@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/db-connect@v1, std/db-query@v1, std/db-tx-begin@v1, std/db-tx-commit@v1, std/db-tx-rollback@v1, std/db-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1, std/thresholds@v1"
+                    "available actions: std/http@v1, std/graphql@v1, std/tcp@v1, std/udp@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/db-connect@v1, std/db-query@v1, std/db-tx-begin@v1, std/db-tx-commit@v1, std/db-tx-rollback@v1, std/db-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1, std/thresholds@v1"
                         .into(),
                 )
             }),
@@ -362,6 +519,7 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
     if let Some(with) = map.get("with").and_then(|v| v.as_object()) {
         let with_fields: Option<&[&str]> = match action {
             "std/http@v1" | "http" => Some(&HTTP_WITH_FIELDS),
+            "std/graphql@v1" | "graphql" => Some(&GRAPHQL_WITH_FIELDS),
             "std/tcp@v1" | "tcp" | "std/udp@v1" | "udp" => Some(&RAW_NET_WITH_FIELDS),
             "std/ws@v1" | "ws" => Some(&WS_SESSION_WITH_FIELDS),
             "std/ws-connect@v1" | "ws-connect" => Some(&WS_PROFILE_FIELDS),
@@ -426,6 +584,15 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
         issues,
     );
 
+    // std/graphql@v1 gets the same treatment: a missing url/query or a
+    // malformed GraphQL document otherwise fails only mid-run.
+    lint_graphql_with(
+        action,
+        map.get("with").and_then(|v| v.as_object()),
+        loc,
+        issues,
+    );
+
     if let Some(check) = map.get("check").and_then(|v| v.as_object()) {
         unknown_field_issues(check, &CHECK_FIELDS, &format!("{loc}/check"), issues);
     }
@@ -457,6 +624,8 @@ fn is_known_action(action: &str) -> bool {
         action,
         "std/http@v1"
             | "http"
+            | "std/graphql@v1"
+            | "graphql"
             | "std/tcp@v1"
             | "tcp"
             | "std/udp@v1"
@@ -594,15 +763,107 @@ fn lint_db_with(
     }
 }
 
-/// `Some("did you mean 'check'?")` when a known name is within edit
-/// distance 2 of the typo.
-fn did_you_mean(input: &str, candidates: &[&str]) -> Option<String> {
+/// Required-`with`-field checks for `std/graphql@v1`, plus offline validation
+/// of literal values: the query/document syntax (via `graphql-parser`), the
+/// `method` and `pool` enums. Interpolated `${{ … }}` values resolve at
+/// runtime and skip every check here.
+fn lint_graphql_with(
+    action: &str,
+    with: Option<&serde_json::Map<String, Value>>,
+    loc: &str,
+    issues: &mut Vec<LintIssue>,
+) {
+    if !matches!(action, "std/graphql@v1" | "graphql") {
+        return;
+    }
+
+    if !with.is_some_and(|w| w.contains_key("url")) {
+        issues.push(LintIssue {
+            location: format!("{loc}/with"),
+            problem: "missing required field 'url'".into(),
+            suggestion: Some("`std/graphql@v1` needs `url` — the GraphQL endpoint, e.g. `http://localhost:4000/graphql`".into()),
+        });
+    }
+
+    let has_query = with.is_some_and(|w| w.contains_key("query"));
+    let has_query_file = with.is_some_and(|w| w.contains_key("query_file"));
+    match (has_query, has_query_file) {
+        (false, false) => issues.push(LintIssue {
+            location: format!("{loc}/with"),
+            problem: "missing required field 'query'".into(),
+            suggestion: Some(
+                "`std/graphql@v1` needs `query` (inline document) or `query_file` (a .graphql file)"
+                    .into(),
+            ),
+        }),
+        (true, true) => issues.push(LintIssue {
+            location: format!("{loc}/with"),
+            problem: "'query' and 'query_file' are mutually exclusive".into(),
+            suggestion: Some("keep one: inline `query` for short documents, `query_file` for large ones".into()),
+        }),
+        _ => {}
+    }
+
+    // Literal-only checks below: interpolated values resolve at runtime.
+    fn literal<'a>(w: Option<&'a serde_json::Map<String, Value>>, k: &str) -> Option<&'a str> {
+        w.and_then(|w| w.get(k))
+            .and_then(Value::as_str)
+            .filter(|s| !s.contains("${{"))
+    }
+
+    if let Some(query) = literal(with, "query") {
+        if let Err(msg) = crate::step::graphql::validate_query_syntax(query) {
+            issues.push(LintIssue {
+                location: format!("{loc}/with/query"),
+                problem: msg,
+                suggestion: Some(
+                    "check the document: balanced braces, valid field names, no stray commas"
+                        .into(),
+                ),
+            });
+        }
+    }
+
+    if let Some(method) = literal(with, "method") {
+        if !matches!(method.to_ascii_uppercase().as_str(), "POST" | "GET") {
+            issues.push(LintIssue {
+                location: format!("{loc}/with/method"),
+                problem: format!("invalid method '{method}'"),
+                suggestion: Some("GraphQL over HTTP is POST (default) or GET".into()),
+            });
+        }
+    }
+
+    if let Some(pool) = literal(with, "pool") {
+        if !matches!(pool, "per-vu" | "shared") {
+            issues.push(LintIssue {
+                location: format!("{loc}/with/pool"),
+                problem: format!("invalid pool '{pool}'"),
+                suggestion: Some("expected per-vu (default) or shared".into()),
+            });
+        }
+    }
+}
+
+/// The candidate closest to `input` within edit distance 2, if any — the
+/// shared core of every did-you-mean suggestion (lint fields, gRPC method
+/// resolution, GraphQL schema-field validation).
+pub(crate) fn closest_name<'a>(
+    input: &str,
+    candidates: impl IntoIterator<Item = &'a str>,
+) -> Option<&'a str> {
     candidates
-        .iter()
+        .into_iter()
         .map(|c| (c, edit_distance(input, c)))
         .filter(|(_, d)| *d <= 2)
         .min_by_key(|(_, d)| *d)
-        .map(|(c, _)| format!("did you mean '{c}'?"))
+        .map(|(c, _)| c)
+}
+
+/// `Some("did you mean 'check'?")` when a known name is within edit
+/// distance 2 of the typo.
+fn did_you_mean(input: &str, candidates: &[&str]) -> Option<String> {
+    closest_name(input, candidates.iter().copied()).map(|c| format!("did you mean '{c}'?"))
 }
 
 /// Levenshtein distance, used by the linter and by `grpc` method resolution
@@ -1134,6 +1395,132 @@ steps:
         // Interpolated values resolve at runtime — lint cannot know them.
         let yaml = "steps:\n  - use: std/db-connect@v1\n    with:\n      driver: \"${{ vars.driver }}\"\n      dsn: \"${{ vars.dsn }}\"\n";
         assert_eq!(lint(yaml, DocKind::Test), vec![]);
+    }
+
+    #[test]
+    fn graphql_valid_step_has_no_issues() {
+        let yaml = r#"
+steps:
+  - name: fetch viewer
+    use: std/graphql@v1
+    with:
+      url: http://localhost:4000/graphql
+      query: |
+        query GetViewer { viewer { id name } }
+      variables: { "id": "${{ vars.id }}" }
+      method: POST
+      pool: shared
+      introspection: false
+"#;
+        assert_eq!(lint(yaml, DocKind::Test), vec![]);
+    }
+
+    #[test]
+    fn graphql_missing_url_and_query_is_reported() {
+        let yaml = "steps:\n  - use: std/graphql@v1\n    with:\n      timeout: 500\n";
+        let issues = lint(yaml, DocKind::Test);
+        for field in ["url", "query"] {
+            assert!(
+                issues
+                    .iter()
+                    .any(|i| i.problem == format!("missing required field '{field}'")
+                        && i.location == "/steps/0/with"),
+                "no issue for missing '{field}': {issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn graphql_query_and_query_file_conflict_is_reported() {
+        let yaml = "steps:\n  - use: std/graphql@v1\n    with:\n      url: http://x/graphql\n      query: \"{ a }\"\n      query_file: q.graphql\n";
+        let issues = lint(yaml, DocKind::Test);
+        assert!(issues
+            .iter()
+            .any(|i| i.problem.contains("mutually exclusive")));
+    }
+
+    #[test]
+    fn graphql_bad_syntax_is_reported_with_location() {
+        let yaml = "steps:\n  - use: std/graphql@v1\n    with:\n      url: http://x/graphql\n      query: \"{ broken {{ \"\n";
+        let issues = lint(yaml, DocKind::Test);
+        let syntax = issues
+            .iter()
+            .find(|i| i.problem.contains("invalid GraphQL syntax"))
+            .unwrap_or_else(|| panic!("no syntax issue: {issues:?}"));
+        assert_eq!(syntax.location, "/steps/0/with/query");
+    }
+
+    #[test]
+    fn graphql_interpolated_query_skips_syntax_check() {
+        // A `${{ }}` query resolves at run time — lint must not parse it.
+        let yaml = "steps:\n  - use: std/graphql@v1\n    with:\n      url: http://x/graphql\n      query: \"${{ vars.q }}\"\n";
+        assert_eq!(lint(yaml, DocKind::Test), vec![]);
+    }
+
+    #[test]
+    fn graphql_bad_method_and_pool_are_reported() {
+        let yaml = "steps:\n  - use: std/graphql@v1\n    with:\n      url: http://x/graphql\n      query: \"{ a }\"\n      method: PUT\n      pool: fancy\n";
+        let issues = lint(yaml, DocKind::Test);
+        assert!(issues
+            .iter()
+            .any(|i| i.problem == "invalid method 'PUT'" && i.location == "/steps/0/with/method"));
+        assert!(issues
+            .iter()
+            .any(|i| i.problem == "invalid pool 'fancy'" && i.location == "/steps/0/with/pool"));
+    }
+
+    #[test]
+    fn graphql_unknown_with_field_gets_did_you_mean() {
+        let yaml = "steps:\n  - use: std/graphql@v1\n    with:\n      url: http://x/graphql\n      qurey: \"{ a }\"\n";
+        let issues = lint(yaml, DocKind::Test);
+        let typo = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown field 'qurey'"))
+            .unwrap();
+        assert_eq!(typo.suggestion.as_deref(), Some("did you mean 'query'?"));
+    }
+
+    #[tokio::test]
+    async fn graphql_remote_unreachable_endpoint_is_a_note_not_an_issue() {
+        let yaml = "steps:\n  - use: std/graphql@v1\n    with:\n      url: \"http://127.0.0.1:1/graphql\"\n      query: \"{ a }\"\n";
+        let (issues, notes) = lint_graphql_remote(yaml, false).await;
+        assert!(issues.is_empty(), "unreachable endpoint never fails lint");
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("could not introspect"));
+    }
+
+    #[tokio::test]
+    async fn graphql_remote_introspection_false_skips_the_step() {
+        let yaml = "steps:\n  - use: std/graphql@v1\n    with:\n      url: \"http://127.0.0.1:1/graphql\"\n      query: \"{ a }\"\n      introspection: false\n";
+        let (issues, notes) = lint_graphql_remote(yaml, false).await;
+        assert!(issues.is_empty() && notes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn graphql_remote_sdl_file_validates_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let sdl = dir.path().join("schema.graphql");
+        std::fs::write(
+            &sdl,
+            "type Query { viewer: Viewer }\ntype Viewer { id: ID }",
+        )
+        .unwrap();
+        let yaml = format!(
+            "steps:\n  - use: std/graphql@v1\n    with:\n      url: \"http://x/graphql\"\n      query: \"{{ viewr {{ id }} }}\"\n      schema_file: {}\n",
+            sdl.display()
+        );
+        // `offline: true` still validates against the SDL — no network needed.
+        let (issues, _) = lint_graphql_remote(&yaml, true).await;
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].problem.contains("unknown field 'viewr'"));
+        assert_eq!(issues[0].location, "/steps/0/with/query");
+    }
+
+    #[tokio::test]
+    async fn graphql_remote_interpolated_values_skip_the_step() {
+        let yaml = "steps:\n  - use: std/graphql@v1\n    with:\n      url: \"${{ vars.url }}\"\n      query: \"${{ vars.q }}\"\n";
+        let (issues, notes) = lint_graphql_remote(yaml, false).await;
+        assert!(issues.is_empty() && notes.is_empty());
     }
 
     #[test]

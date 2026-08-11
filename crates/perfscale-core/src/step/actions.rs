@@ -24,6 +24,7 @@
 //! | Action ID        | What it does                                     |
 //! |------------------|--------------------------------------------------|
 //! | `std/http@v1`    | HTTP request (any method) with timing            |
+//! | `std/graphql@v1` | GraphQL query/mutation over HTTP, schema-validated |
 //! | `std/tcp@v1`     | Raw TCP connect / send / receive with timing     |
 //! | `std/udp@v1`     | Raw UDP send / receive with timing               |
 //! | `std/ws@v1`      | WebSocket one-shot session (connect→msgs→close)  |
@@ -83,7 +84,7 @@ pub struct ActionOutput {
     pub logs: Vec<(LogTag, String)>,
     /// Whether this step is considered successful.
     pub success: bool,
-    /// HTTP timing (only for `std/http@v1`).
+    /// HTTP timing (for the HTTP-based actions: `std/http@v1`, `std/graphql@v1`).
     pub http_sample: Option<HttpSample>,
 }
 
@@ -144,7 +145,10 @@ pub async fn execute_action(
         };
 
     match action_id {
-        "std/http@v1" | "http" => http_action(&resolved, step_name, ctx).await,
+        "std/http@v1" | "http" => super::http::http_action(&resolved, step_name, ctx).await,
+        "std/graphql@v1" | "graphql" => {
+            super::graphql::graphql_action(&resolved, ctx, step_name).await
+        }
         "std/tcp@v1" | "tcp" => tcp_action(&resolved, step_name).await,
         "std/udp@v1" | "udp" => udp_action(&resolved, step_name).await,
         "std/ws@v1" | "ws" => super::ws::ws_session_action(&resolved, step_name).await,
@@ -273,360 +277,13 @@ pub fn register_action(handler: Arc<dyn ActionHandler>) {
 }
 
 // ---------------------------------------------------------------------------
-// std/http@v1
+// HTTP plumbing — `std/http@v1` and the transport shared by HTTP-based
+// protocol families live in `step::http`. The re-exports below keep the
+// historic `step::actions` paths working for the other families and the
+// runner.
 // ---------------------------------------------------------------------------
-//
-// Parameters:
-//   method    – HTTP method, default "GET". Any valid token is accepted,
-//               including extension methods like QUERY (safe method with a
-//               body, draft-ietf-httpbis-safe-method-w-body)
-//   url       – required
-//   headers   – optional JSON object { "Name": "Value" }
-//   body      – optional: JSON object → application/json, string → text/plain
-//   multipart – optional array of multipart/form-data parts (mutually
-//               exclusive with body). Each part: `name` plus either `value`
-//               (text field) or `file` (path on disk); optional `filename`
-//               (defaults to the file's basename) and `content_type`.
-//               Files are read from disk each iteration — the OS page cache
-//               keeps repeats cheap, and edits between runs are picked up.
-//               `file` parts are filesystem access: they require
-//               `allow_file_actions` and honour `fs_root` confinement.
-//   timeout   – optional timeout in ms, default 10000
-//   insecure  – optional bool: skip TLS certificate verification (self-signed
-//               targets like `perfscale serve --tls`), default false
-//
-// Output:
-//   { "status": <u16>, "body": <string>, "duration_ms": <f64> }
-//   Binary responses (non-textual Content-Type) instead return an empty
-//   `body` plus `body_base64` — e.g. a fetched protobuf FileDescriptorSet
-//   can flow into a grpc step via `${{ fetch.body_base64 }}`.
 
-/// HTTP client shards: a fixed set of `reqwest::Client`s, one per available
-/// CPU (capped at 16). Each VU is pinned to one shard via
-/// [`Context::http_client_shard`], so connection pooling / keep-alive across
-/// iterations and VUs is preserved exactly as with a single client — but a
-/// *single* process-global client made hundreds of VUs contend on one hyper
-/// pool mutex (the top lock in CPU profiles under load). Sharding by VU
-/// rather than by calling thread matters: tokio work-stealing migrates VU
-/// tasks across workers, and thread-keyed shards let every VU accumulate an
-/// idle connection in every shard pool (400 VUs × N shards sockets), which
-/// stalls the target under load. The per-request `timeout` parameter is
-/// applied on the request builder, so the shared clients themselves carry no
-/// default timeout.
-fn shared_client(shard: usize) -> &'static reqwest::Client {
-    static CLIENTS: OnceLock<Vec<reqwest::Client>> = OnceLock::new();
-    let clients = CLIENTS.get_or_init(|| {
-        (0..client_shard_count())
-            .map(|_| reqwest::Client::new())
-            .collect()
-    });
-    &clients[shard % clients.len()]
-}
-
-/// Like [`shared_client`], but skips TLS certificate verification — used only
-/// when a step opts in with `insecure: true`. A separate shard set so secure
-/// requests never share a connection pool with unverified ones.
-fn shared_insecure_client(shard: usize) -> &'static reqwest::Client {
-    static CLIENTS: OnceLock<Vec<reqwest::Client>> = OnceLock::new();
-    let clients = CLIENTS.get_or_init(|| {
-        (0..client_shard_count())
-            .map(|_| {
-                reqwest::Client::builder()
-                    .danger_accept_invalid_certs(true)
-                    .build()
-                    .expect("insecure client construction cannot fail")
-            })
-            .collect()
-    });
-    &clients[shard % clients.len()]
-}
-
-/// Number of client shards: available parallelism, capped — more shards than
-/// worker threads only fragments the connection pools.
-pub(crate) fn client_shard_count() -> usize {
-    static N: OnceLock<usize> = OnceLock::new();
-    *N.get_or_init(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-            .clamp(1, 16)
-    })
-}
-
-async fn http_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
-    let method = params["method"].as_str().unwrap_or("GET").to_uppercase();
-    let url = match params["url"].as_str() {
-        Some(u) => u.to_string(),
-        None => return err(step_name, "'url' is required"),
-    };
-    let timeout_ms = params["timeout"].as_u64().unwrap_or(10_000);
-    let insecure = params["insecure"].as_bool().unwrap_or(false);
-
-    let reqwest_method = match reqwest::Method::from_bytes(method.as_bytes()) {
-        Ok(m) => m,
-        Err(_) => return err(step_name, &format!("invalid HTTP method '{method}'")),
-    };
-
-    let client = if insecure {
-        shared_insecure_client(ctx.http_client_shard)
-    } else {
-        shared_client(ctx.http_client_shard)
-    };
-    let mut req = client
-        .request(reqwest_method, &url)
-        .timeout(Duration::from_millis(timeout_ms));
-
-    if let Some(headers) = params["headers"].as_object() {
-        for (k, v) in headers {
-            if let Some(val) = v.as_str() {
-                req = req.header(k.as_str(), val);
-            }
-        }
-    }
-
-    if !params["multipart"].is_null() {
-        if !params["body"].is_null() {
-            return err(step_name, "'body' and 'multipart' are mutually exclusive");
-        }
-        match build_multipart(&params["multipart"], step_name, ctx).await {
-            Ok(form) => req = req.multipart(form),
-            Err(out) => return out,
-        }
-    } else if !params["body"].is_null() {
-        match &params["body"] {
-            Value::String(s) => req = req.header("content-type", "text/plain").body(s.clone()),
-            other => {
-                req = req
-                    .header("content-type", "application/json")
-                    .body(other.to_string())
-            }
-        }
-    }
-
-    let t0 = Instant::now();
-    match req.send().await {
-        Ok(resp) => {
-            let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-            let status = resp.status().as_u16();
-            let reason = resp.status().canonical_reason().unwrap_or("");
-            // Textual payloads keep the historic `body` string (reqwest's
-            // charset-aware decoding); binary payloads surface as
-            // `body_base64` so protobuf descriptor sets, images etc. can flow
-            // into later steps (`descriptor_set: "${{ fetch.body_base64 }}"`).
-            let textual = resp
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(is_textual_content_type);
-            let headers = header_map_to_json(resp.headers());
-            let (body, body_base64) = match textual {
-                Some(true) => (resp.text().await.unwrap_or_default(), None),
-                Some(false) => {
-                    let bytes = resp.bytes().await.unwrap_or_default();
-                    (String::new(), Some(base64_encode(&bytes)))
-                }
-                // No Content-Type: sniff — valid UTF-8 behaves as before,
-                // anything else is treated as binary.
-                None => {
-                    let bytes = resp.bytes().await.unwrap_or_default();
-                    match std::str::from_utf8(&bytes) {
-                        Ok(_) => (String::from_utf8_lossy(&bytes).into_owned(), None),
-                        Err(_) => (String::new(), Some(base64_encode(&bytes))),
-                    }
-                }
-            };
-            let failed = status >= 400;
-
-            let mut value = json!({
-                "status": status,
-                "body": body,
-                "duration_ms": duration_ms,
-                "headers": headers,
-            });
-            if let Some(b64) = body_base64 {
-                value["body_base64"] = Value::String(b64);
-            }
-
-            ActionOutput {
-                value,
-                logs: vec![(
-                    if failed { LogTag::Err } else { LogTag::Out },
-                    format!("{method} {url} → {status} {reason} ({duration_ms:.2}ms)"),
-                )],
-                success: !failed,
-                http_sample: Some(HttpSample {
-                    duration_ms,
-                    status,
-                    failed,
-                }),
-            }
-        }
-        Err(e) => {
-            let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-            let detail = error_chain(&e);
-            let msg = if e.is_timeout() {
-                format!("{method} {url} → TIMEOUT after {duration_ms:.2}ms")
-            } else {
-                format!("{method} {url} → ERROR: {detail}")
-            };
-            ActionOutput {
-                value: json!({ "error": detail, "duration_ms": duration_ms }),
-                logs: vec![(LogTag::Err, msg)],
-                success: false,
-                http_sample: Some(HttpSample {
-                    duration_ms,
-                    status: 0,
-                    failed: true,
-                }),
-            }
-        }
-    }
-}
-
-/// Build a `multipart/form-data` form from the `multipart` parameter — an
-/// array of parts, each `{ name, value }` (text field) or
-/// `{ name, file[, filename][, content_type] }` (file upload). Files are read
-/// per call: no process-level cache, so a file edited between runs is picked
-/// up (the agent is long-lived), and the OS page cache keeps per-iteration
-/// reads cheap. The Content-Type header with its boundary is set by reqwest.
-///
-/// `file` parts are filesystem access: they require `allow_file_actions`
-/// and honour the context's `fs_root` confinement (see [`confine_fs_path`]).
-async fn build_multipart(
-    spec: &Value,
-    step_name: &str,
-    ctx: &Context,
-) -> Result<reqwest::multipart::Form, ActionOutput> {
-    let Some(parts) = spec.as_array() else {
-        return Err(err(step_name, "'multipart' must be an array of parts"));
-    };
-    if parts.is_empty() {
-        return Err(err(step_name, "'multipart' must not be empty"));
-    }
-
-    let mut form = reqwest::multipart::Form::new();
-    for (i, p) in parts.iter().enumerate() {
-        let Some(name) = p["name"].as_str() else {
-            return Err(err(
-                step_name,
-                &format!("multipart part #{i}: 'name' is required"),
-            ));
-        };
-
-        if let Some(text) = p["value"].as_str() {
-            form = form.text(name.to_owned(), text.to_owned());
-            continue;
-        }
-
-        let Some(path) = p["file"].as_str() else {
-            return Err(err(
-                step_name,
-                &format!("multipart part '{name}': needs 'value' (text) or 'file' (path)"),
-            ));
-        };
-        let path = match confine_fs_path(ctx, path, false) {
-            Ok(p) => p,
-            Err(msg) => return Err(err(step_name, &format!("multipart part '{name}': {msg}"))),
-        };
-        let data = match tokio::fs::read(&path).await {
-            Ok(d) => d,
-            Err(e) => {
-                return Err(err(
-                    step_name,
-                    &format!(
-                        "multipart part '{name}': cannot read file '{}': {e}",
-                        path.display()
-                    ),
-                ));
-            }
-        };
-
-        let filename = p["filename"]
-            .as_str()
-            .map(str::to_owned)
-            .or_else(|| path.file_name().map(|f| f.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "file".to_owned());
-
-        let mut part = reqwest::multipart::Part::bytes(data).file_name(filename);
-        if let Some(ct) = p["content_type"].as_str() {
-            part = match part.mime_str(ct) {
-                Ok(p) => p,
-                Err(_) => {
-                    return Err(err(
-                        step_name,
-                        &format!("multipart part '{name}': invalid content_type '{ct}'"),
-                    ));
-                }
-            };
-        }
-        form = form.part(name.to_owned(), part);
-    }
-    Ok(form)
-}
-
-/// Response headers as a JSON object: lowercase names → string values, so
-/// later steps can reference `${{ resp.headers.x-request-id }}`. Repeated
-/// headers are joined with ", " (fine for everything except `set-cookie`,
-/// where only the combined string is available). Non-UTF-8 values are
-/// skipped.
-fn header_map_to_json(headers: &reqwest::header::HeaderMap) -> serde_json::Map<String, Value> {
-    let mut map = serde_json::Map::with_capacity(headers.len());
-    for (name, value) in headers {
-        let Ok(v) = value.to_str() else { continue };
-        match map.get_mut(name.as_str()) {
-            Some(Value::String(existing)) => {
-                existing.push_str(", ");
-                existing.push_str(v);
-            }
-            _ => {
-                map.insert(name.as_str().to_owned(), Value::String(v.to_owned()));
-            }
-        }
-    }
-    map
-}
-
-/// True for content types whose payload is meant to be read as text; anything
-/// else (octet-stream, protobuf, images, …) is surfaced as `body_base64`.
-fn is_textual_content_type(ct: &str) -> bool {
-    let mime = ct
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    mime.starts_with("text/")
-        || mime == "application/json"
-        || mime.ends_with("+json")
-        || mime == "application/xml"
-        || mime.ends_with("+xml")
-        || mime == "application/javascript"
-        || mime == "application/x-javascript"
-        || mime == "application/x-www-form-urlencoded"
-        || mime == "application/yaml"
-        || mime == "application/x-yaml"
-}
-
-/// Standard base64 for binary response bodies.
-fn base64_encode(bytes: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-/// Flatten an error and its source chain into one line — reqwest's `Display`
-/// alone is just "error sending request for url (...)", which hides the actual
-/// cause (connection refused, reset, dns, ...).
-pub(crate) fn error_chain(e: &dyn std::error::Error) -> String {
-    let mut out = e.to_string();
-    let mut src = e.source();
-    while let Some(s) = src {
-        out.push_str(": ");
-        out.push_str(&s.to_string());
-        src = s.source();
-    }
-    out
-}
-
+pub(crate) use super::http::{client_shard_count, error_chain};
 // ---------------------------------------------------------------------------
 // std/tcp@v1
 // ---------------------------------------------------------------------------
@@ -1110,7 +767,7 @@ fn message_json_matches(pattern: &Value, m: &Value) -> bool {
 /// Returns the path to actually use: canonicalized when confined, the
 /// original path untouched otherwise (no behaviour change for unconfined
 /// runs).
-fn confine_fs_path(
+pub(crate) fn confine_fs_path(
     ctx: &Context,
     path: &str,
     for_write: bool,

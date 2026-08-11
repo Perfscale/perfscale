@@ -5,7 +5,7 @@ action in `use`, passes parameters in `with`, and may assert on the result in
 `check`.
 
 Full IDs carry a namespace and version (`std/http@v1`); the short aliases
-(`http`, `tcp`, `udp`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`,
+(`http`, `graphql`, `tcp`, `udp`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`,
 `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`,
 `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`,
 `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`,
@@ -26,6 +26,7 @@ Perform one HTTP request per iteration. Timing feeds the run's metrics.
 | `multipart` | array | — | Send `multipart/form-data` — see [Multipart uploads](#multipart-uploads). Mutually exclusive with `body` |
 | `timeout` | integer (ms) | `10000` | Per-request timeout |
 | `insecure` | boolean | `false` | Skip TLS certificate verification — for self-signed targets like `perfscale serve --tls`. Never use against hosts you don't control |
+| `pool` | string | `per-vu` | `per-vu` pins the step to the VU's HTTP client shard; `shared` puts every VU on one process-global client |
 
 **Output** (available via `outputs` / `__last__`):
 
@@ -92,6 +93,82 @@ Notes:
   repeats cheap, and a file changed between runs is picked up. Under high
   RPS prefer small fixture files.
 - A missing/unreadable file fails the step before any request is sent.
+
+## `std/graphql@v1`
+
+Send one GraphQL operation (query or mutation) per iteration over HTTP, with
+optional schema validation against the endpoint's introspected schema. See the
+full walkthrough in [GraphQL load testing](graphql.md).
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `url` | string | **required** | GraphQL endpoint, e.g. `https://api.example.com/graphql` |
+| `query` | string | one of query/query_file | Inline GraphQL document |
+| `query_file` | string (path) | one of query/query_file | Read the document from a `.graphql` file. Filesystem access: requires `allow_file_actions`, honours `fs_root` |
+| `variables` | object | — | Query variables. `${{ … }}` interpolation applies, and single-brace `${…}` generator tokens (`${uuid}`, `${rand}`, `${now}`) expand per execution |
+| `operation` | string | — | `operationName` to execute. Required when the document holds several operations; also the per-operation metrics tag |
+| `method` | string | `POST` | `POST` (JSON body) or `GET` (URL query parameters, for CDN-cacheable reads) |
+| `headers` | object | — | `{ "Name": "Value" }`, string values only |
+| `timeout` | integer (ms) | `10000` | Per-request timeout |
+| `insecure` | boolean | `false` | Skip TLS certificate verification |
+| `introspection` | boolean | `true` | Fetch the endpoint's schema once per run and validate every query before sending. Fetch failure degrades to unvalidated runs (logged once) |
+| `schema_file` | string (path) | — | Validate against a local SDL file instead of introspection (fallback for endpoints with introspection disabled). Same filesystem rules as `query_file` |
+| `pool` | string | `per-vu` | `per-vu` pins the step to the VU's HTTP client shard (the `std/http@v1` behaviour); `shared` puts every VU on one process-global client |
+
+**Output** (available via `outputs` / `__last__`):
+
+```json
+{
+  "status": 200,
+  "data": { "viewer": { "id": "u-1" } },
+  "errors": [ { "message": "widgets timed out" } ],
+  "body": "{\"data\":…}",
+  "duration_ms": 12.31,
+  "headers": { "content-type": "application/json" }
+}
+```
+
+`data` and `errors` are the decoded GraphQL payload (`errors` only present
+when the server sent it); `body` keeps the raw text for `body_contains`
+checks. Extraction reads the structured payload:
+`${{ create.data.createWidget.id }}`.
+
+Response semantics follow the GraphQL-over-HTTP reality: statuses ≥ 400 fail
+the step; a `200` with `errors` and no `data` fails; partial `data` plus
+`errors` passes (the server resolved what it could) and the errors are
+counted in the `graphql_errors` metric.
+
+A syntax error, a schema-validation failure, or an unreadable `query_file`
+fails the step **before** any request is made — the target never sees a
+malformed query.
+
+```yaml
+steps:
+  - name: fetch viewer
+    use: std/graphql@v1
+    with:
+      url: https://api.example.com/graphql
+      query: |
+        query GetViewer($id: ID!) {
+          viewer(id: $id) { id name }
+        }
+      variables: { "id": "${{ vars.viewer_id }}" }
+    check:
+      status: 200
+    outputs: viewer
+
+  - name: rename widget
+    use: std/graphql@v1
+    with:
+      url: https://api.example.com/graphql
+      query_file: ./queries/rename-widget.graphql
+      variables: { "id": "${{ viewer.data.viewer.id }}", "name": "w-${seq}" }
+```
+
+Metrics: `graphql_req_duration` (histogram, with the derived
+`graphql_req_failed` rate), `graphql_errors` (counter), and
+`graphql_op_<operationName>_duration` when the operation is named — plus the
+standard `http_req_*` aggregates every HTTP step feeds.
 
 ## `std/tcp@v1`
 

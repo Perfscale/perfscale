@@ -92,6 +92,9 @@ Built-in emitters:
 | `ws_msgs_received` | counter | `std/ws@v1`, `std/ws-recv@v1` | WS messages read |
 | `ws_msg_rtt` | histogram | `std/ws@v1`, `std/ws-recv@v1` | Send → first matching reply (application-level RTT) |
 | `grpc_req_duration` | histogram | `std/grpc@v1`, `std/grpc-call@v1` | Unary call latency |
+| `graphql_req_duration` | histogram | `std/graphql@v1` | GraphQL operation round trip |
+| `graphql_errors` | counter | `std/graphql@v1` | GraphQL-level errors, including partial-data responses that pass the step |
+| `graphql_op_<operationName>_duration` | histogram | `std/graphql@v1` | Per-operation latency, only for named operations (bounded cardinality) |
 | `grpc_msg_rtt` | histogram | `std/grpc-call@v1`, `std/grpc-stream-recv@v1` | Send → matching reply RTT |
 | `grpc_msgs_sent` | counter | `std/grpc-call@v1`, `std/grpc-stream-send@v1` | gRPC messages sent |
 | `grpc_msgs_received` | counter | `std/grpc-call@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1` | gRPC messages read |
@@ -119,6 +122,7 @@ it succeeded — under the metric's family name with a trailing
 | `db_query_duration` | `db_query_failed` |
 | `db_connect_duration` | `db_connect_failed` |
 | `grpc_req_duration` | `grpc_req_failed` |
+| `graphql_req_duration` | `graphql_req_failed` |
 | `ws_msg_rtt` | `ws_msg_failed` |
 
 These print as `<name>: <pct>%` (k6's `http_req_failed` shape). Because one

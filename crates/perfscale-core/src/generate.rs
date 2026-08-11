@@ -139,6 +139,27 @@ impl Gen {
 }
 
 // ---------------------------------------------------------------------------
+// JSON payload expansion — shared by every protocol family
+// ---------------------------------------------------------------------------
+
+/// Expand `${…}` tokens in every string leaf of a JSON value (object keys are
+/// never expanded). Shared by the gRPC payloads, GraphQL variables, and any
+/// future protocol whose parameters carry generator tokens.
+pub fn expand_tokens(v: &serde_json::Value, generator: &mut Gen) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::String(s) => Value::String(generator.expand(s)),
+        Value::Array(a) => Value::Array(a.iter().map(|x| expand_tokens(x, generator)).collect()),
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .map(|(k, x)| (k.clone(), expand_tokens(x, generator)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Wall-clock formatting (no chrono dependency)
 // ---------------------------------------------------------------------------
 

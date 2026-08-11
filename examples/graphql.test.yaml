@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=../schema/test.schema.json
+#
+# GraphQL load test — queries and a mutation against one endpoint, with the
+# endpoint's introspected schema validating every document before it is sent.
+#
+# Run against the bundled example server:
+#   cargo run -p perfscale-core --example graphql_server   (listens on 4000)
+#   perfscale run -c examples/hello.config.yaml -f examples/graphql.test.yaml
+#
+# The introspection round trip is paid once per run (cached process-wide);
+# a typo'd field fails the step — and `perfscale lint` — before any request.
+
+steps:
+  - name: fetch viewer
+    use: std/graphql@v1
+    with:
+      url: http://127.0.0.1:4000/graphql
+      query: |
+        query GetViewer($id: ID) {
+          viewer(id: $id) { id name }
+        }
+      variables: { "id": "u-1" }
+    check:
+      status: 200
+      duration_ms_lt: 250
+    outputs: viewer
+
+  - name: list widgets
+    use: std/graphql@v1
+    with:
+      url: http://127.0.0.1:4000/graphql
+      query: |
+        {
+          widgets { id name }
+        }
+    outputs: widgets
+
+  - name: rename widget
+    use: std/graphql@v1
+    with:
+      url: http://127.0.0.1:4000/graphql
+      query: |
+        mutation Rename($id: String!, $name: String!) {
+          renameWidget(id: $id, name: $name) { id name }
+        }
+      # ${uuid} expands per execution — every rename sends a fresh name.
+      variables: { "id": "w-1", "name": "renamed-${uuid}" }
+    check:
+      status: 200

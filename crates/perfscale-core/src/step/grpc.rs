@@ -82,8 +82,8 @@ use super::actions::{err, error_chain, ActionOutput, LogTag};
 use super::context::Context;
 use super::resources::{GrpcConn, GrpcStream};
 use super::ws::{bool_param, json_subset_match, u64_param, Until};
-use crate::generate::Gen;
-use crate::lint::edit_distance;
+use crate::generate::{expand_tokens, Gen};
+use crate::lint::closest_name;
 
 /// Inbound message cap when `max_recv_size` is not set (tonic's own default
 /// is 4 MiB — too tight for payload-heavy APIs).
@@ -582,13 +582,8 @@ fn resolve_method(pool: &DescriptorPool, name: &str) -> Result<MethodDescriptor,
                 .collect::<Vec<_>>()
         })
         .collect();
-    let suggestion = candidates
-        .iter()
-        .map(|c| (c, edit_distance(name, c)))
-        .filter(|(_, d)| *d <= 2)
-        .min_by_key(|(_, d)| *d);
-    match suggestion {
-        Some((c, _)) => Err(format!("unknown method '{name}' — did you mean '{c}'?")),
+    match closest_name(name, candidates.iter().map(String::as_str)) {
+        Some(c) => Err(format!("unknown method '{name}' — did you mean '{c}'?")),
         None => Err(format!(
             "unknown method '{name}' — schema has: {}",
             candidates.join(", ")
@@ -661,20 +656,6 @@ fn build_message(
             })
         }
         (None, None) => Err("'payload' (or 'payload_base64') is required".into()),
-    }
-}
-
-/// Expand `${…}` tokens in every string leaf (keys are never expanded).
-fn expand_tokens(v: &Value, generator: &mut Gen) -> Value {
-    match v {
-        Value::String(s) => Value::String(generator.expand(s)),
-        Value::Array(a) => Value::Array(a.iter().map(|x| expand_tokens(x, generator)).collect()),
-        Value::Object(m) => Value::Object(
-            m.iter()
-                .map(|(k, x)| (k.clone(), expand_tokens(x, generator)))
-                .collect(),
-        ),
-        other => other.clone(),
     }
 }
 

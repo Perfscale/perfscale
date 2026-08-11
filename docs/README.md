@@ -21,7 +21,7 @@ tiny local dev server for collecting results.
 - [Architecture](core/architecture.md) — how the pieces fit together
 - [Runners](core/runners.md) — k6, locust, and the native engine
 - [Actions](core/actions.md) — `std/http`, `std/tcp`, `std/udp`, `std/ws*`
-  (WebSocket), `std/grpc*` (gRPC), `std/db-*` (SQL databases), `std/check`,
+  (WebSocket), `std/graphql` (GraphQL), `std/grpc*` (gRPC), `std/db-*` (SQL databases), `std/check`,
   `std/sleep`, `std/log`,
   `std/file-*`, `std/child_process`, `std/kill_process`, `std/thresholds`
 - [Setup and teardown](core/setup-teardown.md) — `before:`/`after:` lifecycle,
@@ -30,6 +30,8 @@ tiny local dev server for collecting results.
   counters/histograms, `--quiet`, summary forwarding
 - [WebSocket guide](core/websocket.md) — sessions, live connections, message
   RTT, assertions
+- [GraphQL guide](core/graphql.md) — queries/mutations, introspection
+  schema validation
 - [gRPC guide](core/grpc.md) — dynamic schemas (reflection / descriptor
   sets), unary calls, streams
 

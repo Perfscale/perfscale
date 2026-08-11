@@ -28,11 +28,22 @@ pub async fn run(args: LintArgs) -> Result<(), CliError> {
     for path in &args.files {
         match lint_file(path, args.schema) {
             Ok(issues) if issues.is_empty() => {
-                println!(
-                    "✓ {} ({}) — ok",
-                    path.display(),
-                    kind_label(effective_kind(path, args.schema))
-                );
+                // The offline pass is clean; the GraphQL network pass may
+                // still find schema-level problems.
+                let (remote, notes) = graphql_remote_pass(path, args.schema, args.offline).await;
+                for note in &notes {
+                    println!("  note: {note}");
+                }
+                if remote.is_empty() {
+                    println!(
+                        "✓ {} ({}) — ok",
+                        path.display(),
+                        kind_label(effective_kind(path, args.schema))
+                    );
+                } else {
+                    any_problems = true;
+                    print_issues(path, effective_kind(path, args.schema), &remote);
+                }
             }
             Ok(issues) => {
                 any_problems = true;
@@ -76,6 +87,30 @@ fn effective_kind(path: &Path, schema: SchemaKind) -> DocKind {
         SchemaKind::Test => DocKind::Test,
         SchemaKind::Config => DocKind::Config,
     }
+}
+
+/// The GraphQL schema pass: steps with a `schema_file` validate against the
+/// local SDL (offline by nature); the rest introspect the endpoint, unless
+/// `--offline` is given. Skipped for config documents and unreadable files
+/// (the sync pass already reported those). Never fails the command by
+/// itself — findings come back as issues.
+async fn graphql_remote_pass(
+    path: &Path,
+    schema: SchemaKind,
+    offline: bool,
+) -> (Vec<LintIssue>, Vec<String>) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (Vec::new(), Vec::new());
+    };
+    let kind = match schema {
+        SchemaKind::Auto => detect_kind(&text),
+        SchemaKind::Test => DocKind::Test,
+        SchemaKind::Config => DocKind::Config,
+    };
+    if kind != DocKind::Test {
+        return (Vec::new(), Vec::new());
+    }
+    perfscale_core::lint::lint_graphql_remote(&text, offline).await
 }
 
 fn kind_label(kind: DocKind) -> &'static str {
