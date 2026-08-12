@@ -1,16 +1,16 @@
-# Graph Report - perfscale  (2026-08-12)
+# Graph Report - perfscale  (2026-08-11)
 
 ## Corpus Check
-- 83 files · ~151,286 words
+- 83 files · ~150,617 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2519 nodes · 5368 edges · 119 communities (106 shown, 13 thin omitted)
+- 2506 nodes · 5330 edges · 116 communities (104 shown, 12 thin omitted)
 - Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 186 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `fe985e1b`
+- Built from commit: `a5c2babb`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -126,9 +126,6 @@
 - [[_COMMUNITY_Community 113|Community 113]]
 - [[_COMMUNITY_Community 114|Community 114]]
 - [[_COMMUNITY_Community 115|Community 115]]
-- [[_COMMUNITY_Community 116|Community 116]]
-- [[_COMMUNITY_Community 117|Community 117]]
-- [[_COMMUNITY_Community 118|Community 118]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `execute_action()` - 174 edges
@@ -187,11 +184,11 @@
 - **Three load-test engines unified behind execute** — runner_k6_run_streaming, runner_locust_run_streaming, step_runner_run_steps, runner_mod_execute [INFERRED 0.85]
 - **YAML parse + schema validation + lint flow** — yaml_parse_with_schema, schema_test_schema, schema_config_schema, lint_lint [INFERRED 0.85]
 
-## Communities (119 total, 13 thin omitted)
+## Communities (116 total, 12 thin omitted)
 
 ### Community 0 - "Step Actions (http/check/log/sleep)"
-Cohesion: 0.06
-Nodes (73): check_action_bad_on_path_falls_back_to_last(), check_action_body_contains_pass_and_fail(), check_action_duration_ms_lt_handles_fractional_values(), check_action_duration_ms_lt_pass_and_fail(), check_action_message_contains_any_semantics(), check_action_message_matches_ws_strings_and_fix_objects(), check_action_messages_count_gte(), check_action_missing_target_fails_gracefully() (+65 more)
+Cohesion: 0.05
+Nodes (80): check_action_bad_on_path_falls_back_to_last(), check_action_body_contains_pass_and_fail(), check_action_duration_ms_lt_handles_fractional_values(), check_action_duration_ms_lt_pass_and_fail(), check_action_message_contains_any_semantics(), check_action_message_matches_ws_strings_and_fix_objects(), check_action_messages_count_gte(), check_action_missing_target_fails_gracefully() (+72 more)
 
 ### Community 1 - "CLI Parser & Commands"
 Cohesion: 0.22
@@ -222,16 +219,16 @@ Cohesion: 0.08
 Nodes (57): base_args(), build_export(), build_export_parses_summary_and_stamps_meta(), build_export_picks_up_thresholds_line(), build_export_without_http_metrics_has_none_summary(), export_format(), import_hint(), is_summary_line() (+49 more)
 
 ### Community 8 - "Self-Update Version & Artifacts"
-Cohesion: 0.07
-Nodes (41): download(), replace_executable(), replace_executable_swaps_contents_atomically(), self_update(), staged_path(), staged_path_is_next_to_exe(), verify_digest(), verify_digest_accepts_matching_and_rejects_mismatched() (+33 more)
+Cohesion: 0.05
+Nodes (60): Duration, Option, PathBuf, Result, String, Command, NamedTempFile, Duration (+52 more)
 
 ### Community 9 - "Lint Engine (did-you-mean)"
 Cohesion: 0.05
 Nodes (74): effective_kind(), graphql_remote_pass(), has_import_key(), kind_label(), lint_file(), print_issues(), run(), CliError (+66 more)
 
 ### Community 10 - "CLI Integration Tests"
-Cohesion: 0.09
-Nodes (60): Arc, ConfigFile, Debug, Formatter, Option, Path, PathBuf, Result (+52 more)
+Cohesion: 0.11
+Nodes (49): ConfigFile, Option, Path, PathBuf, Result, String, TestDef, Value (+41 more)
 
 ### Community 11 - "YAML Parsing"
 Cohesion: 0.10
@@ -299,15 +296,15 @@ Nodes (40): default, description, items, type, default, description, type, defau
 
 ### Community 27 - "VUs Schema Property"
 Cohesion: 0.08
-Nodes (31): connect_bad_driver_rejected(), connect_invalid_dsn_does_not_leak_password(), connect_malformed_dsn_errors_are_clean(), connect_memory(), connect_params_defaults(), connect_params_full_override(), connect_params_interpolated_string_forms(), connect_params_pool_size_is_clamped() (+23 more)
+Nodes (32): connect_bad_driver_rejected(), connect_invalid_dsn_does_not_leak_password(), connect_malformed_dsn_errors_are_clean(), connect_memory(), gated_dsn(), interpolate_query_params(), interpolate_query_params_skips_query_text(), mysql_flow_gated() (+24 more)
 
 ### Community 28 - "Steps Schema"
 Cohesion: 0.25
 Nodes (8): anyOf, description, $ref, properties, import, steps, items, type
 
 ### Community 32 - "Lint Core Issues"
-Cohesion: 0.12
-Nodes (33): BTreeMap, Option, String, ThresholdsSummary, expected_response_line_does_not_override_aggregate(), export_json_carries_thresholds_when_present(), export_json_round_trips_and_is_self_describing(), export_markdown_renders_dash_for_missing_percentiles() (+25 more)
+Cohesion: 0.11
+Nodes (34): BTreeMap, Option, String, ThresholdsSummary, Row, expected_response_line_does_not_override_aggregate(), export_json_carries_thresholds_when_present(), export_json_round_trips_and_is_self_describing() (+26 more)
 
 ### Community 33 - "Benchmark Script"
 Cohesion: 0.18
@@ -382,8 +379,8 @@ Cohesion: 0.40
 Nodes (4): Added, Changed, Thresholds — SLO gates for every protocol, Upcoming release
 
 ### Community 63 - "Community 63"
-Cohesion: 0.15
-Nodes (35): Context, Error, HttpSample, LogTag, Map, Option, PathBuf, Result (+27 more)
+Cohesion: 0.16
+Nodes (32): Context, Error, HttpSample, LogTag, Option, PathBuf, Result, String (+24 more)
 
 ### Community 64 - "Community 64"
 Cohesion: 0.10
@@ -415,7 +412,7 @@ Nodes (31): C, Clone, Arc, AtomicBool, Connection, Debug, Default, Formatter (+2
 
 ### Community 71 - "Community 71"
 Cohesion: 0.14
-Nodes (27): ActionOutput, Client, Context, Error, Map, Option, Result, Self (+19 more)
+Nodes (28): ActionOutput, Client, Context, Error, Map, Option, Result, Self (+20 more)
 
 ### Community 72 - "Community 72"
 Cohesion: 0.50
@@ -435,7 +432,7 @@ Nodes (5): Environment variables, MCP server, Notes, Setup, Tools
 
 ### Community 76 - "Community 76"
 Cohesion: 0.09
-Nodes (64): ActionOutput, ClientConfig, ActionOutput, Context, Gen, Instant, Option, Result (+56 more)
+Nodes (63): ActionOutput, ClientConfig, ActionOutput, Context, Gen, Instant, Option, Result (+55 more)
 
 ### Community 77 - "Community 77"
 Cohesion: 0.14
@@ -450,8 +447,8 @@ Cohesion: 0.24
 Nodes (14): BidiStream, Box, Echo, EchoRequest, EchoResponse, Error, Request, Response (+6 more)
 
 ### Community 80 - "Community 80"
-Cohesion: 0.11
-Nodes (20): Arc, ProcessRegistry, Send, Sync, RwLock, Send, action_registry(), ActionHandler (+12 more)
+Cohesion: 0.24
+Nodes (10): Arc, Send, Sync, RwLock, Send, action_registry(), ActionHandler, register_action() (+2 more)
 
 ### Community 81 - "Community 81"
 Cohesion: 0.22
@@ -474,12 +471,12 @@ Cohesion: 0.40
 Nodes (5): Path, confined_ctx(), file_actions_allowed_inside_fs_root(), file_read_rejects_path_traversal_escape_when_confined(), file_write_rejects_path_traversal_escape_when_confined()
 
 ### Community 86 - "Community 86"
-Cohesion: 0.11
-Nodes (34): Command, NamedTempFile, cmd(), errors_carry_hint_and_docs_sections(), help_flag_lists_all_commands(), k6_available(), lint_missing_file_is_a_cli_error_with_hint(), lint_missing_use_shows_fix_with_action_list() (+26 more)
+Cohesion: 0.28
+Nodes (15): download(), replace_executable(), replace_executable_swaps_contents_atomically(), self_update(), staged_path(), staged_path_is_next_to_exe(), verify_digest(), verify_digest_accepts_matching_and_rejects_mismatched() (+7 more)
 
 ### Community 87 - "Community 87"
-Cohesion: 0.14
-Nodes (16): Cow, Option, DbDriver, ErrorKind, classify(), classify_db_error(), DbConnRef, dsn_password() (+8 more)
+Cohesion: 0.20
+Nodes (11): Cow, Option, DbDriver, ErrorKind, classify(), classify_db_error(), DbConnRef, dsn_password() (+3 more)
 
 ### Community 88 - "Community 88"
 Cohesion: 0.24
@@ -491,11 +488,11 @@ Nodes (20): DbState, Result, String, MySqlConnectOptions, SqliteConnectOptions, 
 
 ### Community 90 - "Community 90"
 Cohesion: 0.05
-Nodes (80): Arguments, ClientPool, ActionOutput, Client, Context, Gen, HashMap, Mutex (+72 more)
+Nodes (81): Arguments, ClientPool, ActionOutput, Client, Context, Gen, HashMap, Mutex (+73 more)
 
 ### Community 91 - "Community 91"
-Cohesion: 0.16
-Nodes (20): Map, R, Value, MySqlRow, PgRow, SqliteRow, base64_cell(), error_metrics() (+12 more)
+Cohesion: 0.13
+Nodes (33): ActionOutput, Context, Map, R, Value, DbConn, MySqlRow, PgRow (+25 more)
 
 ### Community 92 - "Community 92"
 Cohesion: 0.20
@@ -510,12 +507,12 @@ Cohesion: 0.20
 Nodes (9): Custom metrics (`value.metrics`), Failure-rate metrics (`<family>_failed`), Final summary, Forwarding the summary (`report`), Live `[stats]` lines, Metrics, `--quiet`, Request metrics (`http_req_*`) (+1 more)
 
 ### Community 95 - "Community 95"
-Cohesion: 0.29
-Nodes (15): ActionOutput, Context, DbConn, db_close_action(), db_connect_action(), db_fail_ref(), db_query_action(), db_tx_begin_action() (+7 more)
+Cohesion: 0.20
+Nodes (10): ProcessRegistry, child_process_reports_output_shape_and_registers_by_step_name(), child_process_validates_params_before_spawning(), child_process_wait_until_failure_fails_the_step(), child_process_wait_until_timeout_continue_still_succeeds(), kill_process_by_name_stops_the_registered_process(), kill_process_by_name_targets_the_current_pid_after_restart(), kill_process_by_raw_pid_is_best_effort() (+2 more)
 
 ### Community 96 - "Community 96"
-Cohesion: 0.19
-Nodes (9): Box, Display, Formatter, Self, Send, Sync, DatabaseError, FakeDbErr (+1 more)
+Cohesion: 0.12
+Nodes (22): A, Box, Display, Error, Formatter, Self, Send, Sync (+14 more)
 
 ### Community 97 - "Community 97"
 Cohesion: 0.20
@@ -526,8 +523,8 @@ Cohesion: 0.60
 Nodes (5): run --report to serve reporting loop, is_summary_line, report_summary, ingest metrics handler, MetricsPayload
 
 ### Community 99 - "Community 99"
-Cohesion: 0.53
-Nodes (6): Client, Client, client_shard_count(), shared_client(), shared_insecure_client(), client_for()
+Cohesion: 0.27
+Nodes (10): Client, Client, Map, base64_encode(), client_shard_count(), header_map_to_json(), http_action(), HttpSample (+2 more)
 
 ### Community 102 - "Community 102"
 Cohesion: 0.26
@@ -562,8 +559,8 @@ Cohesion: 0.25
 Nodes (8): ReportConfig, url, description, properties, required, type, description, type
 
 ### Community 110 - "Community 110"
-Cohesion: 0.25
-Nodes (14): A, Error, Vec, E, PgConnectOptions, PgPool, QueryResult, Row (+6 more)
+Cohesion: 0.33
+Nodes (6): connect_params_defaults(), connect_params_full_override(), connect_params_interpolated_string_forms(), connect_params_pool_size_is_clamped(), connect_params_rejections(), parse_connect_params()
 
 ### Community 111 - "Community 111"
 Cohesion: 0.40
@@ -585,33 +582,25 @@ Nodes (3): use, description, type
 Cohesion: 0.67
 Nodes (3): uses, description, type
 
-### Community 116 - "Community 116"
-Cohesion: 0.50
-Nodes (4): spawn_tcp_echo(), tcp_action_expect_mismatch_fails(), tcp_action_host_port_form_and_base64_payload(), tcp_action_sends_and_reads_echo()
-
-### Community 117 - "Community 117"
-Cohesion: 0.67
-Nodes (3): spawn_udp_echo(), udp_action_send_only_succeeds_without_reply(), udp_action_sends_and_reads_echo()
-
 ## Knowledge Gaps
-- **608 isolated node(s):** `PreToolUse`, `Commands`, `Commands`, `SchemaDumpKind`, `SchemaDumpKind` (+603 more)
+- **605 isolated node(s):** `PreToolUse`, `Commands`, `Commands`, `SchemaDumpKind`, `SchemaDumpKind` (+600 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **13 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **12 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Duration` connect `Self-Update Version & Artifacts` to `Step Actions (http/check/log/sleep)`, `Run Command Internals`, `Community 71`, `Community 76`, `E2E Workflow Tests`, `Self-Update Integration Tests`, `Community 86`, `Schema Generation Tests`, `Community 90`, `VUs Schema Property`?**
-  _High betweenness centrality (0.145) - this node is a cross-community bridge._
+  _High betweenness centrality (0.139) - this node is a cross-community bridge._
 - **Why does `Sync` connect `Community 80` to `Step Actions (http/check/log/sleep)`, `Community 66`, `Community 70`, `Step Runner Core`, `Community 78`, `Self-Update Download/Verify/Swap`, `Community 90`?**
-  _High betweenness centrality (0.135) - this node is a cross-community bridge._
-- **Why does `Json` connect `Serve HTTP Endpoints` to `Step Actions (http/check/log/sleep)`, `Runner Config & Output Structs`, `Step Runner Core`, `Run Command Internals`, `Context Interpolation`, `Self-Update Download/Verify/Swap`, `Community 90`, `VUs Schema Property`, `Community 92`?**
   _High betweenness centrality (0.130) - this node is a cross-community bridge._
+- **Why does `Json` connect `Serve HTTP Endpoints` to `Step Actions (http/check/log/sleep)`, `Runner Config & Output Structs`, `Step Runner Core`, `Run Command Internals`, `Context Interpolation`, `Self-Update Download/Verify/Swap`, `Community 90`, `VUs Schema Property`, `Community 92`?**
+  _High betweenness centrality (0.126) - this node is a cross-community bridge._
 - **Are the 72 inferred relationships involving `execute_action()` (e.g. with `lint::lint` and `connect_bad_driver_rejected()`) actually correct?**
   _`execute_action()` has 72 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `PreToolUse`, `Commands`, `Commands` to the rest of the system?**
-  _620 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _617 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Step Actions (http/check/log/sleep)` be split into smaller, more focused modules?**
-  _Cohesion score 0.05502392344497608 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.050774526678141134 - nodes in this community are weakly interconnected._
 - **Should `Docs, Examples & Schemas` be split into smaller, more focused modules?**
   _Cohesion score 0.07692307692307693 - nodes in this community are weakly interconnected._

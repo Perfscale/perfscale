@@ -106,9 +106,17 @@ pub struct GitImport {
     pub file: String,
 }
 
+/// A hook the embedding process can install to veto each network target
+/// before it is contacted. Called with the raw remote string — an
+/// `http(s)://` URL or a git remote — for every hop of the import chain,
+/// including hops discovered inside already-fetched documents. A server
+/// resolving imports on behalf of users (SSRF exposure) uses this to reject
+/// loopback/private hosts; the CLI leaves it unset.
+pub type RemoteGuard = dyn Fn(&str) -> Result<(), String> + Send + Sync;
+
 /// Caller-side policy for import resolution. Fail-closed by construction:
 /// `Default` allows local file imports only.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ImportOptions {
     /// Permit `http(s)://` and `git:` imports. Set by the *caller* (CLI flag
     /// `--allow-remote-import`), never parsed from the document.
@@ -119,6 +127,28 @@ pub struct ImportOptions {
     /// Cache directory override; defaults to
     /// `$PERFSCALE_CACHE_DIR` → `$XDG_CACHE_HOME/perfscale` → `~/.cache/perfscale`.
     pub cache_dir: Option<PathBuf>,
+    /// Per-target veto for remote fetches; see [`RemoteGuard`].
+    pub remote_guard: Option<std::sync::Arc<RemoteGuard>>,
+}
+
+impl std::fmt::Debug for ImportOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportOptions")
+            .field("allow_remote", &self.allow_remote)
+            .field("refresh", &self.refresh)
+            .field("cache_dir", &self.cache_dir)
+            .field("remote_guard", &self.remote_guard.as_ref().map(|_| "<fn>"))
+            .finish()
+    }
+}
+
+impl ImportOptions {
+    fn check_remote(&self, target: &str) -> Result<(), String> {
+        match &self.remote_guard {
+            Some(guard) => guard(target),
+            None => Ok(()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +190,19 @@ pub async fn load_config_file(
 }
 
 /// [`load_document`] + schema validation into a [`crate::step::TestDef`].
+/// Resolve the `import` chain of an already-parsed document that has no
+/// local filesystem origin — one submitted over an API rather than read from
+/// disk. Relative-path imports are rejected at the top level (there is no
+/// directory to resolve them against); URL and git imports follow the same
+/// [`ImportOptions`] policy as file-based loading. Returns the merged value
+/// plus the number of imports resolved (0 = the document had no `import`).
+pub async fn resolve_value(value: Value, opts: &ImportOptions) -> Result<(Value, usize), String> {
+    let mut chain = vec!["<inline document>".to_string()];
+    let mut resolved = 0usize;
+    let merged = resolve_parsed(value, Origin::Detached, opts, &mut chain, &mut resolved).await?;
+    Ok((merged, resolved))
+}
+
 pub async fn load_test_file(
     path: &Path,
     opts: &ImportOptions,
@@ -175,6 +218,9 @@ pub async fn load_test_file(
 /// Where the document currently being resolved came from — determines how a
 /// relative `import:` inside it is interpreted, and what it may reach.
 enum Origin {
+    /// No filesystem origin (submitted over an API): relative imports are
+    /// rejected — there is no directory to resolve them against.
+    Detached,
     /// Local file: relative imports resolve against its directory.
     Local { dir: PathBuf },
     /// Fetched from a URL: relative imports resolve against that URL.
@@ -196,8 +242,17 @@ async fn resolve_text(
     chain: &mut Vec<String>,
     resolved: &mut usize,
 ) -> Result<Value, String> {
-    let mut value: Value = serde_yaml::from_str(text).map_err(|e| format!("invalid YAML: {e}"))?;
+    let value: Value = serde_yaml::from_str(text).map_err(|e| format!("invalid YAML: {e}"))?;
+    resolve_parsed(value, origin, opts, chain, resolved).await
+}
 
+async fn resolve_parsed(
+    mut value: Value,
+    origin: Origin,
+    opts: &ImportOptions,
+    chain: &mut Vec<String>,
+    resolved: &mut usize,
+) -> Result<Value, String> {
     let Some(import_value) = value.as_object_mut().and_then(|obj| obj.remove("import")) else {
         return Ok(value);
     };
@@ -264,12 +319,18 @@ async fn fetch(
             }
             let url =
                 reqwest::Url::parse(s).map_err(|e| format!("invalid import URL '{s}': {e}"))?;
-            fetch_url(url).await
+            fetch_url(url, opts).await
         }
         ImportSpec::Path(s) if s.starts_with("file://") => Err(format!(
             "import '{s}': file:// URLs are not supported — use a plain relative path"
         )),
         ImportSpec::Path(s) => match parent {
+            // No filesystem origin to resolve against: an API-submitted
+            // document may import URLs or git refs, never local paths.
+            Origin::Detached => Err(format!(
+                "import '{s}': relative-path imports are not available for a document \
+                 submitted without a file origin — use an http(s):// URL or {{ git, ref, file }}"
+            )),
             Origin::Local { dir } => {
                 let path = dir.join(s);
                 let canonical = path.canonicalize().map_err(|e| {
@@ -291,7 +352,7 @@ async fn fetch(
                 let url = base
                     .join(s)
                     .map_err(|e| format!("import '{s}' relative to '{base}': {e}"))?;
-                fetch_url(url).await
+                fetch_url(url, opts).await
             }
             // A git-origin document may only import inside its own clone.
             Origin::Git {
@@ -313,6 +374,7 @@ async fn fetch(
             if !opts.allow_remote {
                 return Err(REMOTE_BLOCKED.into());
             }
+            opts.check_remote(&remote.git)?;
             let repo_root = git_fetch(remote, opts).await?;
             let path = repo_root.join(&remote.file);
             read_repo_file(&repo_root, &path, &remote.git, &remote.git_ref).await
@@ -379,10 +441,28 @@ fn fingerprint_local(path: &Path) -> String {
 // HTTP
 // ---------------------------------------------------------------------------
 
-async fn fetch_url(url: reqwest::Url) -> Result<(String, Origin, String), String> {
+async fn fetch_url(
+    url: reqwest::Url,
+    opts: &ImportOptions,
+) -> Result<(String, Origin, String), String> {
     let fp = url.as_str().to_string();
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+    opts.check_remote(url.as_str())?;
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
+    // A redirect can hop to a host the guard never saw (the classic SSRF
+    // bypass), so when a guard is installed every redirect target passes
+    // through it too.
+    if let Some(guard) = opts.remote_guard.clone() {
+        builder = builder.redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() > 10 {
+                return attempt.error("too many redirects");
+            }
+            match guard(attempt.url().as_str()) {
+                Ok(()) => attempt.follow(),
+                Err(e) => attempt.error(e),
+            }
+        }));
+    }
+    let client = builder
         .build()
         .map_err(|e| format!("import '{fp}': http client: {e}"))?;
     let resp = client
@@ -833,6 +913,81 @@ mod tests {
             err.contains("--allow-remote-import"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_value_passes_plain_documents_through() {
+        let doc = serde_json::json!({"vus": 5, "duration": "1m"});
+        let (merged, resolved) = resolve_value(doc.clone(), &ImportOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(merged, doc);
+        assert_eq!(resolved, 0);
+    }
+
+    #[tokio::test]
+    async fn resolve_value_rejects_relative_paths() {
+        let doc = serde_json::json!({"import": "../shared/_base.yaml", "vus": 5});
+        let err = resolve_value(doc, &ImportOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("without a file origin"), "unexpected: {err}");
+    }
+
+    #[tokio::test]
+    async fn resolve_value_blocks_remote_without_opt_in() {
+        let doc = serde_json::json!({"import": "https://example.com/base.yaml"});
+        let err = resolve_value(doc, &ImportOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("--allow-remote-import"), "unexpected: {err}");
+    }
+
+    #[tokio::test]
+    async fn remote_guard_vetoes_url_and_git_targets() {
+        let opts = ImportOptions {
+            allow_remote: true,
+            remote_guard: Some(std::sync::Arc::new(|target: &str| {
+                Err(format!("host of '{target}' is not allowed"))
+            })),
+            ..Default::default()
+        };
+        let url_doc = serde_json::json!({"import": "https://10.0.0.1/base.yaml"});
+        let err = resolve_value(url_doc, &opts).await.unwrap_err();
+        assert!(err.contains("not allowed"), "unexpected: {err}");
+
+        let git_doc = serde_json::json!({
+            "import": {"git": "git@internal:o/r.git", "ref": "v1", "file": "b.yaml"}
+        });
+        let err = resolve_value(git_doc, &opts).await.unwrap_err();
+        assert!(err.contains("not allowed"), "unexpected: {err}");
+    }
+
+    #[tokio::test]
+    async fn resolve_value_follows_http_imports() {
+        use axum::{routing::get, Router};
+
+        let app = Router::new().route(
+            "/base.yaml",
+            get(|| async { "vus: 50\nvariables:\n  region: eu\n" }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let doc = serde_json::json!({
+            "import": format!("http://{addr}/base.yaml"),
+            "duration": "2m"
+        });
+        let opts = ImportOptions {
+            allow_remote: true,
+            ..Default::default()
+        };
+        let (merged, resolved) = resolve_value(doc, &opts).await.unwrap();
+        assert_eq!(resolved, 1);
+        assert_eq!(merged["vus"], 50);
+        assert_eq!(merged["duration"], "2m");
+        assert_eq!(merged["variables"]["region"], "eu");
     }
 
     #[tokio::test]

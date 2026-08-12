@@ -11,3 +11,8 @@ Release notes for the next release, written as features land.
 - If this file has no entries at tag time, the release falls back to
   auto-generated notes and the workflow prints a warning.
 -->
+
+- **Embedding API for imports** — `import::resolve_value` resolves the
+  `import:` chain of an API-submitted document (no file origin), and
+  `ImportOptions::remote_guard` lets a server veto every network target in
+  the chain (SSRF protection), including HTTP redirect hops.
