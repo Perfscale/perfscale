@@ -40,13 +40,24 @@ impl Default for LocustOpts {
 
 impl LocustOpts {
     /// Build options from a generic [`RunConfig`], spawning all users at once.
-    pub fn from_run_config(cfg: &RunConfig, host: Option<String>) -> Self {
-        Self {
+    ///
+    /// The k6-style load profiles (`stages:`/`arrival:`) are native-engine
+    /// only — locust manages user counts via `--users`/`--spawn-rate`, so a
+    /// config carrying them is rejected with a clear error rather than
+    /// silently run at a flat `vus` count.
+    pub fn from_run_config(cfg: &RunConfig, host: Option<String>) -> Result<Self, String> {
+        if !cfg.stages.is_empty() || cfg.arrival.is_some() {
+            return Err(
+                "`stages`/`arrival` load profiles are only supported by the native engine (-f) — with --locust, use `vus`/`duration` (mapped to locust's --users/--spawn-rate/--run-time)"
+                    .into(),
+            );
+        }
+        Ok(Self {
             users: cfg.vus.max(1),
             spawn_rate: cfg.vus.max(1),
             duration: cfg.duration.clone(),
             host,
-        }
+        })
     }
 }
 
@@ -337,7 +348,7 @@ None,Aggregated,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
             duration: "5m".into(),
             ..Default::default()
         };
-        let opts = LocustOpts::from_run_config(&cfg, Some("https://example.com".into()));
+        let opts = LocustOpts::from_run_config(&cfg, Some("https://example.com".into())).unwrap();
         assert_eq!(opts.users, 20);
         assert_eq!(opts.spawn_rate, 20);
         assert_eq!(opts.duration, "5m");
@@ -351,9 +362,36 @@ None,Aggregated,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
             duration: "1m".into(),
             ..Default::default()
         };
-        let opts = LocustOpts::from_run_config(&cfg, None);
+        let opts = LocustOpts::from_run_config(&cfg, None).unwrap();
         assert_eq!(opts.users, 1);
         assert_eq!(opts.spawn_rate, 1);
+    }
+
+    #[test]
+    fn locust_opts_rejects_native_only_load_profiles() {
+        let cfg = RunConfig {
+            stages: vec![crate::step::VuStage {
+                duration: "30s".into(),
+                target: 10,
+            }],
+            ..Default::default()
+        };
+        let err = LocustOpts::from_run_config(&cfg, None).unwrap_err();
+        assert!(err.contains("native engine"), "{err}");
+
+        let cfg = RunConfig {
+            arrival: Some(Box::new(crate::step::ArrivalConfig {
+                max_vus: 10,
+                pre_allocated_vus: None,
+                stages: vec![crate::step::RateStage {
+                    duration: "30s".into(),
+                    rate: 5.0,
+                }],
+            })),
+            ..Default::default()
+        };
+        let err = LocustOpts::from_run_config(&cfg, None).unwrap_err();
+        assert!(err.contains("native engine"), "{err}");
     }
 
     #[test]

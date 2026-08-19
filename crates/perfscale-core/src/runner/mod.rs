@@ -42,7 +42,8 @@ pub struct RunOutput {
     pub lines: mpsc::Receiver<LogLine>,
     /// Engine process exit code. `None` if the process was killed by a
     /// signal; the native engine reports `Some(1)` when a `severity: fail`
-    /// thresholds gate was violated, `Some(0)` otherwise.
+    /// thresholds gate was violated or the load profile (`stages:`/`arrival:`)
+    /// was invalid, `Some(0)` otherwise.
     pub exit: tokio::sync::oneshot::Receiver<Option<i32>>,
     /// OS process ID of the spawned engine binary, while it's running — lets
     /// callers sample its CPU/memory/IO usage. `None` for the native step
@@ -104,8 +105,9 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
                 )
                 .await;
                 // Like k6, a violated `severity: fail` thresholds gate exits
-                // non-zero — test feedback, not a crash.
-                let _ = exit_tx.send(Some(if outcome.thresholds_failed() { 1 } else { 0 }));
+                // non-zero — test feedback, not a crash. A fatal load-profile
+                // error (`stages:`/`arrival:`) also exits non-zero.
+                let _ = exit_tx.send(Some(if outcome.failed() { 1 } else { 0 }));
             });
             Ok(RunOutput {
                 lines: rx,

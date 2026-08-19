@@ -1,6 +1,38 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "ArrivalConfig": {
+      "description": "Arrival-rate configuration (`arrival:`) — an open load model: the engine holds an iterations-per-second profile and scales a worker pool to keep up, instead of looping a fixed set of VUs.",
+      "properties": {
+        "max_vus": {
+          "default": 0,
+          "description": "Hard cap on the worker pool — must be ≥ 1. A permit that arrives while all `max_vus` workers are busy is dropped and counted in the `dropped_iterations` metric. Effectively required: the default (0) is rejected at validation time.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "pre_allocated_vus": {
+          "description": "Workers spawned at run start (default 1). The pool grows lazily up to `max_vus` while permits arrive faster than the pool can serve them.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stages": {
+          "description": "Rate profile: ramp the arrival rate linearly to each stage's `rate` over its `duration`. The first stage ramps from 0 iterations/sec.",
+          "items": {
+            "$ref": "#/definitions/RateStage"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "stages"
+      ],
+      "type": "object"
+    },
     "GitImport": {
       "additionalProperties": false,
       "description": "`import: { git, ref, file }` — fetch `file` from `git` at `ref`.",
@@ -41,6 +73,25 @@
         }
       ],
       "description": "The value of a top-level `import:` key."
+    },
+    "RateStage": {
+      "description": "One `arrival.stages:` entry — ramp the arrival rate linearly to `rate` over `duration`.",
+      "properties": {
+        "duration": {
+          "description": "Stage length: `\"30s\"`, `\"1m\"`, `\"5m30s\"`, `\"1h\"` — minimum 1s.",
+          "type": "string"
+        },
+        "rate": {
+          "description": "Iterations per second to reach by the end of the stage. Fractions are allowed (`0.5` = one iteration every 2s); must be ≥ 0.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "duration",
+        "rate"
+      ],
+      "type": "object"
     },
     "ReportConfig": {
       "description": "Where to forward the aggregated run summary after `perfscale run` finishes.",
@@ -114,6 +165,26 @@
         }
       },
       "type": "object"
+    },
+    "VuStage": {
+      "description": "One `stages:` entry — ramp the VU count linearly to `target` over `duration`. The first stage ramps from 0 VUs, each later stage from the previous stage's `target` (like k6's `ramping-vus` with `startVUs: 0`).",
+      "properties": {
+        "duration": {
+          "description": "Stage length: `\"30s\"`, `\"1m\"`, `\"5m30s\"`, `\"1h\"` — minimum 1s.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Virtual users to reach by the end of the stage. `0` is a full ramp-down: remaining VUs exit gracefully at their next step boundary.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "duration",
+        "target"
+      ],
+      "type": "object"
     }
   },
   "description": "Top-level `-c config.yaml` document.",
@@ -135,6 +206,17 @@
       "default": false,
       "description": "Allow process-touching steps: `std/child_process@v1` and `std/kill_process@v1`. Fail-closed: defaults to `false` so a step list from an untrusted source cannot spawn or signal OS processes.",
       "type": "boolean"
+    },
+    "arrival": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ArrivalConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Arrival-rate load profile (open model): hold an iterations-per-second rate profile, growing a worker pool up to `arrival.max_vus`. Mutually exclusive with `stages`. Native engine only. Boxed to keep `RunConfig` (and the `ExecutionPlan` enum embedding it) compact."
     },
     "before": {
       "default": [],
@@ -169,6 +251,13 @@
           "type": "null"
         }
       ]
+    },
+    "stages": {
+      "description": "Ramping-VU load profile (k6-style): ramp the number of virtual users linearly to each stage's `target` over its `duration`. Mutually exclusive with `arrival`; when present it overrides `vus`/`duration` (total run length is the sum of stage durations). Native engine only.",
+      "items": {
+        "$ref": "#/definitions/VuStage"
+      },
+      "type": "array"
     },
     "variables": {
       "additionalProperties": true,

@@ -29,10 +29,11 @@ pub mod context;
 pub(crate) mod db;
 pub mod graphql;
 pub(crate) mod grpc;
-pub(crate) mod http;
+pub mod http;
 pub mod process;
 pub(crate) mod resources;
 pub mod runner;
+pub mod schedule;
 pub mod thresholds;
 pub(crate) mod ws;
 
@@ -121,6 +122,20 @@ pub struct RunConfig {
     #[serde(default)]
     pub allow_process_actions: bool,
 
+    /// Ramping-VU load profile (k6-style): ramp the number of virtual users
+    /// linearly to each stage's `target` over its `duration`. Mutually
+    /// exclusive with `arrival`; when present it overrides `vus`/`duration`
+    /// (total run length is the sum of stage durations). Native engine only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<VuStage>,
+
+    /// Arrival-rate load profile (open model): hold an iterations-per-second
+    /// rate profile, growing a worker pool up to `arrival.max_vus`. Mutually
+    /// exclusive with `stages`. Native engine only. Boxed to keep `RunConfig`
+    /// (and the `ExecutionPlan` enum embedding it) compact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrival: Option<Box<ArrivalConfig>>,
+
     /// Confinement root for file actions. When set, every file path a step
     /// touches is canonicalized and must stay under this directory (`../`
     /// escapes and symlink hops out of it are rejected). Never parsed from
@@ -129,6 +144,53 @@ pub struct RunConfig {
     #[serde(skip)]
     #[schemars(skip)]
     pub fs_root: Option<std::path::PathBuf>,
+}
+
+/// One `stages:` entry — ramp the VU count linearly to `target` over
+/// `duration`. The first stage ramps from 0 VUs, each later stage from the
+/// previous stage's `target` (like k6's `ramping-vus` with `startVUs: 0`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VuStage {
+    /// Stage length: `"30s"`, `"1m"`, `"5m30s"`, `"1h"` — minimum 1s.
+    pub duration: String,
+
+    /// Virtual users to reach by the end of the stage. `0` is a full
+    /// ramp-down: remaining VUs exit gracefully at their next step boundary.
+    pub target: u32,
+}
+
+/// Arrival-rate configuration (`arrival:`) — an open load model: the engine
+/// holds an iterations-per-second profile and scales a worker pool to keep
+/// up, instead of looping a fixed set of VUs.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArrivalConfig {
+    /// Hard cap on the worker pool — must be ≥ 1. A permit that arrives while
+    /// all `max_vus` workers are busy is dropped and counted in the
+    /// `dropped_iterations` metric. Effectively required: the default (0) is
+    /// rejected at validation time.
+    #[serde(default)]
+    pub max_vus: u32,
+
+    /// Workers spawned at run start (default 1). The pool grows lazily up to
+    /// `max_vus` while permits arrive faster than the pool can serve them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_allocated_vus: Option<u32>,
+
+    /// Rate profile: ramp the arrival rate linearly to each stage's `rate`
+    /// over its `duration`. The first stage ramps from 0 iterations/sec.
+    pub stages: Vec<RateStage>,
+}
+
+/// One `arrival.stages:` entry — ramp the arrival rate linearly to `rate`
+/// over `duration`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RateStage {
+    /// Stage length: `"30s"`, `"1m"`, `"5m30s"`, `"1h"` — minimum 1s.
+    pub duration: String,
+
+    /// Iterations per second to reach by the end of the stage. Fractions are
+    /// allowed (`0.5` = one iteration every 2s); must be ≥ 0.
+    pub rate: f64,
 }
 
 fn default_vus() -> u32 {
@@ -145,6 +207,8 @@ impl Default for RunConfig {
             duration: default_duration(),
             allow_file_actions: false,
             allow_process_actions: false,
+            stages: Vec::new(),
+            arrival: None,
             fs_root: None,
         }
     }
@@ -184,6 +248,50 @@ pub fn parse_duration_secs(s: &str) -> u64 {
         total += num.parse::<u64>().unwrap_or(0);
     }
     total.max(1)
+}
+
+/// Strict variant of [`parse_duration_secs`] for load-profile stages: instead
+/// of clamping garbage to 1s it returns an error, and zero-length durations
+/// are rejected — a stage with no (or unparseable) length is a config bug the
+/// user should fix, not silently run.
+pub fn parse_duration_secs_strict(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty duration — use e.g. \"30s\", \"1m30s\", \"1h\"".into());
+    }
+    let mut total = 0u64;
+    let mut num = String::new();
+    for ch in s.chars() {
+        match ch {
+            '0'..='9' => num.push(ch),
+            'h' | 'm' | 's' => {
+                let n: u64 = num.parse().map_err(|_| {
+                    format!("invalid duration '{s}': '{ch}' needs a number before it")
+                })?;
+                num.clear();
+                total += n * match ch {
+                    'h' => 3600,
+                    'm' => 60,
+                    _ => 1,
+                };
+            }
+            _ => {
+                return Err(format!(
+                "invalid duration '{s}': unexpected '{ch}' — use e.g. \"30s\", \"1m30s\", \"1h\""
+            ))
+            }
+        }
+    }
+    if !num.is_empty() {
+        // Trailing bare number = seconds, same as `parse_duration_secs`.
+        total += num
+            .parse::<u64>()
+            .map_err(|_| format!("invalid duration '{s}'"))?;
+    }
+    if total == 0 {
+        return Err(format!("invalid duration '{s}': must be at least 1s"));
+    }
+    Ok(total)
 }
 
 /// Resolve a well-known preset ID to a [`RunConfig`].
@@ -227,6 +335,38 @@ mod tests {
     fn parse_duration_garbage_is_minimum() {
         assert_eq!(parse_duration_secs("not-a-duration"), 1);
         assert_eq!(parse_duration_secs(""), 1);
+    }
+
+    #[test]
+    fn strict_duration_parser_accepts_valid_forms() {
+        assert_eq!(parse_duration_secs_strict("30s").unwrap(), 30);
+        assert_eq!(parse_duration_secs_strict("1m").unwrap(), 60);
+        assert_eq!(parse_duration_secs_strict("1m30s").unwrap(), 90);
+        assert_eq!(parse_duration_secs_strict("1h").unwrap(), 3600);
+        assert_eq!(parse_duration_secs_strict("45").unwrap(), 45);
+    }
+
+    #[test]
+    fn strict_duration_parser_rejects_garbage_and_zero() {
+        for bad in ["", "0s", "0", "s", "not-a-duration", "1h30x", "10 s"] {
+            assert!(
+                parse_duration_secs_strict(bad).is_err(),
+                "'{bad}' must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn run_config_default_has_no_load_profile() {
+        let cfg = RunConfig::default();
+        assert!(cfg.stages.is_empty());
+        assert!(cfg.arrival.is_none());
+        // …and the fields are wire-compatible: absent keys deserialize, and
+        // empty profiles never serialize (perfscaled embeds RunConfig).
+        let cfg: RunConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.stages.is_empty() && cfg.arrival.is_none());
+        let json = serde_json::to_value(RunConfig::default()).unwrap();
+        assert!(json.get("stages").is_none() && json.get("arrival").is_none());
     }
 
     #[test]

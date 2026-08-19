@@ -41,7 +41,9 @@ Or grab a binary from [GitHub Releases](https://github.com/Perfscale/perfscale/r
    calls and client/server/bidi streams, schema via reflection or descriptor
    sets), `std/db-*` (PostgreSQL, MySQL/MariaDB, and SQLite queries and
    transactions), `std/check`, `std/sleep`, `std/log`, and `std/file-*` actions across
-   N virtual users for a given duration. Run-level SLO gates (`std/thresholds@v1`
+   N virtual users for a given duration — with a fixed VU count, k6-style
+   ramping `stages:`, or an arrival-rate profile (`arrival:`). Run-level SLO
+   gates (`std/thresholds@v1`
    in the config's `after:` block) evaluate k6-style threshold expressions over
    the run's metrics and fail the run (non-zero exit) on violation.
 4. Test and config documents compose: a top-level `import:` inherits a shared

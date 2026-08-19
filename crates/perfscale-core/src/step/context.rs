@@ -58,6 +58,14 @@ impl Context {
         self.vars.insert(name.to_string(), value);
     }
 
+    /// Which HTTP client shard this VU is pinned to (see
+    /// [`crate::step::http::client`]). Downstream HTTP-based actions pass this
+    /// to `client()` so they share the VU's warm connection pool; 0 in
+    /// hand-built contexts.
+    pub fn http_client_shard(&self) -> usize {
+        self.http_client_shard
+    }
+
     /// Interpolate `${{ expr }}` placeholders in a string.
     ///
     /// Supported forms:

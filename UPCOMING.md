@@ -16,3 +16,21 @@ Release notes for the next release, written as features land.
   `import:` chain of an API-submitted document (no file origin), and
   `ImportOptions::remote_guard` lets a server veto every network target in
   the chain (SSRF protection), including HTTP redirect hops.
+- **HTTP plumbing is public for downstream actions** — `step::http` now
+  exposes `ClientPool`, `client`, `timed_exchange`, `HttpOutcome`,
+  `request_line`, `transport_error`, and `error_chain`, plus
+  `Context::http_client_shard()`, so proprietary action families (e.g.
+  `pro/soap`) pool, time, and report HTTP exchanges identically to
+  `std/http@v1`.
+- **k6-style load profiles in the native engine** — `stages:` ramps VUs
+  linearly between targets (graceful scale-down at step boundaries) and
+  `arrival:` holds an iterations/sec rate profile with a lazily growing
+  worker pool (`max_vus`, `pre_allocated_vus`). For staged/arrival runs the
+  summary's `vus` line reports the observed concurrency
+  (`vus....................: <last> min=<min> max=<max>`), the periodic
+  `[stats]` line gains a trailing `vus=N` field (**downstream parsers: the
+  field appears only on staged/arrival runs; fixed-run lines are
+  unchanged**), summary exports report `vus: null`, and arrival runs surface
+  a `dropped_iterations` metric for permits the saturated pool couldn't
+  serve. Both profiles are native-engine only — `--locust` rejects them with
+  a clear error.

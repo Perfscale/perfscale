@@ -244,9 +244,23 @@ steps:
 #[test]
 fn shipped_example_test_yaml_parses() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
-    let text = std::fs::read_to_string(format!("{root}/hello.test.yaml")).unwrap();
-    let test = yaml::parse_test_file(&text).expect("examples/hello.test.yaml must parse");
-    assert!(!test.steps.is_empty());
+    let mut count = 0;
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        if !name.ends_with(".test.yaml") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let test = yaml::parse_test_file(&text)
+            .unwrap_or_else(|e| panic!("examples/{name} must parse: {e}"));
+        assert!(!test.steps.is_empty(), "examples/{name} has no steps");
+        count += 1;
+    }
+    assert!(count > 0, "no *.test.yaml examples found under {root}");
 }
 
 #[test]
@@ -256,6 +270,29 @@ fn shipped_example_config_yaml_parses() {
     let config = yaml::parse_config_file(&text).expect("examples/hello.config.yaml must parse");
     assert_eq!(config.run.vus, 5);
     assert_eq!(config.run.duration, "30s");
+
+    // Every shipped config parses AND its load profile resolves — the
+    // examples are the first thing users copy.
+    let mut count = 0;
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        if !name.ends_with(".config.yaml") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let config = yaml::parse_config_file(&text)
+            .unwrap_or_else(|e| panic!("examples/{name} must parse: {e}"));
+        config
+            .run
+            .resolve_schedule()
+            .unwrap_or_else(|e| panic!("examples/{name} load profile must resolve: {e}"));
+        count += 1;
+    }
+    assert!(
+        count >= 4,
+        "expected hello + load-profile configs, got {count}"
+    );
 }
 
 #[test]

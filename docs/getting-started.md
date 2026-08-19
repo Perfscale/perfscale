@@ -93,6 +93,10 @@ http_req_failed........: 0.00%
 http_reqs..............: 142 4.73/s
 ```
 
+Beyond a fixed `vus`/`duration`, the native engine also runs k6-style
+load profiles: ramping VUs via `stages:` and arrival-rate via `arrival:` —
+see [Load profiles](yaml-reference.md#load-profiles).
+
 ## Running k6 or locust scripts
 
 Already have scripts? Point perfscale at them — output lands in the same

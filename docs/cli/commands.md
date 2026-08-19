@@ -69,7 +69,11 @@ Exactly one engine flag is required: `--k6`, `--locust`, or `-f`.
 ```
 
 `vus`/`duration` are `null` for `--k6` runs (the load shape lives in the
-script); `summary` is `null` when the run produced no HTTP metrics. When the
+script). The same holds for native runs with a `stages:`/`arrival:` profile —
+there is no fixed VU count, so `vus` is `null` and `duration` is the summed
+stage length (e.g. `"90s"`); the summary's `vus` line reports the observed
+min/max concurrency instead. `summary` is `null` when the run produced no
+HTTP metrics. When the
 config had a [`std/thresholds@v1`](../core/actions.md#stdthresholdsv1) gate,
 the export gains a `thresholds` field with the gate result:
 

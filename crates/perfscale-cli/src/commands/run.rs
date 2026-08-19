@@ -16,6 +16,7 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
         allow_remote: args.allow_remote_import,
         refresh: args.refresh_imports,
         cache_dir: None,
+        remote_guard: None,
     };
     let config = load_config(args.config.as_deref(), &import_opts).await?;
     let native_test = match &args.file {
@@ -23,7 +24,7 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
         None => None,
     };
 
-    let plan = resolve_plan(&args, native_test, config.as_ref());
+    let plan = resolve_plan(&args, native_test, config.as_ref())?;
     let (engine, vus, duration) = plan_meta(&plan);
     let report_url = resolve_report_url(&args, config.as_ref());
 
@@ -79,16 +80,28 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
 }
 
 /// Engine name and load shape for the export metadata. k6 owns its load
-/// shape inside the script, so vus/duration are unknown to the CLI there.
+/// shape inside the script, so vus/duration are unknown to the CLI there;
+/// staged/arrival native runs have no fixed VU count either — `vus` is null
+/// and `duration` is the summed stage length.
 fn plan_meta(plan: &ExecutionPlan) -> (&'static str, Option<u32>, Option<String>) {
     match plan {
         ExecutionPlan::K6Script(_) => ("k6", None, None),
         ExecutionPlan::LocustScript { opts, .. } => {
             ("locust", Some(opts.users), Some(opts.duration.clone()))
         }
-        ExecutionPlan::NativeSteps { config, .. } => {
-            ("native", Some(config.vus), Some(config.duration.clone()))
-        }
+        ExecutionPlan::NativeSteps { config, .. } => match config.resolve_schedule() {
+            Ok(
+                schedule @ (perfscale_core::step::schedule::Schedule::RampingVus { .. }
+                | perfscale_core::step::schedule::Schedule::ArrivalRate { .. }),
+            ) => (
+                "native",
+                None,
+                Some(format!("{}s", schedule.total_secs() as u64)),
+            ),
+            // Fixed profile — or a broken one (the engine reports that error
+            // itself at run time; the metadata falls back to the raw fields).
+            _ => ("native", Some(config.vus), Some(config.duration.clone())),
+        },
     }
 }
 
@@ -210,7 +223,7 @@ async fn load_config(
                 };
                 let hint = import_hint(
                     &e,
-                    "valid fields: `vus` (integer), `duration` (\"30s\"/\"5m\"/\"1h\"), optional `report.url`, optional `import`",
+                    "valid fields: `vus` (integer), `duration` (\"30s\"/\"5m\"/\"1h\"), `stages` (ramping VUs) or `arrival` (arrival-rate), optional `report.url`, optional `import`",
                 );
                 CliError::new(title)
                     .cause(e)
@@ -250,37 +263,41 @@ fn resolve_plan(
     args: &RunArgs,
     native_test: Option<TestDef>,
     config: Option<&ConfigFile>,
-) -> ExecutionPlan {
+) -> Result<ExecutionPlan, CliError> {
     if let Some(script) = &args.k6 {
-        return ExecutionPlan::K6Script(script.clone());
+        return Ok(ExecutionPlan::K6Script(script.clone()));
     }
 
     if let Some(script) = &args.locust {
         let opts = match config {
-            Some(cfg) => LocustOpts::from_run_config(&cfg.run, args.host.clone()),
+            Some(cfg) => LocustOpts::from_run_config(&cfg.run, args.host.clone()).map_err(|e| {
+                CliError::new(e)
+                    .hint("`stages:`/`arrival:` need the native engine: `perfscale run -f test.yaml -c config.yaml`")
+                    .docs("core/runners.md#native-step-engine")
+            })?,
             None => LocustOpts {
                 host: args.host.clone(),
                 ..LocustOpts::default()
             },
         };
-        return ExecutionPlan::LocustScript {
+        return Ok(ExecutionPlan::LocustScript {
             path: script.clone(),
             opts,
-        };
+        });
     }
 
     if args.file.is_some() {
         let test = native_test.expect("caller must load the test def when --file is set");
         // `-f` requires `-c` (enforced by clap), so config is always present here.
         let cfg = config.expect("clap requires -c with -f");
-        return ExecutionPlan::NativeSteps {
+        return Ok(ExecutionPlan::NativeSteps {
             test,
             config: cfg.run.clone(),
             before: cfg.before.clone(),
             after: cfg.after.clone(),
             variables: cfg.variables.clone(),
             quiet: args.quiet,
-        };
+        });
     }
 
     unreachable!("clap ArgGroup guarantees exactly one of --k6/--locust/-f")
@@ -385,7 +402,7 @@ mod tests {
             k6: Some(PathBuf::from("a.js")),
             ..base_args()
         };
-        let plan = resolve_plan(&args, None, None);
+        let plan = resolve_plan(&args, None, None).unwrap();
         assert!(matches!(plan, ExecutionPlan::K6Script(p) if p == Path::new("a.js")));
     }
 
@@ -396,7 +413,7 @@ mod tests {
             host: Some("https://example.com".into()),
             ..base_args()
         };
-        let plan = resolve_plan(&args, None, None);
+        let plan = resolve_plan(&args, None, None).unwrap();
         match plan {
             ExecutionPlan::LocustScript { path, opts } => {
                 assert_eq!(path, PathBuf::from("b.py"));
@@ -414,7 +431,7 @@ mod tests {
             ..base_args()
         };
         let config = sample_config(None);
-        let plan = resolve_plan(&args, None, Some(&config));
+        let plan = resolve_plan(&args, None, Some(&config)).unwrap();
         match plan {
             ExecutionPlan::LocustScript { opts, .. } => {
                 assert_eq!(opts.users, 4);
@@ -431,7 +448,7 @@ mod tests {
             ..base_args()
         };
         let config = sample_config(None);
-        let plan = resolve_plan(&args, Some(sample_test()), Some(&config));
+        let plan = resolve_plan(&args, Some(sample_test()), Some(&config)).unwrap();
         match plan {
             ExecutionPlan::NativeSteps { config, .. } => assert_eq!(config.vus, 4),
             _ => panic!("expected NativeSteps plan"),
@@ -486,7 +503,7 @@ mod tests {
             ..base_args()
         };
         let config = sample_config(None);
-        let plan = resolve_plan(&args, Some(sample_test()), Some(&config));
+        let plan = resolve_plan(&args, Some(sample_test()), Some(&config)).unwrap();
         match plan {
             ExecutionPlan::NativeSteps { quiet, .. } => assert!(quiet),
             _ => panic!("expected NativeSteps plan"),
@@ -550,6 +567,55 @@ mod tests {
             },
         };
         assert_eq!(plan_meta(&locust), ("locust", Some(3), Some("1m".into())));
+    }
+
+    /// Staged/arrival native runs have no fixed VU count: like k6, `vus` is
+    /// null and `duration` reports the summed stage length.
+    #[test]
+    fn plan_meta_staged_native_run_has_null_vus() {
+        let mut config = RunConfig {
+            vus: 7,
+            duration: "45s".into(),
+            ..Default::default()
+        };
+        config.stages = vec![
+            perfscale_core::step::VuStage {
+                duration: "1s".into(),
+                target: 5,
+            },
+            perfscale_core::step::VuStage {
+                duration: "2s".into(),
+                target: 0,
+            },
+        ];
+        let staged = ExecutionPlan::NativeSteps {
+            test: sample_test(),
+            config,
+            before: Vec::new(),
+            after: Vec::new(),
+            variables: serde_json::Map::new(),
+            quiet: false,
+        };
+        assert_eq!(plan_meta(&staged), ("native", None, Some("3s".into())));
+    }
+
+    /// `--locust` combined with a native-only load profile fails at plan
+    /// time with a pointer at the native engine.
+    #[test]
+    fn resolve_plan_locust_rejects_stages_config() {
+        let args = RunArgs {
+            locust: Some(PathBuf::from("b.py")),
+            ..base_args()
+        };
+        let mut config = sample_config(None);
+        config.run.stages = vec![perfscale_core::step::VuStage {
+            duration: "30s".into(),
+            target: 10,
+        }];
+        let err = resolve_plan(&args, None, Some(&config))
+            .err()
+            .expect("stages config must be rejected for --locust");
+        assert!(err.to_string().contains("native engine"), "{err}");
     }
 
     #[test]

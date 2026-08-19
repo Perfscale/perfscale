@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=../schema/config.schema.json
+#
+# Arrival-rate load (open model): hold a target iterations/sec profile and
+# let the engine scale a worker pool to keep up — unlike `vus`/`stages`,
+# new iterations start on schedule even when the system under test slows
+# down. Run with:
+#   perfscale run -f examples/arrival-rate.test.yaml -c examples/arrival-rate.config.yaml
+#
+# A permit that arrives while all `max_vus` workers are busy is dropped and
+# counted in the `dropped_iterations` summary metric. Native engine only.
+arrival:
+  max_vus: 20
+  pre_allocated_vus: 2 # workers spawned at start (default 1); pool grows lazily to max_vus
+  stages:
+    - { duration: 15s, rate: 10 } # ramp 0→10 iterations/sec
+    - { duration: 30s, rate: 10 } # hold 10 iterations/sec
+    - { duration: 15s, rate: 0 } # ramp down

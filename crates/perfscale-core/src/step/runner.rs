@@ -11,8 +11,20 @@
 //!
 //! # The VU loop
 //!
-//! `config.vus` tokio tasks each repeat the step list until the configured
-//! duration expires. One context (`step::context::Context`) per VU is seeded
+//! Three load profiles, resolved from the config by
+//! [`crate::step::schedule::Schedule`]:
+//!
+//! - **fixed** (`vus` + `duration`): `config.vus` tokio tasks each repeat the
+//!   step list until the duration expires.
+//! - **ramping VUs** (`stages:`): a supervisor tracks the piecewise-linear
+//!   target-VU curve, spawning VU tasks on the way up and flagging the newest
+//!   ones to exit (at their next between-steps check) on the way down.
+//! - **arrival-rate** (`arrival:`): a dispatcher emits iteration permits on a
+//!   schedule inverted from the rate integral; a worker pool (growing lazily
+//!   to `max_vus`) runs one iteration per permit. Saturated-pool permits are
+//!   dropped into the `dropped_iterations` metric.
+//!
+//! One context (`step::context::Context`) per VU is seeded
 //! once with the `before:` outputs (`${{ config.* }}`), static
 //! `${{ vars.* }}`, the fail-closed file/process permissions, and the VU's
 //! HTTP client shard — each VU keeps exactly one warm connection pool (see
@@ -40,6 +52,7 @@ use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
 use crate::runner::{LogLine, LogSource};
+use crate::step::schedule::{lerp_segments, DispatchCursor, Schedule, Segment};
 use crate::step::{
     actions::{execute_action, HttpSample, LogTag},
     context::Context,
@@ -239,15 +252,45 @@ impl Metrics {
     /// http_reqs: 120 2.00/s
     /// ```
     pub fn summary_lines(&self, wall_secs: f64, total_iters: u64, vus: u32) -> Vec<String> {
-        let mut lines = Vec::new();
+        self.summary_lines_inner(
+            wall_secs,
+            total_iters,
+            format!("vus....................: {vus} min=1 max={vus}"),
+        )
+    }
 
+    /// Summary for staged/arrival-rate runs: the `vus` line reports the
+    /// *observed* concurrency (last sample plus min/max over the run) instead
+    /// of a fixed configured count. Everything else is identical to
+    /// [`Metrics::summary_lines`].
+    pub fn summary_lines_observed(
+        &self,
+        wall_secs: f64,
+        total_iters: u64,
+        last_vus: u64,
+        min_vus: u64,
+        max_vus: u64,
+    ) -> Vec<String> {
+        self.summary_lines_inner(
+            wall_secs,
+            total_iters,
+            format!("vus....................: {last_vus} min={min_vus} max={max_vus}"),
+        )
+    }
+
+    fn summary_lines_inner(
+        &self,
+        wall_secs: f64,
+        total_iters: u64,
+        vus_line: String,
+    ) -> Vec<String> {
         // Always emit iteration stats (even with no HTTP requests) so
         // downstream parsers can extract metrics from sleep-only runs.
         let iter_rate = total_iters as f64 / wall_secs.max(0.001);
-        lines.push(format!("vus....................: {vus} min=1 max={vus}"));
-        lines.push(format!(
-            "iterations..............: {total_iters} {iter_rate:.2}/s"
-        ));
+        let mut lines = vec![
+            vus_line,
+            format!("iterations..............: {total_iters} {iter_rate:.2}/s"),
+        ];
 
         // Custom action counters (e.g. FIX message rates) — emitted whether or
         // not the run made HTTP-style requests. A counter shadowed by a
@@ -358,6 +401,10 @@ pub struct NativeRunOutcome {
     /// Combined result of every `std/thresholds@v1` gate that ran in
     /// `after:` — `None` when the config had no thresholds step.
     pub thresholds: Option<crate::step::thresholds::ThresholdsSummary>,
+    /// Fatal load-profile error (a broken `stages:`/`arrival:` block): the
+    /// load never started. Maps to a non-zero exit code, like a failed
+    /// thresholds gate.
+    pub config_error: Option<String>,
 }
 
 impl NativeRunOutcome {
@@ -365,6 +412,12 @@ impl NativeRunOutcome {
     /// into a non-zero exit code for CI.
     pub fn thresholds_failed(&self) -> bool {
         self.thresholds.as_ref().is_some_and(|t| t.status == "fail")
+    }
+
+    /// True when the run should exit non-zero: a violated `fail` gate or a
+    /// fatal load-configuration error.
+    pub fn failed(&self) -> bool {
+        self.thresholds_failed() || self.config_error.is_some()
     }
 }
 
@@ -447,6 +500,27 @@ pub async fn run_native(
         metrics: Arc::clone(&metrics),
     };
 
+    // Resolve the load profile up front: a broken `stages:`/`arrival:` block
+    // must fail before any setup runs, not mid-run.
+    let schedule = match config.resolve_schedule() {
+        Ok(s) => s,
+        Err(msg) => {
+            emit(
+                &tx,
+                LogSource::Stderr,
+                &format!("invalid load configuration: {msg}"),
+            )
+            .await;
+            registry.shutdown_all().await;
+            emit(&tx, LogSource::System, "Done — configuration error").await;
+            interrupt_handler.abort();
+            return NativeRunOutcome {
+                config_error: Some(msg),
+                ..NativeRunOutcome::default()
+            };
+        }
+    };
+
     // --- One-time setup ---
     let config_seed = match run_before(&before, &vars, &config, &registry, quiet, &tx).await {
         Ok(v) => v,
@@ -477,79 +551,45 @@ pub async fn run_native(
         }
     };
 
-    let duration_secs = config.duration_secs();
-    let vus = config.vus.max(1);
-    let deadline = Instant::now() + Duration::from_secs(duration_secs);
     let iter_count = Arc::new(AtomicU64::new(0));
     let started = Instant::now();
-
-    emit(
-        &tx,
-        LogSource::System,
-        &format!(
-            "Starting {vus} VU{} for {} ({duration_secs}s)",
-            if vus == 1 { "" } else { "s" },
-            config.duration
-        ),
-    )
-    .await;
 
     let steps = Arc::new(steps);
     // Shared, immutable across VUs — cloned into each VU's context once.
     let config_seed = Arc::new(config_seed);
     let vars = Arc::new(vars);
-    let mut handles = Vec::with_capacity(vus as usize);
 
-    for vu_id in 1..=vus {
-        let steps_ref = Arc::clone(&steps);
-        let metrics = Arc::clone(&metrics);
-        let iter_count = Arc::clone(&iter_count);
-        let config_seed = Arc::clone(&config_seed);
-        let vars = Arc::clone(&vars);
-        let fs_root = config.fs_root.clone();
-        let allow_file_actions = config.allow_file_actions;
-        let allow_process_actions = config.allow_process_actions;
-        let processes = Arc::clone(&registry);
-        let stop = Arc::clone(&stop);
-        let tx = tx.clone();
-
-        handles.push(tokio::spawn(async move {
-            let mut ctx = Context::new();
-            ctx.http_client_shard =
-                (vu_id as usize - 1) % crate::step::actions::client_shard_count();
-            ctx.allow_file_actions = allow_file_actions;
-            ctx.allow_process_actions = allow_process_actions;
-            ctx.fs_root = fs_root;
-            ctx.processes = Some(processes);
-            ctx.log_tx = Some(tx.clone());
-            if !config_seed.is_null() {
-                ctx.set("config", (*config_seed).clone());
-            }
-            if !vars.is_null() {
-                ctx.set("vars", (*vars).clone());
-            }
-
-            while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
-                iter_count.fetch_add(1, Ordering::Relaxed);
-                for step in steps_ref.iter() {
-                    execute_step(step, &mut ctx, &tx, &metrics, quiet, vu_id).await;
-                    if Instant::now() >= deadline || stop.load(Ordering::Relaxed) {
-                        break;
-                    }
-                }
-                // A Live Connection never outlives its iteration: whatever a
-                // scenario left open is dropped here (abrupt TCP drop, no
-                // Close handshake — `std/ws-close@v1` is the graceful path).
-                ctx.resources.drain();
-            }
-        }));
-    }
+    // Staged/arrival runs track the live-VU gauge so the summary and the
+    // [stats] reporter can report the *observed* concurrency; fixed runs skip
+    // the atomics entirely.
+    let active_vus = match &schedule {
+        Schedule::Fixed { .. } => None,
+        _ => Some(Arc::new(AtomicU64::new(0))),
+    };
+    let shared = VuShared {
+        steps,
+        metrics: Arc::clone(&metrics),
+        iter_count: Arc::clone(&iter_count),
+        config_seed: Arc::clone(&config_seed),
+        vars: Arc::clone(&vars),
+        fs_root: config.fs_root.clone(),
+        allow_file_actions: config.allow_file_actions,
+        allow_process_actions: config.allow_process_actions,
+        processes: Arc::clone(&registry),
+        stop: Arc::clone(&stop),
+        quiet,
+        tx: tx.clone(),
+        active_vus,
+    };
 
     // Periodic [stats] reporter: one machine-readable line every 5s while the
     // VUs run, so downstream consumers can chart latency/throughput over time.
+    // Staged/arrival runs append the current live-VU count (`vus=N`) — fixed
+    // runs keep the exact historical format (downstream parsers depend on it).
     let reporter = {
         let metrics = Arc::clone(&metrics);
         let iter_count = Arc::clone(&iter_count);
+        let gauge = shared.active_vus.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
             const INTERVAL_SECS: u64 = 5;
@@ -566,8 +606,12 @@ pub async fn run_native(
                 let line = {
                     let m = metrics.lock().unwrap();
                     let total = m.total_requests();
-                    let line = m.stats_line(ts_ms, total - prev_total, INTERVAL_SECS as f64, iters);
+                    let mut line =
+                        m.stats_line(ts_ms, total - prev_total, INTERVAL_SECS as f64, iters);
                     prev_total = total;
+                    if let Some(gauge) = &gauge {
+                        line.push_str(&format!(" vus={}", gauge.load(Ordering::Relaxed)));
+                    }
                     line
                 };
                 emit(&tx, LogSource::Stdout, &line).await;
@@ -575,9 +619,48 @@ pub async fn run_native(
         })
     };
 
-    for h in handles {
-        let _ = h.await;
-    }
+    let summary_shape = match &schedule {
+        Schedule::Fixed { vus, duration_secs } => {
+            let (vus, duration_secs) = (*vus, *duration_secs);
+            let deadline = started + Duration::from_secs(duration_secs);
+            emit(
+                &tx,
+                LogSource::System,
+                &format!(
+                    "Starting {vus} VU{} for {} ({duration_secs}s)",
+                    if vus == 1 { "" } else { "s" },
+                    config.duration
+                ),
+            )
+            .await;
+            let mut handles = Vec::with_capacity(vus as usize);
+            for vu_id in 1..=vus {
+                handles.push(spawn_vu(vu_id, &shared, deadline, None));
+            }
+            for h in handles {
+                let _ = h.await;
+            }
+            SummaryShape::Fixed(vus)
+        }
+        Schedule::RampingVus { segments } => {
+            SummaryShape::Observed(supervise_ramping(&shared, segments, started, &tx).await)
+        }
+        Schedule::ArrivalRate {
+            segments,
+            max_vus,
+            pre_allocated_vus,
+        } => SummaryShape::Observed(
+            supervise_arrival(
+                &shared,
+                segments,
+                *max_vus,
+                *pre_allocated_vus,
+                started,
+                &tx,
+            )
+            .await,
+        ),
+    };
     reporter.abort();
 
     // Teardown on every non-setup-failure path: `after` steps (best-effort),
@@ -598,10 +681,13 @@ pub async fn run_native(
     let total_iters = iter_count.load(Ordering::Relaxed);
     let (lines, thresholds) = {
         let m = metrics.lock().unwrap();
-        (
-            m.summary_lines(wall_secs, total_iters, vus),
-            m.thresholds_summary(),
-        )
+        let lines = match summary_shape {
+            SummaryShape::Fixed(vus) => m.summary_lines(wall_secs, total_iters, vus),
+            SummaryShape::Observed((last, min_vus, max_vus)) => {
+                m.summary_lines_observed(wall_secs, total_iters, last, min_vus, max_vus)
+            }
+        };
+        (lines, m.thresholds_summary())
     };
     for line in &lines {
         emit(&tx, LogSource::Stdout, line).await;
@@ -626,7 +712,382 @@ pub async fn run_native(
     )
     .await;
     interrupt_handler.abort();
-    NativeRunOutcome { thresholds }
+    NativeRunOutcome {
+        thresholds,
+        config_error: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VU tasks and load supervisors
+// ---------------------------------------------------------------------------
+
+/// Everything a VU task needs beyond its id — assembled once per run, cloned
+/// per spawn.
+struct VuShared {
+    steps: Arc<Vec<Step>>,
+    metrics: Arc<Mutex<Metrics>>,
+    iter_count: Arc<AtomicU64>,
+    config_seed: Arc<Value>,
+    vars: Arc<Value>,
+    fs_root: Option<std::path::PathBuf>,
+    allow_file_actions: bool,
+    allow_process_actions: bool,
+    processes: Arc<ProcessRegistry>,
+    stop: Arc<AtomicBool>,
+    quiet: bool,
+    tx: mpsc::Sender<LogLine>,
+    /// Live-VU gauge for staged/arrival runs (incremented on task start,
+    /// decremented on exit). `None` for fixed runs — the count never changes.
+    active_vus: Option<Arc<AtomicU64>>,
+}
+
+impl VuShared {
+    /// A fresh per-VU context: isolated `${{ }}` state, the fail-closed
+    /// file/process gates, and the VU's HTTP client shard.
+    fn base_context(&self, vu_id: u32) -> Context {
+        let mut ctx = Context::new();
+        ctx.http_client_shard = (vu_id as usize - 1) % crate::step::actions::client_shard_count();
+        ctx.allow_file_actions = self.allow_file_actions;
+        ctx.allow_process_actions = self.allow_process_actions;
+        ctx.fs_root = self.fs_root.clone();
+        ctx.processes = Some(Arc::clone(&self.processes));
+        ctx.log_tx = Some(self.tx.clone());
+        if !self.config_seed.is_null() {
+            ctx.set("config", (*self.config_seed).clone());
+        }
+        if !self.vars.is_null() {
+            ctx.set("vars", (*self.vars).clone());
+        }
+        ctx
+    }
+}
+
+/// The `vus` summary line for a finished run: the fixed configured count, or
+/// the observed (last, min, max) concurrency for staged/arrival runs.
+enum SummaryShape {
+    Fixed(u32),
+    Observed((u64, u64, u64)),
+}
+
+/// Samples the live-VU gauge into (last, min, max) — staged/arrival runs
+/// report these observed values in the summary's `vus` line.
+struct VuSampler {
+    active: Arc<AtomicU64>,
+    last: AtomicU64,
+    min: AtomicU64,
+    max: AtomicU64,
+}
+
+impl VuSampler {
+    fn new(active: Arc<AtomicU64>) -> Self {
+        Self {
+            active,
+            last: AtomicU64::new(0),
+            min: AtomicU64::new(u64::MAX),
+            max: AtomicU64::new(0),
+        }
+    }
+
+    fn sample(&self) {
+        let v = self.active.load(Ordering::SeqCst);
+        self.last.store(v, Ordering::SeqCst);
+        self.min.fetch_min(v, Ordering::SeqCst);
+        self.max.fetch_max(v, Ordering::SeqCst);
+    }
+
+    /// (last, min, max) observed; (0, 0, 0) if nothing was ever sampled.
+    fn observed(&self) -> (u64, u64, u64) {
+        let min = self.min.load(Ordering::SeqCst);
+        (
+            self.last.load(Ordering::SeqCst),
+            if min == u64::MAX { 0 } else { min },
+            self.max.load(Ordering::SeqCst),
+        )
+    }
+}
+
+/// Spawn one looping VU (fixed and ramping profiles). The VU repeats the step
+/// list until the run deadline, the global `stop` flag, or — for ramping
+/// scale-down — its own `vu_stop` flag, all checked between steps so the
+/// in-flight step always finishes (graceful scale-down).
+fn spawn_vu(
+    vu_id: u32,
+    shared: &VuShared,
+    deadline: Instant,
+    vu_stop: Option<Arc<AtomicBool>>,
+) -> tokio::task::JoinHandle<()> {
+    let mut ctx = shared.base_context(vu_id);
+    let steps = Arc::clone(&shared.steps);
+    let metrics = Arc::clone(&shared.metrics);
+    let iter_count = Arc::clone(&shared.iter_count);
+    let stop = Arc::clone(&shared.stop);
+    let active_vus = shared.active_vus.clone();
+    let quiet = shared.quiet;
+    let tx = shared.tx.clone();
+
+    tokio::spawn(async move {
+        if let Some(active) = &active_vus {
+            active.fetch_add(1, Ordering::SeqCst);
+        }
+        let vu_stopped = || vu_stop.as_ref().is_some_and(|f| f.load(Ordering::Relaxed));
+        while Instant::now() < deadline && !stop.load(Ordering::Relaxed) && !vu_stopped() {
+            iter_count.fetch_add(1, Ordering::Relaxed);
+            for step in steps.iter() {
+                execute_step(step, &mut ctx, &tx, &metrics, quiet, vu_id).await;
+                if Instant::now() >= deadline || stop.load(Ordering::Relaxed) || vu_stopped() {
+                    break;
+                }
+            }
+            // A Live Connection never outlives its iteration: whatever a
+            // scenario left open is dropped here (abrupt TCP drop, no
+            // Close handshake — `std/ws-close@v1` is the graceful path).
+            ctx.resources.drain();
+        }
+        if let Some(active) = &active_vus {
+            active.fetch_sub(1, Ordering::SeqCst);
+        }
+    })
+}
+
+/// Spawn one arrival-rate worker: wait for a permit, run exactly one
+/// iteration, wait again. The receiver lock is held only while waiting for a
+/// permit, never during an iteration. Workers exit when the dispatcher closes
+/// the permit channel at the end of the schedule (or on the global stop).
+fn spawn_arrival_worker(
+    vu_id: u32,
+    shared: &VuShared,
+    permits: Arc<tokio::sync::Mutex<mpsc::Receiver<()>>>,
+    deadline: Instant,
+) -> tokio::task::JoinHandle<()> {
+    let mut ctx = shared.base_context(vu_id);
+    let steps = Arc::clone(&shared.steps);
+    let metrics = Arc::clone(&shared.metrics);
+    let iter_count = Arc::clone(&shared.iter_count);
+    let stop = Arc::clone(&shared.stop);
+    let active_vus = shared.active_vus.clone();
+    let quiet = shared.quiet;
+    let tx = shared.tx.clone();
+
+    tokio::spawn(async move {
+        if let Some(active) = &active_vus {
+            active.fetch_add(1, Ordering::SeqCst);
+        }
+        loop {
+            if permits.lock().await.recv().await.is_none() {
+                break; // dispatcher finished — channel closed
+            }
+            if Instant::now() >= deadline || stop.load(Ordering::Relaxed) {
+                break;
+            }
+            iter_count.fetch_add(1, Ordering::Relaxed);
+            for step in steps.iter() {
+                execute_step(step, &mut ctx, &tx, &metrics, quiet, vu_id).await;
+                if Instant::now() >= deadline || stop.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+            ctx.resources.drain();
+        }
+        if let Some(active) = &active_vus {
+            active.fetch_sub(1, Ordering::SeqCst);
+        }
+    })
+}
+
+/// Drive a ramping-VU schedule: every ~100ms recompute the piecewise-linear
+/// target, spawn VUs to reach it (ids from a continuing counter, never
+/// reused), or flag the newest VUs to exit at their next step boundary.
+/// Returns the observed (last, min, max) active-VU counts for the summary.
+async fn supervise_ramping(
+    shared: &VuShared,
+    segments: &[Segment<u32>],
+    started: Instant,
+    tx: &mpsc::Sender<LogLine>,
+) -> (u64, u64, u64) {
+    /// One managed VU; `stopping` once its exit flag is set (it may still be
+    /// finishing an in-flight step).
+    struct Slot {
+        stop: Arc<AtomicBool>,
+        stopping: bool,
+        handle: tokio::task::JoinHandle<()>,
+    }
+
+    let total_secs = segments.last().map(|s| s.end_secs).unwrap_or(0.0);
+    let deadline = started + Duration::from_secs_f64(total_secs);
+    let sampler = VuSampler::new(
+        shared
+            .active_vus
+            .clone()
+            .expect("staged runs have a live-VU gauge"),
+    );
+
+    emit(
+        tx,
+        LogSource::System,
+        &format!(
+            "Starting ramping VUs: {} stages over {}s",
+            segments.len(),
+            total_secs as u64
+        ),
+    )
+    .await;
+
+    let mut slots: Vec<Slot> = Vec::new();
+    let mut next_vu_id = 1u32;
+    let mut ticker = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        ticker.tick().await;
+        sampler.sample();
+        if Instant::now() >= deadline || shared.stop.load(Ordering::Relaxed) {
+            break;
+        }
+        slots.retain(|s| !s.handle.is_finished());
+        let target = lerp_segments(segments, started.elapsed().as_secs_f64())
+            .round()
+            .clamp(0.0, u32::MAX as f64) as u32;
+        let running = slots.iter().filter(|s| !s.stopping).count();
+        // Scale up: fresh VU tasks.
+        for _ in running..target as usize {
+            let vu_stop = Arc::new(AtomicBool::new(false));
+            let handle = spawn_vu(next_vu_id, shared, deadline, Some(Arc::clone(&vu_stop)));
+            next_vu_id += 1;
+            slots.push(Slot {
+                stop: vu_stop,
+                stopping: false,
+                handle,
+            });
+        }
+        // Scale down: flag the newest VUs; they exit at their next
+        // between-steps check, like the global `stop` flag.
+        if running > target as usize {
+            let mut excess = running - target as usize;
+            for slot in slots.iter_mut().rev() {
+                if excess == 0 {
+                    break;
+                }
+                if !slot.stopping {
+                    slot.stop.store(true, Ordering::Relaxed);
+                    slot.stopping = true;
+                    excess -= 1;
+                }
+            }
+        }
+    }
+    sampler.sample();
+    for slot in slots {
+        let _ = slot.handle.await;
+    }
+    sampler.observed()
+}
+
+/// Drive an arrival-rate schedule: the dispatch cursor yields absolute start
+/// instants (inverting the rate integral); each becomes a permit for a worker
+/// pool that starts at `pre_allocated_vus` and grows lazily to `max_vus`. A
+/// permit nobody can take (pool saturated at `max_vus`) is dropped — counted
+/// in the `dropped_iterations` metric and logged at most once per 5s.
+async fn supervise_arrival(
+    shared: &VuShared,
+    segments: &[Segment<f64>],
+    max_vus: u32,
+    pre_allocated_vus: u32,
+    started: Instant,
+    tx: &mpsc::Sender<LogLine>,
+) -> (u64, u64, u64) {
+    let total_secs = segments.last().map(|s| s.end_secs).unwrap_or(0.0);
+    let deadline = started + Duration::from_secs_f64(total_secs);
+    let sampler = VuSampler::new(
+        shared
+            .active_vus
+            .clone()
+            .expect("arrival runs have a live-VU gauge"),
+    );
+
+    emit(
+        tx,
+        LogSource::System,
+        &format!(
+            "Starting arrival-rate load: {} stages over {}s (max {max_vus} VUs)",
+            segments.len(),
+            total_secs as u64
+        ),
+    )
+    .await;
+
+    // Permits queue in a 1-deep channel: a full channel means every worker is
+    // mid-iteration, which is exactly the grow-or-drop signal.
+    let (permit_tx, permit_rx) = mpsc::channel::<()>(1);
+    let permit_rx = Arc::new(tokio::sync::Mutex::new(permit_rx));
+    let mut workers = Vec::new();
+    let mut next_vu_id = 1u32;
+    for _ in 0..pre_allocated_vus.clamp(1, max_vus) {
+        workers.push(spawn_arrival_worker(
+            next_vu_id,
+            shared,
+            Arc::clone(&permit_rx),
+            deadline,
+        ));
+        next_vu_id += 1;
+    }
+
+    let mut dropped = 0u64;
+    let mut last_drop_warn: Option<Instant> = None;
+    let mut cursor = DispatchCursor::new();
+    'dispatch: while let Some(offset) = cursor.next(segments) {
+        // Sleep until the dispatch instant, waking regularly to notice a stop.
+        let at = started + Duration::from_secs_f64(offset);
+        while Instant::now() < at {
+            if shared.stop.load(Ordering::Relaxed) {
+                break 'dispatch;
+            }
+            let remaining = at - Instant::now();
+            tokio::time::sleep(remaining.min(Duration::from_millis(50))).await;
+        }
+        if Instant::now() >= deadline || shared.stop.load(Ordering::Relaxed) {
+            break;
+        }
+        sampler.sample();
+        workers.retain(|h| !h.is_finished());
+        // Pool not saturated yet → grow instead of dropping the permit.
+        let mut permit = permit_tx.try_send(());
+        if permit.is_err() && workers.len() < max_vus as usize {
+            workers.push(spawn_arrival_worker(
+                next_vu_id,
+                shared,
+                Arc::clone(&permit_rx),
+                deadline,
+            ));
+            next_vu_id += 1;
+            permit = permit_tx.try_send(());
+        }
+        if permit.is_err() {
+            dropped += 1;
+            let due = last_drop_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(5));
+            if due {
+                last_drop_warn = Some(Instant::now());
+                emit(
+                    tx,
+                    LogSource::Stderr,
+                    &format!(
+                        "dropped iteration: all {max_vus} VUs busy — raise arrival.max_vus or lower the rate (this warning repeats at most once per 5s)"
+                    ),
+                )
+                .await;
+            }
+        }
+    }
+    sampler.sample();
+    // Closing the channel lets workers drain the queued permit and exit.
+    drop(permit_tx);
+    for w in workers {
+        let _ = w.await;
+    }
+    if dropped > 0 {
+        let mut obj = Map::new();
+        obj.insert("dropped_iterations".to_string(), Value::from(dropped));
+        shared.metrics.lock().unwrap().add_counters(&obj);
+    }
+    sampler.observed()
 }
 
 // ---------------------------------------------------------------------------
@@ -1386,6 +1847,185 @@ mod tests {
         };
         let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
         assert!(lines.iter().any(|l| l.text.starts_with("Starting 1 VU")));
+    }
+
+    // -----------------------------------------------------------------
+    // Load profiles: stages (ramping VUs) and arrival-rate
+    // -----------------------------------------------------------------
+
+    use crate::step::{ArrivalConfig, RateStage, VuStage};
+
+    fn staged(stages: &[(&str, u32)]) -> RunConfig {
+        RunConfig {
+            stages: stages
+                .iter()
+                .map(|(d, t)| VuStage {
+                    duration: d.to_string(),
+                    target: *t,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn arrival(max_vus: u32, stages: &[(&str, f64)]) -> RunConfig {
+        RunConfig {
+            arrival: Some(Box::new(ArrivalConfig {
+                max_vus,
+                pre_allocated_vus: None,
+                stages: stages
+                    .iter()
+                    .map(|(d, r)| RateStage {
+                        duration: d.to_string(),
+                        rate: *r,
+                    })
+                    .collect(),
+            })),
+            ..Default::default()
+        }
+    }
+
+    /// Parse the iteration count out of the `iterations...: N rate/s` line.
+    fn iteration_count(lines: &[LogLine]) -> u64 {
+        lines
+            .iter()
+            .find(|l| l.text.starts_with("iterations"))
+            .and_then(|l| {
+                l.text
+                    .split(':')
+                    .nth(1)?
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()
+            })
+            .unwrap_or_else(|| panic!("iterations summary line missing: {lines:?}"))
+    }
+
+    /// Ramp 0→2 over 1s, hold 2 for 1s, ramp down to 0 over 1s: the run takes
+    /// the summed ~3s, produces iterations, and the summary reports the
+    /// *observed* concurrency (min 0 at the ramp start, max 2 at the top).
+    #[tokio::test]
+    async fn ramping_stages_scale_vus_up_and_down() {
+        let config = staged(&[("1s", 2), ("1s", 2), ("1s", 0)]);
+        let t0 = Instant::now();
+        let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
+        let elapsed = t0.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_secs(3) && elapsed < Duration::from_secs(5),
+            "three 1s stages ≈ 3s wall clock, took {elapsed:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.starts_with("Starting ramping VUs")),
+            "{lines:?}"
+        );
+        assert!(iteration_count(&lines) > 0, "{lines:?}");
+        let vus_line = lines
+            .iter()
+            .find(|l| l.text.starts_with("vus"))
+            .expect("vus summary line");
+        assert!(
+            vus_line.text.contains("min=0") && vus_line.text.contains("max=2"),
+            "observed min/max, got: {}",
+            vus_line.text
+        );
+    }
+
+    /// Open model: the dispatcher holds the arrival rate — 5 it/s ramping up
+    /// over 1s (∫ = 2.5 → 2 iterations) then holding for 2s (10 iterations).
+    #[tokio::test]
+    async fn arrival_rate_holds_the_target_rate() {
+        let config = arrival(5, &[("1s", 5.0), ("2s", 5.0)]);
+        let lines = run_and_collect(vec![sleep_step(1)], config, false).await;
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.starts_with("Starting arrival-rate load")),
+            "{lines:?}"
+        );
+        let iters = iteration_count(&lines);
+        assert!(
+            (9..=15).contains(&iters),
+            "expected ≈12 iterations (rate integral ± timing slack), got {iters}"
+        );
+        // Nobody was ever saturated → nothing dropped.
+        assert!(!lines
+            .iter()
+            .any(|l| l.text.starts_with("dropped_iterations")));
+    }
+
+    /// One worker, 500ms iterations, 10 it/s wanted: most permits cannot be
+    /// served and land in `dropped_iterations` (plus a throttled warning).
+    #[tokio::test]
+    async fn arrival_beyond_max_vus_drops_and_counts_iterations() {
+        let config = arrival(1, &[("1s", 10.0), ("1s", 10.0)]);
+        let lines = run_and_collect(vec![sleep_step(500)], config, false).await;
+        let line = lines
+            .iter()
+            .find(|l| l.text.starts_with("dropped_iterations"))
+            .unwrap_or_else(|| panic!("dropped_iterations in summary: {lines:?}"));
+        let count: u64 = line
+            .text
+            .split(':')
+            .nth(1)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(count > 0, "{line:?}");
+        assert!(
+            lines.iter().any(|l| l.text.contains("dropped iteration")),
+            "throttled drop warning: {lines:?}"
+        );
+    }
+
+    /// Broken load profiles fail fast with a clear error, before any VU runs.
+    #[tokio::test]
+    async fn stages_and_arrival_together_is_a_clean_error() {
+        let mut config = staged(&[("1s", 2)]);
+        config.arrival = arrival(2, &[("1s", 1.0)]).arrival;
+        let lines = run_and_collect(vec![sleep_step(1)], config, false).await;
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.contains("invalid load configuration")
+                    && l.text.contains("mutually exclusive")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.text.starts_with("Starting")),
+            "no VUs must start: {lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn arrival_without_max_vus_is_a_clean_error() {
+        let lines = run_and_collect(vec![sleep_step(1)], arrival(0, &[("1s", 5.0)]), false).await;
+        assert!(
+            lines.iter().any(
+                |l| l.text.contains("invalid load configuration") && l.text.contains("max_vus")
+            ),
+            "{lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stage_with_zero_or_garbage_duration_is_a_clean_error() {
+        for bad in ["0s", "soon"] {
+            let lines = run_and_collect(vec![sleep_step(1)], staged(&[(bad, 2)]), false).await;
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.text.contains("invalid load configuration")
+                        && l.text.contains("stages[0]")),
+                "duration '{bad}': {lines:?}"
+            );
+        }
     }
 
     /// End-to-end WebSocket flow through the VU loop: a Live Connection is

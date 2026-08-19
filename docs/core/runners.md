@@ -6,9 +6,30 @@ ends. Pick one via `ExecutionPlan`.
 
 ## Native step engine (`step::runner`)
 
-Pure Rust, no external binary. `run_steps(steps, config, tx)` spawns
-`config.vus` tokio tasks; each loops over the step list until `duration`
-expires, sharing a metrics collector.
+Pure Rust, no external binary. `run_steps(steps, config, tx)` runs the step
+list under one of three load profiles, resolved from the config by
+`step::schedule::Schedule`:
+
+- **Fixed** — `vus` + `duration`: `config.vus` tokio tasks each loop over the
+  step list until the duration expires.
+- **Ramping VUs** — `stages:` (k6-style): a supervisor task recomputes the
+  target VU count every ~100ms by linear interpolation between stage targets
+  (the first stage ramps from 0, each next one from the previous target).
+  Scaling up spawns fresh VU tasks; scaling down flags the newest VUs, which
+  finish their in-flight step and exit at the next step boundary (graceful).
+  The run length is the sum of the stage durations.
+- **Arrival-rate** — `arrival:` (open model): a dispatcher computes iteration
+  start instants by inverting the piecewise-linear rate integral and hands
+  permits to a worker pool that starts at `pre_allocated_vus` (default 1) and
+  grows lazily to `max_vus`. Unlike the closed VU-loop models, new iterations
+  start on schedule even when the system under test slows down — a permit
+  nobody can serve (pool saturated at `max_vus`) is dropped, counted in the
+  `dropped_iterations` summary metric, and logged at most once per 5s.
+
+For staged/arrival runs the summary's `vus` line reports the *observed*
+concurrency — `vus....................: <last> min=<min> max=<max>` — and the
+periodic `[stats]` line gains a trailing `vus=N` with the live count. Fixed
+runs keep the historical formats unchanged.
 
 - Per-VU `Context` — step outputs and `${{ }}` interpolation are isolated
   between VUs, persistent across iterations of the same VU
@@ -17,7 +38,10 @@ expires, sharing a metrics collector.
   (e.g. `ws_msg_rtt`, `grpc_req_duration`) through the same collector
 - Ends with the k6-compatible summary block + `Done — Xs wall clock`
 - `vus: 0` is clamped to 1; duration strings parse via `parse_duration_secs`
-  (`"90"`, `"1m30s"`, `"1h"` — minimum 1s)
+  (`"90"`, `"1m30s"`, `"1h"` — minimum 1s). Stage durations are validated
+  strictly: unparseable or zero lengths fail the run (and `perfscale lint`)
+  with a clear error, as do `stages` combined with `arrival`, and `arrival`
+  without `max_vus >= 1`
 
 ## k6 (`runner::k6`)
 
@@ -74,5 +98,5 @@ Missing binary → `locust not found in PATH — install with pip install locust
 | Install needed | none | k6 binary | python + locust |
 | Scenario language | YAML steps | JavaScript | Python |
 | Scripting power | low (4 actions) | high | high |
-| Load model | fixed VUs × duration | stages/thresholds/scenarios | users/spawn-rate |
+| Load model | fixed VUs, ramping `stages:`, or arrival-rate | stages/thresholds/scenarios | users/spawn-rate |
 | Best for | smoke tests, CI gates, simple API flows | complex k6 suites you already have | python-centric teams |

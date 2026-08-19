@@ -133,14 +133,75 @@ report:          # optional — forward the summary after the run
 
 | Field | Default | Description |
 |---|---|---|
-| `vus` | `1` | Concurrent virtual users |
+| `vus` | `1` | Concurrent virtual users (fixed profile) |
 | `duration` | `1m` | Wall-clock run length; bare numbers are seconds |
+| `stages` | — | Ramping-VU profile (k6-style): list of `{ duration, target }` stages. Overrides `vus`/`duration`; mutually exclusive with `arrival`. Native engine only |
+| `arrival` | — | Arrival-rate profile (open model): `{ max_vus, pre_allocated_vus?, stages: [{ duration, rate }] }` — hold an iterations/sec rate. Mutually exclusive with `stages`. Native engine only |
 | `report.url` | — | A `perfscale serve` base URL; the CLI `--report` flag overrides it |
 | `before` | `[]` | One-time setup steps — see [Setup and variables](#setup-and-variables) |
 | `after` | `[]` | One-time teardown steps — see [Teardown](#teardown-after) |
 | `variables` | `{}` | Static values exposed to steps as `${{ vars.* }}` |
 | `allow_process_actions` | `false` | Let steps spawn/signal OS processes (`std/child_process@v1`, `std/kill_process@v1`). Fail-closed: a step list from an untrusted source cannot touch processes until you opt in |
 | `import` | — | Base document to inherit from — see [Composing documents](#composing-documents-import) |
+
+### Load profiles
+
+The native engine supports three load profiles. `stages`/`arrival` override
+`vus`/`duration` (lint warns if both are set) and are mutually exclusive;
+the run length is the sum of the stage durations.
+
+**Fixed** (the default): `vus` workers loop the steps for `duration`.
+
+```yaml
+vus: 10
+duration: 5m
+```
+
+**Ramping VUs** (`stages:`, k6-style): the target VU count interpolates
+linearly between stage targets — the first stage ramps from 0, each next one
+from the previous stage's `target`. Scale-down is graceful: a VU being
+ramped away finishes its in-flight step and exits at the next step boundary.
+
+```yaml
+stages:
+  - { duration: 30s, target: 10 }  # ramp 0→10 VUs
+  - { duration: 1m,  target: 50 }  # ramp 10→50 VUs
+  - { duration: 30s, target: 0 }   # ramp down, drain to zero
+```
+
+**Arrival-rate** (`arrival:`, open model): the engine holds an
+iterations-per-second rate profile and scales a worker pool to keep up —
+new iterations start on schedule even when the system under test slows down
+(where a fixed-VU loop would stretch). `rate` ramps linearly between stages
+(fractions allowed: `0.5` = one iteration every 2s).
+
+```yaml
+arrival:
+  max_vus: 100              # worker pool cap — required, ≥ 1
+  pre_allocated_vus: 10     # workers spawned up front (default 1); the pool grows lazily to max_vus
+  stages:
+    - { duration: 30s, rate: 5 }    # ramp 0→5 iterations/sec
+    - { duration: 1m,  rate: 20 }   # ramp 5→20 iterations/sec
+```
+
+A permit that arrives while all `max_vus` workers are busy is dropped and
+counted in the `dropped_iterations` summary metric (plus a warning logged at
+most once per 5s) — raise `max_vus` or lower the rate when it grows.
+
+For `stages`/`arrival` runs the summary's `vus` line reports the observed
+concurrency (`vus....................: <last> min=<min> max=<max>`), the
+periodic `[stats]` line gains a trailing `vus=N` field, and summary exports
+(`--summary-export`) report `vus: null` with `duration` set to the summed
+stage length.
+
+Stage durations use the same `"30s"`/`"1m30s"`/`"1h"` grammar as `duration`
+but are validated strictly: an unparseable or zero stage duration fails the
+run (and `perfscale lint`) with a clear error. `stages` and `arrival` are
+native-engine only — with `--locust` they're rejected (use `vus`/`duration`),
+with `--k6` the config file is ignored anyway. See
+[examples/ramping.config.yaml](../examples/ramping.config.yaml),
+[examples/spike.config.yaml](../examples/spike.config.yaml), and
+[examples/arrival-rate.config.yaml](../examples/arrival-rate.config.yaml).
 
 ### Composing documents: `import`
 

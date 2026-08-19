@@ -14,7 +14,11 @@
 //!   failure output, so every HTTP-based action reports identically.
 //!
 //! The action itself ([`http_action`]) is one consumer of that plumbing;
-//! `step::graphql` is the other.
+//! `step::graphql` is the other in-tree consumer. The shared pieces are
+//! public so downstream crates (proprietary action families such as
+//! `pro/soap`) can report and measure HTTP exchanges identically to
+//! `std/http@v1`; the shard constructors stay crate-private — downstream
+//! code selects a client through [`client`] and [`Context::http_client_shard`].
 
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -84,7 +88,7 @@ pub(crate) fn client_shard_count() -> usize {
 
 /// Connection-pool mode of an HTTP-based action (`pool` parameter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ClientPool {
+pub enum ClientPool {
     /// VU-pinned client shard (default) — every VU keeps one warm pool.
     PerVu,
     /// One process-global client shared by every VU: maximal connection
@@ -95,7 +99,7 @@ pub(crate) enum ClientPool {
 
 impl ClientPool {
     /// Parse the optional `pool` parameter: `per-vu` (default) or `shared`.
-    pub(crate) fn from_params(params: &Value) -> Result<Self, String> {
+    pub fn from_params(params: &Value) -> Result<Self, String> {
         match params["pool"].as_str().unwrap_or("per-vu") {
             "per-vu" => Ok(ClientPool::PerVu),
             "shared" => Ok(ClientPool::Shared),
@@ -108,7 +112,7 @@ impl ClientPool {
 
 /// The HTTP client for a step execution. The insecure variants skip TLS
 /// verification and never share a pool with verified requests.
-pub(crate) fn client(pool: ClientPool, insecure: bool, shard: usize) -> &'static reqwest::Client {
+pub fn client(pool: ClientPool, insecure: bool, shard: usize) -> &'static reqwest::Client {
     match (pool, insecure) {
         (ClientPool::PerVu, false) => shared_client(shard),
         (ClientPool::PerVu, true) => shared_insecure_client(shard),
@@ -134,7 +138,7 @@ pub(crate) fn client(pool: ClientPool, insecure: bool, shard: usize) -> &'static
 
 /// How [`timed_exchange`] decodes the response body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BodyKind {
+pub enum BodyKind {
     /// `std/http@v1` semantics: textual content types decode as text,
     /// anything else surfaces as `body_base64`; a missing content type is
     /// sniffed (valid UTF-8 → text, else binary).
@@ -145,7 +149,7 @@ pub(crate) enum BodyKind {
 }
 
 /// One finished HTTP exchange, body already read and decoded.
-pub(crate) struct HttpOutcome {
+pub struct HttpOutcome {
     pub status: u16,
     /// Canonical reason phrase (`"OK"`, `""` when unknown).
     pub reason: String,
@@ -160,7 +164,7 @@ pub(crate) struct HttpOutcome {
 /// Send `req`, timing the whole exchange (connect → body read). A transport
 /// error returns `(elapsed_ms, error)` so the caller reports timing and the
 /// failure from one code path.
-pub(crate) async fn timed_exchange(
+pub async fn timed_exchange(
     req: reqwest::RequestBuilder,
     body_kind: BodyKind,
 ) -> Result<HttpOutcome, (f64, reqwest::Error)> {
@@ -221,7 +225,7 @@ pub(crate) async fn timed_exchange(
 /// The shared `METHOD url → status reason (Nms<extra>)` log line. `extra`
 /// lets protocol families append their own fields inside the parentheses
 /// (GraphQL adds `, op=…, graphql_errors=…`).
-pub(crate) fn request_line(
+pub fn request_line(
     method: &str,
     url: &str,
     status: u16,
@@ -234,7 +238,7 @@ pub(crate) fn request_line(
 
 /// Uniform transport-failure output: a TIMEOUT/ERROR log line, the flattened
 /// error chain as the value, and a failed timing sample.
-pub(crate) fn transport_error(
+pub fn transport_error(
     step_name: &str,
     method: &str,
     url: &str,
@@ -318,7 +322,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 /// Flatten an error and its source chain into one line — reqwest's `Display`
 /// alone is just "error sending request for url (...)", which hides the actual
 /// cause (connection refused, reset, dns, ...).
-pub(crate) fn error_chain(e: &dyn std::error::Error) -> String {
+pub fn error_chain(e: &dyn std::error::Error) -> String {
     let mut out = e.to_string();
     let mut src = e.source();
     while let Some(s) = src {

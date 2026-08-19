@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema/test.schema.json
+#
+# Run with: perfscale run -f examples/arrival-rate.test.yaml -c examples/arrival-rate.config.yaml
+#
+# The 200ms sleep makes one iteration take ≥200ms, so holding 10 it/s needs
+# ~2 workers — watch the pool grow via `vus=` in the periodic `[stats]` line.
+steps:
+  - name: homepage
+    use: std/http@v1
+    with:
+      method: GET
+      url: https://httpbin.org/get
+    check:
+      status: 200
+    outputs: resp
+
+  - name: log status
+    use: std/log@v1
+    with:
+      message: "got status ${{ resp.status }}"
+
+  - use: std/sleep@v1
+    with:
+      ms: 200

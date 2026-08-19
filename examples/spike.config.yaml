@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=../schema/config.schema.json
+#
+# Spike test: a short warm-up, a sudden jump to 50 VUs, hold, then drop back
+# and drain. Run with:
+#   perfscale run -f examples/ramping.test.yaml -c examples/spike.config.yaml
+#
+# The summary's `vus` line reports the observed concurrency
+# (min/max over the run), and the periodic `[stats]` line gains a `vus=N`
+# field so you can watch the spike live.
+stages:
+  - { duration: 5s, target: 1 } # warm-up
+  - { duration: 5s, target: 50 } # spike up
+  - { duration: 10s, target: 50 } # hold the spike
+  - { duration: 5s, target: 1 } # drop back
+  - { duration: 5s, target: 0 } # drain

@@ -263,9 +263,11 @@ const TEST_TOP_FIELDS: [&str; 1] = ["steps"];
 const STEP_FIELDS: [&str; 8] = [
     "name", "use", "uses", "with", "check", "outputs", "severity", "message",
 ];
-const CONFIG_TOP_FIELDS: [&str; 7] = [
+const CONFIG_TOP_FIELDS: [&str; 9] = [
     "vus",
     "duration",
+    "stages",
+    "arrival",
     "report",
     "before",
     "after",
@@ -606,6 +608,35 @@ fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
         unknown_field_issues(report, &REPORT_FIELDS, "/report", issues);
     }
 
+    // Load-profile validation: the schema accepts any stage list shape, but a
+    // broken profile (both modes at once, an unparseable/zero stage duration,
+    // `arrival` without `max_vus`) must fail at lint time, not mid-run.
+    // `stages: []` is checked on the raw document — after serde's defaults it
+    // is indistinguishable from an absent key.
+    if map
+        .get("stages")
+        .is_some_and(|v| v.as_array().is_some_and(|a| a.is_empty()))
+    {
+        issues.push(LintIssue {
+            location: "/stages".into(),
+            problem: "'stages' must contain at least one stage".into(),
+            suggestion: Some("e.g. `stages: [{ duration: 30s, target: 10 }]`".into()),
+        });
+    }
+    if let Ok(cfg) = serde_json::from_value::<crate::yaml::ConfigFile>(value.clone()) {
+        if let Err(msg) = cfg.run.resolve_schedule() {
+            issues.push(LintIssue {
+                location: if map.contains_key("stages") {
+                    "/stages".into()
+                } else {
+                    "/arrival".into()
+                },
+                problem: msg,
+                suggestion: None,
+            });
+        }
+    }
+
     // `before:`/`after:` steps get the same per-step linting as test steps.
     if let Some(before) = map.get("before").and_then(|b| b.as_array()) {
         for (i, step) in before.iter().enumerate() {
@@ -617,6 +648,34 @@ fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
             lint_step(step, &format!("/after/{i}"), issues);
         }
     }
+}
+
+/// Advisory findings that must NOT fail `perfscale lint` (unlike
+/// [`lint`] issues): printed as warnings by the CLI, exit code unaffected.
+///
+/// Currently: a config that sets both a load profile (`stages:`/`arrival:`)
+/// and explicit `vus:`/`duration:` — the profile wins and the fixed fields
+/// are silently ignored at run time, which usually isn't what the author
+/// meant.
+pub fn lint_warnings(yaml: &str, kind: DocKind) -> Vec<String> {
+    if kind != DocKind::Config {
+        return Vec::new();
+    }
+    let Ok(value) = serde_yaml::from_str::<Value>(yaml) else {
+        return Vec::new();
+    };
+    let Some(map) = value.as_object() else {
+        return Vec::new();
+    };
+    let has_profile = map.contains_key("stages") || map.contains_key("arrival");
+    let has_fixed = map.contains_key("vus") || map.contains_key("duration");
+    if has_profile && has_fixed {
+        return vec![
+            "`stages`/`arrival` override `vus`/`duration` — the fixed fields are ignored; remove them to avoid confusion"
+                .into(),
+        ];
+    }
+    Vec::new()
 }
 
 fn is_known_action(action: &str) -> bool {
@@ -1249,6 +1308,95 @@ after:
             .find(|i| i.problem.contains("unknown field 'aftr'"))
             .unwrap();
         assert_eq!(typo.suggestion.as_deref(), Some("did you mean 'after'?"));
+    }
+
+    // -----------------------------------------------------------------
+    // Config load profiles (stages / arrival)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn config_with_stages_lints_clean() {
+        let yaml = r#"
+stages:
+  - { duration: 30s, target: 10 }
+  - { duration: 1m, target: 10 }
+  - { duration: 30s, target: 0 }
+"#;
+        assert_eq!(lint(yaml, DocKind::Config), vec![]);
+        assert!(lint_warnings(yaml, DocKind::Config).is_empty());
+    }
+
+    #[test]
+    fn config_with_arrival_lints_clean() {
+        let yaml = r#"
+arrival:
+  max_vus: 100
+  pre_allocated_vus: 10
+  stages:
+    - { duration: 30s, rate: 5 }
+    - { duration: 1m, rate: 20 }
+"#;
+        assert_eq!(lint(yaml, DocKind::Config), vec![]);
+    }
+
+    #[test]
+    fn config_with_stages_and_arrival_is_an_error() {
+        let yaml = r#"
+stages:
+  - { duration: 30s, target: 10 }
+arrival:
+  max_vus: 10
+  stages:
+    - { duration: 30s, rate: 5 }
+"#;
+        let issues = lint(yaml, DocKind::Config);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.problem.contains("mutually exclusive")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn config_with_empty_or_broken_stages_is_an_error() {
+        let issues = lint("stages: []\n", DocKind::Config);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.location == "/stages" && i.problem.contains("at least one stage")),
+            "{issues:?}"
+        );
+
+        let issues = lint(
+            "stages:\n  - { duration: 0s, target: 5 }\n",
+            DocKind::Config,
+        );
+        assert!(
+            issues.iter().any(|i| i.problem.contains("stages[0]")),
+            "{issues:?}"
+        );
+
+        let issues = lint(
+            "arrival:\n  stages:\n    - { duration: 30s, rate: 5 }\n",
+            DocKind::Config,
+        );
+        assert!(
+            issues.iter().any(|i| i.problem.contains("max_vus")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn config_with_stages_and_fixed_fields_warns_but_passes() {
+        let yaml = "vus: 10\nduration: 30s\nstages:\n  - { duration: 30s, target: 10 }\n";
+        // Not an error — the profile simply wins.
+        assert_eq!(lint(yaml, DocKind::Config), vec![]);
+        let warnings = lint_warnings(yaml, DocKind::Config);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("override"), "{warnings:?}");
+        // Test documents never warn.
+        assert!(lint_warnings("steps: []\n", DocKind::Test).is_empty());
     }
 
     #[test]

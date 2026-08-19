@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=../schema/config.schema.json
+#
+# Ramping VUs (k6-style stages): ramp 0→5 over 10s, hold at 5 for 10s,
+# ramp back down to 0. Run with:
+#   perfscale run -f examples/ramping.test.yaml -c examples/ramping.config.yaml
+#
+# `stages` overrides `vus`/`duration` — the run length is the sum of the
+# stage durations. The first stage ramps from 0 VUs, each next stage from
+# the previous target. Scale-down is graceful: VUs finish their in-flight
+# step and exit at the next step boundary. Native engine only.
+stages:
+  - { duration: 10s, target: 5 }
+  - { duration: 10s, target: 5 }
+  - { duration: 10s, target: 0 }

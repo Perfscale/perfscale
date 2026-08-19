@@ -29,11 +29,16 @@ pub async fn run(args: LintArgs) -> Result<(), CliError> {
         allow_remote: args.allow_remote_import,
         refresh: args.refresh_imports,
         cache_dir: None,
+        remote_guard: None,
     };
 
     for path in &args.files {
         match lint_file(path, args.schema, &import_opts).await {
             Ok((kind, effective, issues)) if issues.is_empty() => {
+                // Advisory findings never affect the exit code.
+                for warning in perfscale_core::lint::lint_warnings(&effective, kind) {
+                    println!("  warning: {warning}");
+                }
                 // The offline pass is clean; the GraphQL network pass may
                 // still find schema-level problems. It runs on the merged
                 // text so imported steps are covered too.
@@ -48,7 +53,10 @@ pub async fn run(args: LintArgs) -> Result<(), CliError> {
                     print_issues(path, kind, &remote);
                 }
             }
-            Ok((kind, _, issues)) => {
+            Ok((kind, effective, issues)) => {
+                for warning in perfscale_core::lint::lint_warnings(&effective, kind) {
+                    println!("  warning: {warning}");
+                }
                 any_problems = true;
                 print_issues(path, kind, &issues);
             }
