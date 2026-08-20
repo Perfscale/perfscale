@@ -2,7 +2,7 @@
 """Parsing and JSON plumbing for scripts/bench.sh.
 
 Subcommands:
-  parse <kind> <file>            kind: text | locust-csv
+  parse <kind> <file>            kind: text | locust-csv | ws-text
                                  prints shell-evalable `key=value` lines
   append <json> <label> [k=v..]  append a row object to a JSON array file
   setobj <json> [k=v..]          merge keys into a JSON object file
@@ -74,6 +74,40 @@ def parse_text(content):
     return out
 
 
+def parse_ws_text(content):
+    """Parse the WebSocket echo-suite metrics: `ws_msgs_sent...: N R/s`
+    (counter) and `ws_msg_rtt...: avg=..ms p(50)=..ms ...` (trend). Both the
+    native engine and the bench k6 script emit these two lines in k6-summary
+    shape, so one parser fits every ws scenario. `requests`/`rps` count
+    messages, not HTTP requests.
+    """
+    out = zeroed()
+
+    m = re.search(r"ws_msgs_sent[.\s]*:\s*(\d+)\s+([\d.]+)/s", content)
+    if m:
+        out["requests"] = int(m.group(1))
+        out["rps"] = float(m.group(2))
+
+    m = re.search(r"ws_msg_rtt[.\s]*:(.*)", content)
+    if m:
+        stats = {}
+        for key, value, unit in re.findall(
+            r"(avg|min|med|max|p\(50\)|p\(90\)|p\(95\)|p\(99\))=" + VALUE_UNIT,
+            m.group(1),
+        ):
+            stats[key] = float(value) * UNIT_MS[unit]
+        out["avg_ms"] = stats.get("avg", 0)
+        out["p50_ms"] = stats.get("p(50)", stats.get("med", 0))
+        out["p90_ms"] = stats.get("p(90)", 0)
+        out["p95_ms"] = stats.get("p(95)", 0)
+        out["p99_ms"] = stats.get("p(99)", 0)
+        out["min_ms"] = stats.get("min", 0)
+        out["max_ms"] = stats.get("max", 0)
+
+    out["parse_ok"] = 1 if out["requests"] else 0
+    return out
+
+
 def parse_locust_csv(path):
     """Parse the `Aggregated` row of locust's `--csv` stats output —
     the same source perfscale's locust runner reads."""
@@ -112,6 +146,9 @@ def cmd_parse(kind, path):
     try:
         if kind == "locust-csv":
             metrics = parse_locust_csv(path)
+        elif kind == "ws-text":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics = parse_ws_text(f.read())
         else:
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_text(f.read())
@@ -206,6 +243,7 @@ def cmd_startup(hyperfine_json, out_json, duration):
     native_for = {
         "perfscale (k6)": "k6 (native)",
         "perfscale (locust)": "locust (native)",
+        "perfscale (jmeter)": "jmeter (native)",
     }
 
     rows = []

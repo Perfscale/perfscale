@@ -1,7 +1,7 @@
 # CLI commands
 
 ```text
-perfscale run          Run a load test with k6, locust, or the native step engine
+perfscale run          Run a load test with k6, locust, JMeter, or the native step engine
 perfscale serve        Start a local dev server that receives metrics from `run --report`
 perfscale lint         Validate test/config YAML files without running them
 perfscale man          Print the bundled man page (or install it for `man perfscale`)
@@ -10,14 +10,15 @@ perfscale self-update  Update perfscale to the latest release for this platform
 
 ## `perfscale run`
 
-Exactly one engine flag is required: `--k6`, `--locust`, or `-f`.
+Exactly one engine flag is required: `--k6`, `--locust`, `--jmeter`, or `-f`.
 
 | Flag | Value | Description |
 |---|---|---|
 | `--k6 <FILE>` | `.js` script | Run via the `k6` binary on `PATH` |
 | `--locust <FILE>` | locustfile | Run via the `locust` binary on `PATH`, headless |
+| `--jmeter <FILE>` | `.jmx` test plan | Run via the `jmeter` binary on `PATH`, non-GUI (`jmeter -n -t`). The plan owns the load shape — no perfscale config applies |
 | `-f, --file <FILE>` | `test.yaml` | Run with the built-in native engine (requires `-c`) |
-| `-c, --config <FILE>` | `config.yaml` | Load config: `vus`, `duration`, optional `report.url`. Required with `-f`, optional load hint for `--locust`, ignored by `--k6` |
+| `-c, --config <FILE>` | `config.yaml` | Load config: `vus`, `duration`, optional `report.url`. Required with `-f`, optional load hint for `--locust`, ignored by `--k6` and `--jmeter` |
 | `--host <URL>` | base URL | Target host for `--locust` (locust's `--host`) |
 | `--report <URL>` | base URL | POST the summary to a `perfscale serve` instance after the run; overrides `report.url` from the config file |
 | `-q, --quiet` | — | Suppress per-request output; errors and the final metric summary still print. The native engine drops the lines at the source, which also removes their formatting/IO cost under high load |
@@ -68,8 +69,8 @@ Exactly one engine flag is required: `--k6`, `--locust`, or `-f`.
 }
 ```
 
-`vus`/`duration` are `null` for `--k6` runs (the load shape lives in the
-script). The same holds for native runs with a `stages:`/`arrival:` profile —
+`vus`/`duration` are `null` for `--k6` and `--jmeter` runs (the load shape
+lives in the script/plan). The same holds for native runs with a `stages:`/`arrival:` profile —
 there is no fixed VU count, so `vus` is `null` and `duration` is the summed
 stage length (e.g. `"90s"`); the summary's `vus` line reports the observed
 min/max concurrency instead. `summary` is `null` when the run produced no
@@ -101,7 +102,13 @@ for.
 ```text
 error: k6 not found in PATH — install from https://k6.io/docs/get-started/installation/
 error: locust not found in PATH — install with `pip install locust` (...)
+error: jmeter not found in PATH — install from https://jmeter.apache.org/download_jmeter.cgi (...)
 ```
+
+JMeter runs emit no latency percentiles: after the run, jmeter's final
+console `summary =` line is translated into the k6-compatible summary block
+with `avg`/`min`/`max` only. There is no `std/thresholds@v1` integration for
+`--jmeter` — the jmeter process exit code is the gate.
 
 ## `perfscale serve`
 
@@ -116,10 +123,11 @@ Endpoints:
 |---|---|---|
 | `GET` | `/health` | Returns `ok` |
 | `POST` | `/api/v1/metrics` | Accepts `{"lines": ["...", ...]}` and prints the batch |
+| `GET` | `/ws` | WebSocket echo — every text (and binary) message is echoed back verbatim. A loopback target for WebSocket load tests and the `ws` benchmark suite |
 
 This is a development stand-in, not a control-plane: no persistence, no auth,
-no aggregation across runs. Anything that speaks these two endpoints can
-replace it.
+no aggregation across runs. Anything that speaks these endpoints can replace
+it.
 
 ## Benchmarking
 

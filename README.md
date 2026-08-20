@@ -1,7 +1,7 @@
 # perfscale
 
-A single CLI for running load tests with k6, locust, or perfscale's own
-native step engine — plus a tiny local dev server for collecting the
+A single CLI for running load tests with k6, locust, JMeter, or perfscale's
+own native step engine — plus a tiny local dev server for collecting the
 results.
 
 **[Documentation](docs/README.md)** — [getting started](docs/getting-started.md) ·
@@ -26,14 +26,16 @@ Or grab a binary from [GitHub Releases](https://github.com/Perfscale/perfscale/r
 - axum (`perfscale serve`)
 - serde / serde_yaml / serde_json (test & config files)
 - schemars + jsonschema (YAML schema generation & validation)
-- k6 / locust (external binaries, invoked as subprocesses — not bundled)
+- k6 / locust / JMeter (external binaries, invoked as subprocesses — not bundled)
 
 ## How it works
 
-1. `perfscale run` picks exactly one engine from `--k6`, `--locust`, or `-f` (native).
-2. k6 and locust runs shell out to an existing `k6`/`locust` installation and stream
-   their stdout/stderr live; locust's `--csv` output is parsed into a k6-compatible
-   summary at the end so all three engines report in the same shape.
+1. `perfscale run` picks exactly one engine from `--k6`, `--locust`, `--jmeter`,
+   or `-f` (native).
+2. k6, locust, and JMeter runs shell out to an existing `k6`/`locust`/`jmeter`
+   installation and stream their stdout/stderr live; locust's `--csv` output and
+   JMeter's final console `summary =` line are parsed into a k6-compatible
+   summary at the end so every engine reports in the same shape.
 3. Native (`-f test.yaml -c config.yaml`) runs perfscale's own step engine — no
    external binary required — executing `std/http`, `std/graphql` (queries and
    mutations with introspection/SDL schema validation), `std/tcp`, `std/udp`,
@@ -63,6 +65,7 @@ Or grab a binary from [GitHub Releases](https://github.com/Perfscale/perfscale/r
 |---|---|
 | `perfscale run --k6 <file.js>` | Run a k6 script |
 | `perfscale run --locust <file.py> [--host <url>]` | Run a locust file headless |
+| `perfscale run --jmeter <plan.jmx>` | Run a JMeter test plan headless (`jmeter -n -t`) |
 | `perfscale run -f <test.yaml> -c <config.yaml>` | Run a native step-engine test |
 | `perfscale run ... --report <url>` | Also forward the summary to `perfscale serve` |
 | `perfscale run ... --quiet` | Drop per-request output (errors and the final summary still print) |
@@ -79,7 +82,7 @@ Full reference lives in [`docs/`](docs/README.md).
 
 ```
 crates/
-  perfscale-core/   generic engine: k6 & locust runners, native step engine, YAML/schema
+  perfscale-core/   generic engine: k6, locust & JMeter runners, native step engine, YAML/schema
   perfscale-cli/    bin `perfscale`: clap CLI, run/serve commands
 docs/               user & contributor documentation (markdown)
 examples/           sample test/config/script files for each engine
@@ -89,8 +92,9 @@ docker/             dev & release Dockerfiles
 
 ## Local development
 
-Prerequisites: Rust (see `rust-toolchain` version below), and optionally `k6`
-and `locust` on `PATH` if you want to exercise those engines end to end.
+Prerequisites: Rust (see `rust-toolchain` version below), and optionally `k6`,
+`locust`, and `jmeter` on `PATH` if you want to exercise those engines end to
+end.
 
 ```sh
 cargo build

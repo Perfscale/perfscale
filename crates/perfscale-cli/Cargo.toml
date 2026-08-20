@@ -15,7 +15,8 @@ perfscale-core = { path = "../perfscale-core" }
 
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "process"] }
-axum = "0.7"
+# `ws` feature: the `serve` command's /ws echo endpoint (benchmark target).
+axum = { version = "0.7", features = ["ws"] }
 
 # `perfscale serve --tls`: HTTPS with a self-signed certificate generated at
 # startup. The no-provider feature + explicit ring keeps the process on a

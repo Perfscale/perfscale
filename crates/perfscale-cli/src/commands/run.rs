@@ -79,13 +79,14 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Engine name and load shape for the export metadata. k6 owns its load
-/// shape inside the script, so vus/duration are unknown to the CLI there;
-/// staged/arrival native runs have no fixed VU count either — `vus` is null
-/// and `duration` is the summed stage length.
+/// Engine name and load shape for the export metadata. k6 and JMeter own
+/// their load shape inside the script/plan, so vus/duration are unknown to
+/// the CLI there; staged/arrival native runs have no fixed VU count either —
+/// `vus` is null and `duration` is the summed stage length.
 fn plan_meta(plan: &ExecutionPlan) -> (&'static str, Option<u32>, Option<String>) {
     match plan {
         ExecutionPlan::K6Script(_) => ("k6", None, None),
+        ExecutionPlan::JMeterScript(_) => ("jmeter", None, None),
         ExecutionPlan::LocustScript { opts, .. } => {
             ("locust", Some(opts.users), Some(opts.duration.clone()))
         }
@@ -268,6 +269,12 @@ fn resolve_plan(
         return Ok(ExecutionPlan::K6Script(script.clone()));
     }
 
+    if let Some(plan) = &args.jmeter {
+        // JMeter plans own their load shape (thread groups, timers) — there
+        // is no perfscale config mapping, same as --k6.
+        return Ok(ExecutionPlan::JMeterScript(plan.clone()));
+    }
+
     if let Some(script) = &args.locust {
         let opts = match config {
             Some(cfg) => LocustOpts::from_run_config(&cfg.run, args.host.clone()).map_err(|e| {
@@ -300,7 +307,7 @@ fn resolve_plan(
         });
     }
 
-    unreachable!("clap ArgGroup guarantees exactly one of --k6/--locust/-f")
+    unreachable!("clap ArgGroup guarantees exactly one of --k6/--locust/--jmeter/-f")
 }
 
 /// `--report` wins over a `report:` block in the config file.
@@ -360,6 +367,7 @@ mod tests {
         RunArgs {
             k6: None,
             locust: None,
+            jmeter: None,
             file: None,
             config: None,
             host: None,
@@ -404,6 +412,16 @@ mod tests {
         };
         let plan = resolve_plan(&args, None, None).unwrap();
         assert!(matches!(plan, ExecutionPlan::K6Script(p) if p == Path::new("a.js")));
+    }
+
+    #[test]
+    fn resolve_plan_picks_jmeter_when_jmeter_flag_set() {
+        let args = RunArgs {
+            jmeter: Some(PathBuf::from("plan.jmx")),
+            ..base_args()
+        };
+        let plan = resolve_plan(&args, None, None).unwrap();
+        assert!(matches!(plan, ExecutionPlan::JMeterScript(p) if p == Path::new("plan.jmx")));
     }
 
     #[test]
@@ -556,6 +574,9 @@ mod tests {
 
         let k6 = ExecutionPlan::K6Script(PathBuf::from("a.js"));
         assert_eq!(plan_meta(&k6), ("k6", None, None));
+
+        let jmeter = ExecutionPlan::JMeterScript(PathBuf::from("plan.jmx"));
+        assert_eq!(plan_meta(&jmeter), ("jmeter", None, None));
 
         let locust = ExecutionPlan::LocustScript {
             path: PathBuf::from("b.py"),

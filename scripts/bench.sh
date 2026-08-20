@@ -17,7 +17,14 @@ set -euo pipefail
 #   saturation  – high-VU short run per engine: approximate max RPS.
 #   yaml        – native engine step scenarios: GET, GET+check, POST JSON,
 #                 multi-step with interpolation.
+#   ws          – WebSocket echo: same-connection round-trips against the
+#                 serve target's /ws endpoint — messages/sec and RTT (k6 +
+#                 native engine; locust has no built-in WS support).
 #   tls         – engines against `perfscale serve --tls` (self-signed HTTPS).
+#
+# JMeter joins only the hyperfine suites (overhead/startup): its non-GUI
+# console summary has no percentiles, so it is not part of the throughput
+# table.
 #
 # Scenarios whose engine isn't on PATH are skipped, not failed. hyperfine is
 # required only for the overhead/startup suites.
@@ -33,7 +40,7 @@ PORT="${PORT:-18999}"
 TLS_PORT="${TLS_PORT:-18998}"
 OUTPUT="${OUTPUT:-bench-report.md}"
 RESULTS="${RESULTS:-bench-results.json}"
-SUITES="${SUITES:-overhead throughput startup scaling saturation yaml tls}"
+SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws tls}"
 
 STARTUP_DURATION="${STARTUP_DURATION:-1s}"
 STARTUP_RUNS="${STARTUP_RUNS:-5}"
@@ -43,6 +50,8 @@ SAT_VUS="${SAT_VUS:-256}"
 SAT_DURATION="${SAT_DURATION:-15s}"
 YAML_DURATION="${YAML_DURATION:-10s}"
 TLS_DURATION="${TLS_DURATION:-10s}"
+WS_DURATION="${WS_DURATION:-10s}"
+WS_ROUNDS="${WS_ROUNDS:-10}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${PERFSCALE_BIN:-$ROOT/target/release/perfscale}"
@@ -71,12 +80,15 @@ TLS_TARGET="https://127.0.0.1:${TLS_PORT}"
 has_suite() { case " $SUITES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 HAS_K6=0
 HAS_LOCUST=0
+HAS_JMETER=0
 HAS_HYPERFINE=0
 command -v k6 >/dev/null 2>&1 && HAS_K6=1
 command -v locust >/dev/null 2>&1 && HAS_LOCUST=1
+command -v jmeter >/dev/null 2>&1 && HAS_JMETER=1
 command -v hyperfine >/dev/null 2>&1 && HAS_HYPERFINE=1
 [[ "$HAS_K6" == 1 ]] || echo "skipping k6 scenarios: k6 not on PATH" >&2
 [[ "$HAS_LOCUST" == 1 ]] || echo "skipping locust scenarios: locust not on PATH" >&2
+[[ "$HAS_JMETER" == 1 ]] || echo "skipping jmeter scenarios: jmeter not on PATH" >&2
 
 # ---------------------------------------------------------------------------
 # Servers
@@ -110,6 +122,15 @@ if has_suite tls; then
     fi
   else
     echo "skipping tls suite: this perfscale binary has no 'serve --tls'" >&2
+  fi
+fi
+
+HAS_WS=0
+if has_suite ws; then
+  if "$BIN" serve --help 2>/dev/null | grep -q -- '/ws'; then
+    HAS_WS=1
+  else
+    echo "skipping ws suite: this perfscale binary's serve has no /ws endpoint" >&2
   fi
 fi
 
@@ -211,6 +232,118 @@ steps:
       insecure: true
 EOF
 
+# WebSocket echo scenario (ws suite): WS_ROUNDS same-connection round-trips
+# per session against the serve target's /ws endpoint. Both engines report
+# the same two metrics — ws_msgs_sent (counter) and ws_msg_rtt (trend) — so
+# one parser (bench_metrics.py ws-text) fits every scenario.
+{
+  echo "steps:"
+  echo "  - name: echo session"
+  echo "    use: std/ws@v1"
+  echo "    with:"
+  echo "      url: \"ws://127.0.0.1:${PORT}/ws\""
+  echo "      messages:"
+  for i in $(seq 1 "$WS_ROUNDS"); do
+    printf '        - send: m-%s\n          until_contains: m-%s\n' "$i" "$i"
+  done
+} >"$WORKDIR/ws.yaml"
+
+cat >"$WORKDIR/ws.js" <<'EOF'
+import ws from 'k6/ws';
+import { Trend } from 'k6/metrics';
+
+// Same shape as the native ws scenario: BENCH_WS_ROUNDS echo round-trips on
+// one connection. Message counts come from k6's built-in ws_msgs_sent
+// counter (same name/shape as the native engine's); the RTT is a custom
+// Trend in the same ws_msg_rtt shape.
+const ROUNDS = Number(__ENV.BENCH_WS_ROUNDS || 10);
+const msgRtt = new Trend('ws_msg_rtt', true);
+
+export const options = {
+  vus: Number(__ENV.BENCH_VUS || 1),
+  duration: __ENV.BENCH_DURATION || '10s',
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(50)', 'p(90)', 'p(95)', 'p(99)'],
+};
+
+export default function () {
+  ws.connect(__ENV.BENCH_TARGET, {}, function (socket) {
+    let seq = 0;
+    let received = 0;
+    let sentAt = 0;
+    const pump = function () {
+      sentAt = Date.now();
+      socket.send('m-' + ++seq);
+    };
+    socket.on('open', pump);
+    socket.on('message', function () {
+      msgRtt.add(Date.now() - sentAt);
+      if (++received >= ROUNDS) {
+        socket.close();
+        return;
+      }
+      pump();
+    });
+    socket.on('error', function () {
+      socket.close();
+    });
+    // Safety net: never let a stalled server pin the VU past the duration.
+    socket.setTimeout(function () {
+      socket.close();
+    }, 10000);
+  });
+}
+EOF
+
+# JMeter bench plan (overhead/startup suites): one thread group hammering
+# GET /health. The (vus, duration) pair is baked into a per-shape .jmx by
+# jmeter_plan() so the wrapped run (`perfscale run --jmeter`) needs no flags —
+# the CLI passes no -J properties.
+cat >"$WORKDIR/plan-template.jmx" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="bench" enabled="true">
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="bench" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">@VUS@</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">1</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">@SECS@</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true">
+          <boolProp name="LoopController.continue_forever">true</boolProp>
+          <stringProp name="LoopController.loops">-1</stringProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="health" enabled="true">
+          <stringProp name="HTTPSampler.domain">127.0.0.1</stringProp>
+          <stringProp name="HTTPSampler.port">@PORT@</stringProp>
+          <stringProp name="HTTPSampler.path">/health</stringProp>
+          <stringProp name="HTTPSampler.method">GET</stringProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+        </HTTPSamplerProxy>
+        <hashTree/>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
+EOF
+
+# Materialize the JMeter plan for a (vus, duration) pair from the template.
+# Prints the path. Durations are seconds-only for JMeter ("15s" → 15).
+jmeter_plan() {
+  local path="$WORKDIR/plan-$1-$2.jmx"
+  if [[ ! -f "$path" ]]; then
+    sed -e "s/@VUS@/$1/" -e "s/@SECS@/${2%s}/" -e "s/@PORT@/$PORT/" \
+      "$WORKDIR/plan-template.jmx" >"$path"
+  fi
+  echo "$path"
+}
+
 # Load config for the native engine / wrapped locust, one file per (vus,
 # duration) pair. Prints the path.
 cfg() {
@@ -235,6 +368,9 @@ cmd_locust_wrapped() {
 cmd_yaml() { # $1 vus, $2 duration, $3 test file, $4 extra flags (optional)
   echo "$BIN run -f $3 -c $(cfg "$1" "$2")${4:+ $4}"
 }
+# JMeter runs from $WORKDIR so its jmeter.log doesn't land in the repo root.
+cmd_jmeter_native() { echo "cd $WORKDIR && jmeter -n -t $(jmeter_plan "$1" "$2")"; }
+cmd_jmeter_wrapped() { echo "cd $WORKDIR && $BIN run --jmeter $(jmeter_plan "$1" "$2")"; }
 
 # ---------------------------------------------------------------------------
 # /usr/bin/time instrumentation
@@ -342,6 +478,16 @@ else
   echo "skipping quiet scenarios: this perfscale binary has no 'run --quiet'" >&2
 fi
 
+# The hyperfine suites (overhead/startup) get JMeter rows on top: JMeter's
+# non-GUI console summary has no percentiles, so it stays out of the
+# throughput table.
+hf_names=("${scenario_names[@]}")
+hf_builders=("${scenario_builders[@]}")
+if [[ "$HAS_JMETER" == 1 ]]; then
+  hf_names+=("jmeter (native)" "perfscale (jmeter)")
+  hf_builders+=("cmd_jmeter_native" "cmd_jmeter_wrapped")
+fi
+
 build_cmd() { # $1 builder, $2 vus, $3 duration, $4 csv prefix (locust native)
   case "$1" in
     cmd_locust_native) cmd_locust_native "$2" "$3" "$TARGET" 0 "$4" ;;
@@ -350,15 +496,17 @@ build_cmd() { # $1 builder, $2 vus, $3 duration, $4 csv prefix (locust native)
     cmd_k6_wrapped) cmd_k6_wrapped "$2" "$3" "$TARGET" 0 ;;
     cmd_yaml_get) cmd_yaml_get "$2" "$3" ;;
     cmd_yaml_get_quiet) cmd_yaml_get_quiet "$2" "$3" ;;
+    cmd_jmeter_native) cmd_jmeter_native "$2" "$3" ;;
+    cmd_jmeter_wrapped) cmd_jmeter_wrapped "$2" "$3" ;;
   esac
 }
 
 run_hyperfine() { # $1 vus, $2 duration, $3 runs, $4 md out, $5 json out
   local args=(--warmup "$WARMUP" --runs "$3" --export-markdown "$4" --export-json "$5")
   local i
-  for i in "${!scenario_names[@]}"; do
-    args+=(--command-name "${scenario_names[$i]}" \
-      "$(build_cmd "${scenario_builders[$i]}" "$1" "$2" "$WORKDIR/loc-hf")")
+  for i in "${!hf_names[@]}"; do
+    args+=(--command-name "${hf_names[$i]}" \
+      "$(build_cmd "${hf_builders[$i]}" "$1" "$2" "$WORKDIR/loc-hf")")
   done
   hyperfine "${args[@]}"
 }
@@ -553,6 +701,42 @@ if has_suite yaml; then
     echo "includes some target-side cost); multi = two steps with \`outputs\` +"
     echo "\`\${{ ... }}\` interpolation + check. Deltas against \`get\` price each"
     echo "feature of the step engine._"
+  } >>"$OUTPUT"
+fi
+
+# --- ws ---------------------------------------------------------------------
+
+if has_suite ws && [[ "$HAS_WS" == 1 ]]; then
+  echo "suite: ws" >&2
+  section "WebSocket echo (${VUS} VUs, ${WS_DURATION}, ${WS_ROUNDS} round-trips/connection)"
+  {
+    echo "| Scenario | Messages | Msgs/s | RTT avg ms | RTT p50 ms | RTT p95 ms | RTT p99 ms |"
+    echo "|---|---:|---:|---:|---:|---:|---:|"
+  } >>"$OUTPUT"
+  ws_target="ws://127.0.0.1:${PORT}/ws"
+  # locust is not in this suite on purpose: it has no built-in WebSocket
+  # support (the third-party locust-plugins WebSocketUser is out of scope).
+  ws_names=()
+  ws_cmds=()
+  if [[ "$HAS_K6" == 1 ]]; then
+    ws_names+=("k6 (native)" "perfscale (k6)")
+    ws_cmds+=("BENCH_VUS=$VUS BENCH_DURATION=$WS_DURATION BENCH_WS_ROUNDS=$WS_ROUNDS BENCH_TARGET=$ws_target k6 run --quiet $WORKDIR/ws.js"
+      "BENCH_VUS=$VUS BENCH_DURATION=$WS_DURATION BENCH_WS_ROUNDS=$WS_ROUNDS BENCH_TARGET=$ws_target $BIN run --k6 $WORKDIR/ws.js")
+  fi
+  ws_names+=("perfscale (yaml)")
+  ws_cmds+=("$(cmd_yaml "$VUS" "$WS_DURATION" "$WORKDIR/ws.yaml")")
+  for i in "${!ws_names[@]}"; do
+    echo "  ${ws_names[$i]}" >&2
+    measure "${ws_names[$i]}" "${ws_cmds[$i]}" ws-text
+    json_row ws.json "${ws_names[$i]}"
+    echo "| ${ws_names[$i]} | $requests | $rps | $avg_ms | $p50_ms | $p95_ms | $p99_ms |" >>"$OUTPUT"
+  done
+  {
+    echo
+    echo "_Each connection performs ${WS_ROUNDS} echo round-trips (send, wait for"
+    echo "the echo, send the next) against \`serve\`'s \`/ws\` endpoint. Messages"
+    echo "counts sent messages; RTT is send→echo latency. The k6 scenarios"
+    echo "report the same two metrics via a custom Trend/Counter pair._"
   } >>"$OUTPUT"
 fi
 

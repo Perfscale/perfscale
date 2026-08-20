@@ -1,6 +1,7 @@
 /target
 .DS_Store
 *.csv
+__pycache__/
 
 # local build artifacts
 grpc-echo-amd64

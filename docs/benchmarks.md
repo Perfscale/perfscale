@@ -16,8 +16,10 @@ wrapping overhead — not the underlying tool.
 |---|---|
 | `locust (native)` | `locust` invoked directly — baseline |
 | `k6 (native)` | `k6` invoked directly — baseline |
+| `jmeter (native)` | `jmeter -n -t` invoked directly — baseline (overhead/startup suites only) |
 | `perfscale (k6)` | the same k6 script, via `perfscale run --k6` |
 | `perfscale (locust)` | the same locustfile, via `perfscale run --locust` |
+| `perfscale (jmeter)` | the same `.jmx` plan, via `perfscale run --jmeter` (overhead/startup suites only) |
 | `perfscale (yaml)` | perfscale's own step engine (no external binary) |
 | `perfscale (yaml quiet)` | the step engine with `--quiet` — per-request logging suppressed; the delta against `perfscale (yaml)` is the logging cost |
 
@@ -31,10 +33,16 @@ wrapping overhead — not the underlying tool.
 | `scaling` | How do RPS / p95 / RSS grow with VUs? (default sweep: 10, 50, 200) |
 | `saturation` | Approximate max RPS per engine at high VUs (default 256) |
 | `yaml` | What does each native-engine feature cost? (GET baseline vs `--quiet` vs +check vs POST body vs multi-step interpolation) |
+| `ws` | WebSocket message throughput and RTT: same-connection echo round-trips against `serve`'s `/ws` endpoint (`perfscale (yaml)`, `k6 (native)`, `perfscale (k6)` — locust has no built-in WebSocket support and is skipped) |
 | `tls` | The TLS tax: same workload against `perfscale serve --tls` (self-signed HTTPS, verification skipped) |
 
-Select suites with `SUITES="..."`. Scenarios whose engine (`k6`/`locust`)
-isn't on `PATH` are skipped, not failed; `overhead`/`startup` need
+JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
+console summary has no percentiles, so it stays out of the `throughput`
+table. Parsing its `.jtl` result files for full throughput metrics is future
+work.
+
+Select suites with `SUITES="..."`. Scenarios whose engine (`k6`/`locust`/
+`jmeter`) isn't on `PATH` are skipped, not failed; `overhead`/`startup` need
 [hyperfine](https://github.com/sharkdp/hyperfine), the rest don't.
 
 Micro-benchmarks for the native engine's hot paths (YAML parse, `${{ ... }}`
@@ -44,8 +52,9 @@ capture, `waitUntil` readiness matchers) live in
 
 ## Methodology
 
-- **Target**: a `perfscale serve` instance on loopback (`GET /health`) — no
-  network noise, the same target for every scenario within a run. The `tls`
+- **Target**: a `perfscale serve` instance on loopback (`GET /health`; the
+  `ws` suite uses its `GET /ws` WebSocket echo endpoint) — no network noise,
+  the same target for every scenario within a run. The `tls`
   suite adds a second `serve --tls` instance.
 - **Wall-time comparison** (`overhead`, `startup`): hyperfine repeats each
   scenario (`--runs`, with a `--warmup`) and reports mean, min/max, and
@@ -84,6 +93,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `SCALING_VUS` / `SCALING_DURATION` | `10 50 200` / `10s` | VU sweep points / per-point length |
 | `SAT_VUS` / `SAT_DURATION` | `256` / `15s` | Saturation VUs / run length |
 | `YAML_DURATION` / `TLS_DURATION` | `10s` / `10s` | Per-scenario length in those suites |
+| `WS_DURATION` / `WS_ROUNDS` | `10s` / `10` | ws-suite run length / echo round-trips per connection |
 | `PORT` / `TLS_PORT` | `18999` / `18998` | Ports for the throwaway serve targets |
 | `OUTPUT` | `bench-report.md` | Markdown report path |
 | `RESULTS` | `bench-results.json` | Machine-readable results (regression tracking input) |
@@ -99,7 +109,8 @@ The [`bench` workflow](../.github/workflows/bench.yml) runs on
 - **weekly**: scheduled Monday 04:00 UTC as a perf-regression drift check
 
 The job summary carries an Environment table (OS/CPU/threads/RAM/swap) and a
-Software table (perfscale/k6/locust/hyperfine versions) ahead of the results.
+Software table (perfscale/k6/locust/jmeter/java/hyperfine versions) ahead of
+the results.
 The `bench-report` artifact (kept 90 days) holds the markdown report plus
 `bench-results.json`.
 

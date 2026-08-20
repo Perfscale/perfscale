@@ -1,7 +1,8 @@
-//! Execution engines: k6, locust, and the native step engine — unified
-//! behind a single [`LogLine`] stream so callers (CLI, `perfscale serve`)
-//! don't need to care which engine produced the output.
+//! Execution engines: k6, locust, JMeter, and the native step engine —
+//! unified behind a single [`LogLine`] stream so callers (CLI,
+//! `perfscale serve`) don't need to care which engine produced the output.
 
+pub mod jmeter;
 pub mod k6;
 pub mod locust;
 
@@ -60,6 +61,8 @@ pub enum ExecutionPlan {
         path: PathBuf,
         opts: locust::LocustOpts,
     },
+    /// `perfscale run --jmeter <plan.jmx>`
+    JMeterScript(PathBuf),
     /// `perfscale run -f <test.yaml> -c <config.yaml>`
     NativeSteps {
         test: TestDef,
@@ -89,6 +92,7 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
             k6::run_streaming(script).await
         }
         ExecutionPlan::LocustScript { path, opts } => locust::run_streaming(path, opts).await,
+        ExecutionPlan::JMeterScript(path) => jmeter::run_streaming(path).await,
         ExecutionPlan::NativeSteps {
             test,
             config,

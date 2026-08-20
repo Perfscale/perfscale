@@ -72,7 +72,7 @@ fn run_help_shows_examples_engine_rule_and_docs_links() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Exactly one of --k6 / --locust / -f",
+            "Exactly one of --k6 / --locust / --jmeter / -f",
         ))
         .stdout(predicate::str::contains("Examples:"))
         .stdout(predicate::str::contains("docs/cli/commands.md"))
@@ -206,6 +206,18 @@ fn run_locust_not_found_in_path_reports_friendly_error() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("pip install locust"));
+}
+
+#[test]
+fn run_jmeter_not_found_in_path_reports_friendly_error() {
+    let empty_dir = tempfile::tempdir().unwrap();
+    cmd()
+        .env("PATH", empty_dir.path())
+        .args(["run", "--jmeter", "whatever.jmx"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("jmeter not found in PATH"))
+        .stderr(predicate::str::contains("install JMeter"));
 }
 
 // ---------------------------------------------------------------------------

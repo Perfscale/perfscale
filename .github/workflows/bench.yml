@@ -18,7 +18,7 @@ on:
         default: "5"
       suites:
         description: "Suites to run (see scripts/bench.sh)"
-        default: "overhead throughput startup scaling saturation yaml tls"
+        default: "overhead throughput startup scaling saturation yaml ws tls"
   schedule:
     # Daily drift check (04:23 UTC) — catches perf regressions between
     # releases. ~30min per run ≈ ~900 Actions-min/month; off-:00 to dodge
@@ -29,6 +29,9 @@ permissions:
   contents: read
   # Download the previous run's bench-results artifact for the delta table.
   actions: read
+
+env:
+  JMETER_VERSION: "5.6.3"
 
 jobs:
   bench:
@@ -50,8 +53,34 @@ jobs:
       - name: Install locust
         run: pipx install locust
 
+      - name: Install JRE (for JMeter)
+        run: sudo apt-get install -y --no-install-recommends openjdk-17-jre-headless
+
+      - name: Cache JMeter
+        id: jmeter-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/apache-jmeter-${{ env.JMETER_VERSION }}
+          key: jmeter-${{ env.JMETER_VERSION }}
+
+      - name: Install JMeter
+        if: steps.jmeter-cache.outputs.cache-hit != 'true'
+        # archive.apache.org is the stable distribution point (the CDN mirrors
+        # only carry current releases).
+        run: |
+          curl -fsSL "https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${JMETER_VERSION}.tgz" \
+            | sudo tar xz -C /opt
+          "/opt/apache-jmeter-${JMETER_VERSION}/bin/jmeter" --version
+
+      - name: JMeter on PATH
+        run: echo "/opt/apache-jmeter-${JMETER_VERSION}/bin" >> "$GITHUB_PATH"
+
+      # Prebuilt binary (seconds) instead of `cargo install` compiling from
+      # source (minutes).
       - name: Install hyperfine
-        run: cargo install hyperfine --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: hyperfine
 
       - name: Install GNU time
         run: sudo apt-get install -y --no-install-recommends time
@@ -77,6 +106,8 @@ jobs:
             echo "| perfscale | $(./target/release/perfscale --version) |"
             echo "| k6 | $(k6 version 2>/dev/null || echo 'not installed') |"
             echo "| locust | $(locust --version 2>/dev/null || echo 'not installed') |"
+            echo "| jmeter | ${JMETER_VERSION} |"
+            echo "| java | $(java -version 2>&1 | head -n1) |"
             echo "| hyperfine | $(hyperfine --version) |"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
@@ -86,7 +117,7 @@ jobs:
           VUS: ${{ github.event.inputs.vus || '10' }}
           DURATION: ${{ github.event.inputs.duration || '30s' }}
           RUNS: ${{ github.event.inputs.runs || '5' }}
-          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml tls' }}
+          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws tls' }}
         run: ./scripts/bench.sh
 
       - name: Micro-benchmarks (criterion)

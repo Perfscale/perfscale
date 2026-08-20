@@ -1,5 +1,7 @@
 use std::net::SocketAddr;
 
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::response::Response;
 use axum::{routing::get, routing::post, Json, Router};
 use serde::Deserialize;
 use tracing::info;
@@ -16,6 +18,7 @@ fn app() -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/metrics", post(ingest))
+        .route("/ws", get(ws_upgrade))
 }
 
 /// Minimal local dev server: receives the aggregated summary that
@@ -103,6 +106,28 @@ async fn ingest(Json(payload): Json<MetricsPayload>) -> &'static str {
         println!("  {line}");
     }
     "ok"
+}
+
+/// `GET /ws` — WebSocket echo endpoint: a loopback target for WebSocket load
+/// tests and the `ws` benchmark suite. Every text (and binary) message is
+/// echoed back verbatim.
+async fn ws_upgrade(ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(ws_echo)
+}
+
+async fn ws_echo(mut socket: WebSocket) {
+    while let Some(Ok(msg)) = socket.recv().await {
+        let reply = match msg {
+            Message::Text(t) => Message::Text(t),
+            Message::Binary(b) => Message::Binary(b),
+            Message::Ping(p) => Message::Pong(p),
+            Message::Close(_) => break,
+            Message::Pong(_) => continue,
+        };
+        if socket.send(reply).await.is_err() {
+            break;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -196,6 +221,35 @@ mod tests {
             .unwrap();
         let response = app().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn ws_route_echoes_text_messages() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite;
+
+        // WebSocket needs a live server — tower's oneshot can't do the
+        // upgrade handshake.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app()).await.unwrap();
+        });
+
+        let url = format!("ws://127.0.0.1:{}/ws", addr.port());
+        let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        socket
+            .send(tungstenite::Message::Text("hello echo".into()))
+            .await
+            .unwrap();
+        let reply = socket.next().await.unwrap().unwrap();
+        assert_eq!(
+            reply,
+            tungstenite::Message::Text("hello echo".into()),
+            "echoed message must match the sent one"
+        );
+
+        server.abort();
     }
 
     #[tokio::test]

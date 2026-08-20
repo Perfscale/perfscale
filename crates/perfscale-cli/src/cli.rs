@@ -17,10 +17,11 @@ fn top_level_after_help() -> String {
 
 fn run_after_help() -> String {
     format!(
-        "Exactly one of --k6 / --locust / -f selects the engine.\n\n\
+        "Exactly one of --k6 / --locust / --jmeter / -f selects the engine.\n\n\
          Examples:\n  \
          perfscale run --k6 script.js\n  \
          perfscale run --locust locustfile.py --host https://target.example.com -c load.yaml\n  \
+         perfscale run --jmeter plan.jmx\n  \
          perfscale run -f test.yaml -c config.yaml\n  \
          perfscale run -f test.yaml -c config.yaml --quiet\n  \
          perfscale run -f test.yaml -c config.yaml --report http://localhost:7999\n  \
@@ -37,7 +38,8 @@ fn serve_after_help() -> String {
     format!(
         "Endpoints:\n  \
          GET  /health           liveness probe, returns `ok`\n  \
-         POST /api/v1/metrics   accepts {{\"lines\": [\"...\"]}} and prints the batch\n\n\
+         POST /api/v1/metrics   accepts {{\"lines\": [\"...\"]}} and prints the batch\n  \
+         GET  /ws               WebSocket echo (target for WS load tests/benchmarks)\n\n\
          Examples:\n  \
          perfscale serve                 listen on the default port 7999\n  \
          perfscale serve --port 9000     listen on a specific port\n  \
@@ -51,7 +53,7 @@ fn serve_after_help() -> String {
 #[command(
     name = "perfscale",
     version,
-    about = "Run k6, locust, or native load tests from one CLI",
+    about = "Run k6, locust, JMeter, or native load tests from one CLI",
     after_help = top_level_after_help()
 )]
 pub struct Cli {
@@ -61,7 +63,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Run a load test with k6, locust, or the native step engine.
+    /// Run a load test with k6, locust, JMeter, or the native step engine.
     Run(RunArgs),
     /// Start a local dev server that receives metrics from `perfscale run --report`.
     Serve(ServeArgs),
@@ -167,7 +169,7 @@ pub struct SelfUpdateArgs {
 #[command(group(
     ArgGroup::new("target")
         .required(true)
-        .args(["k6", "locust", "file"]),
+        .args(["k6", "locust", "jmeter", "file"]),
 ), after_help = run_after_help())]
 pub struct RunArgs {
     /// Run a k6 script (requires `k6` on PATH; load config lives in the script's `options`).
@@ -177,6 +179,11 @@ pub struct RunArgs {
     /// Run a locustfile headless (requires `locust` on PATH; combine with --host and -c).
     #[arg(long, value_name = "FILE.py")]
     pub locust: Option<PathBuf>,
+
+    /// Run a JMeter test plan headless (requires `jmeter` on PATH; the plan
+    /// owns the load shape — no perfscale config applies).
+    #[arg(long, value_name = "FILE.jmx")]
+    pub jmeter: Option<PathBuf>,
 
     /// Run a native perfscale test definition (YAML with a `steps:` list; requires -c).
     #[arg(
@@ -188,7 +195,7 @@ pub struct RunArgs {
     pub file: Option<PathBuf>,
 
     /// Load config: `vus`, `duration`, optional `report.url`. Required with -f,
-    /// optional load hint for --locust, ignored by --k6.
+    /// optional load hint for --locust, ignored by --k6 and --jmeter.
     #[arg(short = 'c', long = "config", value_name = "CONFIG.yaml")]
     pub config: Option<PathBuf>,
 
@@ -394,6 +401,34 @@ mod tests {
     }
 
     #[test]
+    fn run_jmeter_alone_parses() {
+        let cli = parse(&["run", "--jmeter", "plan.jmx"]).unwrap();
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.jmeter, Some(PathBuf::from("plan.jmx")));
+                assert!(args.k6.is_none());
+                assert!(args.locust.is_none());
+                assert!(args.file.is_none());
+            }
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn run_jmeter_with_config_is_allowed_and_ignored() {
+        // Like --k6, a jmeter plan owns its load shape — `-c` parses but is
+        // ignored rather than rejected (consistent with --k6).
+        let cli = parse(&["run", "--jmeter", "plan.jmx", "-c", "cfg.yaml"]).unwrap();
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.jmeter, Some(PathBuf::from("plan.jmx")));
+                assert_eq!(args.config, Some(PathBuf::from("cfg.yaml")));
+            }
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
     fn run_native_file_with_config_parses() {
         let cli = parse(&["run", "-f", "t.yaml", "-c", "cfg.yaml"]).unwrap();
         match cli.command {
@@ -480,6 +515,8 @@ mod tests {
     fn run_with_two_target_flags_is_rejected() {
         assert!(parse(&["run", "--k6", "a.js", "--locust", "b.py"]).is_err());
         assert!(parse(&["run", "--k6", "a.js", "-f", "t.yaml", "-c", "c.yaml"]).is_err());
+        assert!(parse(&["run", "--jmeter", "p.jmx", "--k6", "a.js"]).is_err());
+        assert!(parse(&["run", "--jmeter", "p.jmx", "--locust", "b.py"]).is_err());
     }
 
     #[test]

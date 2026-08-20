@@ -1,7 +1,7 @@
 .\" perfscale(1) manual page
-.TH PERFSCALE 1 "2026-07-28" "perfscale 0.7" "User Commands"
+.TH PERFSCALE 1 "2026-08-19" "perfscale 0.10" "User Commands"
 .SH NAME
-perfscale \- run k6, locust, or native load tests from one CLI
+perfscale \- run k6, locust, JMeter, or native load tests from one CLI
 .SH SYNOPSIS
 .B perfscale
 .RI < COMMAND >
@@ -16,15 +16,19 @@ perfscale \- run k6, locust, or native load tests from one CLI
 .RI [ OPTIONS ]
 .br
 .B perfscale run
+.BI \-\-jmeter " FILE.jmx"
+.RI [ OPTIONS ]
+.br
+.B perfscale run
 .BI \-f " TEST.yaml"
 .BI \-c " CONFIG.yaml"
 .RI [ OPTIONS ]
 .SH DESCRIPTION
 .B perfscale
-is a load-testing CLI that runs existing k6 scripts and locustfiles, or its
-own native step engine driven by YAML test definitions. All three engines
-emit a k6-compatible metric summary, so downstream tooling (CI reporters,
-dashboards,
+is a load-testing CLI that runs existing k6 scripts, locustfiles, and JMeter
+test plans, or its own native step engine driven by YAML test definitions.
+All engines emit a k6-compatible metric summary, so downstream tooling (CI
+reporters, dashboards,
 .BR \-\-summary\-export )
 parses one format regardless of the engine that produced it.
 .SH COMMANDS
@@ -33,6 +37,7 @@ parses one format regardless of the engine that produced it.
 Run a load test. Exactly one engine selector is required:
 .BR \-\-k6 ,
 .BR \-\-locust ,
+.BR \-\-jmeter ,
 or
 .BR \-f /
 .BR \-c
@@ -46,11 +51,14 @@ Start a local dev server that receives metric summaries from
 and prints them. Endpoints:
 .B GET /health
 (liveness, returns
-.IR ok )
-and
+.IR ok ),
 .B POST /api/v1/metrics
 (accepts
-.IR {"lines": ["..."]} ).
+.IR {"lines": ["..."]} ),
+and
+.B GET /ws
+(WebSocket echo — every message is echoed back; a loopback target for
+WebSocket load tests).
 .TP
 .B lint
 Validate test/config YAML files without running them: JSON-Schema checks,
@@ -97,6 +105,7 @@ reinstalls even when up to date.
 Exactly one of
 .BR \-\-k6 ,
 .BR \-\-locust ,
+.BR \-\-jmeter ,
 .BR \-f
 selects the engine.
 .TP
@@ -113,6 +122,18 @@ on PATH; combine with
 .B \-\-host
 and
 .BR \-c ).
+.TP
+.BI \-\-jmeter " FILE.jmx"
+Run a JMeter test plan headless via
+.B "jmeter \-n \-t"
+(requires
+.B jmeter
+on PATH and a JRE). The plan owns the load shape — no perfscale config
+applies. After the run, jmeter's final console
+.B summary =
+line is translated into the k6-compatible summary (avg/min/max and error
+rate only — the console summary carries no percentiles). JMeter's exit code
+is the CI gate; there is no thresholds integration.
 .TP
 .BI \-f ", " \-\-file " TEST.yaml"
 Run a native perfscale test definition (YAML with a
@@ -137,7 +158,9 @@ Required with
 optional load hint for
 .BR \-\-locust ;
 ignored by
-.BR \-\-k6 .
+.BR \-\-k6
+and
+.BR \-\-jmeter .
 .TP
 .BI \-\-host " URL"
 Target base URL for
@@ -242,6 +265,14 @@ Run a locustfile headless against a target:
 .nf
 .RS
 perfscale run --locust locustfile.py --host https://target.example.com -c load.yaml
+.RE
+.fi
+.PP
+Run a JMeter test plan headless:
+.PP
+.nf
+.RS
+perfscale run --jmeter plan.jmx
 .RE
 .fi
 .PP

@@ -59,6 +59,10 @@ impl CliError {
             Self::new(message)
                 .hint("install locust (`pip install locust`), or use the built-in engine instead: `perfscale run -f test.yaml -c config.yaml`")
                 .docs("getting-started.md#install")
+        } else if message.contains("jmeter not found in PATH") {
+            Self::new(message)
+                .hint("install JMeter (requires a JRE), or use the built-in engine instead: `perfscale run -f test.yaml -c config.yaml`")
+                .docs("getting-started.md#install")
         } else {
             Self::new(message).docs("cli/commands.md")
         }
@@ -136,6 +140,16 @@ mod tests {
         );
         let s = e.to_string();
         assert!(s.contains("pip install locust"), "{s}");
+        assert!(s.contains("getting-started.md#install"), "{s}");
+    }
+
+    #[test]
+    fn from_engine_jmeter_not_found_points_at_install_docs() {
+        let e = CliError::from_engine(
+            "jmeter not found in PATH — install from https://jmeter.apache.org/...".into(),
+        );
+        let s = e.to_string();
+        assert!(s.contains("install JMeter"), "{s}");
         assert!(s.contains("getting-started.md#install"), "{s}");
     }
 

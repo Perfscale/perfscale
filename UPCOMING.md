@@ -12,6 +12,16 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- **JMeter engine** — `perfscale run --jmeter plan.jmx` runs a JMeter test
+  plan headless (`jmeter -n -t`), streams its output live, and translates the
+  final console `summary =` line into the k6-compatible summary block
+  (avg/min/max and error rate — the console summary has no percentiles).
+  JMeter's exit code is the CI gate; there is no thresholds integration and
+  no perfscale config mapping.
+- **WebSocket echo endpoint in `perfscale serve`** — `GET /ws` upgrades and
+  echoes every text (and binary) message back, a loopback target for
+  WebSocket load tests and the new `ws` benchmark suite (messages/sec and
+  message RTT for the native engine and k6).
 - **Embedding API for imports** — `import::resolve_value` resolves the
   `import:` chain of an API-submitted document (no file origin), and
   `ImportOptions::remote_guard` lets a server veto every network target in

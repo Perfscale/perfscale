@@ -1,6 +1,6 @@
 # Runners
 
-Three engines, one interface: every runner produces an
+Four engines, one interface: every runner produces an
 `mpsc::Receiver<LogLine>` that streams output live and closes when the run
 ends. Pick one via `ExecutionPlan`.
 
@@ -91,12 +91,41 @@ output has already been streamed.
 
 Missing binary → `locust not found in PATH — install with pip install locust`.
 
+## JMeter (`runner::jmeter`)
+
+Wraps an existing `jmeter` install in non-GUI mode:
+
+```text
+jmeter -n -t <plan.jmx>
+```
+
+The plan owns the whole load shape (thread groups, timers, throughput) —
+perfscale passes no `-J` properties and no perfscale config applies. While
+running, jmeter's own stdout/stderr stream through. After exit, the final
+console line (`summary = N in HH:MM:SS = R/s Avg: .. Min: .. Max: .. Err: ..
+(E%)`) is translated into the k6-compatible summary block:
+
+```text
+http_req_duration......: avg=4.00ms min=1.00ms max=42.00ms
+http_req_failed........: 0.25%
+http_reqs..............: 1200 80.0/s
+```
+
+What JMeter does **not** get: the console summary carries no percentiles, so
+the translated duration line has `avg`/`min`/`max` only; there are no
+perfscale `std/thresholds@v1` gates over jmeter runs (exit code is the CI
+gate — jmeter exits non-zero on plan/startup errors); and `.jtl` result files
+are not parsed (throughput parsing of `.jtl` is future work).
+
+Missing binary → `jmeter not found in PATH — install from
+https://jmeter.apache.org/download_jmeter.cgi (requires a JRE)`.
+
 ## Choosing an engine
 
-| | native | k6 | locust |
-|---|---|---|---|
-| Install needed | none | k6 binary | python + locust |
-| Scenario language | YAML steps | JavaScript | Python |
-| Scripting power | low (4 actions) | high | high |
-| Load model | fixed VUs, ramping `stages:`, or arrival-rate | stages/thresholds/scenarios | users/spawn-rate |
-| Best for | smoke tests, CI gates, simple API flows | complex k6 suites you already have | python-centric teams |
+| | native | k6 | locust | JMeter |
+|---|---|---|---|---|
+| Install needed | none | k6 binary | python + locust | JRE + jmeter |
+| Scenario language | YAML steps | JavaScript | Python | `.jmx` test plan (XML) |
+| Scripting power | low (4 actions) | high | high | high |
+| Load model | fixed VUs, ramping `stages:`, or arrival-rate | stages/thresholds/scenarios | users/spawn-rate | thread groups/timers (in the plan) |
+| Best for | smoke tests, CI gates, simple API flows | complex k6 suites you already have | python-centric teams | existing JMeter suites |

@@ -19,7 +19,7 @@ tiny local dev server for collecting results.
 ## Core (`perfscale-core` library)
 
 - [Architecture](core/architecture.md) — how the pieces fit together
-- [Runners](core/runners.md) — k6, locust, and the native engine
+- [Runners](core/runners.md) — k6, locust, JMeter, and the native engine
 - [Actions](core/actions.md) — `std/http`, `std/tcp`, `std/udp`, `std/ws*`
   (WebSocket), `std/graphql` (GraphQL), `std/grpc*` (gRPC), `std/db-*` (SQL databases), `std/check`,
   `std/sleep`, `std/log`,
