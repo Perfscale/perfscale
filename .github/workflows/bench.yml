@@ -18,7 +18,7 @@ on:
         default: "5"
       suites:
         description: "Suites to run (see scripts/bench.sh)"
-        default: "overhead throughput startup scaling saturation yaml ws tls"
+        default: "overhead throughput startup scaling saturation yaml ws boundary tls"
   schedule:
     # Daily drift check (04:23 UTC) — catches perf regressions between
     # releases. ~30min per run ≈ ~900 Actions-min/month; off-:00 to dodge
@@ -117,7 +117,7 @@ jobs:
           VUS: ${{ github.event.inputs.vus || '10' }}
           DURATION: ${{ github.event.inputs.duration || '30s' }}
           RUNS: ${{ github.event.inputs.runs || '5' }}
-          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws tls' }}
+          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws boundary tls' }}
         run: ./scripts/bench.sh
 
       - name: Micro-benchmarks (criterion)

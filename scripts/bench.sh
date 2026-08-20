@@ -20,6 +20,9 @@ set -euo pipefail
 #   ws          – WebSocket echo: same-connection round-trips against the
 #                 serve target's /ws endpoint — messages/sec and RTT (k6 +
 #                 native engine; locust has no built-in WS support).
+#   boundary    – ramp 0→BOUNDARY_MAX_VUS over BOUNDARY_DURATION and find the
+#                 load where the cumulative error rate first reaches
+#                 BOUNDARY_ERR_PCT percent (default 1%).
 #   tls         – engines against `perfscale serve --tls` (self-signed HTTPS).
 #
 # JMeter joins only the hyperfine suites (overhead/startup): its non-GUI
@@ -40,7 +43,7 @@ PORT="${PORT:-18999}"
 TLS_PORT="${TLS_PORT:-18998}"
 OUTPUT="${OUTPUT:-bench-report.md}"
 RESULTS="${RESULTS:-bench-results.json}"
-SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws tls}"
+SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws boundary tls}"
 
 STARTUP_DURATION="${STARTUP_DURATION:-1s}"
 STARTUP_RUNS="${STARTUP_RUNS:-5}"
@@ -52,6 +55,9 @@ YAML_DURATION="${YAML_DURATION:-10s}"
 TLS_DURATION="${TLS_DURATION:-10s}"
 WS_DURATION="${WS_DURATION:-10s}"
 WS_ROUNDS="${WS_ROUNDS:-10}"
+BOUNDARY_DURATION="${BOUNDARY_DURATION:-30s}"
+BOUNDARY_MAX_VUS="${BOUNDARY_MAX_VUS:-2000}"
+BOUNDARY_ERR_PCT="${BOUNDARY_ERR_PCT:-1}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${PERFSCALE_BIN:-$ROOT/target/release/perfscale}"
@@ -371,6 +377,116 @@ cmd_yaml() { # $1 vus, $2 duration, $3 test file, $4 extra flags (optional)
 # JMeter runs from $WORKDIR so its jmeter.log doesn't land in the repo root.
 cmd_jmeter_native() { echo "cd $WORKDIR && jmeter -n -t $(jmeter_plan "$1" "$2")"; }
 cmd_jmeter_wrapped() { echo "cd $WORKDIR && $BIN run --jmeter $(jmeter_plan "$1" "$2")"; }
+
+# Error-boundary scenario (boundary suite): every engine ramps 0→
+# BOUNDARY_MAX_VUS VUs over BOUNDARY_DURATION against GET /health while its
+# periodic output is watched for the cumulative error rate crossing
+# BOUNDARY_ERR_PCT percent. Detection differs per engine — k6 aborts itself
+# via a threshold, the others are parsed from their periodic lines.
+cat >"$WORKDIR/boundary.js" <<'EOF'
+import http from 'k6/http';
+
+// The threshold aborts the run the moment the cumulative error rate reaches
+// BENCH_ERR_PCT percent — vus_max in the summary is then the boundary load.
+const ERR_PCT = Number(__ENV.BENCH_ERR_PCT || 1);
+
+export const options = {
+  scenarios: {
+    ramp: {
+      executor: 'ramping-vus',
+      startVUs: 0,
+      stages: [{ duration: __ENV.BENCH_DURATION || '30s', target: Number(__ENV.BENCH_MAX_VUS || 2000) }],
+      gracefulRampDown: '0s',
+    },
+  },
+  thresholds: {
+    // abortOnFail fires when the threshold FAILS, so the expression must be
+    // the healthy direction: rate < err% holds until errors reach the limit.
+    http_req_failed: [{ threshold: `rate<${ERR_PCT / 100}`, abortOnFail: true }],
+  },
+};
+
+export default function () {
+  http.get(__ENV.BENCH_TARGET);
+}
+EOF
+
+cat >"$WORKDIR/boundary.yaml" <<EOF
+steps:
+  - name: health check
+    use: std/http@v1
+    with:
+      method: GET
+      url: "${TARGET}/health"
+EOF
+
+# Staged ramp for the native engine: 0→target over BOUNDARY_DURATION.
+printf 'stages:\n  - duration: "%s"\n    target: %s\n' \
+  "$BOUNDARY_DURATION" "$BOUNDARY_MAX_VUS" >"$WORKDIR/boundary-cfg.yaml"
+
+cat >"$WORKDIR/boundary_locust.py" <<'EOF'
+import os
+
+from locust import HttpUser, LoadTestShape, task
+
+MAX_VUS = int(os.environ.get("BENCH_MAX_VUS", "2000"))
+DURATION_S = int(os.environ.get("BENCH_DURATION_S", "30"))
+
+
+class BoundaryUser(HttpUser):
+    @task
+    def health(self):
+        self.client.get("/health")
+
+
+class RampToBoundary(LoadTestShape):
+    """Linear 0→MAX_VUS over DURATION_S. Run with --csv-full-history: the
+    Aggregated history rows are what the boundary parser reads."""
+
+    def tick(self):
+        run_time = self.get_run_time()
+        if run_time >= DURATION_S + 5:
+            return None
+        vus = max(1, min(MAX_VUS, int(MAX_VUS * run_time / DURATION_S)))
+        return (vus, max(10, MAX_VUS // 10))
+EOF
+
+# Boundary JMeter plan: threads ramp over the whole BENCH duration and the
+# scheduler holds for a tail so the summariser reports the full ramp.
+cat >"$WORKDIR/plan-boundary-template.jmx" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="boundary" enabled="true">
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="boundary" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">@VUS@</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">@RAMP@</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">@SECS@</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true">
+          <boolProp name="LoopController.continue_forever">true</boolProp>
+          <stringProp name="LoopController.loops">-1</stringProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="health" enabled="true">
+          <stringProp name="HTTPSampler.domain">127.0.0.1</stringProp>
+          <stringProp name="HTTPSampler.port">@PORT@</stringProp>
+          <stringProp name="HTTPSampler.path">/health</stringProp>
+          <stringProp name="HTTPSampler.method">GET</stringProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+        </HTTPSamplerProxy>
+        <hashTree/>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
+EOF
 
 # ---------------------------------------------------------------------------
 # /usr/bin/time instrumentation
@@ -737,6 +853,79 @@ if has_suite ws && [[ "$HAS_WS" == 1 ]]; then
     echo "the echo, send the next) against \`serve\`'s \`/ws\` endpoint. Messages"
     echo "counts sent messages; RTT is send→echo latency. The k6 scenarios"
     echo "report the same two metrics via a custom Trend/Counter pair._"
+  } >>"$OUTPUT"
+fi
+
+# --- boundary ---------------------------------------------------------------
+
+if has_suite boundary; then
+  echo "suite: boundary" >&2
+  section "1% error boundary (ramp 0→${BOUNDARY_MAX_VUS} VUs over ${BOUNDARY_DURATION})"
+  {
+    echo "| Engine | Boundary | Time | RPS at boundary |"
+    echo "|---|---:|---:|---:|"
+  } >>"$OUTPUT"
+  b_dur_s="${BOUNDARY_DURATION%s}"
+  b_out="$WORKDIR/boundary-out.$$"
+
+  # boundary_row $1 label, $2 parse kind, $3 file to parse
+  boundary_row() {
+    local crossed boundary_vus boundary_s boundary_rps
+    eval "$($METRICS boundary "$2" "$3" "$BOUNDARY_MAX_VUS" "$b_dur_s" "$BOUNDARY_ERR_PCT")"
+    $METRICS append "$RESULTS_D/boundary.json" "$1" \
+      crossed="$crossed" boundary_vus="$boundary_vus" \
+      boundary_s="$boundary_s" boundary_rps="$boundary_rps"
+    if [[ "$crossed" == 1 ]]; then
+      echo "| $1 | ${boundary_vus} VUs | ${boundary_s}s | $boundary_rps |" >>"$OUTPUT"
+    else
+      echo "| $1 | >${BOUNDARY_MAX_VUS} VUs (never crossed) | — | — |" >>"$OUTPUT"
+    fi
+  }
+
+  if [[ "$HAS_K6" == 1 ]]; then
+    b_k6_env="BENCH_TARGET=$TARGET/health BENCH_MAX_VUS=$BOUNDARY_MAX_VUS BENCH_DURATION=$BOUNDARY_DURATION BENCH_ERR_PCT=$BOUNDARY_ERR_PCT"
+    echo "  k6 (native)" >&2
+    run_timed "$b_out" "$b_k6_env k6 run $WORKDIR/boundary.js"
+    boundary_row "k6 (native)" k6 "$b_out"
+    echo "  perfscale (k6)" >&2
+    run_timed "$b_out" "$b_k6_env $BIN run --k6 $WORKDIR/boundary.js"
+    boundary_row "perfscale (k6)" k6 "$b_out"
+  fi
+
+  if [[ "$HAS_LOCUST" == 1 ]]; then
+    echo "  locust (native)" >&2
+    run_timed "$b_out" "BENCH_MAX_VUS=$BOUNDARY_MAX_VUS BENCH_DURATION_S=$b_dur_s locust -f $WORKDIR/boundary_locust.py --headless --host $TARGET --run-time $((b_dur_s + 10))s --csv $WORKDIR/b-loc --csv-full-history"
+    boundary_row "locust (native)" locust "$WORKDIR/b-loc_stats_history.csv"
+  fi
+
+  if [[ "$HAS_JMETER" == 1 ]]; then
+    echo "  jmeter (native)" >&2
+    sed -e "s/@VUS@/$BOUNDARY_MAX_VUS/" -e "s/@RAMP@/$b_dur_s/" \
+      -e "s/@SECS@/$((b_dur_s + 10))/" -e "s/@PORT@/$PORT/" \
+      "$WORKDIR/plan-boundary-template.jmx" >"$WORKDIR/plan-boundary.jmx"
+    run_timed "$b_out" "cd $WORKDIR && jmeter -n -t $WORKDIR/plan-boundary.jmx -Jsummariser.interval=2"
+    boundary_row "jmeter (native)" jmeter "$b_out"
+  fi
+
+  # The native run is NOT --quiet: the boundary is read from its periodic
+  # [stats] stream, which quiet mode suppresses. Its boundary therefore
+  # includes the per-request logging cost, unlike the yaml/throughput rows.
+  echo "  perfscale (yaml)" >&2
+  run_timed "$b_out" "$BIN run -f $WORKDIR/boundary.yaml -c $WORKDIR/boundary-cfg.yaml"
+  boundary_row "perfscale (yaml)" native "$b_out"
+
+  {
+    echo
+    echo "_Every engine ramps 0→${BOUNDARY_MAX_VUS} VUs over ${BOUNDARY_DURATION};"
+    echo "the boundary is the load at which the cumulative error rate first"
+    echo "reaches ${BOUNDARY_ERR_PCT}%. Detection is engine-specific: k6 aborts"
+    echo "itself via a threshold (\`vus_max\` at abort is the boundary), locust is"
+    echo "read from \`--csv-full-history\`, jmeter from accumulated \`summary +\`"
+    echo "deltas, the native engine from its periodic \`[stats]\` lines. Wrapped"
+    echo "locust/jmeter rows are omitted: the wrapper is a pass-through, the"
+    echo "boundary is an engine property. The \`perfscale (yaml)\` row runs"
+    echo "without \`--quiet\` (quiet suppresses \`[stats]\`), so it includes the"
+    echo "per-request logging cost._"
   } >>"$OUTPUT"
 fi
 

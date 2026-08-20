@@ -34,6 +34,7 @@ wrapping overhead — not the underlying tool.
 | `saturation` | Approximate max RPS per engine at high VUs (default 256) |
 | `yaml` | What does each native-engine feature cost? (GET baseline vs `--quiet` vs +check vs POST body vs multi-step interpolation) |
 | `ws` | WebSocket message throughput and RTT: same-connection echo round-trips against `serve`'s `/ws` endpoint (`perfscale (yaml)`, `k6 (native)`, `perfscale (k6)` — locust has no built-in WebSocket support and is skipped) |
+| `boundary` | Where does the engine break? Ramps 0→`BOUNDARY_MAX_VUS` over `BOUNDARY_DURATION` and reports the VU level / time / RPS where the cumulative error rate first reaches `BOUNDARY_ERR_PCT` percent (default 1%) |
 | `tls` | The TLS tax: same workload against `perfscale serve --tls` (self-signed HTTPS, verification skipped) |
 
 JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
@@ -44,6 +45,16 @@ work.
 Select suites with `SUITES="..."`. Scenarios whose engine (`k6`/`locust`/
 `jmeter`) isn't on `PATH` are skipped, not failed; `overhead`/`startup` need
 [hyperfine](https://github.com/sharkdp/hyperfine), the rest don't.
+
+The `boundary` suite detects the crossing differently per engine: k6 aborts
+itself via an `abortOnFail` threshold (the peak-VU progress line is the
+boundary), locust is read from its `--csv-full-history` Aggregated rows,
+jmeter from accumulated `summary +` deltas (run with
+`-Jsummariser.interval=2`), and the native engine from its periodic
+`[stats]` lines — which is why the native boundary row runs without
+`--quiet` and includes the per-request logging cost. Wrapped locust/jmeter
+rows are omitted: the wrapper is a pass-through, the boundary is an engine
+property.
 
 Micro-benchmarks for the native engine's hot paths (YAML parse, `${{ ... }}`
 interpolation, metrics recording / percentile summary, `RingBuf` process-output
@@ -94,6 +105,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `SAT_VUS` / `SAT_DURATION` | `256` / `15s` | Saturation VUs / run length |
 | `YAML_DURATION` / `TLS_DURATION` | `10s` / `10s` | Per-scenario length in those suites |
 | `WS_DURATION` / `WS_ROUNDS` | `10s` / `10` | ws-suite run length / echo round-trips per connection |
+| `BOUNDARY_DURATION` / `BOUNDARY_MAX_VUS` / `BOUNDARY_ERR_PCT` | `30s` / `2000` / `1` | boundary-suite ramp length / ramp target / error-rate threshold in percent |
 | `PORT` / `TLS_PORT` | `18999` / `18998` | Ports for the throwaway serve targets |
 | `OUTPUT` | `bench-report.md` | Markdown report path |
 | `RESULTS` | `bench-results.json` | Machine-readable results (regression tracking input) |
