@@ -240,6 +240,7 @@ drivers, which is how you learn your build lacks them.
 | `url` | string | — | Broker URL; required by `nats`, ignored by `memory` |
 | `publish` | string \| array | — | One message or a list; non-strings are serialized to JSON text |
 | `subscribe` | object | — | `{ count, until_contains, timeout_ms }` — wait for `count` messages (default `1`) that each contain `until_contains` (optional), within `timeout_ms` (default `5000`) |
+| `options` | object | — | Driver-specific tuning passed through verbatim — ignored by the built-in drivers; pro drivers (Kafka, Redis, MQTT) use it for QoS, consumer groups, auth, … |
 
 At least one of `publish` / `subscribe` is required. When both are given the
 subscription is established **first**, so a same-subject roundtrip sees its

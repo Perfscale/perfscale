@@ -15,7 +15,7 @@
 //! | `memory` | In-process broadcast bus (default) — no broker needed |
 //! | `nats`   | A real NATS server via the `async-nats` crate         |
 //!
-//! Proprietary drivers (Kafka, Redis, …) live in closed crates and register
+//! Proprietary drivers (Kafka, Redis, MQTT, …) live in closed crates and register
 //! themselves via [`register_pubsub_driver`] at process start — the same
 //! extension posture as [`super::actions::register_action`]. An unknown
 //! `driver` value fails the step with the list of registered drivers, which
@@ -35,6 +35,7 @@
 //! | `url`        | string          | —          | Broker URL; required by `nats`, ignored by `memory` |
 //! | `publish`    | string \| array | —          | One message, or a list; non-strings are serialized to JSON text |
 //! | `subscribe`  | object          | —          | `{ count, until_contains, timeout_ms }` — wait for `count` messages (default 1) that each contain `until_contains` (optional), within `timeout_ms` (default 5000) |
+//! | `options`    | object          | —          | Driver-specific tuning, passed through verbatim (ignored by the built-in drivers; pro drivers use it for QoS, consumer groups, auth, …) |
 //!
 //! At least one of `publish` / `subscribe` is required. Publish-only is a
 //! pure producer step (success = all publishes accepted); subscribe-only is a
@@ -65,7 +66,7 @@ use std::sync::{Arc, LazyLock, Mutex, Once, OnceLock, RwLock};
 use std::time::Instant;
 
 use futures_util::{Stream, StreamExt as _};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tokio::sync::broadcast;
 use tokio::time::Duration;
 
@@ -92,6 +93,10 @@ pub struct PubSubParams {
     pub publish: Vec<Vec<u8>>,
     /// Consumer side of the step, when `subscribe` was given.
     pub subscribe: Option<SubscribeSpec>,
+    /// Driver-specific tuning knobs from the `options` object, passed through
+    /// verbatim. The built-in drivers ignore it; downstream (proprietary)
+    /// drivers read their own keys out of it.
+    pub options: Map<String, Value>,
 }
 
 /// The `subscribe` object: wait for `count` matching messages.
@@ -147,12 +152,19 @@ impl PubSubParams {
             return Err("at least one of 'publish' or 'subscribe' is required".into());
         }
 
+        let options = match params.get("options") {
+            None | Some(Value::Null) => Map::new(),
+            Some(Value::Object(m)) => m.clone(),
+            Some(_) => return Err("'options' must be an object".into()),
+        };
+
         Ok(PubSubParams {
             driver,
             subject,
             url,
             publish,
             subscribe,
+            options,
         })
     }
 }
@@ -249,13 +261,18 @@ fn lookup_driver(name: &str) -> Result<Arc<dyn PubSubDriver>, String> {
 // Shared collect loop
 // ---------------------------------------------------------------------------
 
-/// A received-message byte stream, as produced by either driver's transport.
-type ByteStream<'a> = Pin<Box<dyn Stream<Item = Vec<u8>> + Send + 'a>>;
+/// A received-message byte stream, as produced by a driver's transport.
+/// Public so downstream driver crates can feed [`collect_matching`].
+pub type ByteStream<'a> = Pin<Box<dyn Stream<Item = Vec<u8>> + Send + 'a>>;
 
 /// Read from `stream` until `spec.count` messages have matched (or the
 /// timeout fires / the stream ends), filling `matched`, `rejected`, and
 /// `e2e_ms` of `out`. `anchor` is the start of the publish phase.
-async fn collect_matching(
+///
+/// Shared by every driver — built-in and downstream — so the `until_contains`
+/// matcher, the timeout framing, and the e2e measurement stay identical
+/// across transports.
+pub async fn collect_matching(
     stream: &mut ByteStream<'_>,
     spec: &SubscribeSpec,
     anchor: Instant,
@@ -552,6 +569,34 @@ mod tests {
         assert_eq!(spec.count, 1);
         assert_eq!(spec.timeout_ms, 5000);
         assert!(spec.until_contains.is_none());
+        assert!(p.options.is_empty());
+    }
+
+    #[test]
+    fn params_options_pass_through_verbatim() {
+        let p = PubSubParams::from_params(&json!({
+            "subject": "s",
+            "publish": "hi",
+            "options": { "qos": 1, "group_id": "load", "nested": { "a": true } },
+        }))
+        .unwrap();
+        assert_eq!(p.options["qos"], json!(1));
+        assert_eq!(p.options["group_id"], json!("load"));
+        assert_eq!(p.options["nested"], json!({ "a": true }));
+    }
+
+    #[tokio::test]
+    async fn non_object_options_is_rejected() {
+        let out = execute_action(
+            "std/pubsub@v1",
+            &json!({ "subject": "s", "publish": "hi", "options": "fast" }),
+            &Context::new(),
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        let text = &out.logs[0].1;
+        assert!(text.contains("'options' must be an object"), "{text}");
     }
 
     #[test]

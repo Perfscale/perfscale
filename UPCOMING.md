@@ -19,7 +19,9 @@ Release notes for the next release, written as features land.
   `pubsub_e2e_ms` end-to-end latency histogram. Ships with two drivers:
   `memory` (process-global in-process bus shared by all VUs, no broker
   needed) and `nats` (core NATS via `async-nats`). The driver seam is public
-  (`register_pubsub_driver`) — the pro build will add Kafka/Redis drivers;
+  (`register_pubsub_driver`), and a new `options` object passes
+  driver-specific tuning (QoS, consumer groups, auth, …) through verbatim —
+  that is how the pro build's Kafka/Redis/MQTT drivers take their settings;
   an unknown `driver:` value fails with the list of registered ones.
 - **`boundary` benchmark suite** — ramps 0→`BOUNDARY_MAX_VUS` (default 2000)
   VUs over `BOUNDARY_DURATION` (default 30s) and reports the VU level, time,
