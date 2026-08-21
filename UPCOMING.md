@@ -12,6 +12,15 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- **`std/pubsub@v1` action** — one-shot pub/sub load step: publish messages
+  to a subject and/or wait for `count` matching messages (optional
+  `until_contains` matcher, `timeout_ms` bounded), reporting
+  `pubsub_msgs_published` / `pubsub_msgs_received` counters and a
+  `pubsub_e2e_ms` end-to-end latency histogram. Ships with two drivers:
+  `memory` (process-global in-process bus shared by all VUs, no broker
+  needed) and `nats` (core NATS via `async-nats`). The driver seam is public
+  (`register_pubsub_driver`) — the pro build will add Kafka/Redis drivers;
+  an unknown `driver:` value fails with the list of registered ones.
 - **`boundary` benchmark suite** — ramps 0→`BOUNDARY_MAX_VUS` (default 2000)
   VUs over `BOUNDARY_DURATION` (default 30s) and reports the VU level, time,
   and RPS where the cumulative error rate first reaches `BOUNDARY_ERR_PCT`

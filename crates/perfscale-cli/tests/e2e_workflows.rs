@@ -422,6 +422,83 @@ fn websocket_unmet_until_rule_fails_step_but_run_completes() {
         ));
 }
 
+/// `std/pubsub@v1` memory roundtrip through the compiled binary: custom
+/// pubsub metrics land in the run summary, and a `body_contains` check over
+/// the joined received payloads passes.
+#[test]
+#[file_serial(heavy_io)]
+fn pubsub_memory_roundtrip_full_journey() {
+    let test_file = write_temp(
+        ".yaml",
+        r#"steps:
+  - name: order events roundtrip
+    use: std/pubsub@v1
+    with:
+      subject: orders.created
+      publish: ["order-1 created", "order-2 created"]
+      subscribe: { count: 2, until_contains: created, timeout_ms: 2000 }
+    check:
+      body_contains: order-2
+  - use: std/sleep@v1
+    with: { ms: 100 }
+"#,
+    );
+    let config_file = write_temp(".yaml", "vus: 1\nduration: 1s\n");
+
+    assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args([
+            "run",
+            "-f",
+            test_file.path().to_str().unwrap(),
+            "-c",
+            config_file.path().to_str().unwrap(),
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        // Custom pub/sub metrics land in the summary block…
+        .stdout(predicate::str::contains("pubsub_msgs_published"))
+        .stdout(predicate::str::contains("pubsub_msgs_received"))
+        // …including the end-to-end latency histogram with its sample count…
+        .stdout(predicate::str::is_match(r"pubsub_e2e_ms: avg=.* count=\d+").unwrap())
+        // …and the body check passed; nothing failed.
+        .stderr(predicate::str::contains("FAIL").not());
+}
+
+/// A subscribe-only `std/pubsub@v1` step that never receives its message
+/// fails the step (load-test feedback on stderr) but the run still completes.
+#[test]
+#[file_serial(heavy_io)]
+fn pubsub_subscribe_timeout_fails_step_but_run_completes() {
+    let test_file = write_temp(
+        ".yaml",
+        r#"steps:
+  - use: std/pubsub@v1
+    with:
+      subject: never.published
+      subscribe: { count: 1, timeout_ms: 200 }
+  - use: std/sleep@v1
+    with: { ms: 200 }
+"#,
+    );
+    let config_file = write_temp(".yaml", "vus: 1\nduration: 1s\n");
+
+    assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args([
+            "run",
+            "-f",
+            test_file.path().to_str().unwrap(),
+            "-c",
+            config_file.path().to_str().unwrap(),
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "subscribe timeout: 0 of 1 message(s) arrived",
+        ));
+}
+
 /// Contract test: a Live Connection opened in `before:` setup does NOT leak
 /// into VU iterations. The setup context (and its socket) is gone before any
 /// VU starts, and N concurrent VUs must never share one socket — they would

@@ -73,7 +73,7 @@ prost-reflect = { version = "0.16", default-features = false, features = ["serde
 # Client-only (server reflection protocol for `reflection: true`); the test
 # server pulls the default `server` feature back in as a dev-dependency.
 tonic-reflection = { version = "0.14.6", default-features = false }
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 # URI types for dynamic call paths (tonic's re-export sits behind its
 # `codegen` feature, which dynamic calls don't need).
 http = "1"
@@ -83,6 +83,10 @@ http = "1"
 # webpki roots, matching the WebSocket/gRPC families; no chrono/time/decimal
 # extras — unmapped column types decode as null (see step/db.rs).
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "mysql", "sqlite", "runtime-tokio", "tls-rustls-ring-webpki", "json"] }
+
+# NATS client for the `std/pubsub@v1` action's `nats` driver. Core NATS only —
+# no JetStream; the in-process `memory` driver needs no client at all.
+async-nats = "0.50.0"
 
 # kill(2)/killpg(2) for the managed child processes of `std/child_process@v1`
 # and `std/kill_process@v1` (signal delivery + tree kill by process group).

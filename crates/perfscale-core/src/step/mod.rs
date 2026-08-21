@@ -31,6 +31,7 @@ pub mod graphql;
 pub(crate) mod grpc;
 pub mod http;
 pub mod process;
+pub mod pubsub;
 pub(crate) mod resources;
 pub mod runner;
 pub mod schedule;

@@ -91,6 +91,9 @@ Built-in emitters:
 | `ws_msgs_sent` | counter | `std/ws@v1`, `std/ws-send@v1` | WS messages sent |
 | `ws_msgs_received` | counter | `std/ws@v1`, `std/ws-recv@v1` | WS messages read |
 | `ws_msg_rtt` | histogram | `std/ws@v1`, `std/ws-recv@v1` | Send → first matching reply (application-level RTT) |
+| `pubsub_msgs_published` | counter | `std/pubsub@v1` | Messages accepted by the transport |
+| `pubsub_msgs_received` | counter | `std/pubsub@v1` (with `subscribe`) | Messages counted toward `subscribe.count` |
+| `pubsub_e2e_ms` | histogram | `std/pubsub@v1` (with `subscribe`) | Publish-phase start → message consumed, one sample per matched message |
 | `grpc_req_duration` | histogram | `std/grpc@v1`, `std/grpc-call@v1` | Unary call latency |
 | `graphql_req_duration` | histogram | `std/graphql@v1` | GraphQL operation round trip |
 | `graphql_errors` | counter | `std/graphql@v1` | GraphQL-level errors, including partial-data responses that pass the step |
@@ -124,6 +127,7 @@ it succeeded — under the metric's family name with a trailing
 | `grpc_req_duration` | `grpc_req_failed` |
 | `graphql_req_duration` | `graphql_req_failed` |
 | `ws_msg_rtt` | `ws_msg_failed` |
+| `pubsub_e2e_ms` | `pubsub_e2e_ms_failed` |
 
 These print as `<name>: <pct>%` (k6's `http_req_failed` shape). Because one
 sample is recorded **per invocation** (not per duration sample),

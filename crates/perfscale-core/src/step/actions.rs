@@ -27,6 +27,7 @@
 //! | `std/graphql@v1` | GraphQL query/mutation over HTTP, schema-validated |
 //! | `std/tcp@v1`     | Raw TCP connect / send / receive with timing     |
 //! | `std/udp@v1`     | Raw UDP send / receive with timing               |
+//! | `std/pubsub@v1`  | Pub/sub publish + subscribe with e2e latency (drivers: memory, nats) |
 //! | `std/ws@v1`      | WebSocket one-shot session (connect→msgs→close)  |
 //! | `std/ws-connect@v1` | Open a live WebSocket, returns its id         |
 //! | `std/ws-send@v1`    | Send message(s) on a live WebSocket           |
@@ -151,6 +152,7 @@ pub async fn execute_action(
         }
         "std/tcp@v1" | "tcp" => tcp_action(&resolved, step_name).await,
         "std/udp@v1" | "udp" => udp_action(&resolved, step_name).await,
+        "std/pubsub@v1" | "pubsub" => super::pubsub::pubsub_action(&resolved, step_name).await,
         "std/ws@v1" | "ws" => super::ws::ws_session_action(&resolved, step_name).await,
         "std/ws-connect@v1" | "ws-connect" => {
             super::ws::ws_connect_action(&resolved, ctx, step_name).await

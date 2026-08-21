@@ -1519,6 +1519,35 @@ mod tests {
         assert!(get("min=") <= 0.11, "min: {dur}");
     }
 
+    /// The `std/pubsub@v1` counters and the e2e-latency histogram fold into
+    /// the summary like every other custom metric.
+    #[test]
+    fn metrics_pubsub_counters_appear_in_summary() {
+        let mut m = Metrics::default();
+        m.add_counters(
+            json!({
+                "pubsub_msgs_published": 2.0,
+                "pubsub_msgs_received": 1.0,
+                "pubsub_e2e_ms": [1.2],
+            })
+            .as_object()
+            .unwrap(),
+        );
+
+        let lines = m.summary_lines(1.0, 1, 1);
+        assert!(lines
+            .iter()
+            .any(|l| l.starts_with("pubsub_msgs_published: 2")));
+        assert!(lines
+            .iter()
+            .any(|l| l.starts_with("pubsub_msgs_received: 1")));
+        let e2e = lines
+            .iter()
+            .find(|l| l.starts_with("pubsub_e2e_ms"))
+            .expect("e2e histogram line present");
+        assert!(e2e.contains("count=1"), "{e2e}");
+    }
+
     /// Custom action counters accumulate and surface as `<name>: total rate/s`
     /// summary lines the downstream parser understands.
     #[test]

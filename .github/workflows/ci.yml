@@ -13,6 +13,13 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      # Real broker for the `std/pubsub@v1` nats-driver tests (gated on
+      # NATS_URL / a reachable 127.0.0.1:4222 — they skip without one).
+      nats:
+        image: nats:latest
+        ports:
+          - 4222:4222
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -37,6 +44,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-features
+        env:
+          NATS_URL: nats://127.0.0.1:4222
 
       # Informational — not a merge gate, just visibility on where coverage is thin.
       - name: Coverage summary

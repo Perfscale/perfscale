@@ -5,7 +5,7 @@ action in `use`, passes parameters in `with`, and may assert on the result in
 `check`.
 
 Full IDs carry a namespace and version (`std/http@v1`); the short aliases
-(`http`, `graphql`, `tcp`, `udp`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`,
+(`http`, `graphql`, `tcp`, `udp`, `pubsub`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`,
 `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`,
 `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`,
 `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`,
@@ -216,6 +216,96 @@ host. Set `read` (or `expect`) to actually validate a response.
 
 ```json
 { "sent": 4, "received": 4, "response": "pong", "duration_ms": 0.21 }
+```
+
+## `std/pubsub@v1`
+
+Publish messages to a subject and/or wait for messages on it — a one-shot
+pub/sub exchange measuring publish and end-to-end latency. The transport is
+pluggable behind a **driver**:
+
+| Driver | Transport |
+|---|---|
+| `memory` (default) | In-process broadcast bus — no broker needed. The bus is process-global: one channel per subject shared by all VUs, so one VU's publish is delivered to every VU subscribed to that subject (cross-VU fan-out is a feature) |
+| `nats` | A real NATS server (core NATS, no JetStream) via `async-nats` |
+
+Proprietary drivers (Kafka, Redis, …) register through the same seam in the
+pro build; an unknown `driver` value fails the step listing the registered
+drivers, which is how you learn your build lacks them.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `driver` | string | `memory` | `memory`, `nats`, or a downstream-registered driver |
+| `subject` | string | **required** | NATS subject / in-memory topic name |
+| `url` | string | — | Broker URL; required by `nats`, ignored by `memory` |
+| `publish` | string \| array | — | One message or a list; non-strings are serialized to JSON text |
+| `subscribe` | object | — | `{ count, until_contains, timeout_ms }` — wait for `count` messages (default `1`) that each contain `until_contains` (optional), within `timeout_ms` (default `5000`) |
+
+At least one of `publish` / `subscribe` is required. When both are given the
+subscription is established **first**, so a same-subject roundtrip sees its
+own messages. Publish-only is a pure producer step (success = all publishes
+accepted); subscribe-only is a pure consumer step. The step fails on connect
+failure, publish error, or a subscribe timeout — the error reports how many
+of `count` arrived and how many the `until_contains` matcher rejected.
+
+**Output:**
+
+```json
+{ "driver": "memory", "subject": "orders.created", "published": 2,
+  "received": 1, "duration_ms": 3.21,
+  "body": "<joined received payloads>",
+  "metrics": { "pubsub_msgs_published": 2, "pubsub_msgs_received": 1,
+               "pubsub_e2e_ms": [1.2] } }
+```
+
+`received` / `body` and the `pubsub_msgs_received` / `pubsub_e2e_ms` metrics
+appear only when `subscribe` is given. `pubsub_e2e_ms` holds one sample per
+matched message: start of the publish phase → consumed. `body` is the
+newline-joined matched payloads, so `check: { body_contains: … }` works.
+
+**Examples.** In-memory roundtrip (no broker — both sides in one step):
+
+```yaml
+steps:
+  - name: order events roundtrip
+    use: std/pubsub@v1
+    with:
+      subject: orders.created
+      publish: ["order-1 created", "order-2 created"]
+      subscribe: { count: 2, until_contains: created, timeout_ms: 2000 }
+    check:
+      body_contains: order-2
+```
+
+NATS publish-only producer:
+
+```yaml
+steps:
+  - name: produce order events
+    use: std/pubsub@v1
+    with:
+      driver: nats
+      url: nats://127.0.0.1:4222
+      subject: orders.created
+      publish:
+        - '{"id":"ord-1","total":42.50}'
+        - '{"id":"ord-2","total":17.00}'
+```
+
+NATS consumer with matcher, timeout, and a check block:
+
+```yaml
+steps:
+  - name: await shipment event
+    use: std/pubsub@v1
+    with:
+      driver: nats
+      url: nats://127.0.0.1:4222
+      subject: orders.shipped
+      subscribe: { count: 1, until_contains: '"id":"ord-1"', timeout_ms: 3000 }
+    check:
+      body_contains: ord-1
+    outputs: shipment
 ```
 
 ## WebSocket: `std/ws@v1` and the `std/ws-*@v1` family
