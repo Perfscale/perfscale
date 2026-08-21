@@ -220,6 +220,9 @@ host. Set `read` (or `expect`) to actually validate a response.
 
 ## `std/pubsub@v1`
 
+> Concept-level walkthrough (drivers, producer/consumer patterns, metrics,
+> thresholds): [Pub/Sub guide](pubsub.md).
+
 Publish messages to a subject and/or wait for messages on it — a one-shot
 pub/sub exchange measuring publish and end-to-end latency. The transport is
 pluggable behind a **driver**:
