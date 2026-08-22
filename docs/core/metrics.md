@@ -94,6 +94,11 @@ Built-in emitters:
 | `pubsub_msgs_published` | counter | `std/pubsub@v1` | Messages accepted by the transport |
 | `pubsub_msgs_received` | counter | `std/pubsub@v1` (with `subscribe`) | Messages counted toward `subscribe.count` |
 | `pubsub_e2e_ms` | histogram | `std/pubsub@v1` (with `subscribe`) | Publish-phase start → message consumed, one sample per matched message |
+| `llm_ttft_ms` | histogram | `std/llm@v1` (streamed) | Request start → first content chunk (time to first token) |
+| `llm_tokens_per_sec` | histogram | `std/llm@v1` | Completion tokens / generation time (after the first token when streamed) |
+| `llm_prompt_tokens` | counter | `std/llm@v1` | Prompt tokens as reported by the server |
+| `llm_completion_tokens` | counter | `std/llm@v1` | Completion tokens as reported by the server |
+| `llm_chunks` | counter | `std/llm@v1` (streamed) | SSE chunks received |
 | `grpc_req_duration` | histogram | `std/grpc@v1`, `std/grpc-call@v1` | Unary call latency |
 | `graphql_req_duration` | histogram | `std/graphql@v1` | GraphQL operation round trip |
 | `graphql_errors` | counter | `std/graphql@v1` | GraphQL-level errors, including partial-data responses that pass the step |
@@ -128,6 +133,8 @@ it succeeded — under the metric's family name with a trailing
 | `graphql_req_duration` | `graphql_req_failed` |
 | `ws_msg_rtt` | `ws_msg_failed` |
 | `pubsub_e2e_ms` | `pubsub_e2e_ms_failed` |
+| `llm_ttft_ms` | `llm_ttft_ms_failed` |
+| `llm_tokens_per_sec` | `llm_tokens_per_sec_failed` |
 
 These print as `<name>: <pct>%` (k6's `http_req_failed` shape). Because one
 sample is recorded **per invocation** (not per duration sample),

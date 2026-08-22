@@ -5,7 +5,7 @@ action in `use`, passes parameters in `with`, and may assert on the result in
 `check`.
 
 Full IDs carry a namespace and version (`std/http@v1`); the short aliases
-(`http`, `graphql`, `tcp`, `udp`, `pubsub`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`,
+(`http`, `graphql`, `tcp`, `udp`, `pubsub`, `llm`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`,
 `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`,
 `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`,
 `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`,
@@ -310,6 +310,104 @@ steps:
     check:
       body_contains: ord-1
     outputs: shipment
+```
+
+## `std/llm@v1`
+
+> Concept-level walkthrough (endpoints, examples, metrics, thresholds):
+> [LLM guide](llm.md).
+
+Send one LLM chat-completion request per iteration, streaming by default,
+measuring time-to-first-token (TTFT), generation throughput, and token usage.
+Three endpoint wire formats:
+
+| Endpoint | Wire format |
+|---|---|
+| `openai` (default) | OpenAI chat completions — also OpenAI-compatible servers (Ollama, vLLM, LM Studio, …). Sends `stream_options: { include_usage: true }` when streaming |
+| `anthropic` | Anthropic messages API; sends `anthropic-version: 2023-06-01`, key as `x-api-key` |
+| `generic` | Body is the `params` object verbatim; response fields pulled out via `extract` |
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `endpoint` | string | `openai` | `openai`, `anthropic`, or `generic` |
+| `url` | string | **required** | Completion endpoint URL |
+| `model` | string | — | Model name; required for `openai` / `anthropic` |
+| `prompt` | string | one of prompt/messages | Sugar for a single `user` message (mutually exclusive with `messages`) |
+| `messages` | array | one of prompt/messages | `[{ role, content }]` chat messages |
+| `max_tokens` | integer | `256` | Completion token cap |
+| `stream` | boolean | `true` (`openai`/`anthropic`), `false` (`generic`) | Stream the response as SSE |
+| `api_key` | string | — | `Authorization: Bearer` (`openai`/`generic`) or `x-api-key` (`anthropic`) |
+| `headers` | object | — | Extra request headers, string values |
+| `params` | object | — | Passthrough body fields (`temperature`, …); for `generic` it IS the body |
+| `extract` | object | — | `generic` only: `{ text, prompt_tokens, completion_tokens }` — each a dotted path (`$.usage.completion_tokens`, `$.choices[0].text`) or a regex with one capture group |
+| `timeout_ms` | integer (ms) | `120000` | Whole-request timeout (connect → last chunk) |
+
+A non-2xx status fails the step with the status and the first ~500 characters
+of the error body.
+
+**Output:**
+
+```json
+{ "endpoint": "openai", "model": "gpt-4o-mini", "status": 200,
+  "ttft_ms": 120.31, "duration_ms": 850.02,
+  "prompt_tokens": 12, "completion_tokens": 96,
+  "tokens_per_sec": 131.5, "chunks": 34, "text": "…",
+  "metrics": { "llm_ttft_ms": [120.31], "llm_tokens_per_sec": [131.5],
+               "llm_prompt_tokens": 12, "llm_completion_tokens": 96,
+               "llm_chunks": 34 } }
+```
+
+`ttft_ms` appears only for streamed responses (TTFT = request start → first
+content chunk); `tokens_per_sec` divides completion tokens by the generation
+time after the first token, falling back to the whole request time when no
+TTFT was measured. `text` is truncated to ~4 KiB. `llm_ttft_ms` /
+`llm_tokens_per_sec` are trends (percentile-able in `std/thresholds@v1`);
+`llm_prompt_tokens` / `llm_completion_tokens` / `llm_chunks` are counters.
+
+**Examples.** Local Ollama (OpenAI-compatible, no key):
+
+```yaml
+steps:
+  - name: llama completion
+    use: std/llm@v1
+    with:
+      url: http://127.0.0.1:11434/v1/chat/completions
+      model: llama3.1
+      prompt: "Summarize the CAP theorem in two sentences."
+      max_tokens: 128
+    check:
+      status: 200
+```
+
+Anthropic streaming with a key from the environment:
+
+```yaml
+steps:
+  - name: claude completion
+    use: std/llm@v1
+    with:
+      endpoint: anthropic
+      url: https://api.anthropic.com/v1/messages
+      model: claude-sonnet-4-5
+      api_key: ${{ env.ANTHROPIC_API_KEY }}
+      prompt: "Explain backpressure in one paragraph."
+```
+
+Generic endpoint with field extraction:
+
+```yaml
+steps:
+  - name: tgi generate
+    use: std/llm@v1
+    with:
+      endpoint: generic
+      url: http://127.0.0.1:8080/generate
+      params:
+        inputs: "Tell me a joke."
+        parameters: { max_new_tokens: 64 }
+      extract:
+        text: "$.generated_text"
+        completion_tokens: '"generated_tokens": (\d+)'
 ```
 
 ## WebSocket: `std/ws@v1` and the `std/ws-*@v1` family
