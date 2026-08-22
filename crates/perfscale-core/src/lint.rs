@@ -239,7 +239,7 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
     // definition (see `schema::relax_use_alias`); the older wording was
     // `"use" is a required property`.
     if problem.contains("\"use\" is a required property") || problem.contains("anyOf") {
-        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, or `std/thresholds@v1`".into())
+        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, or `std/thresholds@v1`".into())
     } else if problem.contains("\"steps\" is a required property") {
         Some("a test definition is a mapping with a `steps:` list at the top level".into())
     } else if problem.contains("\"url\" is a required property") {
@@ -351,6 +351,20 @@ const WS_RECV_WITH_FIELDS: [&str; 5] = ["id", "count", "until_contains", "until_
 const WS_PING_WITH_FIELDS: [&str; 2] = ["id", "timeout"];
 const WS_CLOSE_WITH_FIELDS: [&str; 4] = ["id", "code", "reason", "timeout"];
 const PUBSUB_WITH_FIELDS: [&str; 5] = ["driver", "subject", "url", "publish", "subscribe"];
+const LLM_WITH_FIELDS: [&str; 12] = [
+    "endpoint",
+    "url",
+    "model",
+    "messages",
+    "prompt",
+    "max_tokens",
+    "stream",
+    "api_key",
+    "headers",
+    "params",
+    "extract",
+    "timeout_ms",
+];
 // Shared by std/grpc@v1 and std/grpc-connect@v1 (the Channel Profile), plus
 // per-action extras below.
 const GRPC_PROFILE_FIELDS: [&str; 8] = [
@@ -482,6 +496,7 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
                     "std/tcp@v1",
                     "std/udp@v1",
                     "std/pubsub@v1",
+                    "std/llm@v1",
                     "std/ws@v1",
                     "std/ws-connect@v1",
                     "std/ws-send@v1",
@@ -513,7 +528,7 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             )
             .or_else(|| {
                 Some(
-                    "available actions: std/http@v1, std/graphql@v1, std/tcp@v1, std/udp@v1, std/pubsub@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/db-connect@v1, std/db-query@v1, std/db-tx-begin@v1, std/db-tx-commit@v1, std/db-tx-rollback@v1, std/db-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1, std/thresholds@v1"
+                    "available actions: std/http@v1, std/graphql@v1, std/tcp@v1, std/udp@v1, std/pubsub@v1, std/llm@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/db-connect@v1, std/db-query@v1, std/db-tx-begin@v1, std/db-tx-commit@v1, std/db-tx-rollback@v1, std/db-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1, std/thresholds@v1"
                         .into(),
                 )
             }),
@@ -526,6 +541,7 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             "std/graphql@v1" | "graphql" => Some(&GRAPHQL_WITH_FIELDS),
             "std/tcp@v1" | "tcp" | "std/udp@v1" | "udp" => Some(&RAW_NET_WITH_FIELDS),
             "std/pubsub@v1" | "pubsub" => Some(&PUBSUB_WITH_FIELDS),
+            "std/llm@v1" | "llm" => Some(&LLM_WITH_FIELDS),
             "std/ws@v1" | "ws" => Some(&WS_SESSION_WITH_FIELDS),
             "std/ws-connect@v1" | "ws-connect" => Some(&WS_PROFILE_FIELDS),
             "std/ws-send@v1" | "ws-send" => Some(&WS_SEND_WITH_FIELDS),
@@ -694,6 +710,8 @@ fn is_known_action(action: &str) -> bool {
             | "udp"
             | "std/pubsub@v1"
             | "pubsub"
+            | "std/llm@v1"
+            | "llm"
             | "std/ws@v1"
             | "ws"
             | "std/ws-connect@v1"

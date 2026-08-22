@@ -30,6 +30,7 @@ pub(crate) mod db;
 pub mod graphql;
 pub(crate) mod grpc;
 pub mod http;
+pub mod llm;
 pub mod process;
 pub mod pubsub;
 pub(crate) mod resources;
