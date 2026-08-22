@@ -217,7 +217,7 @@
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/docs/core/actions.md": {
     "mtime": 1787323818.2796748,
     "ast_hash": "21a0f89af8e4cdca5d674cd11f5aeeb5",
-    "semantic_hash": "21a0f89af8e4cdca5d674cd11f5aeeb5"
+    "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/docs/core/architecture.md": {
     "mtime": 1786374007.9597883,
@@ -270,9 +270,9 @@
     "semantic_hash": "4d865914a47df3415b654a702202777c"
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/UPCOMING.md": {
-    "mtime": 1787331184.1070797,
-    "ast_hash": "51b02046534e97bda9ce029765b611e8",
-    "semantic_hash": "51b02046534e97bda9ce029765b611e8"
+    "mtime": 1787329996.488054,
+    "ast_hash": "8a1f1d1968f2bc77e6e64ed4097612e5",
+    "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/examples/raw-net.test.yaml": {
     "mtime": 1783670969.7371087,
@@ -552,11 +552,11 @@
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/docs/ci.md": {
     "mtime": 1787329975.1546545,
     "ast_hash": "a65d45b7ec515978c12537c13ed83bcf",
-    "semantic_hash": "a65d45b7ec515978c12537c13ed83bcf"
+    "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/docs/core/pubsub.md": {
     "mtime": 1787323796.8342662,
     "ast_hash": "9adedbdd28832975180a12016ab9c102",
-    "semantic_hash": "9adedbdd28832975180a12016ab9c102"
+    "semantic_hash": ""
   }
 }
