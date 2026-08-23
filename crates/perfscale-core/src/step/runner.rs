@@ -1922,6 +1922,7 @@ mod tests {
                     memory_total_mib: Some(24576.0),
                     temperature_c: Some(58.0),
                     power_w: Some(210.5),
+                    extra: std::collections::BTreeMap::new(),
                 }])
             })
         }

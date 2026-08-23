@@ -30,7 +30,9 @@
 //! shadows the built-in of the same name, so a pro build can replace
 //! `nvidia-smi` with a NVML-based sampler exporting detailed metrics, and new
 //! sources (`rocm-smi`, `powermetrics`, …) become selectable via
-//! `gpu.source` without core changes.
+//! `gpu.source` without core changes. Collectors with more to say than the
+//! built-in fields carry it on [`GpuSample::extra`] — flattened into the
+//! summary timeseries under the collector's own key names.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -129,6 +131,13 @@ pub struct GpuSample {
     /// Board power draw, watts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power_w: Option<f64>,
+    /// Extra numeric fields from downstream (pro) collectors — SM/memory
+    /// clocks, throttle-reason bitmasks, per-process aggregates. Flattened
+    /// into the sample's JSON under their own keys; always empty from the
+    /// built-in sources. Not aggregated by [`summarize`] — pro collectors
+    /// expose their own rollups for these.
+    #[serde(default, flatten)]
+    pub extra: std::collections::BTreeMap<String, f64>,
 }
 
 impl GpuSample {
@@ -143,6 +152,7 @@ impl GpuSample {
             memory_total_mib: None,
             temperature_c: None,
             power_w: None,
+            extra: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -749,6 +759,7 @@ DCGM_FI_DEV_SM_CLOCK{gpu="0",UUID="GPU-aaa"} 1980
             memory_total_mib: Some(24576.0),
             temperature_c: Some(60.0),
             power_w: Some(200.0),
+            extra: std::collections::BTreeMap::new(),
         }
     }
 
@@ -795,6 +806,7 @@ DCGM_FI_DEV_SM_CLOCK{gpu="0",UUID="GPU-aaa"} 1980
                     memory_total_mib: Some(24576.0),
                     temperature_c: None,
                     power_w: None,
+                    extra: std::collections::BTreeMap::new(),
                 },
             ],
             "nvidia-smi",
@@ -828,6 +840,27 @@ DCGM_FI_DEV_SM_CLOCK{gpu="0",UUID="GPU-aaa"} 1980
         assert!(!json.contains("utilization_pct"), "{json}");
         assert!(!json.contains("memory_used_mib"), "{json}");
         assert!(!json.contains("temperature_c"), "{json}");
+    }
+
+    #[test]
+    fn gpu_sample_extra_fields_flatten_and_round_trip() {
+        // Pro collectors ride extra numeric fields (clocks, throttle bitmask)
+        // on the same sample; they serialize flat, next to the built-ins.
+        let mut s = sample(0, Some(42.0), Some(2048.0), 7);
+        s.extra.insert("pro_gpu_clocks_sm_mhz".into(), 1980.0);
+        s.extra.insert("pro_gpu_throttle_reasons".into(), 0.0);
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"pro_gpu_clocks_sm_mhz\":1980.0"), "{json}");
+        assert!(!json.contains("\"extra\""), "{json}");
+        let back: GpuSample = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+
+        // Empty extra map adds nothing to the wire format.
+        let plain = sample(0, Some(1.0), Some(2.0), 3);
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("pro_gpu"), "{json}");
+        let back: GpuSample = serde_json::from_str(&json).unwrap();
+        assert!(back.extra.is_empty());
     }
 
     // -------------------------------------------------------------
