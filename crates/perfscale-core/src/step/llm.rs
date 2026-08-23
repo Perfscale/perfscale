@@ -55,6 +55,14 @@
 //! the per-chunk arrival deltas needed for detailed ITL/TPOT and cost
 //! metrics. Observer panics are contained: a misbehaving observer never
 //! affects the step.
+//!
+//! [`register_llm_metrics_observer`] is the metrics-returning half of the
+//! seam: a [`LlmMetricsObserver`] additionally hands back a map of extra
+//! metrics per successful request, which the engine merges into the step
+//! output's `metrics` object — that's how pro builds surface ITL/TPOT
+//! percentiles and per-request cost under their own `pro_*` keys without
+//! core changes. Engine keys win on collision, so an observer can never
+//! clobber the built-in `llm_*` metrics.
 
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
@@ -446,6 +454,50 @@ fn notify_observers(sample: &LlmSample) {
     }
 }
 
+/// A consumer of per-request [`LlmSample`]s that contributes extra metrics
+/// to the step output. Implemented by downstream (proprietary) crates —
+/// unlike [`LlmObserver`], which only watches, a metrics observer hands back
+/// a map that the engine merges into `value["metrics"]` of the successful
+/// step (pro crates prefix their keys with `pro_`; engine keys win on
+/// collision). Failed requests produce no `metrics` object, so metrics
+/// observers are consulted on success only — use [`LlmObserver`] when error
+/// samples matter. Panics are contained and never affect the step.
+pub trait LlmMetricsObserver: Send + Sync {
+    /// Called once per successful request. Return extra metrics to merge
+    /// into the step's `metrics` object, or `None` to add nothing.
+    fn on_sample_metrics(&self, sample: &LlmSample) -> Option<Map<String, Value>>;
+}
+
+fn metrics_observer_registry() -> &'static RwLock<Vec<Arc<dyn LlmMetricsObserver>>> {
+    static REGISTRY: OnceLock<RwLock<Vec<Arc<dyn LlmMetricsObserver>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Register a [`LlmMetricsObserver`]. Typically called once at startup by a
+/// downstream (proprietary) crate; observers are invoked in registration
+/// order for every successful `std/llm@v1` request.
+pub fn register_llm_metrics_observer(observer: Arc<dyn LlmMetricsObserver>) {
+    metrics_observer_registry().write().unwrap().push(observer);
+}
+
+/// Collect extra metrics from all metrics observers. A panicking observer is
+/// swallowed; between observers the first registration wins a key collision.
+fn collect_observer_metrics(sample: &LlmSample) -> Map<String, Value> {
+    let observers: Vec<Arc<dyn LlmMetricsObserver>> =
+        metrics_observer_registry().read().unwrap().clone();
+    let mut out = Map::new();
+    for o in observers {
+        let caught =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| o.on_sample_metrics(sample)));
+        if let Ok(Some(extra)) = caught {
+            for (k, v) in extra {
+                out.entry(k).or_insert(v);
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // SSE decoding
 // ---------------------------------------------------------------------------
@@ -833,7 +885,7 @@ pub(crate) async fn llm_action(params: &Value, ctx: &Context, step_name: &str) -
         }
     };
 
-    notify_observers(&LlmSample {
+    let sample = LlmSample {
         endpoint: parsed.endpoint.as_str().to_string(),
         model: parsed.model.clone(),
         ttft_ms: ex.ttft_ms,
@@ -842,7 +894,11 @@ pub(crate) async fn llm_action(params: &Value, ctx: &Context, step_name: &str) -
         completion_tokens: ex.completion_tokens,
         chunk_intervals_ms: ex.chunk_intervals_ms.clone(),
         error: None,
-    });
+    };
+    notify_observers(&sample);
+    // Metrics observers (pro seam) get the same sample and contribute extra
+    // `pro_*` metrics; engine keys win collisions.
+    let observer_metrics = collect_observer_metrics(&sample);
 
     let tps = tokens_per_sec(&ex, duration_ms);
     let text: String = ex.text.chars().take(TEXT_CAP).collect();
@@ -883,6 +939,11 @@ pub(crate) async fn llm_action(params: &Value, ctx: &Context, step_name: &str) -
     }
     if let Some(c) = ex.completion_tokens {
         metrics["llm_completion_tokens"] = json!(c);
+    }
+    for (k, v) in observer_metrics {
+        // Engine metrics win: an observer can add `pro_*` keys but never
+        // clobber the built-in `llm_*` ones.
+        metrics.as_object_mut().unwrap().entry(k).or_insert(v);
     }
     value["metrics"] = metrics;
 
@@ -1726,5 +1787,92 @@ mod tests {
             "{err:?}"
         );
         assert!(err.chunk_intervals_ms.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // Metrics observer seam (pro metrics merged into the step output)
+    // -----------------------------------------------------------------
+
+    struct ProMetricsObserver;
+
+    impl LlmMetricsObserver for ProMetricsObserver {
+        fn on_sample_metrics(&self, sample: &LlmSample) -> Option<Map<String, Value>> {
+            let mut m = Map::new();
+            m.insert("pro_test_samples".into(), json!(1));
+            m.insert(
+                "pro_test_itl_avg_ms".into(),
+                json!([sample.chunk_intervals_ms.iter().sum::<f64>()
+                    / sample.chunk_intervals_ms.len().max(1) as f64]),
+            );
+            // Collision attempt: the engine's own key must survive.
+            m.insert("llm_chunks".into(), json!(999));
+            Some(m)
+        }
+    }
+
+    struct PanicMetricsObserver;
+
+    impl LlmMetricsObserver for PanicMetricsObserver {
+        fn on_sample_metrics(&self, _sample: &LlmSample) -> Option<Map<String, Value>> {
+            panic!("metrics observer must never break the step");
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn metrics_observers_merge_into_step_metrics() {
+        register_llm_metrics_observer(Arc::new(ProMetricsObserver));
+        register_llm_metrics_observer(Arc::new(PanicMetricsObserver));
+
+        let model = format!("pro-{}", uuid::Uuid::new_v4());
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move || {
+                let chunks = openai_chunks();
+                async move { sse_response(chunks, 5) }
+            }),
+        );
+        let base = serve(app).await;
+        let out = execute_action(
+            "std/llm@v1",
+            &json!({
+                "url": format!("{base}/v1/chat/completions"),
+                "model": model,
+                "prompt": "hi",
+            }),
+            &Context::new(),
+            "chat",
+        )
+        .await;
+        // The panicking observer did not affect the step.
+        assert!(out.success, "{:?}", out.logs);
+
+        // Observer metrics landed under their own keys…
+        assert_eq!(out.value["metrics"]["pro_test_samples"], 1);
+        assert!(
+            out.value["metrics"]["pro_test_itl_avg_ms"]
+                .as_array()
+                .is_some_and(|a| a.len() == 1 && a[0].as_f64().unwrap() > 0.0),
+            "{:?}",
+            out.value["metrics"]
+        );
+        // …and the engine's own metric survived the collision attempt.
+        assert_eq!(out.value["metrics"]["llm_chunks"], 4);
+
+        // Failed steps carry no metrics object, so metrics observers are not
+        // consulted on errors (plain LlmObserver still gets the sample).
+        let out = execute_action(
+            "std/llm@v1",
+            &json!({
+                "url": format!("{base}/nowhere"),
+                "model": model,
+                "prompt": "hi",
+            }),
+            &Context::new(),
+            "chat",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.value.get("metrics").is_none(), "{:?}", out.value);
     }
 }
