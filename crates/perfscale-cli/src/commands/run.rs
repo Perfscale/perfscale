@@ -127,6 +127,7 @@ fn build_export(
         },
         summary: perfscale_core::summary::parse_summary(&summary_lines.join("\n")),
         thresholds: perfscale_core::summary::parse_thresholds(&summary_lines.join("\n")),
+        gpu: perfscale_core::summary::parse_gpu_summary(&summary_lines.join("\n")),
     }
 }
 
@@ -170,7 +171,7 @@ fn write_summary_export(
 /// to hundreds of thousands of lines and would blow past any collector's
 /// request-size limit.
 fn is_summary_line(text: &str) -> bool {
-    const MARKERS: [&str; 9] = [
+    const MARKERS: [&str; 10] = [
         "vus",
         "iterations",
         "iteration_duration",
@@ -180,6 +181,7 @@ fn is_summary_line(text: &str) -> bool {
         "data_sent",
         "checks",
         "thresholds",
+        "gpu",
     ];
     let trimmed = text.trim_start();
     if MARKERS.iter().any(|m| trimmed.starts_with(m)) {
@@ -696,6 +698,32 @@ mod tests {
             .expect("thresholds parsed from summary lines");
         assert_eq!(t.status, "fail");
         assert_eq!(t.violations.len(), 1);
+    }
+
+    #[test]
+    fn build_export_picks_up_gpu_line() {
+        let lines = vec![
+            "http_reqs..............: 120 2.00/s".to_string(),
+            "gpu: 1 device, 2 samples every 1000ms (nvidia-smi)".to_string(),
+            r#"gpu: {"source":"nvidia-smi","interval_ms":1000,"devices":[{"index":0,"samples":[{"ts_ms":1,"index":0,"utilization_pct":42.0}],"avg_utilization_pct":42.0,"max_utilization_pct":42.0}]}"#.to_string(),
+        ];
+        let export = build_export("native", Some(1), Some("1s".into()), &lines);
+        let g = export.gpu.expect("gpu parsed from summary lines");
+        assert_eq!(g.source, "nvidia-smi");
+        assert_eq!(g.devices[0].max_utilization_pct, Some(42.0));
+    }
+
+    #[test]
+    fn is_summary_line_accepts_gpu_lines() {
+        assert!(is_summary_line(
+            r#"gpu: {"source":"nvidia-smi","interval_ms":1000,"devices":[]}"#
+        ));
+        assert!(is_summary_line(
+            "gpu: 1 device, 2 samples every 1000ms (nvidia-smi)"
+        ));
+        assert!(is_summary_line(
+            "gpu0: util avg=42.0% max=98.0% vram max=12288/24576MiB temp max=61.0C power max=250.4W"
+        ));
     }
 
     #[test]
