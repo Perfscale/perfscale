@@ -120,9 +120,9 @@
     "semantic_hash": "171e0cfd56d9acb2b4ca5c0bf871ce77"
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-core/src/step/runner.rs": {
-    "mtime": 1787505473.5402076,
-    "ast_hash": "edb5753aec595fffa77b7cd78524ae23",
-    "semantic_hash": "edb5753aec595fffa77b7cd78524ae23"
+    "mtime": 1787509586.5843196,
+    "ast_hash": "c5843f576bd1c356621c97d369bad2e6",
+    "semantic_hash": "c5843f576bd1c356621c97d369bad2e6"
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-core/src/yaml.rs": {
     "mtime": 1787505473.5409856,
@@ -270,9 +270,9 @@
     "semantic_hash": "4d865914a47df3415b654a702202777c"
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/UPCOMING.md": {
-    "mtime": 1787507731.835586,
-    "ast_hash": "4f156f2b6b56ca466602656d9eae1abc",
-    "semantic_hash": "4f156f2b6b56ca466602656d9eae1abc"
+    "mtime": 1787509673.903253,
+    "ast_hash": "78d361bdf83448af92a797fe096e2a37",
+    "semantic_hash": "78d361bdf83448af92a797fe096e2a37"
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/examples/raw-net.test.yaml": {
     "mtime": 1783670969.7371087,
@@ -565,14 +565,14 @@
     "semantic_hash": "57513cc0833cac893a426d25eba7df6c"
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-core/src/gpu.rs": {
-    "mtime": 1787505473.538972,
-    "ast_hash": "b83ea3f330d59734aa78e0d2d5881d29",
-    "semantic_hash": "b83ea3f330d59734aa78e0d2d5881d29"
+    "mtime": 1787509541.2711577,
+    "ast_hash": "150bb40feb4b6761f3f7ddf6d22f8f97",
+    "semantic_hash": "150bb40feb4b6761f3f7ddf6d22f8f97"
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-core/src/step/llm.rs": {
-    "mtime": 1787507602.6291788,
-    "ast_hash": "fc97e222d2533bf085b61e8090e22bad",
-    "semantic_hash": "fc97e222d2533bf085b61e8090e22bad"
+    "mtime": 1787509644.5118349,
+    "ast_hash": "96fd63d8c46d2ee37d9b561111f7e446",
+    "semantic_hash": "96fd63d8c46d2ee37d9b561111f7e446"
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/bench/gpu/README.md": {
     "mtime": 1787507087.3337047,
