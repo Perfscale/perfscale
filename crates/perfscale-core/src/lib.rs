@@ -9,6 +9,7 @@
 //! and [`yaml::ConfigFile`] via `serde`.
 
 pub mod generate;
+pub mod gpu;
 pub mod import;
 pub mod introspect;
 pub mod lint;

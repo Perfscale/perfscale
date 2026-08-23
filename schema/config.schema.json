@@ -57,6 +57,48 @@
       ],
       "type": "object"
     },
+    "GpuConfig": {
+      "description": "GPU metrics collection for a run (`gpu:` next to `vus`/`duration`).\n\nOff by default; set `enabled: true` to sample every GPU (or the `devices` subset) for the duration of the VU phase. Failures are non-fatal: one warning is logged and the run continues without GPU metrics.",
+      "properties": {
+        "dcgm_url": {
+          "description": "dcgm-exporter metrics endpoint, used with `source: dcgm`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "devices": {
+          "description": "Restrict sampling to these GPU indices (default: all devices the source reports).",
+          "items": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "enabled": {
+          "default": false,
+          "description": "Master switch. When `false` the whole section is ignored.",
+          "type": "boolean"
+        },
+        "interval_ms": {
+          "default": 1000,
+          "description": "Sampling interval in milliseconds (default 1000).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "source": {
+          "default": "nvidia-smi",
+          "description": "Collector source: `nvidia-smi` (default) or `dcgm`. Downstream crates may register additional names via [`register_gpu_collector`].",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "ImportSpec": {
       "anyOf": [
         {
@@ -230,6 +272,17 @@
       "default": "1m",
       "description": "Duration string: `\"30s\"`, `\"1m\"`, `\"5m30s\"`, `\"1h\"`.",
       "type": "string"
+    },
+    "gpu": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/GpuConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "GPU metrics collection for the run (`gpu:`) — sample utilization, VRAM, temperature, and power every `interval_ms` while the VUs run, and land a `gpu` section in the run summary. Off by default; collection failures never fail the run. Native engine only. Boxed to keep `RunConfig` (and the `ExecutionPlan` enum embedding it) compact."
     },
     "import": {
       "anyOf": [

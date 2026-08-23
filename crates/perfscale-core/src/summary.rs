@@ -286,6 +286,11 @@ pub struct SummaryExport {
     /// summary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thresholds: Option<crate::step::thresholds::ThresholdsSummary>,
+    /// GPU metrics collected during the run (`gpu.enabled: true`), parsed
+    /// from the `gpu: {...}` line the native engine emits after the metric
+    /// summary. `None` when GPU collection was off or unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<crate::gpu::GpuSummary>,
 }
 
 /// Extract the `thresholds: {...}` line the native engine emits at the end of
@@ -295,6 +300,22 @@ pub fn parse_thresholds(output: &str) -> Option<crate::step::thresholds::Thresho
     for line in output.lines() {
         let t = line.trim();
         if let Some(rest) = t.strip_prefix("thresholds:") {
+            if let Ok(parsed) = serde_json::from_str(rest.trim()) {
+                return Some(parsed);
+            }
+        }
+    }
+    None
+}
+
+/// Extract the `gpu: {...}` line the native engine emits at the end of a run
+/// with `gpu.enabled: true` (see [`crate::gpu`]). Returns `None` when GPU
+/// collection was off or produced no samples. The human-readable
+/// `gpu: N devices …` console line is skipped — only the JSON payload parses.
+pub fn parse_gpu_summary(output: &str) -> Option<crate::gpu::GpuSummary> {
+    for line in output.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("gpu:") {
             if let Ok(parsed) = serde_json::from_str(rest.trim()) {
                 return Some(parsed);
             }
@@ -346,6 +367,39 @@ impl SummaryExport {
 
         if let Some(ref t) = self.thresholds {
             row("Thresholds", format!("{} — {}", t.status, t.message));
+        }
+
+        if let Some(ref g) = self.gpu {
+            for d in &g.devices {
+                let f = |v: Option<f64>, unit: &str| {
+                    v.map(|x| format!("{x:.1}{unit}"))
+                        .unwrap_or_else(|| "—".into())
+                };
+                row(
+                    &format!("GPU{} util avg/max", d.index),
+                    format!(
+                        "{} / {}",
+                        f(d.avg_utilization_pct, "%"),
+                        f(d.max_utilization_pct, "%")
+                    ),
+                );
+                row(
+                    &format!("GPU{} VRAM max", d.index),
+                    match (d.max_memory_used_mib, d.memory_total_mib) {
+                        (Some(used), Some(total)) => format!("{used:.0} / {total:.0} MiB"),
+                        (Some(used), None) => format!("{used:.0} MiB"),
+                        _ => "—".into(),
+                    },
+                );
+                row(
+                    &format!("GPU{} temp/power max", d.index),
+                    format!(
+                        "{} / {}",
+                        f(d.max_temperature_c, "°C"),
+                        f(d.max_power_w, "W")
+                    ),
+                );
+            }
         }
 
         md.push_str(&format!(
@@ -618,6 +672,7 @@ grpc_req_failed: 1 0.10/s
             },
             summary: with_summary.then(|| parse_summary(NATIVE_OUTPUT).unwrap()),
             thresholds: None,
+            gpu: None,
         }
     }
 
@@ -706,5 +761,51 @@ grpc_req_failed: 1 0.10/s
         // …and the markdown summary surfaces the gate result.
         let md = export.to_markdown();
         assert!(md.contains("| Thresholds | fail —"), "{md}");
+    }
+
+    // -----------------------------------------------------------------
+    // GPU section (gpu.enabled runs)
+    // -----------------------------------------------------------------
+
+    const GPU_LINE: &str = r#"gpu: {"source":"nvidia-smi","interval_ms":1000,"devices":[{"index":0,"samples":[{"ts_ms":1,"index":0,"utilization_pct":42.0,"memory_used_mib":12288.0,"memory_total_mib":24576.0,"temperature_c":61.0,"power_w":250.4}],"avg_utilization_pct":42.0,"max_utilization_pct":42.0,"max_memory_used_mib":12288.0,"memory_total_mib":24576.0,"max_temperature_c":61.0,"max_power_w":250.4}]}"#;
+
+    #[test]
+    fn parse_gpu_summary_extracts_json_line_and_skips_console_lines() {
+        let out = format!(
+            "{NATIVE_OUTPUT}\ngpu: 1 device, 1 samples every 1000ms (nvidia-smi)\ngpu0: util avg=42.0% max=42.0%\n{GPU_LINE}\n"
+        );
+        let g = parse_gpu_summary(&out).expect("gpu line parsed");
+        assert_eq!(g.source, "nvidia-smi");
+        assert_eq!(g.devices.len(), 1);
+        assert_eq!(g.devices[0].samples.len(), 1);
+        assert_eq!(g.devices[0].max_utilization_pct, Some(42.0));
+
+        assert!(parse_gpu_summary(NATIVE_OUTPUT).is_none());
+        assert!(parse_gpu_summary("gpu: 1 device, 3 samples every 1000ms (dcgm)").is_none());
+        assert!(parse_gpu_summary("").is_none());
+    }
+
+    #[test]
+    fn export_json_carries_gpu_section_when_present() {
+        let mut export = sample_export(true);
+        export.gpu = parse_gpu_summary(GPU_LINE);
+        let json = export.to_json();
+        assert!(json.contains("\"gpu\""), "{json}");
+        assert!(json.contains("\"nvidia-smi\""), "{json}");
+        let back: SummaryExport = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, export);
+
+        // Without GPU collection the field is omitted entirely.
+        let json = sample_export(true).to_json();
+        assert!(!json.contains("\"gpu\""), "{json}");
+
+        // …and the markdown summary surfaces per-device aggregates.
+        let md = export.to_markdown();
+        assert!(md.contains("| GPU0 util avg/max | 42.0% / 42.0% |"), "{md}");
+        assert!(md.contains("| GPU0 VRAM max | 12288 / 24576 MiB |"), "{md}");
+        assert!(
+            md.contains("| GPU0 temp/power max | 61.0°C / 250.4W |"),
+            "{md}"
+        );
     }
 }

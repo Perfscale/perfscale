@@ -619,6 +619,11 @@ pub async fn run_native(
         })
     };
 
+    // GPU sampler: spans exactly the VU phase, so utilization/VRAM/temp/power
+    // line up with the load on the [stats] timeline. Best-effort — a missing
+    // GPU/tool warns once and the run continues without GPU metrics.
+    let gpu_session = crate::gpu::start(config.gpu.as_deref(), &tx).await;
+
     let summary_shape = match &schedule {
         Schedule::Fixed { vus, duration_secs } => {
             let (vus, duration_secs) = (*vus, *duration_secs);
@@ -662,6 +667,7 @@ pub async fn run_native(
         ),
     };
     reporter.abort();
+    let gpu_summary = gpu_session.and_then(|s| s.stop());
 
     // Teardown on every non-setup-failure path: `after` steps (best-effort),
     // then stop whatever managed processes are still alive.
@@ -701,6 +707,23 @@ pub async fn run_native(
             &format!(
                 "thresholds: {}",
                 serde_json::to_string(t).expect("thresholds summary is always serializable")
+            ),
+        )
+        .await;
+    }
+    // GPU block, when the run collected it: a compact human-readable
+    // device/aggregate view, then the machine-readable `gpu: {...}` line
+    // (timeseries included) — consumed like the thresholds line downstream.
+    if let Some(ref g) = gpu_summary {
+        for line in g.console_lines() {
+            emit(&tx, LogSource::Stdout, &line).await;
+        }
+        emit(
+            &tx,
+            LogSource::Stdout,
+            &format!(
+                "gpu: {}",
+                serde_json::to_string(g).expect("gpu summary is always serializable")
             ),
         )
         .await;
@@ -1876,6 +1899,144 @@ mod tests {
         };
         let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
         assert!(lines.iter().any(|l| l.text.starts_with("Starting 1 VU")));
+    }
+
+    // -----------------------------------------------------------------
+    // GPU metrics collection (gpu.enabled)
+    // -----------------------------------------------------------------
+
+    struct FakeGpuCollector;
+
+    impl crate::gpu::GpuCollector for FakeGpuCollector {
+        fn name(&self) -> &'static str {
+            "runner-fake"
+        }
+
+        fn sample<'a>(&'a self) -> crate::gpu::GpuSampleFuture<'a> {
+            Box::pin(async {
+                Ok(vec![crate::gpu::GpuSample {
+                    ts_ms: 0,
+                    index: 0,
+                    utilization_pct: Some(73.0),
+                    memory_used_mib: Some(8192.0),
+                    memory_total_mib: Some(24576.0),
+                    temperature_c: Some(58.0),
+                    power_w: Some(210.5),
+                }])
+            })
+        }
+    }
+
+    struct BrokenGpuCollector;
+
+    impl crate::gpu::GpuCollector for BrokenGpuCollector {
+        fn name(&self) -> &'static str {
+            "runner-broken"
+        }
+
+        fn sample<'a>(&'a self) -> crate::gpu::GpuSampleFuture<'a> {
+            Box::pin(async { Err("no such gpu".to_string()) })
+        }
+    }
+
+    fn gpu_config(source: &str) -> RunConfig {
+        RunConfig {
+            vus: 1,
+            duration: "1s".into(),
+            gpu: Some(Box::new(crate::gpu::GpuConfig {
+                enabled: true,
+                interval_ms: 100,
+                source: source.into(),
+                ..crate::gpu::GpuConfig::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    /// The pro seam: a collector registered via `register_gpu_collector` is
+    /// selected by `gpu.source`, and its samples land in the run summary —
+    /// human-readable device lines plus the machine-readable `gpu: {...}`.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn run_with_fake_gpu_collector_lands_samples_in_summary() {
+        crate::gpu::register_gpu_collector(Arc::new(FakeGpuCollector));
+        let lines = run_and_collect(vec![sleep_step(50)], gpu_config("runner-fake"), false).await;
+
+        let json_line = lines
+            .iter()
+            .find(|l| l.text.starts_with("gpu: {"))
+            .expect("machine-readable gpu line emitted");
+        let g: crate::gpu::GpuSummary =
+            serde_json::from_str(json_line.text.strip_prefix("gpu: ").unwrap()).unwrap();
+        assert_eq!(g.source, "runner-fake");
+        assert_eq!(g.interval_ms, 100);
+        assert_eq!(g.devices.len(), 1);
+        let d = &g.devices[0];
+        assert!(d.samples.len() >= 5, "1s run at 100ms: {:?}", d.samples);
+        assert!(d.samples.iter().all(|s| s.ts_ms > 0), "timestamps stamped");
+        assert_eq!(d.avg_utilization_pct, Some(73.0));
+        assert_eq!(d.max_memory_used_mib, Some(8192.0));
+        assert_eq!(d.max_temperature_c, Some(58.0));
+        assert_eq!(d.max_power_w, Some(210.5));
+
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.starts_with("gpu0: util avg=73.0%")),
+            "console block: {lines:?}"
+        );
+        // And the whole output round-trips through the summary parser.
+        let text = lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed = crate::summary::parse_gpu_summary(&text).expect("gpu summary parses back");
+        assert_eq!(parsed.devices[0].max_utilization_pct, Some(73.0));
+    }
+
+    /// GPU collection is best-effort: a collector that fails on its first
+    /// tick logs ONE warning and the run completes without a gpu section.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn run_with_broken_gpu_collector_warns_once_and_succeeds() {
+        crate::gpu::register_gpu_collector(Arc::new(BrokenGpuCollector));
+        let lines = run_and_collect(vec![sleep_step(50)], gpu_config("runner-broken"), false).await;
+
+        let warnings = lines
+            .iter()
+            .filter(|l| l.text.contains("gpu metrics unavailable"))
+            .count();
+        assert_eq!(warnings, 1, "exactly one warning: {lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.text.starts_with("gpu: {")),
+            "no gpu section: {lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.text.starts_with("Done —")));
+    }
+
+    /// Same guarantee against the real default source on a GPU-less host
+    /// (CI, laptops): `gpu.enabled: true` must not fail the run.
+    #[tokio::test]
+    async fn run_with_nvidia_smi_on_gpu_less_machine_warns_and_succeeds() {
+        let has_nvidia_smi = std::process::Command::new("nvidia-smi")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if has_nvidia_smi {
+            eprintln!("skipping: this machine has nvidia-smi");
+            return;
+        }
+        let lines = run_and_collect(vec![sleep_step(50)], gpu_config("nvidia-smi"), false).await;
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.contains("gpu metrics unavailable")),
+            "warning: {lines:?}"
+        );
+        assert!(!lines.iter().any(|l| l.text.starts_with("gpu: {")));
+        assert!(lines.iter().any(|l| l.text.starts_with("Done —")));
     }
 
     // -----------------------------------------------------------------

@@ -138,6 +138,14 @@ pub struct RunConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrival: Option<Box<ArrivalConfig>>,
 
+    /// GPU metrics collection for the run (`gpu:`) — sample utilization,
+    /// VRAM, temperature, and power every `interval_ms` while the VUs run,
+    /// and land a `gpu` section in the run summary. Off by default;
+    /// collection failures never fail the run. Native engine only. Boxed to
+    /// keep `RunConfig` (and the `ExecutionPlan` enum embedding it) compact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<Box<crate::gpu::GpuConfig>>,
+
     /// Confinement root for file actions. When set, every file path a step
     /// touches is canonicalized and must stay under this directory (`../`
     /// escapes and symlink hops out of it are rejected). Never parsed from
@@ -211,6 +219,7 @@ impl Default for RunConfig {
             allow_process_actions: false,
             stages: Vec::new(),
             arrival: None,
+            gpu: None,
             fs_root: None,
         }
     }

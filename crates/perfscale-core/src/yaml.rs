@@ -387,4 +387,67 @@ before:
         assert_eq!(cfg.run.vus, 1);
         assert!(cfg.report.is_none());
     }
+
+    #[test]
+    fn parses_gpu_section_with_defaults() {
+        let yaml = r#"
+vus: 4
+gpu:
+  enabled: true
+"#;
+        let cfg = parse_config_file(yaml).unwrap();
+        let gpu = cfg.run.gpu.expect("gpu section parsed");
+        assert!(gpu.enabled);
+        assert_eq!(gpu.interval_ms, 1000);
+        assert_eq!(gpu.source, "nvidia-smi");
+        assert!(gpu.dcgm_url.is_none());
+        assert!(gpu.devices.is_none());
+    }
+
+    #[test]
+    fn parses_gpu_section_full() {
+        let yaml = r#"
+gpu:
+  enabled: true
+  interval_ms: 500
+  source: dcgm
+  dcgm_url: http://10.0.0.5:9400/metrics
+  devices: [0, 1]
+"#;
+        let cfg = parse_config_file(yaml).unwrap();
+        let gpu = cfg.run.gpu.expect("gpu section parsed");
+        assert_eq!(gpu.interval_ms, 500);
+        assert_eq!(gpu.source, "dcgm");
+        assert_eq!(
+            gpu.dcgm_url.as_deref(),
+            Some("http://10.0.0.5:9400/metrics")
+        );
+        assert_eq!(gpu.devices, Some(vec![0, 1]));
+    }
+
+    #[test]
+    fn config_without_gpu_has_none_and_stays_off_the_wire() {
+        let cfg = parse_config_file("vus: 2\n").unwrap();
+        assert!(cfg.run.gpu.is_none());
+        // Wire-compatible: absent key deserializes, None never serializes
+        // (perfscaled embeds RunConfig).
+        let json = serde_json::to_value(RunConfig::default()).unwrap();
+        assert!(json.get("gpu").is_none());
+    }
+
+    #[test]
+    fn rejects_gpu_section_with_wrong_types() {
+        for bad in [
+            "gpu: yes\n",                                 // not an object
+            "gpu:\n  enabled: yes please\n",              // enabled not a bool
+            "gpu:\n  enabled: true\n  interval_ms: -5\n", // negative interval
+            "gpu:\n  enabled: true\n  devices: zero\n",   // devices not a list
+        ] {
+            let err = parse_config_file(bad).unwrap_err();
+            assert!(
+                err.contains("schema validation failed"),
+                "'{bad}' → unexpected error: {err}"
+            );
+        }
+    }
 }
