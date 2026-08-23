@@ -37,6 +37,8 @@ tiny local dev server for collecting results.
   schema validation
 - [gRPC guide](core/grpc.md) — dynamic schemas (reflection / descriptor
   sets), unary calls, streams
+- [GPU metrics guide](core/gpu.md) — utilization/VRAM/temp/power during a
+  run, `nvidia-smi` and dcgm-exporter sources
 
 ## For contributors
 

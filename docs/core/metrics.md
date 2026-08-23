@@ -164,6 +164,28 @@ so gate numbers match what the summary prints. The line is collected into
 (`{status, message, violations}`), and a `fail` status makes the CLI exit
 non-zero. See [actions.md](actions.md#stdthresholdsv1).
 
+## GPU metrics (`gpu:`)
+
+With `gpu.enabled: true` in the [run config](../yaml-reference.md#config--c-configyaml),
+the native engine samples every GPU on the host — utilization %, VRAM
+used/total, temperature, power draw — once per `interval_ms` for the whole
+VU phase (via `nvidia-smi` or a dcgm-exporter endpoint). After the metric
+summary the run prints a compact per-device block plus one machine-readable
+`gpu: {...}` line with the full timeseries, which `--summary-export` embeds
+under `gpu`:
+
+```text
+gpu: 1 device, 300 samples every 1000ms (nvidia-smi)
+gpu0: util avg=64.3% max=100.0% vram max=41088/81559MiB temp max=71.0C power max=512.3W
+gpu: {"source":"nvidia-smi","interval_ms":1000,"devices":[{"index":0,"samples":[…],…}]}
+```
+
+Collection is best-effort: no GPU / missing tooling logs one warning and the
+run continues without GPU metrics. Sample timestamps share the epoch-ms
+timeline with the `[stats]` lines, so load and GPU state correlate directly —
+the primary use case is [`std/llm@v1`](llm.md) runs against local model
+servers. Full guide: [gpu.md](gpu.md).
+
 ## `--quiet`
 
 Two independent layers:

@@ -162,3 +162,7 @@ status and the first ~500 characters of the error body.
 - Detailed per-token timing (ITL/TPOT percentiles) and cost accounting are a
   pro capability on the `register_llm_observer` seam; the OSS build reports
   the metrics above.
+
+Against a **local** model server the GPU is the system under test — turn on
+[GPU metrics](gpu.md) (`gpu.enabled: true` in the config) to chart
+utilization/VRAM/temperature alongside TTFT and tokens/sec.

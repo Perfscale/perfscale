@@ -129,6 +129,11 @@ duration: 5m     # "30s", "1m", "5m30s", "1h" — default "1m"
 
 report:          # optional — forward the summary after the run
   url: http://localhost:7999
+
+gpu:             # optional — GPU metrics during the run (native engine)
+  enabled: true
+  interval_ms: 1000
+  source: nvidia-smi
 ```
 
 | Field | Default | Description |
@@ -138,11 +143,30 @@ report:          # optional — forward the summary after the run
 | `stages` | — | Ramping-VU profile (k6-style): list of `{ duration, target }` stages. Overrides `vus`/`duration`; mutually exclusive with `arrival`. Native engine only |
 | `arrival` | — | Arrival-rate profile (open model): `{ max_vus, pre_allocated_vus?, stages: [{ duration, rate }] }` — hold an iterations/sec rate. Mutually exclusive with `stages`. Native engine only |
 | `report.url` | — | A `perfscale serve` base URL; the CLI `--report` flag overrides it |
+| `gpu` | — | GPU metrics collection — see [GPU metrics](#gpu-metrics-gpu). Native engine only |
 | `before` | `[]` | One-time setup steps — see [Setup and variables](#setup-and-variables) |
 | `after` | `[]` | One-time teardown steps — see [Teardown](#teardown-after) |
 | `variables` | `{}` | Static values exposed to steps as `${{ vars.* }}` |
 | `allow_process_actions` | `false` | Let steps spawn/signal OS processes (`std/child_process@v1`, `std/kill_process@v1`). Fail-closed: a step list from an untrusted source cannot touch processes until you opt in |
 | `import` | — | Base document to inherit from — see [Composing documents](#composing-documents-import) |
+
+### GPU metrics (`gpu:`)
+
+Sample the host's GPUs (utilization, VRAM, temperature, power) for the whole
+run and land a `gpu` section in the run summary — primarily to correlate
+[`std/llm@v1`](core/llm.md) load with GPU state. Off by default; collection
+failures (no GPU, missing tooling) log one warning and never fail the run.
+
+```yaml
+gpu:
+  enabled: true
+  interval_ms: 1000                          # default 1000 (min 10)
+  source: nvidia-smi                         # nvidia-smi (default) | dcgm
+  dcgm_url: http://127.0.0.1:9400/metrics    # for source: dcgm
+  devices: [0, 1]                            # optional; default — all GPUs
+```
+
+Full guide: [core/gpu.md](core/gpu.md).
 
 ### Load profiles
 
