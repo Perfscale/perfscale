@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../../schema/config.schema.json
+#
+# Stepped ramping-VU profile for the GPU bench (closed model): each plateau
+# raises concurrency, so the run shows where tokens/sec flattens and TTFT
+# starts climbing as the model server saturates the GPU. Total run length
+# ≈ 6m. Run with:
+#   perfscale run -f bench/gpu/ollama.yaml -c bench/gpu/stages.yaml
+#
+# `variables.model` is the default model — run.sh regenerates an override
+# config from $OLLAMA_MODEL/$VLLM_MODEL (import-merged on top of this file).
+# Read the result per plateau: the periodic [stats] lines and the gpu
+# timeseries share a timeline, so each hold level maps to its own
+# tok/s + TTFT + utilization window.
+variables:
+  model: llama3.2:3b
+stages:
+  - { duration: 30s, target: 2 }  # warm-up ramp
+  - { duration: 1m, target: 2 }   # plateau @ 2 concurrent requests
+  - { duration: 30s, target: 8 }
+  - { duration: 1m, target: 8 }   # plateau @ 8
+  - { duration: 30s, target: 16 }
+  - { duration: 1m, target: 16 }  # plateau @ 16
+  - { duration: 30s, target: 0 }  # graceful ramp-down
+gpu:
+  enabled: true
+  interval_ms: 1000
+  source: nvidia-smi

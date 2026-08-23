@@ -61,6 +61,14 @@ interpolation, metrics recording / percentile summary, `RingBuf` process-output
 capture, `waitUntil` readiness matchers) live in
 `crates/perfscale-core/benches/` and run with `cargo bench -p perfscale-core`.
 
+## GPU inference (local only)
+
+A separate suite for benchmarking **GPU-backed LLM inference** (Ollama /
+vLLM via `std/llm@v1`, with `gpu:` run metrics — TTFT, tokens/sec, GPU
+utilization/VRAM) lives in [`bench/gpu/`](../bench/gpu/README.md). It is
+deliberately not part of the CI workflow above: hosted runners have no GPU,
+so the suite runs on a local machine with an NVIDIA card.
+
 ## Methodology
 
 - **Target**: a `perfscale serve` instance on loopback (`GET /health`; the

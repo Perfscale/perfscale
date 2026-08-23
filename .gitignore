@@ -5,3 +5,6 @@ __pycache__/
 
 # local build artifacts
 grpc-echo-amd64
+
+# GPU bench output
+bench/gpu/results/

@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../../schema/test.schema.json
+#
+# GPU bench test definition: chat completions against a local Ollama server
+# (OpenAI-compatible endpoint on :11434). Streaming is on by default, so the
+# run measures TTFT and tokens/sec per request (see docs/core/llm.md).
+#
+# The model comes from `${{ vars.model }}` — the config's `variables`
+# (stages.yaml / arrival.yaml default it to llama3.2:3b; run.sh overrides it
+# from $OLLAMA_MODEL via an import-merged config). Pair with a profile:
+#   perfscale run -f bench/gpu/ollama.yaml -c bench/gpu/stages.yaml
+steps:
+  - name: chat completion
+    use: std/llm@v1
+    with:
+      url: http://127.0.0.1:11434/v1/chat/completions
+      model: "${{ vars.model }}"
+      prompt: "Explain how a transformer neural network works, in detail."
+      max_tokens: 256
+      timeout_ms: 120000
+    check:
+      status: 200

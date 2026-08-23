@@ -131,6 +131,32 @@ shard the model, or lower `vus`); util well below 100% with rising TTFT →
 look at the server (queueing, context limits) instead. VRAM creeping to
 `memory_total_mib` explains evictions/OOMs mid-run.
 
+## GPU benchmark suite
+
+The repo ships a ready-made local suite in
+[`bench/gpu/`](https://github.com/Perfscale/perfscale/tree/main/bench/gpu):
+`std/llm@v1` scenarios against Ollama and vLLM with `gpu:` metrics on, a
+stepped ramping-VU profile (concurrency vs tok/s / TTFT degradation) and an
+arrival-rate profile (find the rate where TTFT and `dropped_iterations`
+climb). It is local-only — CI runners have no GPU.
+
+```sh
+bench/gpu/run.sh ollama        # or: vllm, or both
+```
+
+…runs each profile, writes `--summary-export` JSONs and raw logs to
+`bench/gpu/results/<timestamp>/`, and prints a compact table:
+
+```text
+scenario        reqs  req/s  tok/s avg  ttft p50 ms  ttft p95 ms  gpu util max  vram max MiB  dropped
+--------------  ----  -----  ---------  -----------  -----------  ------------  ------------  -------
+ollama-stages   152   0.42   38.71      212.40       890.15       100%          5104          0
+ollama-arrival  210   0.63   31.05      340.72       2410.30      100%          5112          17
+```
+
+Setup (Ollama / vLLM), requirements, and how to read the numbers:
+`bench/gpu/README.md`.
+
 ## Extension seam
 
 `perfscale-core` exposes `gpu::GpuCollector` and

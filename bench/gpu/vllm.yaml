@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../../schema/test.schema.json
+#
+# GPU bench test definition: chat completions against a local vLLM server
+# (`vllm serve` / the vllm-openai Docker image, OpenAI-compatible endpoint on
+# :8000). Streaming is on by default, so the run measures TTFT and
+# tokens/sec per request (see docs/core/llm.md).
+#
+# The model comes from `${{ vars.model }}` and must match the model the
+# server was started with — run.sh sets it from $VLLM_MODEL via an
+# import-merged config. Pair with a profile:
+#   perfscale run -f bench/gpu/vllm.yaml -c bench/gpu/stages.yaml
+steps:
+  - name: chat completion
+    use: std/llm@v1
+    with:
+      url: http://127.0.0.1:8000/v1/chat/completions
+      model: "${{ vars.model }}"
+      prompt: "Explain how a transformer neural network works, in detail."
+      max_tokens: 256
+      timeout_ms: 120000
+    check:
+      status: 200

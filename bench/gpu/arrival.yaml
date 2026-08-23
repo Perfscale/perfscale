@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../../schema/config.schema.json
+#
+# Arrival-rate profile for the GPU bench (open model): the completion rate
+# steps up every minute while the engine scales a worker pool to keep up.
+# Unlike `stages`, new requests keep arriving on schedule even when the
+# server slows down — so the rate where the periodic [stats] TTFT starts
+# climbing and `dropped_iterations` first grows past 0 is the server's
+# practical capacity for this model/prompt. Run with:
+#   perfscale run -f bench/gpu/ollama.yaml -c bench/gpu/arrival.yaml
+#
+# A permit that arrives while all `max_vus` workers are busy is dropped and
+# counted in the `dropped_iterations` summary metric. `variables.model` is
+# the default model — run.sh overrides it (import-merged config).
+variables:
+  model: llama3.2:3b
+arrival:
+  max_vus: 64
+  pre_allocated_vus: 2 # workers spawned at start; pool grows lazily to max_vus
+  stages:
+    - { duration: 1m, rate: 1 }   # 1 completion/sec
+    - { duration: 1m, rate: 2 }
+    - { duration: 1m, rate: 4 }
+    - { duration: 1m, rate: 8 }
+    - { duration: 1m, rate: 16 }
+    - { duration: 30s, rate: 0 }  # drain in-flight requests
+gpu:
+  enabled: true
+  interval_ms: 1000
+  source: nvidia-smi

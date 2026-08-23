@@ -263,15 +263,17 @@ const TEST_TOP_FIELDS: [&str; 1] = ["steps"];
 const STEP_FIELDS: [&str; 8] = [
     "name", "use", "uses", "with", "check", "outputs", "severity", "message",
 ];
-const CONFIG_TOP_FIELDS: [&str; 9] = [
+const CONFIG_TOP_FIELDS: [&str; 11] = [
     "vus",
     "duration",
     "stages",
     "arrival",
+    "gpu",
     "report",
     "before",
     "after",
     "variables",
+    "allow_file_actions",
     "allow_process_actions",
 ];
 const REPORT_FIELDS: [&str; 1] = ["url"];

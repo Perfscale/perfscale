@@ -11,3 +11,15 @@ Release notes for the next release, written as features land.
 - If this file has no entries at tag time, the release falls back to
   auto-generated notes and the workflow prints a warning.
 -->
+
+- **GPU benchmark suite (`bench/gpu/`)** — a local (non-CI) suite for
+  benchmarking GPU inference: `std/llm@v1` scenarios against Ollama and
+  vLLM with `gpu:` metrics on, a stepped ramping-VU profile (concurrency
+  vs tok/s / TTFT degradation) and an arrival-rate profile (find the rate
+  where TTFT and `dropped_iterations` climb). `run.sh` checks the binary,
+  GPU tooling, and the model server, runs the profiles, and writes
+  `--summary-export` JSONs + raw logs to `bench/gpu/results/<timestamp>/`
+  with a compact summary table. Guide: `bench/gpu/README.md`.
+- **Fix: `perfscale lint` accepts `gpu:` configs** — lint rejected run
+  configs using the v0.14.0 `gpu:` section (and `allow_file_actions`) as
+  unknown fields; both are now in its known-field list.
