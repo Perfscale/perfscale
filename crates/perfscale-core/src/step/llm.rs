@@ -1346,6 +1346,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_key_from_env_placeholder_reaches_the_header_not_the_logs() {
+        std::env::set_var("PERFSCALE_TEST_LLM_ENV_KEY", "sk-env-secret");
+        let cap = Capture::default();
+        let state = cap.clone();
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(
+                move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                    let state = state.clone();
+                    async move {
+                        for (k, v) in headers.iter() {
+                            state.headers.lock().unwrap().push((
+                                k.as_str().to_string(),
+                                v.to_str().unwrap_or("").to_string(),
+                            ));
+                        }
+                        state
+                            .bodies
+                            .lock()
+                            .unwrap()
+                            .push(serde_json::from_slice::<Value>(&body).unwrap());
+                        sse_response(openai_chunks(), 1)
+                    }
+                },
+            ),
+        );
+        let base = serve(app).await;
+        let out = execute_action(
+            "std/llm@v1",
+            &json!({
+                "url": format!("{base}/v1/chat/completions"),
+                "model": "gpt-test",
+                "prompt": "hi",
+                "api_key": "${{ env.PERFSCALE_TEST_LLM_ENV_KEY }}",
+            }),
+            &Context::new(),
+            "chat",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+
+        // The env value reached the Authorization header…
+        let headers = cap.headers();
+        let auth = headers
+            .iter()
+            .find(|(k, _)| k == "authorization")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(auth, Some("Bearer sk-env-secret"), "{headers:?}");
+        // …and never leaked into a log line or the step output.
+        for (_, line) in &out.logs {
+            assert!(!line.contains("sk-env-secret"), "secret in log: {line}");
+        }
+        assert!(
+            !out.value.to_string().contains("sk-env-secret"),
+            "secret in output value"
+        );
+        std::env::remove_var("PERFSCALE_TEST_LLM_ENV_KEY");
+    }
+
+    #[tokio::test]
+    async fn missing_env_var_fails_the_step_before_any_request() {
+        std::env::remove_var("PERFSCALE_TEST_LLM_ENV_UNSET");
+        let out = execute_action(
+            "std/llm@v1",
+            &json!({
+                "url": "http://127.0.0.1:1/v1/chat/completions",
+                "model": "gpt-test",
+                "prompt": "hi",
+                "api_key": "${{ env.PERFSCALE_TEST_LLM_ENV_UNSET }}",
+            }),
+            &Context::new(),
+            "chat",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0]
+                .1
+                .contains("env var 'PERFSCALE_TEST_LLM_ENV_UNSET' is not set"),
+            "{:?}",
+            out.logs
+        );
+        // Fail-fast: no HTTP sample was recorded (no request ever went out).
+        assert!(out.http_sample.is_none(), "{:?}", out.logs);
+    }
+
+    #[tokio::test]
     async fn openai_non_streaming_has_no_ttft() {
         let app = axum::Router::new().route(
             "/v1/chat/completions",

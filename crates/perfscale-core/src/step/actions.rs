@@ -134,14 +134,22 @@ pub async fn execute_action(
 ) -> ActionOutput {
     // Interpolation deep-clones the whole params tree; most steps have no
     // placeholders, and this runs once per step per iteration — a cheap
-    // borrow-only scan skips the clone on the hot path.
+    // borrow-only scan skips the clone on the hot path. Strict mode: a
+    // missing `${{ env.NAME }}` fails the step instead of silently
+    // substituting an empty string (an empty api_key is a confusing 401).
     let resolved: std::borrow::Cow<'_, Value> =
         if matches!(action_id, "std/db-query@v1" | "db-query") {
             // db-query interpolates everything EXCEPT the SQL text itself — the
             // query is bound via `params`, never string-interpolated.
-            std::borrow::Cow::Owned(super::db::interpolate_query_params(params, ctx))
+            match super::db::interpolate_query_params(params, ctx) {
+                Ok(v) => std::borrow::Cow::Owned(v),
+                Err(msg) => return err(step_name, &msg),
+            }
         } else if has_placeholder(params) {
-            std::borrow::Cow::Owned(ctx.interpolate_value(params))
+            match ctx.try_interpolate_value(params) {
+                Ok(v) => std::borrow::Cow::Owned(v),
+                Err(msg) => return err(step_name, &msg),
+            }
         } else {
             std::borrow::Cow::Borrowed(params)
         };

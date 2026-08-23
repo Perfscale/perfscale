@@ -73,7 +73,24 @@ impl Context {
     /// - `${{ name.field }}`          → field of a stored JSON object
     /// - `${{ name.a.b }}`            → nested path, one JSON level per `.`
     ///   (e.g. `${{ resp.headers.x-request-id }}`)
+    /// - `${{ env.NAME }}`            → process environment variable `NAME`;
+    ///   a missing variable resolves to an empty string here — callers that
+    ///   can surface errors should use [`Context::try_interpolate`], which
+    ///   fails instead (a silently empty `api_key` is a confusing 401).
     pub fn interpolate(&self, s: &str) -> String {
+        self.interpolate_inner(s, false)
+            .unwrap_or_else(|_| unreachable!("non-strict interpolation never fails"))
+    }
+
+    /// Fallible variant of [`Context::interpolate`]: a `${{ env.NAME }}`
+    /// placeholder whose variable is not set is an error
+    /// (`env var 'NAME' is not set`) instead of an empty string. Stored-var
+    /// misses stay empty-string either way, for backward compatibility.
+    pub fn try_interpolate(&self, s: &str) -> Result<String, String> {
+        self.interpolate_inner(s, true)
+    }
+
+    fn interpolate_inner(&self, s: &str, strict: bool) -> Result<String, String> {
         // Single pass: literals stream into one output buffer, so each
         // placeholder costs a lookup and a push instead of a `replace_range`
         // (memmove + possible realloc) per placeholder; a placeholder-free
@@ -81,7 +98,7 @@ impl Context {
         // substitution is never re-scanned, as before.
         let mut rest = s;
         let Some(mut start) = rest.find("${{") else {
-            return s.to_string();
+            return Ok(s.to_string());
         };
         let mut out = String::with_capacity(s.len() + 16);
         loop {
@@ -90,15 +107,19 @@ impl Context {
             let Some(end) = after.find("}}") else {
                 // Unterminated opener: the remainder stays verbatim.
                 out.push_str(&rest[start..]);
-                return out;
+                return Ok(out);
             };
-            out.push_str(&self.resolve_expr(after[..end].trim()));
+            match self.resolve_expr(after[..end].trim()) {
+                Ok(v) => out.push_str(&v),
+                Err(e) if strict => return Err(e),
+                Err(_) => {} // non-strict: a miss resolves to empty, as before
+            }
             rest = &after[end + 2..];
             match rest.find("${{") {
                 Some(next) => start = next,
                 None => {
                     out.push_str(rest);
-                    return out;
+                    return Ok(out);
                 }
             }
         }
@@ -107,35 +128,67 @@ impl Context {
     /// Resolve an expression like `"resp"`, `"resp.status"`, or a nested
     /// path like `"resp.headers.x-request-id"` — each `.` descends one JSON
     /// object level. Missing variables or fields resolve to an empty string.
-    fn resolve_expr(&self, expr: &str) -> String {
+    ///
+    /// The `env.` prefix is special: `${{ env.NAME }}` reads the process
+    /// environment variable `NAME` (everything after `env.` is the variable
+    /// name), and a missing variable is an `Err`, never a silent empty — the
+    /// non-strict wrappers downgrade that error to an empty string. The
+    /// resolved value is only ever substituted into step parameters; it is
+    /// never written to logs by the interpolation layer itself.
+    fn resolve_expr(&self, expr: &str) -> Result<String, String> {
+        if let Some(name) = expr.strip_prefix("env.") {
+            if name.is_empty() {
+                return Err("env placeholder needs a variable name: ${{ env.NAME }}".into());
+            }
+            return std::env::var(name).map_err(|_| format!("env var '{name}' is not set"));
+        }
         let mut segments = expr.split('.');
         let root = segments.next().unwrap_or("");
         let Some(mut current) = self.vars.get(root) else {
-            return String::new();
+            return Ok(String::new());
         };
         for segment in segments {
             match current.get(segment) {
                 Some(v) => current = v,
-                None => return String::new(),
+                None => return Ok(String::new()),
             }
         }
-        value_to_string(current)
+        Ok(value_to_string(current))
     }
 
     /// Apply interpolation to every string leaf of a JSON `Value`.
+    ///
+    /// Non-strict: a missing `${{ env.NAME }}` resolves to an empty string.
+    /// Prefer [`Context::try_interpolate_value`] where a failure can be
+    /// surfaced (step execution).
     pub fn interpolate_value(&self, v: &Value) -> Value {
-        match v {
-            Value::String(s) => Value::String(self.interpolate(s)),
+        self.interpolate_value_inner(v, false)
+            .unwrap_or_else(|_| unreachable!("non-strict interpolation never fails"))
+    }
+
+    /// Fallible variant of [`Context::interpolate_value`]: the first missing
+    /// `${{ env.NAME }}` anywhere in the tree fails the whole value.
+    pub fn try_interpolate_value(&self, v: &Value) -> Result<Value, String> {
+        self.interpolate_value_inner(v, true)
+    }
+
+    fn interpolate_value_inner(&self, v: &Value, strict: bool) -> Result<Value, String> {
+        Ok(match v {
+            Value::String(s) => Value::String(self.interpolate_inner(s, strict)?),
             Value::Object(m) => {
                 let mut out = serde_json::Map::new();
                 for (k, val) in m {
-                    out.insert(k.clone(), self.interpolate_value(val));
+                    out.insert(k.clone(), self.interpolate_value_inner(val, strict)?);
                 }
                 Value::Object(out)
             }
-            Value::Array(a) => Value::Array(a.iter().map(|x| self.interpolate_value(x)).collect()),
+            Value::Array(a) => Value::Array(
+                a.iter()
+                    .map(|x| self.interpolate_value_inner(x, strict))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
             other => other.clone(),
-        }
+        })
     }
 }
 
@@ -258,5 +311,87 @@ mod tests {
         ctx.set("v", json!("first"));
         ctx.set("v", json!("second"));
         assert_eq!(ctx.interpolate("${{ v }}"), "second");
+    }
+
+    // -----------------------------------------------------------------
+    // ${{ env.NAME }}
+    // -----------------------------------------------------------------
+    //
+    // Unique variable names per test: env is process-global and tests run in
+    // parallel threads, so shared names would race.
+
+    #[test]
+    fn env_placeholder_resolves_from_process_env() {
+        std::env::set_var("PERFSCALE_TEST_CTX_ENV_RESOLVE", "s3cret");
+        let ctx = Context::new();
+        assert_eq!(
+            ctx.try_interpolate("key=${{ env.PERFSCALE_TEST_CTX_ENV_RESOLVE }}")
+                .unwrap(),
+            "key=s3cret"
+        );
+        std::env::remove_var("PERFSCALE_TEST_CTX_ENV_RESOLVE");
+    }
+
+    #[test]
+    fn env_missing_is_an_error_in_strict_mode() {
+        std::env::remove_var("PERFSCALE_TEST_CTX_ENV_MISSING");
+        let ctx = Context::new();
+        let err = ctx
+            .try_interpolate("${{ env.PERFSCALE_TEST_CTX_ENV_MISSING }}")
+            .unwrap_err();
+        assert_eq!(err, "env var 'PERFSCALE_TEST_CTX_ENV_MISSING' is not set");
+        // The error names the variable but can never contain its value.
+    }
+
+    #[test]
+    fn env_missing_is_empty_in_non_strict_mode() {
+        std::env::remove_var("PERFSCALE_TEST_CTX_ENV_LENIENT");
+        let ctx = Context::new();
+        assert_eq!(
+            ctx.interpolate("x${{ env.PERFSCALE_TEST_CTX_ENV_LENIENT }}y"),
+            "xy"
+        );
+    }
+
+    #[test]
+    fn env_placeholder_without_name_is_an_error() {
+        let ctx = Context::new();
+        let err = ctx.try_interpolate("${{ env. }}").unwrap_err();
+        assert!(err.contains("env.NAME"), "{err}");
+    }
+
+    #[test]
+    fn env_resolves_inside_nested_structures() {
+        std::env::set_var("PERFSCALE_TEST_CTX_ENV_NESTED", "nested-value");
+        let ctx = Context::new();
+        let input = json!({
+            "headers": { "authorization": "Bearer ${{ env.PERFSCALE_TEST_CTX_ENV_NESTED }}" },
+            "params": ["${{ env.PERFSCALE_TEST_CTX_ENV_NESTED }}", 3],
+        });
+        let out = ctx.try_interpolate_value(&input).unwrap();
+        assert_eq!(out["headers"]["authorization"], "Bearer nested-value");
+        assert_eq!(out["params"][0], "nested-value");
+        assert_eq!(out["params"][1], 3);
+        std::env::remove_var("PERFSCALE_TEST_CTX_ENV_NESTED");
+    }
+
+    #[test]
+    fn env_missing_anywhere_fails_the_whole_value() {
+        std::env::set_var("PERFSCALE_TEST_CTX_ENV_PRESENT", "ok");
+        std::env::remove_var("PERFSCALE_TEST_CTX_ENV_ABSENT");
+        let ctx = Context::new();
+        let input = json!({
+            "a": "${{ env.PERFSCALE_TEST_CTX_ENV_PRESENT }}",
+            "b": { "c": "${{ env.PERFSCALE_TEST_CTX_ENV_ABSENT }}" },
+        });
+        let err = ctx.try_interpolate_value(&input).unwrap_err();
+        assert!(err.contains("PERFSCALE_TEST_CTX_ENV_ABSENT"), "{err}");
+        std::env::remove_var("PERFSCALE_TEST_CTX_ENV_PRESENT");
+    }
+
+    #[test]
+    fn stored_vars_still_miss_to_empty_in_strict_mode() {
+        let ctx = Context::new();
+        assert_eq!(ctx.try_interpolate("${{ missing.field }}").unwrap(), "");
     }
 }

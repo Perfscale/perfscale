@@ -842,21 +842,22 @@ fn take_conn(params: &Value, ctx: &Context) -> Result<(String, DbConn), String> 
 
 /// Interpolation for `std/db-query@v1`: every parameter EXCEPT the SQL text
 /// itself. The query is bound, never string-interpolated — a `${{`
-/// sequence in SQL must reach the database verbatim.
-pub(crate) fn interpolate_query_params(params: &Value, ctx: &Context) -> Value {
+/// sequence in SQL must reach the database verbatim. Strict: a missing
+/// `${{ env.NAME }}` is an error, not a silent empty string.
+pub(crate) fn interpolate_query_params(params: &Value, ctx: &Context) -> Result<Value, String> {
     let Value::Object(map) = params else {
-        return params.clone();
+        return Ok(params.clone());
     };
     let mut map = map.clone();
     let raw_query = map.remove("query");
     let mut value = Value::Object(map);
     if super::actions::has_placeholder(&value) {
-        value = ctx.interpolate_value(&value);
+        value = ctx.try_interpolate_value(&value)?;
     }
     if let (Value::Object(obj), Some(query)) = (&mut value, raw_query) {
         obj.insert("query".to_string(), query);
     }
-    value
+    Ok(value)
 }
 
 /// The `metrics` object every failing DB step emits: the total counter plus
@@ -2002,7 +2003,8 @@ mod tests {
                 "params": ["${{ who }}", 7],
             }),
             &ctx,
-        );
+        )
+        .unwrap();
         // The SQL text passes through verbatim…
         assert_eq!(out["query"], "INSERT INTO t VALUES ('${{ who }}', ?)");
         // …while every other parameter interpolates as usual.
@@ -2032,6 +2034,27 @@ mod tests {
         assert!(!out.success);
         assert!(
             out.logs[0].1.contains("'query' is required"),
+            "{:?}",
+            out.logs
+        );
+    }
+
+    #[tokio::test]
+    async fn query_missing_env_var_fails_fast() {
+        std::env::remove_var("PERFSCALE_TEST_DB_ENV_UNSET");
+        let ctx = Context::new();
+        let out = execute_action(
+            "std/db-query@v1",
+            &json!({ "id": "${{ env.PERFSCALE_TEST_DB_ENV_UNSET }}", "query": "SELECT 1" }),
+            &ctx,
+            "q",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0]
+                .1
+                .contains("env var 'PERFSCALE_TEST_DB_ENV_UNSET' is not set"),
             "{:?}",
             out.logs
         );

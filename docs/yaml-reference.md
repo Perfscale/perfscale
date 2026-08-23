@@ -59,6 +59,7 @@ value** in a later step's `with:` or `check:` can then reference it:
 | `${{ __last__ }}` / `${{ __last__.field }}` | The immediately preceding step's output — always available, no `outputs:` needed |
 | `${{ config.<name>.<field> }}` | Output of a config-file `before:` setup step (see [Config](#config--c-configyaml)) |
 | `${{ vars.<key> }}` | A static value from the config file's `variables:` block |
+| `${{ env.NAME }}` | Process environment variable `NAME` — for secrets (`api_key`, tokens, DSNs) that must not live in the YAML |
 
 For `std/http@v1` the stored output is
 `{ "status": <int>, "body": <string>, "duration_ms": <float>, "headers": <object> }`
@@ -110,6 +111,15 @@ Rules and edge cases:
   `${{ auth.status }}`.
 - A **missing variable or field resolves to an empty string** — the run does
   not fail. Gate on the value with `check:` when absence should be an error.
+  **Exception:** `${{ env.NAME }}` with `NAME` unset **fails the step** with
+  `env var 'NAME' is not set` before the action runs — a silently empty
+  `api_key` would surface as a confusing 401 from the API instead.
+- `${{ env.NAME }}` reads the process environment of the `perfscale` run
+  (everything after `env.` is the variable name). `env` is a reserved
+  prefix: a stored output literally named `env` is shadowed by it. Resolved
+  values are substituted into step parameters only — they are never written
+  to logs or summaries by the engine, which is why `env.*` is the right
+  channel for secrets.
 - Path segments descend one JSON object level per `.` — header names with
   dots in them cannot be addressed (rare; everything else works).
 - Placeholders are resolved per virtual user, per iteration — each VU sees

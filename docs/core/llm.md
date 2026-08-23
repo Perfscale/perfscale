@@ -65,7 +65,10 @@ steps:
 
 `api_key` goes out as `Authorization: Bearer …`. Extra body fields the API
 understands (`temperature`, `top_p`, `presence_penalty`, …) ride in `params`,
-merged into the request verbatim.
+merged into the request verbatim. `${{ env.* }}` reads the process
+environment at run time — if the variable is unset the step fails with
+`env var 'OPENAI_API_KEY' is not set` instead of sending an empty key (see
+[Variables](../yaml-reference.md#variables-)).
 
 ## Anthropic streaming
 
