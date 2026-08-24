@@ -50,6 +50,9 @@ http_reqs..............: 4521 150.23/s
 
 - `vus` / `iterations` (+ per-second rate) are always emitted, even for
   sleep-only runs.
+- `dropped_iterations` is always emitted for arrival-rate runs — 0 when the
+  pool kept up — so threshold gates (`dropped_iterations: ["count==0"]`)
+  resolve instead of erroring on an unknown metric.
 - The `http_req_*` block appears only when at least one sample was recorded.
 - Percentiles come from a fixed-size HDR histogram (1 µs – 1 h range, two
   significant figures → ≤1% quantile error) — memory stays flat no matter how
@@ -94,6 +97,7 @@ Built-in emitters:
 | `pubsub_msgs_published` | counter | `std/pubsub@v1` | Messages accepted by the transport |
 | `pubsub_msgs_received` | counter | `std/pubsub@v1` (with `subscribe`) | Messages counted toward `subscribe.count` |
 | `pubsub_e2e_ms` | histogram | `std/pubsub@v1` (with `subscribe`) | Publish-phase start → message consumed, one sample per matched message |
+| `shared_variable_wait_ms` | histogram | `std/get_shared_variable@v1` (with `wait_for`) | Time blocked in `wait_for` before the condition held, one sample per waiting read |
 | `llm_ttft_ms` | histogram | `std/llm@v1` (streamed) | Request start → first content chunk (time to first token) |
 | `llm_tokens_per_sec` | histogram | `std/llm@v1` | Completion tokens / generation time (after the first token when streamed) |
 | `llm_prompt_tokens` | counter | `std/llm@v1` | Prompt tokens as reported by the server |

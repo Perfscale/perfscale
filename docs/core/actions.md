@@ -10,7 +10,8 @@ Full IDs carry a namespace and version (`std/http@v1`); the short aliases
 `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`,
 `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`,
 `check`, `sleep`,
-`log`, `file-read`, `file-write`, `child_process`, `kill_process`) resolve to the
+`log`, `file-read`, `file-write`, `child_process`, `kill_process`,
+`set_shared_variable`, `get_shared_variable`) resolve to the
 same implementations.
 
 ## `std/http@v1`
@@ -310,6 +311,105 @@ steps:
     check:
       body_contains: ord-1
     outputs: shipment
+```
+
+## `std/set_shared_variable@v1`
+
+> Concept-level walkthrough (declaration, patterns, drivers):
+> [Shared variables guide](shared-variables.md).
+
+Atomically mutate a shared variable — one run-scoped key/value store shared
+by every VU in the process, for cross-VU coordination (shared counters,
+producer/consumer queues, barriers) that immutable per-VU `variables` cannot
+express. Names must be **declared** in the config file's
+[`shared_variables:`](../yaml-reference.md#config--c-configyaml) block; a step
+referencing an undeclared name, or an `op` incompatible with the declared
+type (`increment` on a list), fails configuration validation before any VU
+starts.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `driver` | string | `memory` | `memory` (process-global store) or a downstream-registered driver (pro builds: Redis, …). An unknown value fails the step listing the registered drivers |
+| `name` | string | **required** | Declared shared-variable name |
+| `op` | string | `set` | `set` (any type), `increment` (number — `value` is the delta), `append` (list — `value` is the element) |
+| `value` | any | **required** | New value / increment delta / appended element |
+
+`increment` returns the new value, `append` the new list length, `set` the
+stored value. Every op is a single atomic acquisition — there is no
+read-modify-write pair to race.
+
+**Output:**
+
+```json
+{ "driver": "memory", "name": "approved_count", "op": "increment",
+  "value": 3, "duration_ms": 0.03 }
+```
+
+## `std/get_shared_variable@v1`
+
+Atomically read a shared variable, optionally blocking until a condition
+holds.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `driver` | string | `memory` | `memory` or a downstream-registered driver |
+| `name` | string | **required** | Declared shared-variable name |
+| `op` | string | `get` | `get` (any type) or `pop` (list: remove and return the first element FIFO; `null` when empty) |
+| `wait_for` | object | — | `{ exists \| equals: <json> \| length_gte: <int>, timeout_ms }` — block until the condition holds; exactly one condition key, `timeout_ms` default `5000` |
+| `extract` | object | — | `{ key: dotted-path }` — pull fields out of the value; same `$.a.b[0]` syntax as [`std/llm@v1`'s extract](#stdllmv1) |
+
+`wait_for` polls with a small async sleep (no spinning). On timeout the step
+**fails** (`[err]` line, the same contract as `std/pubsub@v1`'s subscribe),
+reporting the last observed value — a slow producer is an assertion failure,
+not a silent `null`.
+
+**Output:**
+
+```json
+{ "driver": "memory", "name": "pending_orders", "op": "pop",
+  "value": {"id": "ord-1"}, "duration_ms": 0.05 }
+```
+
+With `extract`, each extracted key is added at the top level instead of
+`value` (unresolvable paths map to `null`). A `wait_for` wait adds
+`waited_ms` to the output and a `shared_variable_wait_ms` metric sample.
+
+**Examples.** Producer/consumer queue over a shared list:
+
+```yaml
+# config.yaml
+shared_variables:
+  pending_orders: []      # type inferred: list
+```
+
+```yaml
+# producer step
+- name: enqueue order
+  use: std/set_shared_variable@v1
+  with: { name: pending_orders, op: append, value: { id: "ord-${seq}" } }
+
+# consumer step — block until something is there, then take it
+- name: dequeue order
+  use: std/get_shared_variable@v1
+  with:
+    name: pending_orders
+    op: pop
+    wait_for: { length_gte: 1, timeout_ms: 10000 }
+    extract: { order_id: $.id }
+```
+
+Shared counter:
+
+```yaml
+# config.yaml
+shared_variables:
+  approved_count: 0       # type inferred: number
+```
+
+```yaml
+- name: count approval
+  use: std/set_shared_variable@v1
+  with: { name: approved_count, op: increment, value: 1 }
 ```
 
 ## `std/llm@v1`

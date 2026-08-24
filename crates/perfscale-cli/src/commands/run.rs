@@ -301,10 +301,11 @@ fn resolve_plan(
         let cfg = config.expect("clap requires -c with -f");
         return Ok(ExecutionPlan::NativeSteps {
             test,
-            config: cfg.run.clone(),
+            config: Box::new(cfg.run.clone()),
             before: cfg.before.clone(),
             after: cfg.after.clone(),
             variables: cfg.variables.clone(),
+            shared_variables: cfg.shared_variables.clone(),
             quiet: args.quiet,
         });
     }
@@ -403,6 +404,7 @@ mod tests {
             before: Vec::new(),
             after: Vec::new(),
             variables: serde_json::Map::new(),
+            shared_variables: serde_json::Map::new(),
         }
     }
 
@@ -562,14 +564,15 @@ mod tests {
     fn plan_meta_reports_engine_and_load_shape() {
         let native = ExecutionPlan::NativeSteps {
             test: sample_test(),
-            config: RunConfig {
+            config: Box::new(RunConfig {
                 vus: 7,
                 duration: "45s".into(),
                 ..Default::default()
-            },
+            }),
             before: Vec::new(),
             after: Vec::new(),
             variables: serde_json::Map::new(),
+            shared_variables: serde_json::Map::new(),
             quiet: false,
         };
         assert_eq!(plan_meta(&native), ("native", Some(7), Some("45s".into())));
@@ -613,10 +616,11 @@ mod tests {
         ];
         let staged = ExecutionPlan::NativeSteps {
             test: sample_test(),
-            config,
+            config: Box::new(config),
             before: Vec::new(),
             after: Vec::new(),
             variables: serde_json::Map::new(),
+            shared_variables: serde_json::Map::new(),
             quiet: false,
         };
         assert_eq!(plan_meta(&staged), ("native", None, Some("3s".into())));
@@ -762,7 +766,9 @@ mod tests {
         // Native/locust-style (our own formatting).
         assert!(is_summary_line("vus....................: 3 min=1 max=3"));
         assert!(is_summary_line("iterations..............: 42 42.00/s"));
-        assert!(is_summary_line("http_req_duration......: avg=1.00ms p(50)=1ms p(90)=1ms p(95)=1ms p(99)=1ms min=1ms max=1ms"));
+        assert!(is_summary_line(
+            "http_req_duration......: avg=1.00ms p(50)=1ms p(90)=1ms p(95)=1ms p(99)=1ms min=1ms max=1ms"
+        ));
         assert!(is_summary_line("http_req_failed........: 0.00%"));
         // k6-style (leading indentation, different dot padding).
         assert!(is_summary_line(

@@ -54,6 +54,8 @@
 //! | `std/child_process@v1` | Spawn a managed OS process (restart, readiness gate, output capture) |
 //! | `std/kill_process@v1`  | Signal/stop a managed process by registry name or raw pid |
 //! | `std/thresholds@v1` | Run-level SLO gates over collected metrics (for `after:` blocks) |
+//! | `std/set_shared_variable@v1` | Atomic set/increment/append on a shared variable (drivers: memory) |
+//! | `std/get_shared_variable@v1` | Atomic get/pop on a shared variable, with `wait_for` blocking reads |
 //!
 //! # Extending with custom actions
 //!
@@ -223,6 +225,12 @@ pub async fn execute_action(
         }
         "std/thresholds@v1" | "thresholds" => {
             super::thresholds::thresholds_action(&resolved, ctx, step_name)
+        }
+        "std/set_shared_variable@v1" | "set_shared_variable" => {
+            super::shared_variable::set_shared_variable_action(&resolved, step_name).await
+        }
+        "std/get_shared_variable@v1" | "get_shared_variable" => {
+            super::shared_variable::get_shared_variable_action(&resolved, step_name).await
         }
         unknown => {
             // No built-in match — hand off to a downstream-registered handler
@@ -853,7 +861,7 @@ async fn file_read_action(params: &Value, step_name: &str, ctx: &Context) -> Act
             return err(
                 step_name,
                 &format!("cannot read file '{}': {e}", path.display()),
-            )
+            );
         }
     };
     let (mtime, len) = (meta.modified().ok(), meta.len());
@@ -877,7 +885,7 @@ async fn file_read_action(params: &Value, step_name: &str, ctx: &Context) -> Act
                     return err(
                         step_name,
                         &format!("cannot read file '{}': {e}", path.display()),
-                    )
+                    );
                 }
             };
             let encoded = match encoding {
@@ -1105,7 +1113,7 @@ async fn child_process_action(params: &Value, step_name: &str, ctx: &Context) ->
                 return err(
                     step_name,
                     &format!("invalid restart '{s}' — use \"never\", \"on-failure\" or \"always\""),
-                )
+                );
             }
         },
     };

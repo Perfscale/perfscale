@@ -78,7 +78,8 @@ steps:
         before: config.before,
         after: config.after,
         variables: config.variables,
-        config: config.run,
+        shared_variables: config.shared_variables,
+        config: Box::new(config.run),
         quiet: false,
     })
     .await
@@ -156,7 +157,8 @@ steps:
         before: Vec::new(),
         after: Vec::new(),
         variables: serde_json::Map::new(),
-        config,
+        shared_variables: serde_json::Map::new(),
+        config: Box::new(config),
         quiet: false,
     })
     .await
@@ -210,7 +212,8 @@ steps:
         before: Vec::new(),
         after: Vec::new(),
         variables: serde_json::Map::new(),
-        config,
+        shared_variables: serde_json::Map::new(),
+        config: Box::new(config),
         quiet: false,
     })
     .await
@@ -316,6 +319,92 @@ fn shipped_schemas_match_generated_ones() {
         perfscale_core::schema::config_schema(),
         "schema/config.schema.json is stale — run `cargo run -p perfscale-core --example gen_schema`"
     );
+}
+
+// ---------------------------------------------------------------------------
+// GPU bench suite must stay valid and its SLO gates typo-free
+// ---------------------------------------------------------------------------
+
+/// The bench/gpu test definitions (`-f`) parse and carry steps.
+#[test]
+fn bench_gpu_test_yamls_parse() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../bench/gpu");
+    for name in ["ollama.yaml", "vllm.yaml"] {
+        let text = std::fs::read_to_string(format!("{root}/{name}"))
+            .unwrap_or_else(|e| panic!("bench/gpu/{name} must exist: {e}"));
+        let test = yaml::parse_test_file(&text)
+            .unwrap_or_else(|e| panic!("bench/gpu/{name} must parse: {e}"));
+        assert!(!test.steps.is_empty(), "bench/gpu/{name} has no steps");
+    }
+}
+
+/// The bench/gpu load profiles (`-c`) parse, their schedules resolve, and
+/// every `std/thresholds@v1` gate references real LLM-bench metrics with
+/// parseable expressions — a typo here would fail every bench run as a
+/// config error.
+#[test]
+fn bench_gpu_profile_yamls_parse_and_have_valid_gates() {
+    use perfscale_core::step::thresholds;
+
+    const KNOWN_GATE_METRICS: &[&str] = &[
+        "llm_ttft_ms",
+        "llm_tokens_per_sec",
+        "llm_ttft_ms_failed",
+        "llm_tokens_per_sec_failed",
+        "dropped_iterations",
+    ];
+
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../bench/gpu");
+    for name in ["stages.yaml", "arrival.yaml"] {
+        let text = std::fs::read_to_string(format!("{root}/{name}"))
+            .unwrap_or_else(|e| panic!("bench/gpu/{name} must exist: {e}"));
+        let config = yaml::parse_config_file(&text)
+            .unwrap_or_else(|e| panic!("bench/gpu/{name} must parse: {e}"));
+        config
+            .run
+            .resolve_schedule()
+            .unwrap_or_else(|e| panic!("bench/gpu/{name} load profile must resolve: {e}"));
+
+        let gates: Vec<_> = config
+            .after
+            .iter()
+            .filter(|s| s.action == "std/thresholds@v1")
+            .collect();
+        assert!(
+            !gates.is_empty(),
+            "bench/gpu/{name} must carry at least one SLO gate"
+        );
+        for gate in gates {
+            let with = gate
+                .with
+                .as_ref()
+                .and_then(|w| w.as_object())
+                .unwrap_or_else(|| panic!("bench/gpu/{name}: gate `with` must be an object"));
+            for (metric, exprs) in with {
+                assert!(
+                    KNOWN_GATE_METRICS.contains(&metric.as_str()),
+                    "bench/gpu/{name}: gate references unknown metric '{metric}' \
+                     (known: {KNOWN_GATE_METRICS:?})"
+                );
+                let list: Vec<&str> = match exprs {
+                    serde_json::Value::String(s) => vec![s.as_str()],
+                    serde_json::Value::Array(items) => items
+                        .iter()
+                        .map(|i| {
+                            i.as_str()
+                                .unwrap_or_else(|| panic!("bench/gpu/{name}: non-string expr"))
+                        })
+                        .collect(),
+                    other => panic!("bench/gpu/{name}: bad exprs value {other}"),
+                };
+                for raw in list {
+                    thresholds::parse_expr(raw).unwrap_or_else(|e| {
+                        panic!("bench/gpu/{name}: unparseable expression \"{raw}\": {e}")
+                    });
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

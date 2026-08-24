@@ -158,7 +158,7 @@ impl LlmParams {
             other => {
                 return Err(format!(
                     "invalid endpoint '{other}' — use \"openai\", \"anthropic\" or \"generic\""
-                ))
+                ));
             }
         };
         let url = params["url"]
@@ -178,7 +178,7 @@ impl LlmParams {
         let messages_v = params.get("messages").filter(|v| !v.is_null());
         let messages = match (prompt, messages_v) {
             (Some(_), Some(_)) => {
-                return Err("'prompt' and 'messages' are mutually exclusive".into())
+                return Err("'prompt' and 'messages' are mutually exclusive".into());
             }
             (Some(p), None) => vec![ChatMessage {
                 role: "user".into(),
@@ -201,7 +201,7 @@ impl LlmParams {
                 })
                 .collect::<Result<Vec<_>, String>>()?,
             (None, Some(_)) => {
-                return Err("'messages' must be an array of {role, content} objects".into())
+                return Err("'messages' must be an array of {role, content} objects".into());
             }
             (None, None) => {
                 if endpoint == Endpoint::Generic {
@@ -323,7 +323,9 @@ impl Extractor {
 }
 
 /// Parse the part after `$.`: `usage.completion_tokens`, `choices[0].text`.
-fn parse_dotted_path(s: &str) -> Result<Vec<PathSegment>, String> {
+/// Public so the shared-variable steps reuse the exact same dotted-path
+/// syntax for their `extract` parameter.
+pub fn parse_dotted_path(s: &str) -> Result<Vec<PathSegment>, String> {
     let mut out = Vec::new();
     for part in s.split('.') {
         if part.is_empty() {
@@ -354,8 +356,9 @@ fn parse_dotted_path(s: &str) -> Result<Vec<PathSegment>, String> {
     Ok(out)
 }
 
-/// Walk a parsed dotted path down a JSON value.
-fn resolve_path<'v>(mut v: &'v Value, segs: &[PathSegment]) -> Option<&'v Value> {
+/// Walk a parsed dotted path down a JSON value. Public so the
+/// shared-variable steps resolve `extract` paths against stored values.
+pub fn resolve_path<'v>(mut v: &'v Value, segs: &[PathSegment]) -> Option<&'v Value> {
     for seg in segs {
         v = match seg {
             PathSegment::Key(k) => v.get(k)?,

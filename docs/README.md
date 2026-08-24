@@ -23,7 +23,8 @@ tiny local dev server for collecting results.
 - [Actions](core/actions.md) — `std/http`, `std/tcp`, `std/udp`, `std/ws*`
   (WebSocket), `std/graphql` (GraphQL), `std/grpc*` (gRPC), `std/db-*` (SQL databases), `std/check`,
   `std/sleep`, `std/log`,
-  `std/file-*`, `std/child_process`, `std/kill_process`, `std/thresholds`
+  `std/file-*`, `std/child_process`, `std/kill_process`,
+  `std/set_shared_variable`, `std/get_shared_variable`, `std/thresholds`
 - [Setup and teardown](core/setup-teardown.md) — `before:`/`after:` lifecycle,
   `config.*`/`vars.*` data flow, background processes
 - [Imports](core/imports.md) — compose test/config documents from a shared
@@ -37,6 +38,8 @@ tiny local dev server for collecting results.
   schema validation
 - [gRPC guide](core/grpc.md) — dynamic schemas (reflection / descriptor
   sets), unary calls, streams
+- [Shared variables guide](core/shared-variables.md) — cross-VU shared
+  mutable state: counters, producer/consumer queues, barriers
 - [GPU metrics guide](core/gpu.md) — utilization/VRAM/temp/power during a
   run, `nvidia-smi` and dcgm-exporter sources
 

@@ -36,6 +36,7 @@ pub mod pubsub;
 pub(crate) mod resources;
 pub mod runner;
 pub mod schedule;
+pub mod shared_variable;
 pub mod thresholds;
 pub(crate) mod ws;
 

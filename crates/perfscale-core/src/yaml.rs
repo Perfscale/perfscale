@@ -48,6 +48,15 @@ pub struct ConfigFile {
     /// namespace, e.g. `${{ vars.region }}`. Values may themselves be objects.
     #[serde(default)]
     pub variables: serde_json::Map<String, serde_json::Value>,
+
+    /// Shared mutable variables for `std/set_shared_variable@v1` /
+    /// `std/get_shared_variable@v1`: a map of name → initial JSON value,
+    /// shared by every VU of the run. Declaration is mandatory — a step
+    /// referencing an undeclared name (or an op incompatible with the type
+    /// inferred from the initial value) fails validation before the run
+    /// starts.
+    #[serde(default)]
+    pub shared_variables: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Parse a test-definition YAML document (`-f test.yaml`).
@@ -262,6 +271,7 @@ steps:
             before: Vec::new(),
             after: Vec::new(),
             variables: serde_json::Map::new(),
+            shared_variables: serde_json::Map::new(),
         };
         let json = serde_json::to_value(&cfg).unwrap();
         let back: ConfigFile = serde_json::from_value(json).unwrap();
@@ -290,6 +300,25 @@ before:
         // `uses:` alias resolves to the same action field as `use:`.
         assert_eq!(cfg.before[0].action, "std/http@v1");
         assert_eq!(cfg.before[0].outputs.as_deref(), Some("auth"));
+    }
+
+    #[test]
+    fn parses_config_with_shared_variables() {
+        let yaml = r#"
+vus: 4
+shared_variables:
+  pending_orders: []
+  approved_count: 0
+"#;
+        let cfg = parse_config_file(yaml).unwrap();
+        assert_eq!(
+            cfg.shared_variables["pending_orders"],
+            serde_json::json!([])
+        );
+        assert_eq!(cfg.shared_variables["approved_count"], 0);
+        // Absent by default, and wire-compatible with older configs.
+        let cfg = parse_config_file("vus: 1\n").unwrap();
+        assert!(cfg.shared_variables.is_empty());
     }
 
     #[test]

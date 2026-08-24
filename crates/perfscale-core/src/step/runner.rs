@@ -440,11 +440,21 @@ pub async fn run_steps(
     quiet: bool,
     tx: mpsc::Sender<LogLine>,
 ) {
-    run_native(steps, Vec::new(), Vec::new(), config, Map::new(), quiet, tx).await;
+    run_native(
+        steps,
+        Vec::new(),
+        Vec::new(),
+        config,
+        Map::new(),
+        Map::new(),
+        quiet,
+        tx,
+    )
+    .await;
 }
 
 /// Execute a native test with optional one-time `before` setup and `after`
-/// teardown, plus static `variables`.
+/// teardown, plus static `variables` and shared mutable `shared_variables`.
 ///
 /// `before` steps run once, in order, before any VU is spawned. Each step's
 /// `outputs` is collected into a `config` object exposed to every test step as
@@ -452,6 +462,12 @@ pub async fn run_steps(
 /// If any setup step fails, the run aborts before spawning VUs — a broken
 /// setup would make every iteration fail identically, so failing fast is
 /// clearer than a wall of downstream errors.
+///
+/// `shared_variables` declares the names `std/set_shared_variable@v1` /
+/// `std/get_shared_variable@v1` steps may use (name → initial value, type
+/// inferred from it). Declarations are validated against every step and
+/// seeded into the shared store before anything runs — an undeclared name or
+/// an op/type mismatch is a configuration error, not a mid-run surprise.
 ///
 /// `after` steps run once on every exit path — normal finish, failed
 /// `before`, or interrupted run — best-effort: a failing teardown step is
@@ -465,12 +481,16 @@ pub async fn run_steps(
 /// Returns a [`NativeRunOutcome`]: the combined `std/thresholds@v1` gate
 /// result, so the caller (CLI) can exit non-zero when a `severity: fail`
 /// gate was violated.
+// The argument list mirrors the config file's sections; bundling them into an
+// options struct would just rename the same count.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_native(
     steps: Vec<Step>,
     before: Vec<Step>,
     after: Vec<Step>,
     config: RunConfig,
     variables: Map<String, Value>,
+    shared_variables: Map<String, Value>,
     quiet: bool,
     tx: mpsc::Sender<LogLine>,
 ) -> NativeRunOutcome {
@@ -484,6 +504,35 @@ pub async fn run_native(
     // spawned in `before`, a test step or `after`, everything still alive at
     // the end is stopped via `shutdown_all` on every exit path.
     let registry = Arc::new(ProcessRegistry::new());
+
+    // Shared-variable declarations are validated and seeded before anything
+    // runs — a step referencing an undeclared name or an op incompatible with
+    // the declared type is a configuration error, not a mid-run surprise.
+    let shared_setup = match super::shared_variable::validate_shared_variable_usage(
+        &before,
+        &steps,
+        &after,
+        &shared_variables,
+    ) {
+        Ok(()) => super::shared_variable::seed_shared_variables(&shared_variables)
+            .await
+            .map_err(|msg| format!("failed to seed shared variables: {msg}")),
+        Err(msg) => Err(msg),
+    };
+    if let Err(msg) = shared_setup {
+        emit(
+            &tx,
+            LogSource::Stderr,
+            &format!("invalid shared variable configuration: {msg}"),
+        )
+        .await;
+        registry.shutdown_all().await;
+        emit(&tx, LogSource::System, "Done — configuration error").await;
+        return NativeRunOutcome {
+            config_error: Some(msg),
+            ..NativeRunOutcome::default()
+        };
+    }
 
     // Created up front (not after setup) so `after:` thresholds steps get a
     // metrics handle on every exit path — including a failed `before`, where
@@ -1105,11 +1154,12 @@ async fn supervise_arrival(
     for w in workers {
         let _ = w.await;
     }
-    if dropped > 0 {
-        let mut obj = Map::new();
-        obj.insert("dropped_iterations".to_string(), Value::from(dropped));
-        shared.metrics.lock().unwrap().add_counters(&obj);
-    }
+    // Always emit the counter — even at 0 — so `std/thresholds@v1` gates like
+    // `dropped_iterations: ["count==0"]` resolve on clean runs instead of
+    // erroring on an unknown metric (same convention as `db_errors`).
+    let mut obj = Map::new();
+    obj.insert("dropped_iterations".to_string(), Value::from(dropped));
+    shared.metrics.lock().unwrap().add_counters(&obj);
     sampler.observed()
 }
 
@@ -2142,10 +2192,41 @@ mod tests {
             (9..=15).contains(&iters),
             "expected ≈12 iterations (rate integral ± timing slack), got {iters}"
         );
-        // Nobody was ever saturated → nothing dropped.
-        assert!(!lines
+        // Nobody was ever saturated → nothing dropped; the counter is still
+        // emitted at 0 so `count==0` threshold gates resolve on clean runs.
+        let line = lines
             .iter()
-            .any(|l| l.text.starts_with("dropped_iterations")));
+            .find(|l| l.text.starts_with("dropped_iterations"))
+            .unwrap_or_else(|| panic!("dropped_iterations always in summary: {lines:?}"));
+        assert!(
+            line.text
+                .split(':')
+                .nth(1)
+                .unwrap()
+                .trim_start()
+                .starts_with('0'),
+            "expected 0 drops: {line:?}"
+        );
+    }
+
+    /// A `count==0` gate on `dropped_iterations` passes on a clean arrival
+    /// run: the counter must exist even when nothing was dropped.
+    #[tokio::test]
+    async fn arrival_dropped_iterations_gate_passes_when_nothing_dropped() {
+        let config = arrival(4, &[("1s", 2.0)]);
+        let after = vec![thresholds_step(
+            json!({ "dropped_iterations": ["count==0"] }),
+            None,
+            None,
+        )];
+        let (_lines, outcome) =
+            run_native_full(vec![sleep_step(1)], Vec::new(), after, Map::new(), config).await;
+
+        let t = outcome.thresholds.as_ref().expect("gate outcome present");
+        // `pass` (not a config-error `fail`) proves the counter existed in
+        // the snapshot at 0 — an unknown metric would hard-fail the gate.
+        assert_eq!(t.status, "pass", "{}", t.message);
+        assert!(!outcome.thresholds_failed());
     }
 
     /// One worker, 500ms iterations, 10 it/s wanted: most permits cannot be
@@ -2459,7 +2540,14 @@ mod tests {
     ) -> (Vec<LogLine>, NativeRunOutcome) {
         let (tx, mut rx) = mpsc::channel(512);
         let handle = tokio::spawn(run_native(
-            steps, before, after, config, variables, false, tx,
+            steps,
+            before,
+            after,
+            config,
+            variables,
+            Map::new(),
+            false,
+            tx,
         ));
         let mut lines = Vec::new();
         while let Some(line) = rx.recv().await {
@@ -2467,6 +2555,130 @@ mod tests {
         }
         let outcome = handle.await.unwrap();
         (lines, outcome)
+    }
+
+    /// Like [`run_native_full`] but with `shared_variables` declarations.
+    async fn run_native_with_shared(
+        steps: Vec<Step>,
+        shared_variables: Map<String, Value>,
+        config: RunConfig,
+    ) -> (Vec<LogLine>, NativeRunOutcome) {
+        let (tx, mut rx) = mpsc::channel(512);
+        let handle = tokio::spawn(run_native(
+            steps,
+            Vec::new(),
+            Vec::new(),
+            config,
+            Map::new(),
+            shared_variables,
+            false,
+            tx,
+        ));
+        let mut lines = Vec::new();
+        while let Some(line) = rx.recv().await {
+            lines.push(line);
+        }
+        let outcome = handle.await.unwrap();
+        (lines, outcome)
+    }
+
+    /// A shared-variable step referencing an undeclared name aborts the run
+    /// before any VU starts, as a configuration error.
+    #[tokio::test]
+    async fn shared_variable_undeclared_name_fails_before_start() {
+        let steps = vec![Step {
+            name: Some("take order".into()),
+            action: "std/get_shared_variable@v1".into(),
+            with: Some(json!({ "name": "pending_orders" })),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+        }];
+        let config = RunConfig {
+            vus: 1,
+            duration: "1s".into(),
+            ..Default::default()
+        };
+        let (lines, outcome) = run_native_with_shared(steps, Map::new(), config).await;
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.contains("invalid shared variable configuration")
+                    && l.text
+                        .contains("undeclared shared variable 'pending_orders'")),
+            "{lines:?}"
+        );
+        assert!(outcome.config_error.is_some());
+        assert!(
+            !lines.iter().any(|l| l.text.starts_with("Starting")),
+            "no VUs must start: {lines:?}"
+        );
+    }
+
+    /// An op incompatible with the declared type (increment on a list) is
+    /// likewise a pre-start configuration error.
+    #[tokio::test]
+    async fn shared_variable_op_type_mismatch_fails_before_start() {
+        let steps = vec![Step {
+            name: None,
+            action: "std/set_shared_variable@v1".into(),
+            with: Some(json!({ "name": "queue", "op": "increment", "value": 1 })),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+        }];
+        let config = RunConfig {
+            vus: 1,
+            duration: "1s".into(),
+            ..Default::default()
+        };
+        let decls: Map<String, Value> = json!({ "queue": [] }).as_object().unwrap().clone();
+        let (lines, outcome) = run_native_with_shared(steps, decls, config).await;
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.contains("invalid shared variable configuration")
+                    && l.text.contains("requires a number")),
+            "{lines:?}"
+        );
+        assert!(outcome.config_error.is_some());
+    }
+
+    /// Declared shared variables run fine: the counter is seeded and shared
+    /// across VUs of the run.
+    #[tokio::test]
+    async fn shared_variable_run_increments_a_seeded_counter() {
+        let steps = vec![Step {
+            name: Some("count".into()),
+            action: "std/set_shared_variable@v1".into(),
+            with: Some(
+                json!({ "name": "shared_variable_run_increments_a_seeded_counter.n", "op": "increment", "value": 1 }),
+            ),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+        }];
+        let config = RunConfig {
+            vus: 2,
+            duration: "1s".into(),
+            ..Default::default()
+        };
+        let decls: Map<String, Value> =
+            json!({ "shared_variable_run_increments_a_seeded_counter.n": 0 })
+                .as_object()
+                .unwrap()
+                .clone();
+        let (lines, outcome) = run_native_with_shared(steps, decls, config).await;
+        assert!(outcome.config_error.is_none(), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.contains("SHARED_VAR memory") && l.text.contains("increment")),
+            "{lines:?}"
+        );
     }
 
     /// A `before` step's `outputs` is exposed to test steps under `config.<name>`.

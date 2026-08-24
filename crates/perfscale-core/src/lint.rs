@@ -239,7 +239,7 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
     // definition (see `schema::relax_use_alias`); the older wording was
     // `"use" is a required property`.
     if problem.contains("\"use\" is a required property") || problem.contains("anyOf") {
-        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, or `std/thresholds@v1`".into())
+        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, or `std/get_shared_variable@v1`".into())
     } else if problem.contains("\"steps\" is a required property") {
         Some("a test definition is a mapping with a `steps:` list at the top level".into())
     } else if problem.contains("\"url\" is a required property") {
@@ -263,7 +263,7 @@ const TEST_TOP_FIELDS: [&str; 1] = ["steps"];
 const STEP_FIELDS: [&str; 8] = [
     "name", "use", "uses", "with", "check", "outputs", "severity", "message",
 ];
-const CONFIG_TOP_FIELDS: [&str; 11] = [
+const CONFIG_TOP_FIELDS: [&str; 12] = [
     "vus",
     "duration",
     "stages",
@@ -273,6 +273,7 @@ const CONFIG_TOP_FIELDS: [&str; 11] = [
     "before",
     "after",
     "variables",
+    "shared_variables",
     "allow_file_actions",
     "allow_process_actions",
 ];
@@ -353,6 +354,8 @@ const WS_RECV_WITH_FIELDS: [&str; 5] = ["id", "count", "until_contains", "until_
 const WS_PING_WITH_FIELDS: [&str; 2] = ["id", "timeout"];
 const WS_CLOSE_WITH_FIELDS: [&str; 4] = ["id", "code", "reason", "timeout"];
 const PUBSUB_WITH_FIELDS: [&str; 5] = ["driver", "subject", "url", "publish", "subscribe"];
+const SET_SHARED_VARIABLE_WITH_FIELDS: [&str; 4] = ["driver", "name", "op", "value"];
+const GET_SHARED_VARIABLE_WITH_FIELDS: [&str; 5] = ["driver", "name", "op", "wait_for", "extract"];
 const LLM_WITH_FIELDS: [&str; 12] = [
     "endpoint",
     "url",
@@ -526,11 +529,13 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
                     "std/child_process@v1",
                     "std/kill_process@v1",
                     "std/thresholds@v1",
+                    "std/set_shared_variable@v1",
+                    "std/get_shared_variable@v1",
                 ],
             )
             .or_else(|| {
                 Some(
-                    "available actions: std/http@v1, std/graphql@v1, std/tcp@v1, std/udp@v1, std/pubsub@v1, std/llm@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/db-connect@v1, std/db-query@v1, std/db-tx-begin@v1, std/db-tx-commit@v1, std/db-tx-rollback@v1, std/db-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1, std/thresholds@v1"
+                    "available actions: std/http@v1, std/graphql@v1, std/tcp@v1, std/udp@v1, std/pubsub@v1, std/llm@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/db-connect@v1, std/db-query@v1, std/db-tx-begin@v1, std/db-tx-commit@v1, std/db-tx-rollback@v1, std/db-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1, std/thresholds@v1, std/set_shared_variable@v1, std/get_shared_variable@v1"
                         .into(),
                 )
             }),
@@ -575,6 +580,12 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             "std/file-write@v1" | "file-write" => Some(&FILE_WRITE_WITH_FIELDS),
             "std/child_process@v1" | "child_process" => Some(&CHILD_PROCESS_WITH_FIELDS),
             "std/kill_process@v1" | "kill_process" => Some(&KILL_PROCESS_WITH_FIELDS),
+            "std/set_shared_variable@v1" | "set_shared_variable" => {
+                Some(&SET_SHARED_VARIABLE_WITH_FIELDS)
+            }
+            "std/get_shared_variable@v1" | "get_shared_variable" => {
+                Some(&GET_SHARED_VARIABLE_WITH_FIELDS)
+            }
             // pro/* and unknown actions: `with` is free-form, don't lint fields.
             _ => None,
         };
@@ -667,6 +678,41 @@ fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
     if let Some(after) = map.get("after").and_then(|a| a.as_array()) {
         for (i, step) in after.iter().enumerate() {
             lint_step(step, &format!("/after/{i}"), issues);
+        }
+    }
+
+    // `before:`/`after:` shared-variable steps can be checked against the
+    // declared `shared_variables` right here — they live in the same file.
+    // (Test steps live in the test file; the run itself re-validates
+    // everything against the declarations before any VU starts.)
+    if let Some(decls) = map.get("shared_variables").and_then(|v| v.as_object()) {
+        for (key, section) in [("before", "/before"), ("after", "/after")] {
+            if let Some(list) = map.get(key).and_then(|v| v.as_array()) {
+                for (i, step) in list.iter().enumerate() {
+                    let action = step
+                        .get("use")
+                        .or_else(|| step.get("uses"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let label = step
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("{key}/{i}"));
+                    if let Err(msg) = crate::step::shared_variable::check_shared_variable_step(
+                        action,
+                        step.get("with"),
+                        &label,
+                        decls,
+                    ) {
+                        issues.push(LintIssue {
+                            location: format!("{section}/{i}/with"),
+                            problem: msg,
+                            suggestion: None,
+                        });
+                    }
+                }
+            }
         }
     }
 }
@@ -767,6 +813,10 @@ fn is_known_action(action: &str) -> bool {
             | "kill_process"
             | "std/thresholds@v1"
             | "thresholds"
+            | "std/set_shared_variable@v1"
+            | "set_shared_variable"
+            | "std/get_shared_variable@v1"
+            | "get_shared_variable"
             | "log"
     )
 }
@@ -1038,8 +1088,7 @@ steps:
 
     #[test]
     fn typo_in_check_key_gets_did_you_mean() {
-        let yaml =
-            "steps:\n  - use: std/http@v1\n    with:\n      url: https://x\n    check:\n      body_containz: ok\n";
+        let yaml = "steps:\n  - use: std/http@v1\n    with:\n      url: https://x\n    check:\n      body_containz: ok\n";
         let issues = lint(yaml, DocKind::Test);
         let typo = issues
             .iter()

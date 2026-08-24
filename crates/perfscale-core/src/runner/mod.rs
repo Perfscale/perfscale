@@ -66,7 +66,9 @@ pub enum ExecutionPlan {
     /// `perfscale run -f <test.yaml> -c <config.yaml>`
     NativeSteps {
         test: TestDef,
-        config: RunConfig,
+        /// Boxed to keep `ExecutionPlan` compact (this variant dwarfs the
+        /// script ones).
+        config: Box<RunConfig>,
         /// One-time setup steps from the config file's `before:` block.
         before: Vec<Step>,
         /// One-time teardown steps from the config file's `after:` block.
@@ -76,6 +78,9 @@ pub enum ExecutionPlan {
         /// Static variables from the config file's `variables:` block, exposed
         /// to steps as `${{ vars.* }}`.
         variables: serde_json::Map<String, serde_json::Value>,
+        /// Shared mutable variables from the config file's `shared_variables:`
+        /// block (name → initial value), used by the shared-variable steps.
+        shared_variables: serde_json::Map<String, serde_json::Value>,
         /// Drop per-iteration success output at the source (`--quiet`);
         /// errors and the final metric summary still stream.
         quiet: bool,
@@ -99,13 +104,21 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
             before,
             after,
             variables,
+            shared_variables,
             quiet,
         } => {
             let (tx, rx) = mpsc::channel(512);
             let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
                 let outcome = crate::step::runner::run_native(
-                    test.steps, before, after, config, variables, quiet, tx,
+                    test.steps,
+                    before,
+                    after,
+                    *config,
+                    variables,
+                    shared_variables,
+                    quiet,
+                    tx,
                 )
                 .await;
                 // Like k6, a violated `severity: fail` thresholds gate exits
@@ -181,10 +194,11 @@ mod tests {
             mut lines, exit, ..
         } = execute(ExecutionPlan::NativeSteps {
             test,
-            config,
+            config: Box::new(config),
             before: Vec::new(),
             after: Vec::new(),
             variables: serde_json::Map::new(),
+            shared_variables: serde_json::Map::new(),
             quiet: false,
         })
         .await
@@ -293,17 +307,18 @@ mod tests {
                     step("std/sleep@v1", serde_json::json!({ "ms": 20 })),
                 ],
             },
-            config: RunConfig {
+            config: Box::new(RunConfig {
                 vus: 1,
                 duration: "1s".into(),
                 ..Default::default()
-            },
+            }),
             before: Vec::new(),
             after: vec![crate::step::Step {
                 severity: severity.map(str::to_owned),
                 ..step("std/thresholds@v1", gate)
             }],
             variables: serde_json::Map::new(),
+            shared_variables: serde_json::Map::new(),
             quiet: true,
         }
     }

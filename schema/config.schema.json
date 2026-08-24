@@ -305,6 +305,12 @@
         }
       ]
     },
+    "shared_variables": {
+      "additionalProperties": true,
+      "default": {},
+      "description": "Shared mutable variables for `std/set_shared_variable@v1` / `std/get_shared_variable@v1`: a map of name → initial JSON value, shared by every VU of the run. Declaration is mandatory — a step referencing an undeclared name (or an op incompatible with the type inferred from the initial value) fails validation before the run starts.",
+      "type": "object"
+    },
     "stages": {
       "description": "Ramping-VU load profile (k6-style): ramp the number of virtual users linearly to each stage's `target` over its `duration`. Mutually exclusive with `arrival`; when present it overrides `vus`/`duration` (total run length is the sum of stage durations). Native engine only.",
       "items": {
