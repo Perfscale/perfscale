@@ -42,6 +42,8 @@ tiny local dev server for collecting results.
   mutable state: counters, producer/consumer queues, barriers
 - [GPU metrics guide](core/gpu.md) — utilization/VRAM/temp/power during a
   run, `nvidia-smi` and dcgm-exporter sources
+- [JMeter guide](core/jmeter.md) — run existing `.jmx` plans headless,
+  translated k6-compatible summary, parameterization, limits
 
 ## For contributors
 
