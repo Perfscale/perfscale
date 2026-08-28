@@ -84,6 +84,27 @@ Both profiles exist to answer different questions:
   the rate where TTFT starts climbing and `dropped_iterations` first grows
   past 0 is the practical capacity for this model/prompt.
 
+## Quality gates
+
+Both profiles end with `std/thresholds@v1` gates (see
+[`docs/core/metrics.md`](../../docs/core/metrics.md#run-level-gates-stdthresholdsv1))
+— a violated `fail` gate fails the run and gives `run.sh` a non-zero exit:
+
+- **`stages`** is the SLO reference (closed model, steady plateaus): one
+  `fail` gate — `llm_ttft_ms p50<500 / p95<2000`, `llm_tokens_per_sec
+  avg>20`, `llm_ttft_ms_failed rate<0.01`.
+- **`arrival`** deliberately probes past the capacity knee, so it splits
+  gates by intent: a `fail` *correctness* gate (`llm_ttft_ms_failed
+  rate<0.01`, `dropped_iterations count==0`) and a `warn` *capacity
+  advisory* (`llm_ttft_ms p95<3000`) that reports TTFT degradation without
+  failing the run. `dropped_iterations` is emitted even at 0, so the
+  `count==0` gate resolves on clean runs.
+
+The numbers are starting points calibrated for a mid-range GPU (the
+illustrative table below). **Tune them to your card** — edit the `with:`
+expressions in `stages.yaml` / `arrival.yaml`; stricter gates are the point
+once you know your hardware's baseline.
+
 ## Reading the results
 
 Everything lands in `bench/gpu/results/<timestamp>/`:

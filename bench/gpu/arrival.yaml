@@ -27,3 +27,22 @@ gpu:
   enabled: true
   interval_ms: 1000
   source: nvidia-smi
+# Two gates (see bench/gpu/README.md → "Quality gates"):
+# - correctness (severity: fail) — failed requests and dropped iterations fail
+#   the run. `dropped_iterations` is emitted even at 0, so the gate resolves
+#   on clean runs.
+# - capacity advisory (severity: warn) — this profile deliberately probes past
+#   the knee, so TTFT degradation at the top rates is reported, not failed.
+after:
+  - name: correctness gate
+    use: std/thresholds@v1
+    with:
+      llm_ttft_ms_failed: ["rate<0.01"]
+      dropped_iterations: ["count==0"]
+    message: "GPU bench correctness (arrival)"
+  - name: capacity advisory
+    use: std/thresholds@v1
+    with:
+      llm_ttft_ms: ["p95<3000"]
+    severity: warn
+    message: "capacity knee — see bench/gpu/README.md"

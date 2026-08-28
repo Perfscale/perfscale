@@ -25,3 +25,14 @@ gpu:
   enabled: true
   interval_ms: 1000
   source: nvidia-smi
+# SLO gate (severity: fail — a violated gate fails the run and sets a
+# non-zero exit code). Thresholds are starting points calibrated for a
+# mid-range GPU (see README's illustrative table); tune them to your card.
+after:
+  - name: SLO gate
+    use: std/thresholds@v1
+    with:
+      llm_ttft_ms: ["p50<500", "p95<2000"]
+      llm_tokens_per_sec: ["avg>20"]
+      llm_ttft_ms_failed: ["rate<0.01"]
+    message: "GPU bench SLO (stages)"
