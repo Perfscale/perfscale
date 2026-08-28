@@ -1,6 +1,9 @@
-# Runnable perfscale image. Two flavors from one file:
-#   --target base  → slim: perfscale only (native engine)
-#   --target full  → slim + k6 (for `uses: k6` scenarios)
+# Runnable perfscale image. Flavors (build targets) from one file:
+#   --target base    → perfscale only (native step engine)
+#   --target k6      → + k6
+#   --target jmeter  → + JMeter (headless JRE)
+#   --target locust  → + locust (Python)
+#   --target full    → + k6 + JMeter + locust
 #
 # The perfscale binary is NOT compiled here — release.yml builds the static
 # musl binaries in its matrix and this Dockerfile just copies the right one:
@@ -28,20 +31,35 @@ USER perfscale
 ENTRYPOINT ["perfscale"]
 CMD ["--help"]
 
-# ── full: base + k6 ─────────────────────────────────────────────────────────
-# k6 is fetched from GitHub releases (not dl.k6.io apt — that repo has no
-# arm64 packages). Pinned on purpose; bump deliberately.
-FROM base AS full
+# ── Shared flavor setup ─────────────────────────────────────────────────────
+# Pinned runner versions — bump deliberately. Exposed as env so
+# install-runners.sh can read them.
+FROM base AS runner-base
 
 ARG TARGETARCH
 ARG K6_VERSION=v2.2.0
+ARG JMETER_VERSION=5.6.3
+ARG LOCUST_VERSION=2.46.4
+ENV K6_VERSION=${K6_VERSION} \
+    JMETER_VERSION=${JMETER_VERSION} \
+    LOCUST_VERSION=${LOCUST_VERSION}
 
 USER root
-RUN apk add --no-cache --virtual .fetch curl && \
-    curl -fsSL "https://github.com/grafana/k6/releases/download/${K6_VERSION}/k6-${K6_VERSION}-linux-${TARGETARCH}.tar.gz" \
-      | tar xz -C /tmp && \
-    cp "/tmp/k6-${K6_VERSION}-linux-${TARGETARCH}/k6" /usr/local/bin/k6 && \
-    rm -rf "/tmp/k6-${K6_VERSION}-linux-${TARGETARCH}" && \
-    apk del .fetch
+COPY docker/install-runners.sh /usr/local/bin/install-runners.sh
 
+# ── Flavors ─────────────────────────────────────────────────────────────────
+FROM runner-base AS k6
+RUN sh /usr/local/bin/install-runners.sh "${TARGETARCH}" k6
+USER perfscale
+
+FROM runner-base AS jmeter
+RUN sh /usr/local/bin/install-runners.sh "${TARGETARCH}" jmeter
+USER perfscale
+
+FROM runner-base AS locust
+RUN sh /usr/local/bin/install-runners.sh "${TARGETARCH}" locust
+USER perfscale
+
+FROM runner-base AS full
+RUN sh /usr/local/bin/install-runners.sh "${TARGETARCH}" k6 jmeter locust
 USER perfscale

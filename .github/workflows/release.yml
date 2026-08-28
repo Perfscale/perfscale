@@ -155,10 +155,13 @@ jobs:
           done
 
   # ── Publish Docker images to ghcr.io ─────────────────────────────────────
-  # Two flavors from docker/image.Dockerfile (multi-arch, binaries come from
+  # Five flavors from docker/image.Dockerfile (multi-arch, binaries come from
   # the build matrix — nothing is recompiled here):
-  #   ghcr.io/perfscale/perfscale:X.Y.Z[/X.Y/latest]        — slim
-  #   ghcr.io/perfscale/perfscale:X.Y.Z-full[/…-full]       — slim + k6
+  #   perfscale:X.Y.Z[/X.Y/latest]            — perfscale only (native engine)
+  #   perfscale:X.Y.Z-k6[/…-k6]               — + k6
+  #   perfscale:X.Y.Z-jmeter[/…-jmeter]       — + JMeter (headless JRE)
+  #   perfscale:X.Y.Z-locust[/…-locust]       — + locust
+  #   perfscale:X.Y.Z-full[/…-full]           — + k6 + JMeter + locust
   docker:
     name: Publish Docker images
     needs: build
@@ -191,23 +194,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push slim
+      - name: Build & push all flavors
         run: |
-          docker buildx build -f docker/image.Dockerfile --target base \
-            --platform linux/amd64,linux/arm64 \
-            -t "ghcr.io/perfscale/perfscale:${VERSION}" \
-            -t "ghcr.io/perfscale/perfscale:${MAJOR_MINOR}" \
-            -t "ghcr.io/perfscale/perfscale:latest" \
-            --push .
-
-      - name: Build & push full (with k6)
-        run: |
-          docker buildx build -f docker/image.Dockerfile --target full \
-            --platform linux/amd64,linux/arm64 \
-            -t "ghcr.io/perfscale/perfscale:${VERSION}-full" \
-            -t "ghcr.io/perfscale/perfscale:${MAJOR_MINOR}-full" \
-            -t "ghcr.io/perfscale/perfscale:latest-full" \
-            --push .
+          for flavor in "" k6 jmeter locust full; do
+            target="base"; suffix=""
+            if [ -n "$flavor" ]; then target="$flavor"; suffix="-$flavor"; fi
+            echo "── flavor: ${flavor:-slim} (target $target)"
+            docker buildx build -f docker/image.Dockerfile --target "$target" \
+              --platform linux/amd64,linux/arm64 \
+              -t "ghcr.io/perfscale/perfscale:${VERSION}${suffix}" \
+              -t "ghcr.io/perfscale/perfscale:${MAJOR_MINOR}${suffix}" \
+              -t "ghcr.io/perfscale/perfscale:latest${suffix}" \
+              --push .
+          done
 
       # Runs the published image, not just the build: real scenario, in-memory
       # SQLite (no server, no cwd writes — the container user is non-root).
@@ -223,10 +222,24 @@ jobs:
           grep -q "db_rows" run.log
           echo "slim image runs real scenarios ✓"
 
-      - name: Smoke test full image (k6 present)
+      # Each runner flavor: the runner binary itself must start (this exercises
+      # the JRE for JMeter and the Python runtime for locust, not just PATH).
+      - name: Smoke test runner flavors
         run: |
           docker run --rm --entrypoint k6 \
+            "ghcr.io/perfscale/perfscale:${VERSION}-k6" version
+          docker run --rm --entrypoint jmeter \
+            "ghcr.io/perfscale/perfscale:${VERSION}-jmeter" --version
+          docker run --rm --entrypoint locust \
+            "ghcr.io/perfscale/perfscale:${VERSION}-locust" --version
+          docker run --rm "ghcr.io/perfscale/perfscale:${VERSION}-full" --version
+          docker run --rm --entrypoint k6 \
             "ghcr.io/perfscale/perfscale:${VERSION}-full" version
+          docker run --rm --entrypoint jmeter \
+            "ghcr.io/perfscale/perfscale:${VERSION}-full" --version
+          docker run --rm --entrypoint locust \
+            "ghcr.io/perfscale/perfscale:${VERSION}-full" --version
+          echo "all runner flavors functional ✓"
 
   # ── Reset UPCOMING.md for the next cycle ────────────────────────────────────
   reset-upcoming:

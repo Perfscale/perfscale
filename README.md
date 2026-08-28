@@ -26,9 +26,10 @@ docker run --rm -v "$PWD:/work" -w /work ghcr.io/perfscale/perfscale:latest \
   run -f test.yaml -c config.yaml
 ```
 
-Two flavors: `latest` (slim — the native step engine) and `latest-full`
-(slim + k6, for `--k6` scripts). Both are multi-arch (`linux/amd64`,
-`linux/arm64`). See [docs/core/docker.md](docs/core/docker.md).
+Five flavors: `latest` (perfscale only), `latest-k6`, `latest-jmeter`,
+`latest-locust`, and `latest-full` (all three runners). All are multi-arch
+(`linux/amd64`, `linux/arm64`). See
+[docs/core/docker.md](docs/core/docker.md).
 
 ## Stack
 

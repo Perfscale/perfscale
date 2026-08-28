@@ -18,15 +18,19 @@ same as a local install: `run`, `lint`, `serve`, `man`, `--help`.
 | Image | Contents | Use it for |
 |---|---|---|
 | `ghcr.io/perfscale/perfscale:<version>` | perfscale only (~50 MB) | Native step-engine scenarios (`-f`/`-c`) |
-| `ghcr.io/perfscale/perfscale:<version>-full` | perfscale + k6 (~140 MB) | The above, plus `--k6` scripts |
+| `ghcr.io/perfscale/perfscale:<version>-k6` | + k6 | Existing k6 scripts (`--k6`) |
+| `ghcr.io/perfscale/perfscale:<version>-jmeter` | + JMeter (headless JRE) | Existing `.jmx` plans (`--jmeter`) |
+| `ghcr.io/perfscale/perfscale:<version>-locust` | + locust (Python) | Existing locust files (`--locust`) |
+| `ghcr.io/perfscale/perfscale:<version>-full` | + k6, JMeter, locust | Everything |
 
-Both are multi-arch (`linux/amd64` and `linux/arm64`) and are tagged
-`X.Y.Z`, `X.Y`, and `latest` (the `-full` flavor uses the same tags with a
-`-full` suffix). Pin an exact version in CI — treat `latest` as a
-convenience for local use.
+All flavors are multi-arch (`linux/amd64` and `linux/arm64`) and are tagged
+`X.Y.Z`, `X.Y`, and `latest` (runner flavors use the same tags with their
+suffix: `latest-k6`, `latest-jmeter`, `latest-locust`, `latest-full`).
+Runner versions are pinned in the image (k6, JMeter, locust — see
+`docker/image.Dockerfile` for the exact pins). Pin an exact perfscale
+version in CI — treat `latest` as a convenience for local use.
 
-Locust and JMeter are **not** in either image (they pull in a full
-Python/JRE stack). Build on top of the image if you need them — see
+Need a different tool stack? Build on top of any flavor — see
 [Extending the image](#extending-the-image).
 
 ## Mounting scenarios
@@ -59,15 +63,27 @@ Secrets and configuration go through the same mechanisms as a local install
 — pass environment variables with `-e` (`-e API_TOKEN=...`) and reference
 them as `${{ env.API_TOKEN }}` in the scenario.
 
-## k6 scripts (full flavor)
+## External runners (k6 / JMeter / locust)
 
-The `-full` image ships k6, so existing scripts run without any host
-install:
+The runner flavors ship the matching engine, so existing scripts and plans
+run without any host install:
 
 ```sh
+# k6
 docker run --rm -v "$PWD:/work" -w /work \
-  ghcr.io/perfscale/perfscale:latest-full run --k6 script.js
+  ghcr.io/perfscale/perfscale:latest-k6 run --k6 script.js
+
+# JMeter (.jmx plans)
+docker run --rm -v "$PWD:/work" -w /work \
+  ghcr.io/perfscale/perfscale:latest-jmeter run --jmeter plan.jmx
+
+# locust
+docker run --rm -v "$PWD:/work" -w /work \
+  ghcr.io/perfscale/perfscale:latest-locust run --locust locustfile.py --host https://example.com
 ```
+
+The `-full` image carries all three — use it when one job runs several
+engines, or when you don't want to think about which flavor a script needs.
 
 ## In CI
 
@@ -115,36 +131,40 @@ spec:
 
 ## Extending the image
 
-Need JMeter, locust, or extra tooling? Use the image as a base — the binary
-stays put, you add what you need:
+Need extra tooling the flavors don't carry — JMeter plugins, custom CA
+certificates, another k6 build? Use any flavor as a base — the binaries
+stay put, you add what you need:
 
 ```dockerfile
-FROM ghcr.io/perfscale/perfscale:0.17.0
+FROM ghcr.io/perfscale/perfscale:0.17.0-jmeter
 
 USER root
-RUN apk add --no-cache openjdk17-jre-headless curl && \
-    curl -fsSL https://dlcdn.apache.org//jmeter/binaries/apache-jmeter-5.6.3.tgz \
-      | tar xz -C /opt && \
-    ln -s /opt/apache-jmeter-5.6.3/bin/jmeter /usr/local/bin/jmeter
+# Example: JMeter plugins land in lib/ext of the installation
+RUN curl -fsSL -o /opt/apache-jmeter-5.6.3/lib/ext/jpgc-casutg.jar \
+      https://repo1.maven.org/maven2/kg/apc/jmeter-plugins-casutg/2.10/jmeter-plugins-casutg-2.10.jar
 USER perfscale
 ```
 
 ## Verifying a release image
 
 Images are built from the same static musl binaries published on GitHub
-Releases, and the release workflow smoke-tests both flavors (a real
-native-engine scenario in slim, `k6 version` in full) before they are
-visible. To double-check locally:
+Releases, and the release workflow smoke-tests every flavor before it goes
+live: a real native-engine scenario in slim, and each runner binary
+starting (`k6 version`, `jmeter --version`, `locust --version`) in its
+flavor and in `-full`. To double-check locally:
 
 ```sh
 docker run --rm ghcr.io/perfscale/perfscale:0.17.0 --version
-docker run --rm --entrypoint k6 ghcr.io/perfscale/perfscale:0.17.0-full version
+docker run --rm --entrypoint k6 ghcr.io/perfscale/perfscale:0.17.0-k6 version
 ```
 
 ## Limits
 
-- **Locust and JMeter are not bundled** — extend the image (above) or use
-  the platform binaries.
+- **Runner versions are pinned** — to run a different k6/JMeter/locust
+  version, extend the image (above).
+- **JMeter writes `jmeter.log` (and any `.jtl` results) into the working
+  directory** — give it a writable mount (`-v "$PWD:/work" -w /work`, or
+  `--user "$(id -u):$(id -g)"` to keep files owned by you).
 - **`perfscale serve` needs a published port**: add `-p 7999:7999` and POST
   reports to the container's address, not `localhost`.
 - **File actions are container-scoped**: `std/file-read@v1`/`std/file-write@v1`
