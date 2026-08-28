@@ -19,6 +19,17 @@ Or grab a binary from [GitHub Releases](https://github.com/Perfscale/perfscale/r
 `cargo build --release -p perfscale-cli`. Details in
 [getting started](docs/getting-started.md).
 
+Or skip installing and run the Docker image — your scenarios are mounted in:
+
+```sh
+docker run --rm -v "$PWD:/work" -w /work ghcr.io/perfscale/perfscale:latest \
+  run -f test.yaml -c config.yaml
+```
+
+Two flavors: `latest` (slim — the native step engine) and `latest-full`
+(slim + k6, for `--k6` scripts). Both are multi-arch (`linux/amd64`,
+`linux/arm64`). See [docs/core/docker.md](docs/core/docker.md).
+
 ## Stack
 
 - Rust, tokio (async runtime)

@@ -1,0 +1,8 @@
+# Keep the build context small for docker/image.Dockerfile (it only needs
+# dist/) while leaving the source tree visible to docker/release.Dockerfile
+# (which does `COPY . .`).
+.git/
+target/
+**/target/
+node_modules/
+graphify-out/

@@ -44,6 +44,8 @@ tiny local dev server for collecting results.
   run, `nvidia-smi` and dcgm-exporter sources
 - [JMeter guide](core/jmeter.md) — run existing `.jmx` plans headless,
   translated k6-compatible summary, parameterization, limits
+- [Docker](core/docker.md) — ready-to-run ghcr.io images (slim and
+  k6-bundled flavors), mounting scenarios, CI and Kubernetes recipes
 
 ## For contributors
 
