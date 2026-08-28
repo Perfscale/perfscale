@@ -12,6 +12,11 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Perfscale/perfscale"
 
+[profile.dev]
+# Skip the incremental cache — it grows unbounded across edits and is the
+# main reason local target/ dirs balloon into tens of GB.
+incremental = false
+
 [profile.release]
 # Thin LTO + a single codegen unit: measurable hot-path win (cross-crate
 # inlining) for the engine at an acceptable clean-build cost. Unwind is kept
@@ -19,3 +24,6 @@ repository = "https://github.com/Perfscale/perfscale"
 # ring already does runtime AES-NI dispatch.
 lto = "thin"
 codegen-units = 1
+# Binaries ship without debug sections — much smaller downloads and local
+# artifacts; backtraces still resolve function names via the symbol table.
+strip = "debuginfo"
