@@ -131,6 +131,116 @@ shard the model, or lower `vus`); util well below 100% with rising TTFT →
 look at the server (queueing, context limits) instead. VRAM creeping to
 `memory_total_mib` explains evictions/OOMs mid-run.
 
+## Example: game-style rendering load
+
+GPU load testing is not only about LLM servers. The other classic question
+is **session density**: how many concurrent render sessions — game clients
+on a cloud-gaming node, streaming viewports, digital-twin renderers — one
+card carries before the frame rate collapses. The pattern is the same as
+above, except the "system under test" is a set of renderer processes that
+perfscale orchestrates with
+[`std/child_process@v1`](actions.md#stdchild_processv1) while the `gpu:`
+sampler records what the card is doing. A `before:` sidecar adds the second
+ingredient of a real node — a heavy background GPU job (the encode stage)
+competing with the sessions for the same card.
+
+Any renderer that prints FPS works. This example uses
+[glmark2](https://github.com/glmark2/glmark2) (OpenGL, `apt install
+glmark2`) looping its 3D scenes as a stand-in for a game client; `vkmark`
+is the Vulkan equivalent, and a headless Unity/Unreal build drops in
+unchanged — only the `command` differs.
+
+```yaml
+# config.yaml
+vus: 1                      # the renderers are the load; one VU just keeps
+duration: 5m                # the run open (see test.yaml below)
+allow_process_actions: true # required for child_process/kill_process
+
+gpu:
+  enabled: true
+  interval_ms: 1000
+
+before:
+  # One "game session" = one renderer process. The farm spawns as a single
+  # managed process group, so `after:` stops every session at once.
+  - name: render-farm
+    uses: std/child_process@v1
+    with:
+      command: sh
+      args: ["-c", "for i in $(seq 4); do glmark2 --run-forever & done; wait"]
+      waitUntil:
+        stdout_contains: GL_RENDERER  # GL context is up
+        on_timeout: continue
+      restart: never                  # a crashed session must not respawn a 2nd farm
+
+  # Sidecar: a heavy GPU job sharing the card with the sessions — the encode
+  # stage of a game-streaming pipeline. Looped 1080p60 from a generated
+  # source, NVENC-encoded, discarded to null.
+  - name: encode-sidecar
+    uses: std/child_process@v1
+    with:
+      command: ffmpeg
+      args: ["-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=60",
+             "-c:v", "h264_nvenc", "-f", "null", "-"]
+      waitUntil:
+        stderr_contains: "Press [q]"  # ffmpeg reports the running loop on stderr
+        on_timeout: continue
+      restart: on-failure             # a crashed encoder comes back
+
+after:
+  - name: stop the farm
+    uses: std/kill_process@v1
+    with: { name: render-farm }       # tree: true by default → every session
+  - name: stop the sidecar
+    uses: std/kill_process@v1
+    with: { name: encode-sidecar }
+```
+
+```yaml
+# test.yaml
+steps:
+  - name: keep the run open
+    use: std/sleep@v1
+    with: { seconds: 30 }
+```
+
+```sh
+perfscale run -f test.yaml -c config.yaml --summary-export render.json
+```
+
+Headless nodes: glmark2 needs a GL context. On a GPU server without a
+display use the DRM build (`glmark2-drm` / `glmark2-es2-drm` — renders via
+GBM straight on the card) or wrap the command in `xvfb-run -a`.
+
+### Reading the result
+
+The renderer's FPS lines stream into the run log with a `render-farm: `
+prefix; the `gpu:` summary records what the card did meanwhile. The method
+is a sweep, not a single run — raise the session count (`seq 4` → 1, 2, 4,
+8) between runs:
+
+- per-scene FPS divided by ~N while `util max` pins at 100% → the GPU is
+  saturated; that session count is the card's ceiling for this workload;
+- FPS degrades while util stays below 100% → the limit is elsewhere (CPU,
+  context switching) — cross-check `temp max` / `power max` for thermal or
+  power throttling;
+- `vram max` per session count answers the capacity question directly: how
+  many sessions fit into `memory_total_mib` before the driver starts
+  swapping;
+- the sidecar's price is the **FPS delta** between a farm-only run (comment
+  the `encode-sidecar` block out) and a farm+sidecar run at the same session
+  count — that is what sharing the card with the encode pipeline costs a
+  cloud-gaming node.
+
+perfscale does not parse FPS into metrics — frame-rate numbers live in the
+run log; the `gpu:` timeseries (each sample stamped `ts_ms` on the [stats
+timeline](metrics.md#live-stats-lines)) is what you chart against them.
+
+One caveat for runs like this: `utilization.gpu` reports the 3D/compute
+engine — the NVENC encoder the sidecar burns is **not** counted there, so
+judge the sidecar by VRAM, power draw, and the FPS it costs the sessions,
+not by the util line.
+
 ## GPU benchmark suite
 
 The repo ships a ready-made local suite in
