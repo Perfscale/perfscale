@@ -635,9 +635,12 @@ pub async fn start(config: Option<&GpuConfig>, tx: &mpsc::Sender<LogLine>) -> Op
 }
 
 async fn warn(tx: &mpsc::Sender<LogLine>, text: &str) {
+    // System, not stderr: on the agent wire stderr lines become `[err] `
+    // entries, and the controlplane fails runs on those — a best-effort GPU
+    // warning must never fail a run (see the module doc).
     let _ = tx
         .send(LogLine {
-            source: LogSource::Stderr,
+            source: LogSource::System,
             text: format!("[warn] {text}"),
         })
         .await;
@@ -1025,5 +1028,8 @@ DCGM_FI_DEV_SM_CLOCK{gpu="0",UUID="GPU-aaa"} 1980
         assert!(start(Some(&cfg), &tx).await.is_none());
         let line = rx.recv().await.expect("warning emitted");
         assert!(line.text.contains("unknown gpu source"), "{}", line.text);
+        // Best-effort warnings go out as system lines: stderr would become a
+        // run-failing `[err] ` entry on the agent → controlplane wire.
+        assert_eq!(line.source, LogSource::System);
     }
 }
