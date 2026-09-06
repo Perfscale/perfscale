@@ -63,14 +63,93 @@ pub struct MetricSnapshot {
 
 /// One ingest sample, matching the controlplane's
 /// `{metric, labels, value, ts}` shape.
+///
+/// Wire contract: `ts` is an **RFC3339 string** (the controlplane's
+/// `MetricSampleInput.ts` is `Option<String>`; an integer would fail
+/// ingestion with a 400). Internally we keep epoch milliseconds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sample {
     pub metric: String,
     pub labels: Map<String, Value>,
     pub value: f64,
-    /// Sample time, milliseconds since the Unix epoch (`ts` on the wire).
-    #[serde(rename = "ts")]
+    /// Sample time (`ts` on the wire, RFC3339).
+    #[serde(
+        rename = "ts",
+        serialize_with = "ts_to_rfc3339",
+        deserialize_with = "ts_from_wire"
+    )]
     pub ts_ms: i64,
+}
+
+/// Serialize epoch milliseconds as RFC3339 (UTC, millisecond precision).
+fn ts_to_rfc3339<S: serde::Serializer>(ts_ms: &i64, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&epoch_ms_to_rfc3339(*ts_ms))
+}
+
+/// Lenient read: RFC3339 string (the wire shape) or bare epoch millis.
+fn ts_from_wire<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+    let v = Value::deserialize(d)?;
+    if let Some(n) = v.as_i64() {
+        return Ok(n);
+    }
+    let s = v
+        .as_str()
+        .ok_or_else(|| serde::de::Error::custom("ts must be RFC3339 string or epoch ms"))?;
+    rfc3339_to_epoch_ms(s).map_err(serde::de::Error::custom)
+}
+
+/// Format epoch milliseconds as `YYYY-MM-DDTHH:MM:SS.sssZ` (UTC) without a
+/// date library — Howard Hinnant's civil-from-days conversion.
+fn epoch_ms_to_rfc3339(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let millis = ms.rem_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let day_secs = secs.rem_euclid(86_400);
+    let (hour, min, sec) = (day_secs / 3600, day_secs % 3600 / 60, day_secs % 60);
+
+    // days since epoch → civil date
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{millis:03}Z")
+}
+
+/// Parse the fixed `…T HH:MM:SS(.sss)?Z` shape we emit (UTC only — that is
+/// all the formatter above produces, and all the controlplane needs back).
+fn rfc3339_to_epoch_ms(s: &str) -> Result<i64, String> {
+    let bad = || format!("invalid ts {s:?}");
+    let (date, time) = s.split_once('T').ok_or_else(bad)?;
+    let time = time.strip_suffix('Z').ok_or_else(bad)?;
+    let mut dp = date.split('-');
+    let (y, mo, d): (i64, i64, i64) = (
+        dp.next().and_then(|v| v.parse().ok()).ok_or_else(bad)?,
+        dp.next().and_then(|v| v.parse().ok()).ok_or_else(bad)?,
+        dp.next().and_then(|v| v.parse().ok()).ok_or_else(bad)?,
+    );
+    let (hms, frac) = time.split_once('.').unwrap_or((time, ""));
+    let millis: i64 = frac.parse().unwrap_or(0);
+    let mut tp = hms.split(':');
+    let (h, mi, se): (i64, i64, i64) = (
+        tp.next().and_then(|v| v.parse().ok()).ok_or_else(bad)?,
+        tp.next().and_then(|v| v.parse().ok()).ok_or_else(bad)?,
+        tp.next().and_then(|v| v.parse().ok()).ok_or_else(bad)?,
+    );
+    // civil date → days since epoch (Hinnant's algorithm, reversed)
+    let y_adj = if mo <= 2 { y - 1 } else { y };
+    let era = y_adj.div_euclid(400);
+    let yoe = y_adj.rem_euclid(400);
+    let mp = if mo > 2 { mo - 3 } else { mo + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Ok(days * 86_400_000 + h * 3_600_000 + mi * 60_000 + se * 1000 + millis)
 }
 
 /// Flatten a snapshot into ingest samples (see the module docs for naming
@@ -444,6 +523,44 @@ mod tests {
         }
     }
 
+    /// Wire contract regression: the controlplane's MetricSampleInput takes
+    /// `ts` as an RFC3339 STRING — an integer fails ingestion with a 400 and
+    /// the batch is poisoned. Keep the format pinned.
+    #[test]
+    fn sample_ts_serializes_as_rfc3339_string() {
+        let s = Sample {
+            metric: "m".into(),
+            labels: Map::new(),
+            value: 1.0,
+            ts_ms: 1_735_689_600_123,
+        };
+        let v = serde_json::to_value(&s).unwrap();
+        let ts = v["ts"].as_str().expect("ts must serialize as a string");
+        assert_eq!(ts, "2025-01-01T00:00:00.123Z", "{ts}");
+        // Round trip, and a lenient integer read for robustness.
+        let back: Sample = serde_json::from_value(v).unwrap();
+        assert_eq!(back.ts_ms, s.ts_ms);
+        let as_int: Sample = serde_json::from_value(serde_json::json!(
+            {"metric": "m", "labels": {}, "value": 1.0, "ts": 42}
+        ))
+        .unwrap();
+        assert_eq!(as_int.ts_ms, 42);
+        // A couple of calendar anchors (leap-year boundary included).
+        assert_eq!(epoch_ms_to_rfc3339(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(
+            epoch_ms_to_rfc3339(1_767_225_600_000),
+            "2026-01-01T00:00:00.000Z"
+        );
+        assert_eq!(
+            epoch_ms_to_rfc3339(1_740_693_600_000),
+            "2025-02-27T22:00:00.000Z"
+        );
+        assert_eq!(
+            rfc3339_to_epoch_ms("2025-02-27T22:00:00.000Z").unwrap(),
+            1_740_693_600_000
+        );
+    }
+
     /// One snapshot with a single sample-kind metric → 6 samples
     /// (4 quantiles + `_count` + `_sum`).
     fn sample_snapshot(ts_ms: i64, count: f64) -> MetricSnapshot {
@@ -565,7 +682,7 @@ mod tests {
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({"metric": "x", "labels": {"a": 1}, "value": 0.5, "ts": 7})
+            serde_json::json!({"metric": "x", "labels": {"a": 1}, "value": 0.5, "ts": "1970-01-01T00:00:00.007Z"})
         );
         let back: Sample = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
@@ -704,7 +821,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|s| s["ts"] == 2000),
+                .all(|s| s["ts"] == "1970-01-01T00:00:02.000Z"),
             "dropped (gated) snapshot must never be shipped: {}",
             bodies[0]["samples"]
         );
