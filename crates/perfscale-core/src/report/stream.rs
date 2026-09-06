@@ -768,8 +768,7 @@ mod tests {
             samples
                 .iter()
                 .find(|s| {
-                    s.metric == metric
-                        && s.labels.get("gpu").and_then(Value::as_str) == Some(gpu)
+                    s.metric == metric && s.labels.get("gpu").and_then(Value::as_str) == Some(gpu)
                 })
                 .unwrap_or_else(|| panic!("sample {metric}/gpu{gpu} present: {samples:?}"))
         };
@@ -788,10 +787,12 @@ mod tests {
         assert_eq!(u1.value, 3.0);
         assert_eq!(u1.ts_ms, 7_005);
         assert!(
-            samples.iter().all(|s| !(s.labels.get("gpu").and_then(Value::as_str) == Some("1")
-                && (s.metric == "gpu_temperature_c"
-                    || s.metric == "gpu_power_w"
-                    || s.metric == "gpu_memory_total_mib"))),
+            samples.iter().all(
+                |s| !(s.labels.get("gpu").and_then(Value::as_str) == Some("1")
+                    && (s.metric == "gpu_temperature_c"
+                        || s.metric == "gpu_power_w"
+                        || s.metric == "gpu_memory_total_mib"))
+            ),
             "N/A fields are skipped, not shipped: {samples:?}"
         );
     }
