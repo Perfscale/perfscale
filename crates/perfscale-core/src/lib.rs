@@ -14,6 +14,7 @@ pub mod import;
 pub mod introspect;
 pub mod lint;
 pub mod models;
+pub mod report;
 pub mod runner;
 pub mod schema;
 pub mod step;

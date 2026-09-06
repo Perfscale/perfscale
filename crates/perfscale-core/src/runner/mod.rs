@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
+use crate::report::MetricSnapshot;
 use crate::step::{RunConfig, Step, TestDef};
 
 /// A single line of output from any runner.
@@ -84,6 +85,11 @@ pub enum ExecutionPlan {
         /// Drop per-iteration success output at the source (`--quiet`);
         /// errors and the final metric summary still stream.
         quiet: bool,
+        /// Optional during-run metrics stream: when the config's `report`
+        /// block has `during_run: true` and this sender is present, the
+        /// engine pumps out a cumulative [`MetricSnapshot`] every
+        /// `report.interval_ms` for a [`crate::report::DuringRunShipper`].
+        metrics_tx: Option<mpsc::Sender<MetricSnapshot>>,
     },
 }
 
@@ -106,6 +112,7 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
             variables,
             shared_variables,
             quiet,
+            metrics_tx,
         } => {
             let (tx, rx) = mpsc::channel(512);
             let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
@@ -119,6 +126,7 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
                     shared_variables,
                     quiet,
                     tx,
+                    metrics_tx,
                 )
                 .await;
                 // Like k6, a violated `severity: fail` thresholds gate exits
@@ -200,6 +208,7 @@ mod tests {
             variables: serde_json::Map::new(),
             shared_variables: serde_json::Map::new(),
             quiet: false,
+            metrics_tx: None,
         })
         .await
         .unwrap();
@@ -320,6 +329,7 @@ mod tests {
             variables: serde_json::Map::new(),
             shared_variables: serde_json::Map::new(),
             quiet: true,
+            metrics_tx: None,
         }
     }
 

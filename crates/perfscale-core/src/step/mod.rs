@@ -40,6 +40,8 @@ pub mod shared_variable;
 pub mod thresholds;
 pub(crate) mod ws;
 
+pub use crate::report::{DuringRunShipper, MetricSnapshot};
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -147,6 +149,22 @@ pub struct RunConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu: Option<Box<crate::gpu::GpuConfig>>,
 
+    /// Metrics reporting (`report:`) — forward the run summary, and with
+    /// `during_run: true` stream cumulative metric snapshots while the VUs
+    /// run (see [`crate::report`]). Off by default. Native engine only.
+    ///
+    /// Skipped in the JSON schema: a `-c config.yaml` document carries its
+    /// own typed `report:` block ([`crate::yaml::ReportConfig`], `url`
+    /// required) next to the flattened `RunConfig` — without the skip the
+    /// two `report` properties would collide in the generated schema, and
+    /// the flattened one (all-optional) would shadow the typed one. The
+    /// embedding process (CLI, agent) maps the config-file block into this
+    /// field programmatically; serde stays live so a standalone `RunConfig`
+    /// on the wire (perfscaled) can carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub report: Option<crate::report::ReportRunConfig>,
+
     /// Confinement root for file actions. When set, every file path a step
     /// touches is canonicalized and must stay under this directory (`../`
     /// escapes and symlink hops out of it are rejected). Never parsed from
@@ -221,6 +239,7 @@ impl Default for RunConfig {
             stages: Vec::new(),
             arrival: None,
             gpu: None,
+            report: None,
             fs_root: None,
         }
     }

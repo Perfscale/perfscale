@@ -51,6 +51,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
+use crate::report::MetricSnapshot;
 use crate::runner::{LogLine, LogSource};
 use crate::step::schedule::{lerp_segments, DispatchCursor, Schedule, Segment};
 use crate::step::{
@@ -449,6 +450,7 @@ pub async fn run_steps(
         Map::new(),
         quiet,
         tx,
+        None,
     )
     .await;
 }
@@ -481,6 +483,13 @@ pub async fn run_steps(
 /// Returns a [`NativeRunOutcome`]: the combined `std/thresholds@v1` gate
 /// result, so the caller (CLI) can exit non-zero when a `severity: fail`
 /// gate was violated.
+///
+/// When `config.report.during_run` is set and `metrics_tx` is `Some`, a
+/// snapshot pump sends a cumulative [`MetricSnapshot`] over the channel every
+/// `report.interval_ms` while the VUs run (try_send only — a stalled consumer
+/// never backpressures the VU loop). The channel's receiver is typically
+/// driven by a [`crate::report::DuringRunShipper`]. With no `report` block
+/// (or `during_run: false`) no task is spawned and the channel stays silent.
 // The argument list mirrors the config file's sections; bundling them into an
 // options struct would just rename the same count.
 #[allow(clippy::too_many_arguments)]
@@ -493,6 +502,7 @@ pub async fn run_native(
     shared_variables: Map<String, Value>,
     quiet: bool,
     tx: mpsc::Sender<LogLine>,
+    metrics_tx: Option<mpsc::Sender<MetricSnapshot>>,
 ) -> NativeRunOutcome {
     let vars = if variables.is_empty() {
         Value::Null
@@ -668,6 +678,19 @@ pub async fn run_native(
         })
     };
 
+    // During-run metrics streaming: one cumulative snapshot every
+    // `report.interval_ms` for a shipper at the other end of `metrics_tx`.
+    // Independent of the 5s [stats] reporter; spans the VU phase like it and
+    // is aborted next to it, which closes the channel for the final drain.
+    let metrics_stream = match (&config.report, metrics_tx) {
+        (Some(report), Some(tx)) if report.during_run => Some(spawn_metrics_stream(
+            Arc::clone(&metrics),
+            tx,
+            report.interval(),
+        )),
+        _ => None,
+    };
+
     // GPU sampler: spans exactly the VU phase, so utilization/VRAM/temp/power
     // line up with the load on the [stats] timeline. Best-effort — a missing
     // GPU/tool warns once and the run continues without GPU metrics.
@@ -716,6 +739,11 @@ pub async fn run_native(
         ),
     };
     reporter.abort();
+    // Dropping the pump's sender closes the snapshot channel — the shipper
+    // sees it and runs its final drain.
+    if let Some(task) = metrics_stream {
+        task.abort();
+    }
     let gpu_summary = gpu_session.and_then(|s| s.stop());
 
     // Teardown on every non-setup-failure path: `after` steps (best-effort),
@@ -788,6 +816,44 @@ pub async fn run_native(
         thresholds,
         config_error: None,
     }
+}
+
+/// Snapshot pump for during-run metrics streaming: every `interval`, lock
+/// [`Metrics`], ship one cumulative [`MetricSnapshot`] via `try_send`. A full
+/// channel drops the snapshot (rate-limited warning) — streaming must never
+/// backpressure the VU loop; the shipper applies its own shedding downstream
+/// (CPU gate, bounded pending). Abort to stop; aborting drops the sender,
+/// which closes the channel for the shipper's final drain.
+fn spawn_metrics_stream(
+    metrics: Arc<Mutex<Metrics>>,
+    tx: mpsc::Sender<MetricSnapshot>,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.tick().await; // consume the immediate first tick
+        let mut dropped: u64 = 0;
+        loop {
+            ticker.tick().await;
+            let ts_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let snap = MetricSnapshot {
+                ts_ms,
+                metrics: metrics.lock().unwrap().metric_snapshot(),
+            };
+            if tx.try_send(snap).is_err() {
+                dropped += 1;
+                if dropped % 10 == 1 {
+                    tracing::warn!(
+                        dropped,
+                        "metrics snapshot channel full — dropping snapshots"
+                    );
+                }
+            }
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2548,6 +2614,7 @@ mod tests {
             Map::new(),
             false,
             tx,
+            None,
         ));
         let mut lines = Vec::new();
         while let Some(line) = rx.recv().await {
@@ -2573,6 +2640,7 @@ mod tests {
             shared_variables,
             false,
             tx,
+            None,
         ));
         let mut lines = Vec::new();
         while let Some(line) = rx.recv().await {
@@ -3423,5 +3491,122 @@ mod tests {
         assert_eq!(t.status, "info");
         assert!(!outcome.thresholds_failed());
         assert!(t.message.contains("nightly SLO"), "{}", t.message);
+    }
+
+    // -----------------------------------------------------------------
+    // During-run metrics streaming (metrics_tx + report.during_run)
+    // -----------------------------------------------------------------
+
+    /// Run `run_native` with a snapshot channel attached, collecting log
+    /// lines first, then the buffered snapshots (few per run — the 512-slot
+    /// buffer holds them all, and the pump's sender is dropped when the VU
+    /// phase ends, so the channel is closed by the time `run_native` returns).
+    async fn run_native_streaming(
+        steps: Vec<Step>,
+        config: RunConfig,
+    ) -> (Vec<LogLine>, Vec<crate::report::MetricSnapshot>) {
+        let (tx, mut rx) = mpsc::channel(512);
+        let (mtx, mut mrx) = mpsc::channel(512);
+        let handle = tokio::spawn(run_native(
+            steps,
+            Vec::new(),
+            Vec::new(),
+            config,
+            Map::new(),
+            Map::new(),
+            true, // quiet — the request firehose is irrelevant here
+            tx,
+            Some(mtx),
+        ));
+        let mut lines = Vec::new();
+        while let Some(line) = rx.recv().await {
+            lines.push(line);
+        }
+        handle.await.unwrap();
+        let mut snaps = Vec::new();
+        while let Ok(s) = mrx.try_recv() {
+            snaps.push(s);
+        }
+        (lines, snaps)
+    }
+
+    #[tokio::test]
+    async fn run_native_streams_cumulative_snapshots_when_during_run() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let steps = vec![
+            Step {
+                name: Some("hit".into()),
+                action: "std/http@v1".into(),
+                with: Some(json!({ "url": server.uri() })),
+                check: None,
+                outputs: None,
+                severity: None,
+                message: None,
+            },
+            sleep_step(50),
+        ];
+        let config = RunConfig {
+            vus: 1,
+            duration: "3s".into(),
+            report: Some(crate::report::ReportRunConfig {
+                during_run: true,
+                interval_ms: 1000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (_lines, snaps) = run_native_streaming(steps, config).await;
+
+        assert!(
+            snaps.len() >= 2,
+            "expected ≥2 snapshots over a 3s run, got {}",
+            snaps.len()
+        );
+        // Timestamps strictly increase; counts are cumulative.
+        assert!(
+            snaps.windows(2).all(|w| w[1].ts_ms > w[0].ts_ms),
+            "snapshot timestamps must be monotonic"
+        );
+        let counts: Vec<f64> = snaps
+            .iter()
+            .filter_map(|s| s.metrics.get("http_req_duration"))
+            .map(|a| a.count)
+            .collect();
+        assert!(
+            counts.windows(2).all(|w| w[1] >= w[0]),
+            "cumulative counts never shrink: {counts:?}"
+        );
+        assert!(
+            counts.last().copied().unwrap_or(0.0) > 0.0,
+            "requests recorded during the run"
+        );
+        // The failure-rate family rides along in the same snapshot.
+        assert!(snaps
+            .last()
+            .unwrap()
+            .metrics
+            .contains_key("http_req_failed"));
+    }
+
+    #[tokio::test]
+    async fn run_native_without_during_run_keeps_the_channel_silent() {
+        for report in [None, Some(crate::report::ReportRunConfig::default())] {
+            let config = RunConfig {
+                vus: 1,
+                duration: "1s".into(),
+                report,
+                ..Default::default()
+            };
+            let (_lines, snaps) = run_native_streaming(vec![sleep_step(100)], config).await;
+            assert!(
+                snaps.is_empty(),
+                "no report block / during_run off → zero overhead path"
+            );
+        }
     }
 }

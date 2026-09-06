@@ -137,8 +137,9 @@ Rules and edge cases:
 vus: 10          # virtual users, default 1
 duration: 5m     # "30s", "1m", "5m30s", "1h" — default "1m"
 
-report:          # optional — forward the summary after the run
+report:          # optional — forward metrics to a perfscale serve instance
   url: http://localhost:7999
+  during_run: true      # also stream cumulative snapshots while running
 
 gpu:             # optional — GPU metrics during the run (native engine)
   enabled: true
@@ -153,6 +154,11 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `stages` | — | Ramping-VU profile (k6-style): list of `{ duration, target }` stages. Overrides `vus`/`duration`; mutually exclusive with `arrival`. Native engine only |
 | `arrival` | — | Arrival-rate profile (open model): `{ max_vus, pre_allocated_vus?, stages: [{ duration, rate }] }` — hold an iterations/sec rate. Mutually exclusive with `stages`. Native engine only |
 | `report.url` | — | A `perfscale serve` base URL; the CLI `--report` flag overrides it |
+| `report.during_run` | `false` | Also stream cumulative metric snapshots during the run (batched POSTs to `<url>/api/v1/metrics`), not just the summary at the end — see [During-run metrics](core/metrics.md#during-run-metrics-reportduring_run). Native engine only |
+| `report.interval_ms` | `5000` | During-run snapshot/flush interval, milliseconds (min 1000) |
+| `report.batch_size` | `500` | Flush a batch once it holds this many samples |
+| `report.max_cpu_percent` | `90` | CPU gate: while host CPU% ≥ this, snapshots are dropped and batches held; `0` disables; inert off-Linux |
+| `report.max_pending` | `24` | Max undelivered batches before the oldest is dropped |
 | `gpu` | — | GPU metrics collection — see [GPU metrics](#gpu-metrics-gpu). Native engine only |
 | `before` | `[]` | One-time setup steps — see [Setup and variables](#setup-and-variables) |
 | `after` | `[]` | One-time teardown steps — see [Teardown](#teardown-after) |

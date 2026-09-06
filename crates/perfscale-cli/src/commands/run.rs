@@ -24,9 +24,10 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
         None => None,
     };
 
-    let plan = resolve_plan(&args, native_test, config.as_ref())?;
+    let mut plan = resolve_plan(&args, native_test, config.as_ref())?;
     let (engine, vus, duration) = plan_meta(&plan);
     let report_url = resolve_report_url(&args, config.as_ref());
+    let shipper = wire_during_run(&mut plan, report_url.as_ref());
 
     let RunOutput {
         mut lines, exit, ..
@@ -53,6 +54,13 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
                 .hint("the engine crashed at startup — its output above usually names the cause (script error, broken installation, bad flags)")
                 .docs("cli/commands.md#exit-code-semantics"));
         }
+    }
+
+    // During-run shipper: the engine dropped its snapshot sender when the VU
+    // phase ended, closing the channel — the shipper is now running its final
+    // drain. Wait for it (bounded) so the last batch lands before exit.
+    if let Some(shipper) = shipper {
+        let _ = tokio::time::timeout(Duration::from_secs(30), shipper).await;
     }
 
     if let Some(url) = report_url {
@@ -299,14 +307,22 @@ fn resolve_plan(
         let test = native_test.expect("caller must load the test def when --file is set");
         // `-f` requires `-c` (enforced by clap), so config is always present here.
         let cfg = config.expect("clap requires -c with -f");
+        let mut run = cfg.run.clone();
+        // Fold the `report:` block into the engine's run config — the engine
+        // reads `report.during_run` to decide whether to pump snapshots.
+        if let Some(report) = &cfg.report {
+            run.report = Some(report.to_run_config());
+        }
         return Ok(ExecutionPlan::NativeSteps {
             test,
-            config: Box::new(cfg.run.clone()),
+            config: Box::new(run),
             before: cfg.before.clone(),
             after: cfg.after.clone(),
             variables: cfg.variables.clone(),
             shared_variables: cfg.shared_variables.clone(),
             quiet: args.quiet,
+            // Set later by the caller once the report URL is resolved.
+            metrics_tx: None,
         });
     }
 
@@ -318,6 +334,42 @@ fn resolve_report_url(args: &RunArgs, config: Option<&ConfigFile>) -> Option<Str
     args.report
         .clone()
         .or_else(|| config.and_then(|c| c.report.as_ref().map(|r| r.url.clone())))
+}
+
+/// When the native run opts into during-run streaming (`report.during_run`)
+/// and a report URL resolved (the `--report` flag beats the config URL for
+/// the streaming target too), hand the engine a snapshot channel and spawn
+/// the shipper that batches snapshots to `<url>/api/v1/metrics`.
+///
+/// The CLI ships unauthenticated — authenticated streaming is the agent's
+/// path (its shipper gets a Keycloak token provider). Returns the shipper's
+/// join handle so the caller can await the final drain before exit.
+fn wire_during_run(
+    plan: &mut ExecutionPlan,
+    report_url: Option<&String>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let (
+        ExecutionPlan::NativeSteps {
+            config, metrics_tx, ..
+        },
+        Some(url),
+    ) = (plan, report_url)
+    else {
+        return None;
+    };
+    let report = config.report.as_ref().filter(|r| r.during_run)?;
+    let (tx, rx) = tokio::sync::mpsc::channel(512);
+    *metrics_tx = Some(tx);
+    let cpu = std::sync::Arc::new(perfscale_core::report::cpu::CpuReader::new());
+    let shipper = perfscale_core::report::DuringRunShipper::new(
+        report.clone(),
+        url.clone(),
+        serde_json::Map::new(),
+        None,
+        None,
+        move || cpu.sample(),
+    );
+    Some(shipper.spawn(rx))
 }
 
 /// `--quiet` print policy, applied uniformly to every engine: keep errors,
@@ -400,6 +452,7 @@ mod tests {
             },
             report: report_url.map(|url| ReportConfig {
                 url: url.to_string(),
+                ..ReportConfig::default()
             }),
             before: Vec::new(),
             after: Vec::new(),
@@ -475,6 +528,83 @@ mod tests {
             ExecutionPlan::NativeSteps { config, .. } => assert_eq!(config.vus, 4),
             _ => panic!("expected NativeSteps plan"),
         }
+    }
+
+    #[test]
+    fn resolve_plan_native_maps_report_block_into_run_config() {
+        let args = RunArgs {
+            file: Some(PathBuf::from("t.yaml")),
+            ..base_args()
+        };
+        let mut config = sample_config(Some("http://localhost:7999"));
+        config.report.as_mut().unwrap().during_run = true;
+        let plan = resolve_plan(&args, Some(sample_test()), Some(&config)).unwrap();
+        match plan {
+            ExecutionPlan::NativeSteps {
+                config, metrics_tx, ..
+            } => {
+                let report = config.report.as_ref().expect("report block mapped");
+                assert!(report.during_run);
+                assert_eq!(report.url.as_deref(), Some("http://localhost:7999"));
+                // The channel is attached later, once the URL is resolved.
+                assert!(metrics_tx.is_none());
+            }
+            _ => panic!("expected NativeSteps plan"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wire_during_run_attaches_channel_only_for_opted_in_native_runs() {
+        let url = "http://localhost:7999".to_string();
+        let native_plan = |report: Option<perfscale_core::report::ReportRunConfig>| {
+            let mut config = RunConfig {
+                vus: 1,
+                duration: "1s".into(),
+                ..Default::default()
+            };
+            config.report = report;
+            ExecutionPlan::NativeSteps {
+                test: sample_test(),
+                config: Box::new(config),
+                before: Vec::new(),
+                after: Vec::new(),
+                variables: serde_json::Map::new(),
+                shared_variables: serde_json::Map::new(),
+                quiet: false,
+                metrics_tx: None,
+            }
+        };
+        let has_channel = |plan: &ExecutionPlan| match plan {
+            ExecutionPlan::NativeSteps { metrics_tx, .. } => metrics_tx.is_some(),
+            _ => false,
+        };
+
+        // Opted in + URL resolved → channel attached, shipper spawned.
+        let mut plan = native_plan(Some(perfscale_core::report::ReportRunConfig {
+            during_run: true,
+            ..Default::default()
+        }));
+        let handle = wire_during_run(&mut plan, Some(&url));
+        assert!(handle.is_some());
+        assert!(has_channel(&plan));
+        handle.unwrap().abort();
+
+        // during_run off → untouched.
+        let mut plan = native_plan(Some(perfscale_core::report::ReportRunConfig::default()));
+        assert!(wire_during_run(&mut plan, Some(&url)).is_none());
+        assert!(!has_channel(&plan));
+
+        // Opted in but no URL anywhere → untouched.
+        let mut plan = native_plan(Some(perfscale_core::report::ReportRunConfig {
+            during_run: true,
+            ..Default::default()
+        }));
+        assert!(wire_during_run(&mut plan, None).is_none());
+        assert!(!has_channel(&plan));
+
+        // Non-native engines never stream.
+        let mut plan = ExecutionPlan::K6Script(PathBuf::from("a.js"));
+        assert!(wire_during_run(&mut plan, Some(&url)).is_none());
     }
 
     #[test]
@@ -574,6 +704,7 @@ mod tests {
             variables: serde_json::Map::new(),
             shared_variables: serde_json::Map::new(),
             quiet: false,
+            metrics_tx: None,
         };
         assert_eq!(plan_meta(&native), ("native", Some(7), Some("45s".into())));
 
@@ -622,6 +753,7 @@ mod tests {
             variables: serde_json::Map::new(),
             shared_variables: serde_json::Map::new(),
             quiet: false,
+            metrics_tx: None,
         };
         assert_eq!(plan_meta(&staged), ("native", None, Some("3s".into())));
     }

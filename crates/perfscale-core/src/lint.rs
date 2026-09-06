@@ -277,7 +277,14 @@ const CONFIG_TOP_FIELDS: [&str; 12] = [
     "allow_file_actions",
     "allow_process_actions",
 ];
-const REPORT_FIELDS: [&str; 1] = ["url"];
+const REPORT_FIELDS: [&str; 6] = [
+    "url",
+    "during_run",
+    "interval_ms",
+    "batch_size",
+    "max_cpu_percent",
+    "max_pending",
+];
 const CHECK_FIELDS: [&str; 7] = [
     "on",
     "status",

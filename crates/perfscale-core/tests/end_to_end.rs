@@ -81,6 +81,7 @@ steps:
         shared_variables: config.shared_variables,
         config: Box::new(config.run),
         quiet: false,
+        metrics_tx: None,
     })
     .await
     .unwrap();
@@ -160,6 +161,7 @@ steps:
         shared_variables: serde_json::Map::new(),
         config: Box::new(config),
         quiet: false,
+        metrics_tx: None,
     })
     .await
     .unwrap();
@@ -215,6 +217,7 @@ steps:
         shared_variables: serde_json::Map::new(),
         config: Box::new(config),
         quiet: false,
+        metrics_tx: None,
     })
     .await
     .unwrap();

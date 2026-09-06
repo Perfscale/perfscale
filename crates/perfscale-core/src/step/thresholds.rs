@@ -238,7 +238,7 @@ pub fn parse_expr(input: &str) -> Result<ThresholdExpr, String> {
 // ---------------------------------------------------------------------------
 
 /// What kind of metric a name resolves to — decides which aggregates apply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MetricKind {
     /// Duration/sample histogram (ms): avg/min/max/percentiles + count.
     Sample,
@@ -249,8 +249,9 @@ pub enum MetricKind {
 }
 
 /// Precomputed aggregates for one metric, taken from the same HDR
-/// histograms / counters the text summary prints.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// histograms / counters the text summary prints. Serialized as part of
+/// [`crate::report::stream::MetricSnapshot`] for during-run streaming.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MetricAgg {
     pub kind: MetricKind,
     pub avg: f64,

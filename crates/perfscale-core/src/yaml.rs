@@ -7,11 +7,64 @@ use serde::{Deserialize, Serialize};
 
 use crate::step::{RunConfig, Step, TestDef};
 
-/// Where to forward the aggregated run summary after `perfscale run` finishes.
+/// Where to forward run metrics: the aggregated summary after `perfscale run`
+/// finishes, and — with `during_run: true` — cumulative metric snapshots
+/// while the run is in progress. See [crate::report].
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReportConfig {
     /// Base URL of a running `perfscale serve` instance, e.g. `http://localhost:7999`.
     pub url: String,
+
+    /// Stream metric snapshots during the run (batched POSTs to the same
+    /// endpoint), not just the summary at the end. Off by default.
+    #[serde(default)]
+    pub during_run: bool,
+
+    /// Snapshot/flush interval in milliseconds (default 5000, min 1000).
+    #[serde(default = "crate::report::default_interval_ms")]
+    pub interval_ms: u64,
+
+    /// Flush a batch once it holds this many samples (default 500).
+    #[serde(default = "crate::report::default_batch_size")]
+    pub batch_size: usize,
+
+    /// CPU gate for during-run shipping: while the host's busy CPU% is at or
+    /// above this value snapshots are dropped and batches held. `0` disables
+    /// the gate (default 90); off-Linux the gate is inert.
+    #[serde(default = "crate::report::default_max_cpu_percent")]
+    pub max_cpu_percent: f64,
+
+    /// Maximum sealed batches awaiting delivery before drop-oldest kicks in
+    /// (default 24).
+    #[serde(default = "crate::report::default_max_pending")]
+    pub max_pending: usize,
+}
+
+impl Default for ReportConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            during_run: false,
+            interval_ms: crate::report::default_interval_ms(),
+            batch_size: crate::report::default_batch_size(),
+            max_cpu_percent: crate::report::default_max_cpu_percent(),
+            max_pending: crate::report::default_max_pending(),
+        }
+    }
+}
+
+impl ReportConfig {
+    /// Fold the config-file block into the engine's run-level report config.
+    pub fn to_run_config(&self) -> crate::report::ReportRunConfig {
+        crate::report::ReportRunConfig {
+            url: Some(self.url.clone()),
+            during_run: self.during_run,
+            interval_ms: self.interval_ms,
+            batch_size: self.batch_size,
+            max_cpu_percent: self.max_cpu_percent,
+            max_pending: self.max_pending,
+        }
+    }
 }
 
 /// Top-level `-c config.yaml` document.
@@ -166,6 +219,48 @@ steps:
     }
 
     #[test]
+    fn report_block_defaults_keep_old_configs_compatible() {
+        // A pre-streaming config with only `url` parses with streaming off
+        // and all shipper knobs at their defaults.
+        let cfg = parse_config_file("report:\n  url: http://localhost:7999\n").unwrap();
+        let report = cfg.report.unwrap();
+        assert!(!report.during_run);
+        assert_eq!(report.interval_ms, 5000);
+        assert_eq!(report.batch_size, 500);
+        assert_eq!(report.max_cpu_percent, 90.0);
+        assert_eq!(report.max_pending, 24);
+    }
+
+    #[test]
+    fn parses_report_block_with_during_run_fields() {
+        let yaml = r#"
+report:
+  url: http://localhost:7999
+  during_run: true
+  interval_ms: 2000
+  batch_size: 100
+  max_cpu_percent: 75.5
+  max_pending: 8
+"#;
+        let cfg = parse_config_file(yaml).unwrap();
+        let report = cfg.report.unwrap();
+        assert!(report.during_run);
+        assert_eq!(report.interval_ms, 2000);
+        assert_eq!(report.batch_size, 100);
+        assert_eq!(report.max_cpu_percent, 75.5);
+        assert_eq!(report.max_pending, 8);
+
+        // The mapping into the engine's run config keeps every field.
+        let run = report.to_run_config();
+        assert_eq!(run.url.as_deref(), Some("http://localhost:7999"));
+        assert!(run.during_run);
+        assert_eq!(run.interval_ms, 2000);
+        assert_eq!(run.batch_size, 100);
+        assert_eq!(run.max_cpu_percent, 75.5);
+        assert_eq!(run.max_pending, 8);
+    }
+
+    #[test]
     fn empty_config_file_uses_run_config_defaults() {
         let cfg = parse_config_file("{}").unwrap();
         assert_eq!(cfg.run.vus, 1);
@@ -267,6 +362,7 @@ steps:
             },
             report: Some(ReportConfig {
                 url: "http://localhost:7999".into(),
+                ..ReportConfig::default()
             }),
             before: Vec::new(),
             after: Vec::new(),

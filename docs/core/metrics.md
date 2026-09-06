@@ -222,3 +222,66 @@ The CLI flag wins over the config block. After the run, the CLI POSTs the
 collected summary lines (only the k6-shaped ones) as
 `{"lines": […]}` to `<url>/api/v1/metrics` with a 5 s timeout; delivery
 problems are logged as `[report] …` on stderr and never fail the run itself.
+
+## During-run metrics (`report.during_run`)
+
+The same `report:` block can also stream metrics **while the run is in
+progress** — cumulative snapshots of every metric family, batched and POSTed
+to the same `<url>/api/v1/metrics` endpoint:
+
+```yaml
+report:
+  url: http://localhost:7999
+  during_run: true        # default false — only the end-of-run summary
+  interval_ms: 5000       # snapshot/flush interval, min 1000
+  batch_size: 500         # flush a batch once it holds this many samples
+  max_cpu_percent: 90     # CPU gate; 0 disables it
+  max_pending: 24         # max undelivered batches before drop-oldest
+```
+
+The engine emits one snapshot per `interval_ms` (independent of the 5 s
+`[stats]` reporter) and a shipper batches them: a batch is POSTed once it
+reaches `batch_size` samples, and whatever is open flushes on every interval
+tick. Each POST body is `{samples, seq}` (`taskId` too when the caller sets
+one), where `seq` is a monotonically increasing batch number reused across
+retries — receivers can deduplicate redeliveries.
+
+**Sample naming** follows the Prometheus summary/counter conventions, with
+durations converted from the engine's milliseconds to **seconds**:
+
+| Engine metric | Shipped samples |
+|---|---|
+| histogram (`http_req_duration`, `db_query_duration`, …) | `<name>{quantile="0.5"/"0.9"/"0.95"/"0.99"}` (seconds), `<name>_count`, `<name>_sum` (seconds) |
+| counter (`db_rows`, …) | `<name>_total` |
+| failure rate (`http_req_failed`, …) | `<name>_total` (invocations), `<name>_failed_total` (failures) |
+
+All values are **cumulative since run start** — the HDR histograms and
+counters never reset during a run. To derive per-window numbers consumer-side,
+diff successive snapshots: `rate(x_count[window])`-style for throughput,
+`Δ_sum / Δ_count` for windowed average latency.
+
+**Protective strategies** (the VU loop always wins; streaming sheds first):
+
+- *CPU gate*: while the host's busy CPU% (from `/proc/stat`) is at or above
+  `max_cpu_percent`, incoming snapshots are dropped (every 10th logs a
+  warning) and pending batches are held — no POSTs. Off-Linux there is no
+  CPU reading, so the gate is inert. `max_cpu_percent: 0` disables it.
+- *Bounded backlog*: sealed-but-undelivered batches are capped at
+  `max_pending`; beyond that the oldest is dropped with a warning.
+- *Retries*: network errors, 5xx and 429 retry the same batch with
+  exponential backoff ×2 from 1 s, capped at 60 s. Any other 4xx is treated
+  as poison — the batch is dropped, never retried.
+- *Shutdown*: when the run ends, everything still pending is flushed with
+  short bounded retries (1/2/5/10 s), then the shipper exits. The CLI waits
+  for this final drain (bounded) so the last batch lands before the process
+  exits.
+
+The engine never blocks on streaming: snapshots go over a bounded channel
+with `try_send`, and a full channel drops the snapshot rather than
+backpressuring VUs. With `during_run` absent or `false` there is no extra
+task and no channel traffic at all.
+
+Auth note: the CLI ships unauthenticated (same as the end-of-run report).
+The authenticated path is the agent's — it runs the same shipper with a
+Keycloak token provider and a `taskId` (also stamped as a `task_id` label on
+every sample).

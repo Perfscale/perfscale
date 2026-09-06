@@ -16,6 +16,13 @@ Release notes for the next release, written as features land.
   out as a system log line instead of stderr — on the agent → controlplane
   wire a stderr line becomes an `[err]` entry that fails the whole run, so
   a GPU-less machine could not pass any `gpu: enabled` test.
+- During-run metrics streaming: `report.during_run: true` now streams
+  cumulative metric snapshots (Prometheus-style quantile/`_count`/`_sum`
+  and `_total` samples) to the report URL *while the run is in progress*,
+  not just the summary at the end. Batching is CPU-gated — under host CPU
+  pressure the shipper drops snapshots and holds batches instead of
+  stealing cycles from the VUs — with bounded pending batches, exponential
+  backoff retries, and a final drain before exit.
 - Docs (core/gpu): game-style rendering load example — a glmark2 render
   farm plus an NVENC encode sidecar orchestrated via `std/child_process@v1`
   before/after blocks, with the sweep method for finding a card's
