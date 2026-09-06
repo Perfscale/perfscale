@@ -683,11 +683,26 @@ pub async fn run_native(
     // Independent of the 5s [stats] reporter; spans the VU phase like it and
     // is aborted next to it, which closes the channel for the final drain.
     let metrics_stream = match (&config.report, metrics_tx) {
-        (Some(report), Some(tx)) if report.during_run => Some(spawn_metrics_stream(
-            Arc::clone(&metrics),
-            tx,
-            report.interval(),
-        )),
+        (Some(report), Some(snap_tx)) if report.during_run => {
+            // Surface it in the run log: the controlplane task log is the
+            // only place an operator can see what the agent decided to do.
+            emit(
+                &tx,
+                LogSource::System,
+                &format!(
+                    "during-run metrics: snapshots every {}ms (batch ≤ {}, cpu gate {}%)",
+                    report.interval().as_millis(),
+                    report.batch_size,
+                    report.max_cpu_percent,
+                ),
+            )
+            .await;
+            Some(spawn_metrics_stream(
+                Arc::clone(&metrics),
+                snap_tx,
+                report.interval(),
+            ))
+        }
         _ => None,
     };
 
