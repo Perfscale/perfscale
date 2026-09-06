@@ -487,9 +487,11 @@ pub async fn run_steps(
 /// When `config.report.during_run` is set and `metrics_tx` is `Some`, a
 /// snapshot pump sends a cumulative [`MetricSnapshot`] over the channel every
 /// `report.interval_ms` while the VUs run (try_send only — a stalled consumer
-/// never backpressures the VU loop). The channel's receiver is typically
-/// driven by a [`crate::report::DuringRunShipper`]. With no `report` block
-/// (or `during_run: false`) no task is spawned and the channel stays silent.
+/// never backpressures the VU loop). With `gpu.enabled` on, each snapshot
+/// also carries the GPU gauge samples taken since the previous one. The
+/// channel's receiver is typically driven by a
+/// [`crate::report::DuringRunShipper`]. With no `report` block (or
+/// `during_run: false`) no task is spawned and the channel stays silent.
 // The argument list mirrors the config file's sections; bundling them into an
 // options struct would just rename the same count.
 #[allow(clippy::too_many_arguments)]
@@ -678,10 +680,18 @@ pub async fn run_native(
         })
     };
 
+    // GPU sampler: spans exactly the VU phase, so utilization/VRAM/temp/power
+    // line up with the load on the [stats] timeline. Best-effort — a missing
+    // GPU/tool warns once and the run continues without GPU metrics. Started
+    // before the snapshot pump so the pump can drain its live buffer.
+    let gpu_session = crate::gpu::start(config.gpu.as_deref(), &tx).await;
+
     // During-run metrics streaming: one cumulative snapshot every
     // `report.interval_ms` for a shipper at the other end of `metrics_tx`.
     // Independent of the 5s [stats] reporter; spans the VU phase like it and
     // is aborted next to it, which closes the channel for the final drain.
+    // With a GPU session running, each snapshot also carries the GPU gauge
+    // samples taken since the previous one.
     let metrics_stream = match (&config.report, metrics_tx) {
         (Some(report), Some(snap_tx)) if report.during_run => {
             // Surface it in the run log: the controlplane task log is the
@@ -701,15 +711,11 @@ pub async fn run_native(
                 Arc::clone(&metrics),
                 snap_tx,
                 report.interval(),
+                gpu_session.as_ref().map(|s| s.buffer()),
             ))
         }
         _ => None,
     };
-
-    // GPU sampler: spans exactly the VU phase, so utilization/VRAM/temp/power
-    // line up with the load on the [stats] timeline. Best-effort — a missing
-    // GPU/tool warns once and the run continues without GPU metrics.
-    let gpu_session = crate::gpu::start(config.gpu.as_deref(), &tx).await;
 
     let summary_shape = match &schedule {
         Schedule::Fixed { vus, duration_secs } => {
@@ -839,24 +845,44 @@ pub async fn run_native(
 /// backpressure the VU loop; the shipper applies its own shedding downstream
 /// (CPU gate, bounded pending). Abort to stop; aborting drops the sender,
 /// which closes the channel for the shipper's final drain.
+///
+/// With `gpu` set (a running [`crate::gpu::GpuSession`]'s buffer), each
+/// snapshot also carries the GPU gauge samples appended since the previous
+/// tick — a cursor over the shared buffer, so every GPU sample streams
+/// exactly once while the run is still going.
 fn spawn_metrics_stream(
     metrics: Arc<Mutex<Metrics>>,
     tx: mpsc::Sender<MetricSnapshot>,
     interval: Duration,
+    gpu: Option<Arc<Mutex<Vec<crate::gpu::GpuSample>>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.tick().await; // consume the immediate first tick
         let mut dropped: u64 = 0;
+        let mut gpu_cursor: usize = 0;
         loop {
             ticker.tick().await;
             let ts_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
+            // Drain only what is new since the last tick. `get(cursor..)`
+            // rather than indexing: `GpuSession::stop` takes the buffer at
+            // run end, which can briefly race the pump's final tick.
+            let gpu_samples = gpu
+                .as_ref()
+                .map(|buf| {
+                    let guard = buf.lock().unwrap();
+                    let new = guard.get(gpu_cursor..).unwrap_or(&[]).to_vec();
+                    gpu_cursor = guard.len();
+                    new
+                })
+                .unwrap_or_default();
             let snap = MetricSnapshot {
                 ts_ms,
                 metrics: metrics.lock().unwrap().metric_snapshot(),
+                gpu: gpu_samples,
             };
             if tx.try_send(snap).is_err() {
                 dropped += 1;
@@ -3623,5 +3649,71 @@ mod tests {
                 "no report block / during_run off → zero overhead path"
             );
         }
+    }
+
+    /// With `gpu.enabled` AND `report.during_run`, every snapshot carries
+    /// the GPU gauge samples taken since the previous one — a cursor over
+    /// the session's live buffer, so the union of per-snapshot deltas is
+    /// the whole (streamed) timeline with no duplicates.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn run_native_streams_gpu_samples_when_gpu_and_during_run() {
+        crate::gpu::register_gpu_collector(Arc::new(FakeGpuCollector));
+        let config = RunConfig {
+            report: Some(crate::report::ReportRunConfig {
+                during_run: true,
+                interval_ms: 1000,
+                ..Default::default()
+            }),
+            duration: "3s".into(),
+            ..gpu_config("runner-fake") // 100ms GPU sampling
+        };
+        let (_lines, snaps) = run_native_streaming(vec![sleep_step(50)], config).await;
+
+        assert!(snaps.len() >= 2, "snapshots over a 3s run: {}", snaps.len());
+        let streamed: Vec<&crate::gpu::GpuSample> =
+            snaps.iter().flat_map(|s| s.gpu.iter()).collect();
+        assert!(
+            streamed.len() >= 10,
+            "3s at 100ms sampling ≈ 30 (last partial window is lost at run end): {}",
+            streamed.len()
+        );
+        assert!(
+            streamed.iter().all(|s| s.utilization_pct == Some(73.0)),
+            "fake collector's samples stream through"
+        );
+        // Point-in-time gauges: each keeps the collector's ts, at or below
+        // its snapshot's tick ts.
+        assert!(snaps
+            .iter()
+            .all(|s| s.gpu.iter().all(|g| (g.ts_ms as i64) <= s.ts_ms)));
+        // The cursor semantics: every sample streams exactly once.
+        let mut tss: Vec<u64> = streamed.iter().map(|s| s.ts_ms).collect();
+        let total = tss.len();
+        tss.sort_unstable();
+        tss.dedup();
+        assert_eq!(tss.len(), total, "each GPU sample streams exactly once");
+
+        // And the end-of-run gpu summary still lands, unchanged.
+        // (Both consume the same buffer; streaming never drains it.)
+    }
+
+    /// Without `gpu.enabled` the snapshot's `gpu` field stays empty — no
+    /// GPU overhead and no wire payload when there is nothing to sample.
+    #[tokio::test]
+    async fn run_native_without_gpu_streams_empty_gpu_deltas() {
+        let config = RunConfig {
+            vus: 1,
+            duration: "2s".into(),
+            report: Some(crate::report::ReportRunConfig {
+                during_run: true,
+                interval_ms: 1000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (_lines, snaps) = run_native_streaming(vec![sleep_step(100)], config).await;
+        assert!(!snaps.is_empty());
+        assert!(snaps.iter().all(|s| s.gpu.is_empty()));
     }
 }

@@ -567,6 +567,15 @@ impl GpuSession {
         let samples = std::mem::take(&mut *self.samples.lock().unwrap());
         summarize(samples, &self.source, self.interval_ms)
     }
+
+    /// Shared handle to the live sample buffer, for the during-run snapshot
+    /// pump: it drains the samples appended since its previous tick into
+    /// each [`crate::report::MetricSnapshot`], so GPU gauges stream to the
+    /// collector while the run is still going. Read-only for consumers —
+    /// only the sampling loop appends, only [`GpuSession::stop`] takes.
+    pub fn buffer(&self) -> Arc<Mutex<Vec<GpuSample>>> {
+        Arc::clone(&self.samples)
+    }
 }
 
 /// Start the background GPU sampler for a run, or `None` when the config

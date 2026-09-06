@@ -260,6 +260,23 @@ counters never reset during a run. To derive per-window numbers consumer-side,
 diff successive snapshots: `rate(x_count[window])`-style for throughput,
 `Δ_sum / Δ_count` for windowed average latency.
 
+**GPU gauges stream too** when the run also has `gpu.enabled: true` (see
+[GPU metrics](gpu.md)): each snapshot carries the GPU samples taken since the
+previous one, as point-in-time gauges with the collector's own timestamps —
+chart them as-is, no diffing:
+
+| Shipped sample | Labels | Unit |
+|---|---|---|
+| `gpu_utilization_pct` | `gpu="<index>"` | percent, 0–100 |
+| `gpu_memory_used_mib` | `gpu="<index>"` | MiB |
+| `gpu_memory_total_mib` | `gpu="<index>"` | MiB |
+| `gpu_temperature_c` | `gpu="<index>"` | °C |
+| `gpu_power_w` | `gpu="<index>"` | watts |
+
+Fields the source reported as `N/A` are skipped (never shipped as zeros), and
+pro-collector extras ride under their own names. Without `gpu.enabled` the
+snapshots carry no GPU data at all.
+
 **Protective strategies** (the VU loop always wins; streaming sheds first):
 
 - *CPU gate*: while the host's busy CPU% (from `/proc/stat`) is at or above

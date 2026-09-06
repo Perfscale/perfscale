@@ -97,6 +97,15 @@ state can be charted together. Absent optional fields mean the source
 reported `N/A` for that metric. Markdown exports (`--summary-export out.md`)
 get one compact row per device per aggregate.
 
+GPU state also streams **during the run**: with
+[`report.during_run`](metrics.md#during-run-metrics-reportduring_run) on,
+every engine snapshot carries the GPU samples taken since the previous one —
+shipped to the collector as `gpu_utilization_pct`, `gpu_memory_used_mib`,
+`gpu_memory_total_mib`, `gpu_temperature_c` and `gpu_power_w` gauges with a
+`gpu="<index>"` label, each at the collector's own timestamp. See
+[during-run metrics](metrics.md#during-run-metrics-reportduring_run) for the
+full naming table and delivery semantics.
+
 ## Example: Ollama under load, GPU watch on
 
 ```yaml

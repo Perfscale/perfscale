@@ -15,13 +15,21 @@
 //! - **Cumulative**: engine HDR histograms and counters never reset during a
 //!   run, so every snapshot carries since-run-start values. Consumers derive
 //!   per-window numbers by diffing successive snapshots (diff `_count` /
-//!   `_sum` for windowed averages, diff `_total` for rates).
+//!   `_sum` for windowed averages, diff `_total` for rates). The **GPU
+//!   samples riding the same snapshot are the exception**: they are
+//!   point-in-time gauges, each carrying its own `ts` (the instant the GPU
+//!   collector read the device), and every snapshot ships only the samples
+//!   taken since the previous one — consumers chart them as-is, no diffing.
 //! - **Units**: `MetricAgg` sample-kind values are milliseconds; the shipped
 //!   quantile and `_sum` samples are **seconds**, Prometheus convention.
 //! - **Naming** (Prometheus summary/counter conventions): a sample-kind
 //!   metric `x` ships as `x{quantile="0.5"|"0.9"|"0.95"|"0.99"}` plus
 //!   `x_count` and `x_sum`; a counter `y` ships as `y_total`; a rate metric
 //!   `z` ships as `z_total` (invocations) and `z_failed_total` (failures).
+//!   GPU gauges ship per device as `gpu_utilization_pct`,
+//!   `gpu_memory_used_mib`, `gpu_memory_total_mib`, `gpu_temperature_c` and
+//!   `gpu_power_w`, each with a `gpu="<index>"` label (plus any
+//!   collector-specific extras under their own names).
 //! - **Backpressure**: none, by design — the engine drops snapshots when the
 //!   channel is full, and the shipper sheds load (CPU gate, bounded pending)
 //!   rather than slow the VU loop.
@@ -59,6 +67,12 @@ pub struct MetricSnapshot {
     pub ts_ms: i64,
     /// Aggregates per metric name, as of `ts_ms`.
     pub metrics: BTreeMap<String, MetricAgg>,
+    /// GPU gauge samples taken since the previous snapshot (empty when the
+    /// run has no `gpu:` section). Unlike `metrics` these are NOT
+    /// cumulative: each carries its own `ts_ms`, and consumers chart them
+    /// directly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu: Vec<crate::gpu::GpuSample>,
 }
 
 /// One ingest sample, matching the controlplane's
@@ -189,6 +203,40 @@ pub fn snapshot_to_samples(snap: &MetricSnapshot, labels: &Map<String, Value>) -
                 sample(format!("{name}_total"), None, agg.count);
                 sample(format!("{name}_failed_total"), None, agg.rate * agg.count);
             }
+        }
+    }
+    // GPU gauges: point-in-time, one series per device (`gpu="<index>"`),
+    // each sample keeping the collector's own timestamp. `None` fields are
+    // the source's "N/A" — skipped, never shipped as zeros. Pro-collector
+    // extras ride under their own names, as in the summary timeseries.
+    for g in &snap.gpu {
+        let mut gpu_sample = |metric: &str, value: f64| {
+            let mut labels = labels.clone();
+            labels.insert("gpu".to_string(), Value::String(g.index.to_string()));
+            out.push(Sample {
+                metric: metric.to_string(),
+                labels,
+                value,
+                ts_ms: g.ts_ms as i64,
+            });
+        };
+        if let Some(v) = g.utilization_pct {
+            gpu_sample("gpu_utilization_pct", v);
+        }
+        if let Some(v) = g.memory_used_mib {
+            gpu_sample("gpu_memory_used_mib", v);
+        }
+        if let Some(v) = g.memory_total_mib {
+            gpu_sample("gpu_memory_total_mib", v);
+        }
+        if let Some(v) = g.temperature_c {
+            gpu_sample("gpu_temperature_c", v);
+        }
+        if let Some(v) = g.power_w {
+            gpu_sample("gpu_power_w", v);
+        }
+        for (name, v) in &g.extra {
+            gpu_sample(name, *v);
         }
     }
     out
@@ -580,7 +628,11 @@ mod tests {
                 rate: 0.0,
             },
         );
-        MetricSnapshot { ts_ms, metrics }
+        MetricSnapshot {
+            ts_ms,
+            metrics,
+            gpu: Vec::new(),
+        }
     }
 
     fn spawn_shipper(
@@ -635,7 +687,11 @@ mod tests {
         );
         metrics.insert("rows".to_string(), MetricAgg::counter(7.0));
         metrics.insert("req_failed".to_string(), MetricAgg::rate(10, 2));
-        let snap = MetricSnapshot { ts_ms: 42, metrics };
+        let snap = MetricSnapshot {
+            ts_ms: 42,
+            metrics,
+            gpu: Vec::new(),
+        };
         let mut labels = Map::new();
         labels.insert("run".to_string(), Value::String("r1".into()));
 
@@ -667,6 +723,77 @@ mod tests {
         assert_eq!(find("rows_total", None).value, 7.0);
         assert_eq!(find("req_failed_total", None).value, 10.0);
         assert_eq!(find("req_failed_failed_total", None).value, 2.0);
+    }
+
+    /// GPU gauges ride the same snapshot as per-device series with the
+    /// collector's own timestamps — point-in-time, never cumulative, and
+    /// `N/A` fields are skipped rather than shipped as zeros.
+    #[test]
+    fn snapshot_to_samples_streams_gpu_gauges_per_device() {
+        let mut g0 = crate::gpu::GpuSample {
+            ts_ms: 7_000,
+            index: 0,
+            utilization_pct: Some(73.0),
+            memory_used_mib: Some(8192.0),
+            memory_total_mib: Some(24576.0),
+            temperature_c: Some(58.0),
+            power_w: Some(210.5),
+            extra: std::collections::BTreeMap::new(),
+        };
+        g0.extra.insert("pro_gpu_clocks_sm_mhz".to_string(), 1980.0);
+        // Device 1 reports N/A for temperature and power (virtualized GPUs
+        // do) — those series must not appear for it at all.
+        let g1 = crate::gpu::GpuSample {
+            ts_ms: 7_005,
+            index: 1,
+            utilization_pct: Some(3.0),
+            memory_used_mib: Some(512.0),
+            memory_total_mib: None,
+            temperature_c: None,
+            power_w: None,
+            extra: std::collections::BTreeMap::new(),
+        };
+        let snap = MetricSnapshot {
+            ts_ms: 8_000,
+            metrics: BTreeMap::new(),
+            gpu: vec![g0, g1],
+        };
+        let mut labels = Map::new();
+        labels.insert("task_id".to_string(), Value::String("t1".into()));
+
+        let samples = snapshot_to_samples(&snap, &labels);
+        // g0: 5 built-ins + 1 extra; g1: 2 built-ins (util + mem used).
+        assert_eq!(samples.len(), 8, "{samples:?}");
+        let find = |metric: &str, gpu: &str| {
+            samples
+                .iter()
+                .find(|s| {
+                    s.metric == metric
+                        && s.labels.get("gpu").and_then(Value::as_str) == Some(gpu)
+                })
+                .unwrap_or_else(|| panic!("sample {metric}/gpu{gpu} present: {samples:?}"))
+        };
+
+        let u0 = find("gpu_utilization_pct", "0");
+        assert_eq!(u0.value, 73.0);
+        assert_eq!(u0.ts_ms, 7_000, "GPU samples keep the collector's ts");
+        assert_eq!(u0.labels["task_id"], "t1", "static labels still stamped");
+        assert_eq!(find("gpu_memory_used_mib", "0").value, 8192.0);
+        assert_eq!(find("gpu_memory_total_mib", "0").value, 24576.0);
+        assert_eq!(find("gpu_temperature_c", "0").value, 58.0);
+        assert_eq!(find("gpu_power_w", "0").value, 210.5);
+        assert_eq!(find("pro_gpu_clocks_sm_mhz", "0").value, 1980.0);
+
+        let u1 = find("gpu_utilization_pct", "1");
+        assert_eq!(u1.value, 3.0);
+        assert_eq!(u1.ts_ms, 7_005);
+        assert!(
+            samples.iter().all(|s| !(s.labels.get("gpu").and_then(Value::as_str) == Some("1")
+                && (s.metric == "gpu_temperature_c"
+                    || s.metric == "gpu_power_w"
+                    || s.metric == "gpu_memory_total_mib"))),
+            "N/A fields are skipped, not shipped: {samples:?}"
+        );
     }
 
     #[test]

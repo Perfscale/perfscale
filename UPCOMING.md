@@ -22,7 +22,11 @@ Release notes for the next release, written as features land.
   not just the summary at the end. Batching is CPU-gated — under host CPU
   pressure the shipper drops snapshots and holds batches instead of
   stealing cycles from the VUs — with bounded pending batches, exponential
-  backoff retries, and a final drain before exit.
+  backoff retries, and a final drain before exit. With `gpu.enabled` on,
+  each snapshot also carries the GPU gauges taken since the previous one
+  (`gpu_utilization_pct`, `gpu_memory_used_mib`, `gpu_memory_total_mib`,
+  `gpu_temperature_c`, `gpu_power_w`, labelled per device) — live GPU state
+  next to live latency in the controlplane UI.
 - Docs (core/gpu): game-style rendering load example — a glmark2 render
   farm plus an NVENC encode sidecar orchestrated via `std/child_process@v1`
   before/after blocks, with the sweep method for finding a card's
