@@ -354,7 +354,7 @@ fn resolve_collector(config: &GpuConfig) -> Result<Arc<dyn GpuCollector>, String
                 .clone()
                 .unwrap_or_else(|| DEFAULT_DCGM_URL.to_string()),
         ))),
-        "powermetrics" => Ok(Arc::new(PowermetricsCollector)),
+        "powermetrics" => Ok(Arc::new(PowermetricsCollector::new(config.interval_ms))),
         other => Err(format!(
             "unknown gpu source '{other}' — use 'nvidia-smi', 'dcgm' or 'powermetrics' (or a collector registered via register_gpu_collector)"
         )),
@@ -571,7 +571,25 @@ pub fn parse_dcgm_metrics(body: &str) -> Vec<GpuSample> {
 /// `package_power_w` ride [`GpuSample::extra`] (and stream during-run under
 /// their own names). `memory_*`/`temperature_c` stay `None`: unified memory
 /// has no VRAM figure and `powermetrics` reports thermal *pressure*, not °C.
-pub struct PowermetricsCollector;
+///
+/// Each invocation covers a window of `window_ms` (the `gpu.interval_ms`
+/// clamped to 1s–60s): `powermetrics -n 1` blocks for roughly the window
+/// plus ~1s of startup overhead, so the effective cadence is
+/// `interval_ms + window + overhead` — keep `interval_ms` at 5s+ for
+/// near-continuous coverage.
+pub struct PowermetricsCollector {
+    /// The `-i` window per one-shot invocation, milliseconds.
+    window_ms: u64,
+}
+
+impl PowermetricsCollector {
+    /// A collector taking one `window_ms`-wide sample per tick.
+    pub fn new(window_ms: u64) -> Self {
+        Self {
+            window_ms: window_ms.clamp(1_000, 60_000),
+        }
+    }
+}
 
 impl GpuCollector for PowermetricsCollector {
     fn name(&self) -> &'static str {
@@ -596,6 +614,8 @@ impl GpuCollector for PowermetricsCollector {
                     "cpu_power,gpu_power",
                     "-n",
                     "1",
+                    "-i",
+                    &self.window_ms.to_string(),
                     "-f",
                     "plist",
                 ])
@@ -975,7 +995,11 @@ DCGM_FI_DEV_SM_CLOCK{gpu="0",UUID="GPU-aaa"} 1980
     #[cfg(not(target_os = "macos"))]
     #[tokio::test]
     async fn powermetrics_sample_errors_off_macos() {
-        let err = PowermetricsCollector.sample().await.err().unwrap();
+        let err = PowermetricsCollector::new(1000)
+            .sample()
+            .await
+            .err()
+            .unwrap();
         assert!(err.contains("only available on macOS"), "{err}");
     }
 

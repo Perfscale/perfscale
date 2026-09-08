@@ -74,6 +74,12 @@ echo "$USER ALL=(root) NOPASSWD: /usr/bin/powermetrics" | sudo tee /etc/sudoers.
 Without root the run logs one warning and continues without GPU metrics
 (the usual best-effort contract).
 
+Sampling-cadence note: each `powermetrics -n 1` invocation measures a
+window of `gpu.interval_ms` (clamped to 1s–60s) and blocks for roughly the
+window plus ~1s of startup overhead, so the effective cadence is the tick
+plus window plus overhead (~2s at the default 1s tick). Keep
+`interval_ms` at 5s or above for near-continuous window coverage.
+
 ## Output
 
 While the VUs run, the sampler takes one snapshot per GPU per tick (the
