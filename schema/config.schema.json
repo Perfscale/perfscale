@@ -93,7 +93,7 @@
         },
         "source": {
           "default": "nvidia-smi",
-          "description": "Collector source: `nvidia-smi` (default) or `dcgm`. Downstream crates may register additional names via [`register_gpu_collector`].",
+          "description": "Collector source: `nvidia-smi` (default), `dcgm`, or `powermetrics` (Apple Silicon, macOS only — needs root, see docs). Downstream crates may register additional names via [`register_gpu_collector`].",
           "type": "string"
         }
       },

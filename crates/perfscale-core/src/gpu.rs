@@ -18,6 +18,15 @@
 //!   (`DCGM_FI_DEV_GPU_UTIL`, `DCGM_FI_DEV_FB_USED/FREE`,
 //!   `DCGM_FI_DEV_GPU_TEMP`, `DCGM_FI_DEV_POWER_USAGE`).
 //!
+//! Plus one platform source:
+//!
+//! - `powermetrics` (macOS, Apple Silicon) — shells out to `sudo
+//!   powermetrics` with a plist query (`--samplers cpu_power,gpu_power`).
+//!   The integrated GPU (index 0) gets a true utilization figure (active
+//!   residency %) and its rail power; the Neural Engine has **no public
+//!   utilization signal** on macOS — only its power draw — so
+//!   `ane_power_w` (and the CPU/package rails) rides [`GpuSample::extra`].
+//!
 //! GPU collection is strictly best-effort: no GPU, a missing `nvidia-smi`
 //! binary, or an unreachable dcgm-exporter produces ONE warning at run start
 //! and the run continues without GPU metrics — it never fails the run.
@@ -65,7 +74,8 @@ pub struct GpuConfig {
     #[serde(default = "default_interval_ms")]
     pub interval_ms: u64,
 
-    /// Collector source: `nvidia-smi` (default) or `dcgm`. Downstream crates
+    /// Collector source: `nvidia-smi` (default), `dcgm`, or `powermetrics`
+    /// (Apple Silicon, macOS only — needs root, see docs). Downstream crates
     /// may register additional names via [`register_gpu_collector`].
     #[serde(default = "default_source")]
     pub source: String,
@@ -344,8 +354,9 @@ fn resolve_collector(config: &GpuConfig) -> Result<Arc<dyn GpuCollector>, String
                 .clone()
                 .unwrap_or_else(|| DEFAULT_DCGM_URL.to_string()),
         ))),
+        "powermetrics" => Ok(Arc::new(PowermetricsCollector)),
         other => Err(format!(
-            "unknown gpu source '{other}' — use 'nvidia-smi' or 'dcgm' (or a collector registered via register_gpu_collector)"
+            "unknown gpu source '{other}' — use 'nvidia-smi', 'dcgm' or 'powermetrics' (or a collector registered via register_gpu_collector)"
         )),
     }
 }
@@ -542,6 +553,121 @@ pub fn parse_dcgm_metrics(body: &str) -> Vec<GpuSample> {
         }
     }
     by_gpu.into_values().collect()
+}
+
+// ---------------------------------------------------------------------------
+// Built-in: Apple Silicon (powermetrics)
+// ---------------------------------------------------------------------------
+
+/// Samples Apple Silicon via macOS's built-in `powermetrics` (requires
+/// root: run the CLI under sudo, or grant the user a NOPASSWD sudoers rule
+/// for `/usr/bin/powermetrics` — see the gpu docs page).
+///
+/// One sample for the integrated GPU (index 0): `utilization_pct` is the
+/// GPU's active-residency percent (a true utilization figure, unlike the
+/// power-only proxies other tools normalize), `power_w` the GPU rail in
+/// watts. The Neural Engine exposes **no utilization signal** on macOS —
+/// only its power draw — so `ane_power_w`, `cpu_power_w` and
+/// `package_power_w` ride [`GpuSample::extra`] (and stream during-run under
+/// their own names). `memory_*`/`temperature_c` stay `None`: unified memory
+/// has no VRAM figure and `powermetrics` reports thermal *pressure*, not °C.
+pub struct PowermetricsCollector;
+
+impl GpuCollector for PowermetricsCollector {
+    fn name(&self) -> &'static str {
+        "powermetrics"
+    }
+
+    fn sample<'a>(&'a self) -> GpuSampleFuture<'a> {
+        Box::pin(async {
+            if !cfg!(target_os = "macos") {
+                return Err(
+                    "the powermetrics source is only available on macOS (Apple Silicon)"
+                        .to_string(),
+                );
+            }
+            // `sudo -n` fails fast without a sudoers rule instead of
+            // blocking on a password prompt; already-root works too.
+            let output = tokio::process::Command::new("sudo")
+                .args([
+                    "-n",
+                    "powermetrics",
+                    "--samplers",
+                    "cpu_power,gpu_power",
+                    "-n",
+                    "1",
+                    "-f",
+                    "plist",
+                ])
+                .output()
+                .await
+                .map_err(|e| format!("failed to run powermetrics: {e}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "powermetrics exited with {}: {} (needs root — run the CLI under sudo or add a NOPASSWD sudoers rule for /usr/bin/powermetrics)",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            parse_powermetrics_plist(&output.stdout)
+        })
+    }
+}
+
+/// Parse one `powermetrics --samplers cpu_power,gpu_power -n 1 -f plist`
+/// document into a single-GPU sample (schema pinned against asitop's
+/// reference parser):
+///
+/// - `gpu.idle_ratio` (0..1) → utilization = (1 − idle) × 100, percent;
+/// - `processor.{gpu,ane,cpu}_energy` and `processor.combined_power` are
+///   **milliwatts** → watts.
+///
+/// Missing individual keys (Intel Macs have no `ane_energy`, older macOS
+/// versions differ) drop their series instead of failing the sample; a
+/// document with NONE of the fields is an error — that Mac is not Apple
+/// Silicon (or the samplers drifted), which is data, not silence.
+pub fn parse_powermetrics_plist(plist_bytes: &[u8]) -> Result<Vec<GpuSample>, String> {
+    fn num(v: &plist::Value) -> Option<f64> {
+        v.as_real()
+            .or_else(|| v.as_signed_integer().map(|i| i as f64))
+            .or_else(|| v.as_unsigned_integer().map(|u| u as f64))
+    }
+    let get = |dict: &plist::Dictionary, path: &[&str]| -> Option<f64> {
+        let mut cur = plist::Value::Dictionary(dict.clone());
+        for key in path {
+            cur = cur.as_dictionary()?.get(key)?.clone();
+        }
+        num(&cur)
+    };
+
+    let root = plist::Value::from_reader(std::io::Cursor::new(plist_bytes))
+        .map_err(|e| format!("invalid powermetrics plist: {e}"))?;
+    let dict = root
+        .as_dictionary()
+        .ok_or_else(|| "powermetrics plist root is not a dictionary".to_string())?;
+
+    let mut s = GpuSample::bare(0);
+    if let Some(idle) = get(dict, &["gpu", "idle_ratio"]) {
+        s.utilization_pct = Some(((1.0 - idle) * 100.0).clamp(0.0, 100.0));
+    }
+    if let Some(mw) = get(dict, &["processor", "gpu_energy"]) {
+        s.power_w = Some(mw / 1000.0);
+    }
+    if let Some(mw) = get(dict, &["processor", "ane_energy"]) {
+        s.extra.insert("ane_power_w".to_string(), mw / 1000.0);
+    }
+    if let Some(mw) = get(dict, &["processor", "cpu_energy"]) {
+        s.extra.insert("cpu_power_w".to_string(), mw / 1000.0);
+    }
+    if let Some(mw) = get(dict, &["processor", "combined_power"]) {
+        s.extra.insert("package_power_w".to_string(), mw / 1000.0);
+    }
+    if s.utilization_pct.is_none() && s.power_w.is_none() && s.extra.is_empty() {
+        return Err(
+            "powermetrics reported no GPU/ANE fields — not an Apple Silicon Mac?".to_string(),
+        );
+    }
+    Ok(vec![s])
 }
 
 // ---------------------------------------------------------------------------
@@ -756,6 +882,101 @@ DCGM_FI_DEV_SM_CLOCK{gpu="0",UUID="GPU-aaa"} 1980
             parse_dcgm_metrics("# HELP x y\n# TYPE x gauge\n"),
             Vec::new()
         );
+    }
+
+    // -------------------------------------------------------------
+    // powermetrics plist parser (Apple Silicon)
+    // -------------------------------------------------------------
+
+    /// Shape pinned against asitop's reference parser: `gpu.idle_ratio`
+    /// (0..1), `processor.*_energy` in milliwatts.
+    const POWERMETRICS_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>gpu</key>
+	<dict>
+		<key>freq_hz</key>
+		<real>1296</real>
+		<key>idle_ratio</key>
+		<real>0.27</real>
+	</dict>
+	<key>processor</key>
+	<dict>
+		<key>ane_energy</key>
+		<real>12.5</real>
+		<key>cpu_energy</key>
+		<real>4500.0</real>
+		<key>gpu_energy</key>
+		<real>890.25</real>
+		<key>combined_power</key>
+		<real>5402.75</real>
+	</dict>
+	<key>timestamp</key>
+	<date>2026-09-08T10:00:00Z</date>
+</dict>
+</plist>
+"#;
+
+    #[test]
+    fn powermetrics_plist_parses_gpu_util_power_and_ane_extras() {
+        let samples = parse_powermetrics_plist(POWERMETRICS_FIXTURE.as_bytes()).unwrap();
+        assert_eq!(samples.len(), 1);
+        let s = &samples[0];
+        assert_eq!(s.index, 0);
+        assert_eq!(s.utilization_pct, Some(73.0));
+        assert_eq!(s.power_w, Some(0.89025));
+        // Unified memory and thermal-pressure-only → no memory/temp series.
+        assert_eq!(s.memory_used_mib, None);
+        assert_eq!(s.temperature_c, None);
+        // ANE (and the CPU/package rails) ride extras, milliwatts → watts.
+        assert_eq!(s.extra.get("ane_power_w"), Some(&0.0125));
+        assert_eq!(s.extra.get("cpu_power_w"), Some(&4.5));
+        assert_eq!(s.extra.get("package_power_w"), Some(&5.40275));
+    }
+
+    #[test]
+    fn powermetrics_plist_without_ane_still_yields_the_gpu() {
+        // Intel Macs / older macOS have no ane_energy — drop the series,
+        // don't fail the sample.
+        let plist =
+            POWERMETRICS_FIXTURE.replace("\t\t<key>ane_energy</key>\n\t\t<real>12.5</real>\n", "");
+        let samples = parse_powermetrics_plist(plist.as_bytes()).unwrap();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].utilization_pct, Some(73.0));
+        assert!(!samples[0].extra.contains_key("ane_power_w"));
+        assert!(samples[0].extra.contains_key("cpu_power_w"));
+    }
+
+    #[test]
+    fn powermetrics_plist_without_any_gpu_fields_is_an_error() {
+        // Not Apple Silicon (or the samplers drifted) — data, not silence.
+        let plist = r#"<?xml version="1.0"?>
+<plist version="1.0"><dict><key>timestamp</key><date>2026-09-08T10:00:00Z</date></dict></plist>"#;
+        let err = parse_powermetrics_plist(plist.as_bytes()).err().unwrap();
+        assert!(err.contains("no GPU/ANE fields"), "{err}");
+        // And outright garbage is a parse error, not a panic.
+        assert!(parse_powermetrics_plist(b"not a plist").is_err());
+    }
+
+    #[test]
+    fn powermetrics_source_resolves() {
+        let cfg = GpuConfig {
+            enabled: true,
+            source: "powermetrics".into(),
+            ..GpuConfig::default()
+        };
+        let c = resolve_collector(&cfg).unwrap();
+        assert_eq!(c.name(), "powermetrics");
+    }
+
+    /// Off macOS the collector fails its first sample with a clear message —
+    /// the run's best-effort contract turns it into one warning.
+    #[cfg(not(target_os = "macos"))]
+    #[tokio::test]
+    async fn powermetrics_sample_errors_off_macos() {
+        let err = PowermetricsCollector.sample().await.err().unwrap();
+        assert!(err.contains("only available on macOS"), "{err}");
     }
 
     // -------------------------------------------------------------

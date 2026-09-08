@@ -168,4 +168,6 @@ status and the first ~500 characters of the error body.
 
 Against a **local** model server the GPU is the system under test — turn on
 [GPU metrics](gpu.md) (`gpu.enabled: true` in the config) to chart
-utilization/VRAM/temperature alongside TTFT and tokens/sec.
+utilization/VRAM/temperature alongside TTFT and tokens/sec. On Apple Silicon
+Macs use `gpu.source: powermetrics` for the integrated GPU (true active
+residency) plus ANE/CPU rail power (`ane_power_w`, `cpu_power_w`).

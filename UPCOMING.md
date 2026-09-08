@@ -31,3 +31,10 @@ Release notes for the next release, written as features land.
   farm plus an NVENC encode sidecar orchestrated via `std/child_process@v1`
   before/after blocks, with the sweep method for finding a card's
   session-density ceiling.
+- GPU metrics: new `powermetrics` source for Apple Silicon Macs — the
+  integrated GPU gets a true utilization figure (active residency %) and
+  rail power, and the Neural Engine (ANE/NPU) arrives as `ane_power_w`
+  alongside `cpu_power_w`/`package_power_w` (power is the only ANE signal
+  macOS exposes; there is no public NPU utilization API). Streams during-run
+  like every other GPU gauge. Requires root: run the CLI under sudo or add a
+  NOPASSWD sudoers rule for `/usr/bin/powermetrics` (see the gpu docs page).

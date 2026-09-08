@@ -43,6 +43,11 @@ base64 = "0.22"
 schemars   = "0.8"
 jsonschema = "0.18"
 
+# `powermetrics -f plist` output parsing for the Apple Silicon GPU/ANE source
+# (gpu.source: powermetrics). Pure Rust, tiny; the collector only runs on
+# macOS, but the parser stays buildable everywhere so its tests run in CI.
+plist = "1"
+
 # Stable cache keys for `import:` git clones (~/.cache/perfscale/imports/<hash>).
 # std's DefaultHasher is not stable across releases, so it can't address a
 # cache that outlives the binary.

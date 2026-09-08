@@ -23,7 +23,7 @@ duration: 5m
 gpu:
   enabled: true
   interval_ms: 1000      # default 1000 (min 10)
-  source: nvidia-smi     # nvidia-smi (default) | dcgm
+  source: nvidia-smi     # nvidia-smi (default) | dcgm | powermetrics (macOS)
   dcgm_url: http://127.0.0.1:9400/metrics  # for source: dcgm
   devices: [0, 1]        # optional; default — every GPU the source reports
 ```
@@ -32,7 +32,7 @@ gpu:
 |---|---|---|
 | `enabled` | `false` | Master switch; the section is ignored without it |
 | `interval_ms` | `1000` | Sampling interval (one snapshot per GPU per tick) |
-| `source` | `nvidia-smi` | `nvidia-smi` shells out to the binary; `dcgm` polls a dcgm-exporter HTTP endpoint |
+| `source` | `nvidia-smi` | `nvidia-smi` shells out to the binary; `dcgm` polls a dcgm-exporter HTTP endpoint; `powermetrics` samples Apple Silicon GPU/ANE on macOS (needs root) |
 | `dcgm_url` | `http://127.0.0.1:9400/metrics` | dcgm-exporter metrics endpoint (`source: dcgm` only) |
 | `devices` | all | Restrict sampling to these GPU indices |
 
@@ -50,6 +50,29 @@ virtualized GPUs) are recorded as absent, not zero.
 total is derived as used+free), `DCGM_FI_DEV_GPU_TEMP`,
 `DCGM_FI_DEV_POWER_USAGE`. Better for GPU servers and Kubernetes, where
 dcgm-exporter is typically already running.
+
+**`powermetrics`** (macOS, Apple Silicon) — runs
+`sudo powermetrics --samplers cpu_power,gpu_power -n 1 -f plist` once per
+tick. The integrated GPU (index 0) gets a true utilization figure (active
+residency %) and its rail power. The **Neural Engine (ANE/NPU) has no public
+utilization API on macOS** — the only signal is its power draw — so the ANE
+arrives as `ane_power_w` alongside `cpu_power_w`/`package_power_w`, charted
+as its own series (during-run too). Memory and temperature stay absent:
+unified memory has no VRAM figure, and `powermetrics` reports thermal
+*pressure*, not °C. Note that LLM inference on a Mac (llama.cpp, Ollama,
+MLX) runs on the GPU via Metal — the ANE is only exercised by CoreML models
+compiled for it, so watch `gpu_utilization_pct` first and treat
+`ane_power_w` as the NPU-activity proxy.
+
+`powermetrics` requires root. Either run the CLI under sudo, or grant the
+load-test user passwordless sudo for the tool only:
+
+```sh
+echo "$USER ALL=(root) NOPASSWD: /usr/bin/powermetrics" | sudo tee /etc/sudoers.d/powermetrics
+```
+
+Without root the run logs one warning and continues without GPU metrics
+(the usual best-effort contract).
 
 ## Output
 
