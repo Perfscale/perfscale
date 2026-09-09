@@ -525,3 +525,235 @@ async fn build_multipart(
     }
     Ok(form)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------
+    // ClientPool parsing
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn client_pool_defaults_to_per_vu() {
+        assert_eq!(
+            ClientPool::from_params(&json!({})).unwrap(),
+            ClientPool::PerVu
+        );
+    }
+
+    #[test]
+    fn client_pool_parses_both_modes() {
+        assert_eq!(
+            ClientPool::from_params(&json!({ "pool": "per-vu" })).unwrap(),
+            ClientPool::PerVu
+        );
+        assert_eq!(
+            ClientPool::from_params(&json!({ "pool": "shared" })).unwrap(),
+            ClientPool::Shared
+        );
+    }
+
+    #[test]
+    fn client_pool_rejects_unknown_mode_with_actionable_error() {
+        let e = ClientPool::from_params(&json!({ "pool": "global" })).unwrap_err();
+        assert!(e.contains("invalid pool 'global'"), "{e}");
+        assert!(e.contains("per-vu"), "{e} lists the valid modes");
+        assert!(e.contains("shared"), "{e} lists the valid modes");
+    }
+
+    // -----------------------------------------------------------------
+    // Shard count
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn client_shard_count_is_within_bounds() {
+        let n = client_shard_count();
+        assert!(
+            (1..=16).contains(&n),
+            "shard count {n} must be clamped to 1..=16"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // request_line
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn request_line_renders_the_canonical_shape() {
+        let line = request_line("GET", "http://x/health", 200, "OK", 1.234, "");
+        assert_eq!(line, "GET http://x/health → 200 OK (1.23ms)");
+
+        let with_extra = request_line(
+            "POST",
+            "http://x/graphql",
+            200,
+            "OK",
+            2.0,
+            ", op=Q, graphql_errors=1",
+        );
+        assert_eq!(
+            with_extra,
+            "POST http://x/graphql → 200 OK (2.00ms, op=Q, graphql_errors=1)"
+        );
+
+        // Unknown status → empty reason, no double space beyond the shape.
+        let unknown = request_line("GET", "http://x/", 599, "", 0.5, "");
+        assert_eq!(unknown, "GET http://x/ → 599  (0.50ms)");
+    }
+
+    // -----------------------------------------------------------------
+    // header_map_to_json
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn header_map_to_json_lowercases_and_joins_repeats() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("X-Request-Id", "abc".parse().unwrap());
+        headers.append("x-forwarded-for", "1.1.1.1".parse().unwrap());
+        headers.append("x-forwarded-for", "2.2.2.2".parse().unwrap());
+
+        let map = header_map_to_json(&headers);
+        assert_eq!(map["x-request-id"], json!("abc"));
+        assert_eq!(map["x-forwarded-for"], json!("1.1.1.1, 2.2.2.2"));
+    }
+
+    #[test]
+    fn header_map_to_json_skips_non_utf8_values() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut headers = HeaderMap::new();
+        headers.insert("x-bin", HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap());
+        headers.insert("x-ok", HeaderValue::from_static("yes"));
+
+        let map = header_map_to_json(&headers);
+        assert!(!map.contains_key("x-bin"));
+        assert_eq!(map["x-ok"], json!("yes"));
+    }
+
+    // -----------------------------------------------------------------
+    // is_textual_content_type
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn textual_content_types_are_recognized() {
+        for ct in [
+            "text/plain",
+            "text/html; charset=utf-8",
+            "application/json",
+            "application/problem+json",
+            "application/xml",
+            "application/atom+xml",
+            "application/javascript",
+            "application/x-javascript",
+            "application/x-www-form-urlencoded",
+            "application/yaml",
+            "application/x-yaml",
+            "Application/JSON; charset=UTF-8", // case + parameter tolerance
+        ] {
+            assert!(is_textual_content_type(ct), "{ct} should be textual");
+        }
+    }
+
+    #[test]
+    fn binary_content_types_are_not_textual() {
+        for ct in [
+            "application/octet-stream",
+            "application/protobuf",
+            "image/png",
+            "",
+        ] {
+            assert!(!is_textual_content_type(ct), "{ct} should be binary");
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // base64_encode
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn base64_encode_round_trips_binary() {
+        use base64::Engine as _;
+        let bytes: Vec<u8> = (0u8..=255).collect();
+        let encoded = base64_encode(&bytes);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&encoded)
+            .unwrap();
+        assert_eq!(decoded, bytes);
+        assert_eq!(base64_encode(b""), "");
+    }
+
+    // -----------------------------------------------------------------
+    // error_chain
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn error_chain_flattens_sources() {
+        use std::error::Error;
+        use std::fmt;
+
+        #[derive(Debug)]
+        struct Inner;
+        impl fmt::Display for Inner {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "connection refused")
+            }
+        }
+        impl Error for Inner {}
+
+        #[derive(Debug)]
+        struct Outer(Inner);
+        impl fmt::Display for Outer {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "error sending request")
+            }
+        }
+        impl Error for Outer {
+            fn source(&self) -> Option<&(dyn Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        assert_eq!(
+            error_chain(&Outer(Inner)),
+            "error sending request: connection refused"
+        );
+
+        // Source-less error renders as itself.
+        assert_eq!(error_chain(&Inner), "connection refused");
+    }
+
+    // -----------------------------------------------------------------
+    // transport_error (needs a real reqwest::Error — hit a closed port)
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn transport_error_reports_failed_sample_and_error_chain() {
+        // A listener that is immediately dropped leaves a guaranteed-closed
+        // port → fast connection-refused error.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let url = format!("http://127.0.0.1:{port}/");
+        let e = reqwest::get(&url).await.unwrap_err();
+        let out = transport_error("step", "GET", &url, &e, 12.5);
+
+        assert!(!out.success);
+        let sample = out.http_sample.expect("a failed timing sample is recorded");
+        assert!(sample.failed);
+        assert_eq!(sample.status, 0);
+        assert_eq!(sample.duration_ms, 12.5);
+        // The value carries the flattened chain, not just reqwest's Display.
+        let detail = out.value["error"].as_str().unwrap();
+        assert!(detail.contains("error sending request"), "{detail}");
+        assert_eq!(out.value["duration_ms"], json!(12.5));
+        let (tag, log) = &out.logs[0];
+        assert!(matches!(tag, LogTag::Err));
+        assert!(log.contains("GET") && log.contains("ERROR"), "{log}");
+    }
+}
