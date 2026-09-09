@@ -24,7 +24,10 @@ list under one of three load profiles, resolved from the config by
   grows lazily to `max_vus`. Unlike the closed VU-loop models, new iterations
   start on schedule even when the system under test slows down — a permit
   nobody can serve (pool saturated at `max_vus`) is dropped, counted in the
-  `dropped_iterations` summary metric, and logged at most once per 5s.
+  `dropped_iterations` summary metric, and logged at most once per 5s. The
+  counter is emitted even at 0, so `std/thresholds@v1` gates like
+  `dropped_iterations: ["count==0"]` resolve on clean runs instead of
+  erroring on an unknown metric.
 
 For staged/arrival runs the summary's `vus` line reports the *observed*
 concurrency — `vus....................: <last> min=<min> max=<max>` — and the
