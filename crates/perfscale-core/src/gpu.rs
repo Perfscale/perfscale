@@ -635,14 +635,16 @@ impl GpuCollector for PowermetricsCollector {
 }
 
 /// Parse one `powermetrics --samplers cpu_power,gpu_power -n 1 -f plist`
-/// document into a single-GPU sample (schema pinned against asitop's
-/// reference parser):
+/// document into a single-GPU sample:
 ///
 /// - `gpu.idle_ratio` (0..1) → utilization = (1 − idle) × 100, percent;
-/// - `processor.{gpu,ane,cpu}_energy` and `processor.combined_power` are
-///   **milliwatts** → watts.
+/// - `processor.{gpu,ane,cpu}_power` and `processor.combined_power` are
+///   average power over the sampling window in **milliwatts** → watts.
+///   Their `*_energy` siblings are millijoules accumulated over the window —
+///   reading those as power overreports by exactly the window length
+///   (a 5s window reads 5×), so they are deliberately not a fallback.
 ///
-/// Missing individual keys (Intel Macs have no `ane_energy`, older macOS
+/// Missing individual keys (Intel Macs have no `ane_power`, older macOS
 /// versions differ) drop their series instead of failing the sample; a
 /// document with NONE of the fields is an error — that Mac is not Apple
 /// Silicon (or the samplers drifted), which is data, not silence.
@@ -670,13 +672,13 @@ pub fn parse_powermetrics_plist(plist_bytes: &[u8]) -> Result<Vec<GpuSample>, St
     if let Some(idle) = get(dict, &["gpu", "idle_ratio"]) {
         s.utilization_pct = Some(((1.0 - idle) * 100.0).clamp(0.0, 100.0));
     }
-    if let Some(mw) = get(dict, &["processor", "gpu_energy"]) {
+    if let Some(mw) = get(dict, &["processor", "gpu_power"]) {
         s.power_w = Some(mw / 1000.0);
     }
-    if let Some(mw) = get(dict, &["processor", "ane_energy"]) {
+    if let Some(mw) = get(dict, &["processor", "ane_power"]) {
         s.extra.insert("ane_power_w".to_string(), mw / 1000.0);
     }
-    if let Some(mw) = get(dict, &["processor", "cpu_energy"]) {
+    if let Some(mw) = get(dict, &["processor", "cpu_power"]) {
         s.extra.insert("cpu_power_w".to_string(), mw / 1000.0);
     }
     if let Some(mw) = get(dict, &["processor", "combined_power"]) {
@@ -908,8 +910,10 @@ DCGM_FI_DEV_SM_CLOCK{gpu="0",UUID="GPU-aaa"} 1980
     // powermetrics plist parser (Apple Silicon)
     // -------------------------------------------------------------
 
-    /// Shape pinned against asitop's reference parser: `gpu.idle_ratio`
-    /// (0..1), `processor.*_energy` in milliwatts.
+    /// Trimmed real capture (M2 Pro, 5s window — ANE under Core ML load):
+    /// `gpu.idle_ratio` (0..1), `processor.*_power` in milliwatts. The
+    /// `*_energy` siblings are millijoules over the window (here ≈ power ×
+    /// 5s) and must stay unread — the parser keys on `_power` only.
     const POWERMETRICS_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -920,17 +924,25 @@ DCGM_FI_DEV_SM_CLOCK{gpu="0",UUID="GPU-aaa"} 1980
 		<real>1296</real>
 		<key>idle_ratio</key>
 		<real>0.27</real>
+		<key>gpu_energy</key>
+		<real>555</real>
 	</dict>
 	<key>processor</key>
 	<dict>
 		<key>ane_energy</key>
-		<real>12.5</real>
+		<real>35250</real>
+		<key>ane_power</key>
+		<real>7041.27</real>
 		<key>cpu_energy</key>
-		<real>4500.0</real>
+		<real>11849</real>
+		<key>cpu_power</key>
+		<real>2366.87</real>
 		<key>gpu_energy</key>
-		<real>890.25</real>
+		<real>555</real>
+		<key>gpu_power</key>
+		<real>110.863</real>
 		<key>combined_power</key>
-		<real>5402.75</real>
+		<real>9519.0</real>
 	</dict>
 	<key>timestamp</key>
 	<date>2026-09-08T10:00:00Z</date>
@@ -945,22 +957,26 @@ DCGM_FI_DEV_SM_CLOCK{gpu="0",UUID="GPU-aaa"} 1980
         let s = &samples[0];
         assert_eq!(s.index, 0);
         assert_eq!(s.utilization_pct, Some(73.0));
-        assert_eq!(s.power_w, Some(0.89025));
+        // Average power over the window — NOT the energy sibling, which at
+        // 555 mJ/5s would misread as 0.555 W.
+        let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(approx(s.power_w.unwrap(), 0.110863), "{:?}", s.power_w);
         // Unified memory and thermal-pressure-only → no memory/temp series.
         assert_eq!(s.memory_used_mib, None);
         assert_eq!(s.temperature_c, None);
         // ANE (and the CPU/package rails) ride extras, milliwatts → watts.
-        assert_eq!(s.extra.get("ane_power_w"), Some(&0.0125));
-        assert_eq!(s.extra.get("cpu_power_w"), Some(&4.5));
-        assert_eq!(s.extra.get("package_power_w"), Some(&5.40275));
+        assert!(approx(s.extra["ane_power_w"], 7.04127));
+        assert!(approx(s.extra["cpu_power_w"], 2.36687));
+        assert!(approx(s.extra["package_power_w"], 9.519));
     }
 
     #[test]
     fn powermetrics_plist_without_ane_still_yields_the_gpu() {
-        // Intel Macs / older macOS have no ane_energy — drop the series,
-        // don't fail the sample.
-        let plist =
-            POWERMETRICS_FIXTURE.replace("\t\t<key>ane_energy</key>\n\t\t<real>12.5</real>\n", "");
+        // Intel Macs / older macOS have no ane_power — drop the series,
+        // don't fail the sample. ane_energy stays in the document to prove
+        // it is not picked up as a fallback.
+        let plist = POWERMETRICS_FIXTURE
+            .replace("\t\t<key>ane_power</key>\n\t\t<real>7041.27</real>\n", "");
         let samples = parse_powermetrics_plist(plist.as_bytes()).unwrap();
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].utilization_pct, Some(73.0));
