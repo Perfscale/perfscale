@@ -279,6 +279,56 @@ engine — the NVENC encoder the sidecar burns is **not** counted there, so
 judge the sidecar by VRAM, power draw, and the FPS it costs the sessions,
 not by the util line.
 
+## Example: ANE (Neural Engine) load via Core ML
+
+On Apple Silicon the NPU question mirrors the GPU one: does the workload
+actually engage the Neural Engine, and where is its ceiling? The shipped
+[`examples/coreml-ane/`](https://github.com/Perfscale/perfscale/tree/main/examples/coreml-ane)
+generates real ANE load with a Core ML sidecar — a small conv net built with
+[coremltools](https://github.com/apple/coremltools)' MIL builder (no model
+download), looping predictions with `compute_units=ALL` — while
+`gpu.source: powermetrics` records the SoC:
+
+```yaml
+# config.yaml (excerpt)
+gpu:
+  enabled: true
+  source: powermetrics
+  interval_ms: 5000
+
+before:
+  - name: ane-sidecar
+    uses: std/child_process@v1
+    with:
+      command: sh
+      args: ["-c", ".venv/bin/python ane_load.py"]
+      waitUntil: { stdout_contains: "inference loop", on_timeout: fail }
+      restart: never
+
+after:
+  - name: stop the sidecar
+    uses: std/kill_process@v1
+    with: { name: ane-sidecar }
+```
+
+Verified on an M2 Pro: `ane_power_w` rises ≈2 W over baseline (to ≈7 W
+sustained) while the loop runs at ≈1 450 inferences/s on the built-in net,
+with `gpu_utilization_pct` and `gpu_power_w` staying flat — proof the load
+is on the Neural Engine, not the GPU. (powermetrics models several watts of
+ANE draw even at idle on M2 Pro/Max, so read the delta, not the floor.)
+Reading the result:
+
+- `ane_power_w` flat at its baseline → the ANE is not engaged: the model is
+  CPU/GPU-bound or was loaded without `compute_units=ALL`. (Python's data
+  stack — pandas, NumPy, Anaconda — never touches the ANE;
+  `coremltools`/Core ML is the only path user code has to it.)
+- Scale out (more sidecars, `--size 224`, or your own `--model x.mlpackage`)
+  and watch where inferences/sec stop scaling — the chip's ANE ceiling for
+  that workload.
+
+Setup (venv + the powermetrics sudoers rule) and the sweep method are in the
+example's README.
+
 ## GPU benchmark suite
 
 The repo ships a ready-made local suite in

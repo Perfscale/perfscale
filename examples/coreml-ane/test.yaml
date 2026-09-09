@@ -1,0 +1,7 @@
+# test.yaml — the sidecar is the load; these steps keep the run open and
+# produce the usual latency/throughput timeline to correlate ANE power
+# against. Point them at your own service for a real scenario.
+steps:
+  - name: keep the run open
+    use: std/sleep@v1
+    with: { seconds: 30 }

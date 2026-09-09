@@ -38,3 +38,7 @@ Release notes for the next release, written as features land.
   macOS exposes; there is no public NPU utilization API). Streams during-run
   like every other GPU gauge. Requires root: run the CLI under sudo or add a
   NOPASSWD sudoers rule for `/usr/bin/powermetrics` (see the gpu docs page).
+  New shipped example `examples/coreml-ane/` generates real Neural Engine
+  load (a coremltools MIL conv-net inference loop, no model download) as a
+  before/after sidecar — verified on an M2 Pro: `ane_power_w` climbs ≈2 W
+  over baseline while the GPU stays nearly idle.

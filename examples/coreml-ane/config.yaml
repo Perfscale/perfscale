@@ -1,0 +1,31 @@
+# config.yaml — ANE (Neural Engine) load via a Core ML sidecar.
+#
+# Setup (once): see README.md — a venv with coremltools+numpy next to this
+# file, and passwordless sudo for /usr/bin/powermetrics.
+
+vus: 1
+duration: 2m
+allow_process_actions: true # required for child_process/kill_process
+
+gpu:
+  enabled: true
+  source: powermetrics
+  interval_ms: 5000      # ≥5s: powermetrics measures an interval-long window
+
+before:
+  # The sidecar: a Core ML inference loop. Core ML routes conv nets to the
+  # Neural Engine (compute_units=ALL), so `ane_power_w` goes non-zero.
+  - name: ane-sidecar
+    uses: std/child_process@v1
+    with:
+      command: sh
+      args: ["-c", ".venv/bin/python ane_load.py"]
+      waitUntil:
+        stdout_contains: "inference loop"  # model compiled, loop running
+        on_timeout: fail                   # no ANE load → the run proves nothing
+      restart: never
+
+after:
+  - name: stop the sidecar
+    uses: std/kill_process@v1
+    with: { name: ane-sidecar }
