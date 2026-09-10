@@ -117,9 +117,14 @@ Rules and edge cases:
 - `${{ env.NAME }}` reads the process environment of the `perfscale` run
   (everything after `env.` is the variable name). `env` is a reserved
   prefix: a stored output literally named `env` is shadowed by it. Resolved
-  values are substituted into step parameters only — they are never written
-  to logs or summaries by the engine, which is why `env.*` is the right
-  channel for secrets.
+  values are substituted into step parameters only — the engine never
+  writes them to logs or summaries itself. It also records every resolved
+  `env.*` value into a run-scoped registry and **masks it in the run log**:
+  values of 4+ characters are replaced with `***` wherever they occur
+  (inside URLs and DSNs too), shorter values only as whole tokens — so a
+  secret that slips into a request URL or a `std/log@v1` message still
+  cannot leak into the output. This is why `env.*` is the right channel
+  for secrets.
 - Path segments descend one JSON object level per `.` — header names with
   dots in them cannot be addressed (rare; everything else works).
 - Placeholders are resolved per virtual user, per iteration — each VU sees
@@ -162,7 +167,7 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `gpu` | — | GPU metrics collection — see [GPU metrics](#gpu-metrics-gpu). Native engine only |
 | `before` | `[]` | One-time setup steps — see [Setup and variables](#setup-and-variables) |
 | `after` | `[]` | One-time teardown steps — see [Teardown](#teardown-after) |
-| `variables` | `{}` | Static values exposed to steps as `${{ vars.* }}` |
+| `variables` | `{}` | Static values exposed to steps as `${{ vars.* }}`. Keep secrets out of this block — it is plain YAML, checked into repos and shown in diffs; use `${{ env.NAME }}` (process environment, masked in run logs) for those |
 | `shared_variables` | `{}` | Mutable cross-VU shared state for `std/set_shared_variable@v1` / `std/get_shared_variable@v1`: a map of name → initial JSON value (the type is inferred from it). Declaring is mandatory — a step referencing an undeclared name, or an `op` incompatible with the declared type, fails validation before the run starts. See [Shared variables guide](core/shared-variables.md). Native engine only |
 | `allow_process_actions` | `false` | Let steps spawn/signal OS processes (`std/child_process@v1`, `std/kill_process@v1`). Fail-closed: a step list from an untrusted source cannot touch processes until you opt in |
 | `import` | — | Base document to inherit from — see [Composing documents](#composing-documents-import) |

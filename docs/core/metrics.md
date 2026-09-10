@@ -302,3 +302,13 @@ Auth note: the CLI ships unauthenticated (same as the end-of-run report).
 The authenticated path is the agent's — it runs the same shipper with a
 Keycloak token provider and a `taskId` (also stamped as a `task_id` label on
 every sample).
+
+**On the platform** (perfscale.su or a self-hosted controlplane) the stream
+lights the run page up live — latency quantiles, throughput, failure rate
+and GPU curves drawn as the samples arrive. The agent wires everything
+itself: `report.during_run: true` in the run's configuration is the only
+user action — it authenticates the stream with its machine token and stamps
+every sample with `task_id` and `machine_id`. The same samples feed the
+Metrics dashboard, the Prometheus-compatible query API (point Grafana at
+`/api/v1/integrations/prometheus`) and Remote Write into your own
+Prometheus/Mimir.
