@@ -13,6 +13,7 @@ pub mod gpu;
 pub mod import;
 pub mod introspect;
 pub mod lint;
+pub(crate) mod log_mask;
 pub mod models;
 pub mod report;
 pub mod runner;

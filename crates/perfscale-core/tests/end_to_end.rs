@@ -244,6 +244,95 @@ steps:
 }
 
 // ---------------------------------------------------------------------------
+// ${{ env.NAME }} secrets: masked in the run log, real on the wire
+// ---------------------------------------------------------------------------
+
+/// A resolved `${{ env.NAME }}` value must never appear in the run log
+/// (masked as `***` by the log pipeline), while steps still receive the real
+/// value — here: an HTTP header the backend matches on.
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn env_secret_is_masked_in_run_logs_but_reaches_the_backend_verbatim() {
+    const VAR: &str = "PERFSCALE_TEST_E2E_MASKED_ENV_SECRET";
+    const SECRET: &str = "e2e-s3cr3t-token-7f9c";
+    std::env::set_var(VAR, SECRET);
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/whoami"))
+        // The mock only matches the REAL header value — masking must not
+        // rewrite what goes on the wire.
+        .and(header("x-api-key", SECRET))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1..)
+        .mount(&server)
+        .await;
+
+    let test_yaml = format!(
+        r#"
+steps:
+  - name: authed call
+    use: std/http@v1
+    with:
+      method: GET
+      url: {}/whoami
+      headers:
+        x-api-key: ${{{{ env.{VAR} }}}}
+    check:
+      status: 200
+  - name: log the token
+    use: std/log@v1
+    with:
+      message: "token=${{{{ env.{VAR} }}}} end"
+  - use: std/sleep@v1
+    with:
+      ms: 50
+"#,
+        server.uri()
+    );
+
+    let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
+    let config = RunConfig {
+        vus: 1,
+        duration: "1s".into(),
+        ..Default::default()
+    };
+
+    let rx = runner::execute(ExecutionPlan::NativeSteps {
+        test,
+        before: Vec::new(),
+        after: Vec::new(),
+        variables: serde_json::Map::new(),
+        shared_variables: serde_json::Map::new(),
+        config: Box::new(config),
+        quiet: false,
+        metrics_tx: None,
+    })
+    .await
+    .unwrap();
+    let lines = collect(rx).await;
+    let all: String = lines
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // The resolved secret appears in no run-log line of any source…
+    assert!(
+        !all.contains(SECRET),
+        "secret leaked into the run log:\n{all}"
+    );
+    // …the std/log step's line shows the mask instead…
+    assert!(all.contains("token=*** end"), "run log was:\n{all}");
+    // …and ordinary output is untouched by masking.
+    assert!(all.contains("status==200 → PASS"), "run log was:\n{all}");
+
+    // The backend saw the real header value (the mock expects ≥1 match).
+    server.verify().await;
+    std::env::remove_var(VAR);
+}
+
+// ---------------------------------------------------------------------------
 // Shipped examples must stay valid (they are the first thing users copy)
 // ---------------------------------------------------------------------------
 

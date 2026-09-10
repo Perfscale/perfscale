@@ -51,6 +51,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
+use crate::log_mask::SecretRegistry;
 use crate::report::MetricSnapshot;
 use crate::runner::{LogLine, LogSource};
 use crate::step::schedule::{lerp_segments, DispatchCursor, Schedule, Segment};
@@ -517,6 +518,11 @@ pub async fn run_native(
     // the end is stopped via `shutdown_all` on every exit path.
     let registry = Arc::new(ProcessRegistry::new());
 
+    // One secret registry per run: every context (`before`, VUs, `after`)
+    // shares it, and every line sent to the run log is masked against it —
+    // a resolved `${{ env.NAME }}` value must never appear in the log.
+    let secrets = SecretRegistry::new();
+
     // Shared-variable declarations are validated and seeded before anything
     // runs — a step referencing an undeclared name or an op incompatible with
     // the declared type is a configuration error, not a mid-run surprise.
@@ -536,10 +542,17 @@ pub async fn run_native(
             &tx,
             LogSource::Stderr,
             &format!("invalid shared variable configuration: {msg}"),
+            &secrets,
         )
         .await;
         registry.shutdown_all().await;
-        emit(&tx, LogSource::System, "Done — configuration error").await;
+        emit(
+            &tx,
+            LogSource::System,
+            "Done — configuration error",
+            &secrets,
+        )
+        .await;
         return NativeRunOutcome {
             config_error: Some(msg),
             ..NativeRunOutcome::default()
@@ -554,11 +567,12 @@ pub async fn run_native(
     // First SIGINT/SIGTERM flips this flag (soft stop); a second one exits
     // the process outright. The handler task is aborted when the run ends.
     let stop = Arc::new(AtomicBool::new(false));
-    let interrupt_handler = spawn_interrupt_handler(Arc::clone(&stop), tx.clone());
+    let interrupt_handler = spawn_interrupt_handler(Arc::clone(&stop), tx.clone(), secrets.clone());
 
     let after_shared = AfterShared {
         registry: Arc::clone(&registry),
         metrics: Arc::clone(&metrics),
+        secrets: secrets.clone(),
     };
 
     // Resolve the load profile up front: a broken `stages:`/`arrival:` block
@@ -570,10 +584,17 @@ pub async fn run_native(
                 &tx,
                 LogSource::Stderr,
                 &format!("invalid load configuration: {msg}"),
+                &secrets,
             )
             .await;
             registry.shutdown_all().await;
-            emit(&tx, LogSource::System, "Done — configuration error").await;
+            emit(
+                &tx,
+                LogSource::System,
+                "Done — configuration error",
+                &secrets,
+            )
+            .await;
             interrupt_handler.abort();
             return NativeRunOutcome {
                 config_error: Some(msg),
@@ -583,34 +604,36 @@ pub async fn run_native(
     };
 
     // --- One-time setup ---
-    let config_seed = match run_before(&before, &vars, &config, &registry, quiet, &tx).await {
-        Ok(v) => v,
-        Err(msg) => {
-            emit(
-                &tx,
-                LogSource::Stderr,
-                &format!("Setup failed, aborting run: {msg}"),
-            )
-            .await;
-            // Teardown still runs: a `before` step may have started a process
-            // (or grabbed anything else `after` exists to clean up) before
-            // the one that failed.
-            run_after(
-                &after,
-                &Value::Null,
-                &vars,
-                &config,
-                &after_shared,
-                quiet,
-                &tx,
-            )
-            .await;
-            registry.shutdown_all().await;
-            emit(&tx, LogSource::System, "Done — setup error").await;
-            interrupt_handler.abort();
-            return NativeRunOutcome::default();
-        }
-    };
+    let config_seed =
+        match run_before(&before, &vars, &config, &registry, &secrets, quiet, &tx).await {
+            Ok(v) => v,
+            Err(msg) => {
+                emit(
+                    &tx,
+                    LogSource::Stderr,
+                    &format!("Setup failed, aborting run: {msg}"),
+                    &secrets,
+                )
+                .await;
+                // Teardown still runs: a `before` step may have started a process
+                // (or grabbed anything else `after` exists to clean up) before
+                // the one that failed.
+                run_after(
+                    &after,
+                    &Value::Null,
+                    &vars,
+                    &config,
+                    &after_shared,
+                    quiet,
+                    &tx,
+                )
+                .await;
+                registry.shutdown_all().await;
+                emit(&tx, LogSource::System, "Done — setup error", &secrets).await;
+                interrupt_handler.abort();
+                return NativeRunOutcome::default();
+            }
+        };
 
     let iter_count = Arc::new(AtomicU64::new(0));
     let started = Instant::now();
@@ -637,6 +660,7 @@ pub async fn run_native(
         allow_file_actions: config.allow_file_actions,
         allow_process_actions: config.allow_process_actions,
         processes: Arc::clone(&registry),
+        secrets: secrets.clone(),
         stop: Arc::clone(&stop),
         quiet,
         tx: tx.clone(),
@@ -652,6 +676,7 @@ pub async fn run_native(
         let iter_count = Arc::clone(&iter_count);
         let gauge = shared.active_vus.clone();
         let tx = tx.clone();
+        let secrets = secrets.clone();
         tokio::spawn(async move {
             const INTERVAL_SECS: u64 = 5;
             let mut interval = tokio::time::interval(Duration::from_secs(INTERVAL_SECS));
@@ -675,7 +700,7 @@ pub async fn run_native(
                     }
                     line
                 };
-                emit(&tx, LogSource::Stdout, &line).await;
+                emit(&tx, LogSource::Stdout, &line, &secrets).await;
             }
         })
     };
@@ -705,6 +730,7 @@ pub async fn run_native(
                     report.batch_size,
                     report.max_cpu_percent,
                 ),
+                &secrets,
             )
             .await;
             Some(spawn_metrics_stream(
@@ -729,6 +755,7 @@ pub async fn run_native(
                     if vus == 1 { "" } else { "s" },
                     config.duration
                 ),
+                &secrets,
             )
             .await;
             let mut handles = Vec::with_capacity(vus as usize);
@@ -794,7 +821,7 @@ pub async fn run_native(
         (lines, m.thresholds_summary())
     };
     for line in &lines {
-        emit(&tx, LogSource::Stdout, line).await;
+        emit(&tx, LogSource::Stdout, line, &secrets).await;
     }
     // Machine-readable gate result for the run summary JSON / CI: one line,
     // consumed like the other summary lines downstream.
@@ -806,6 +833,7 @@ pub async fn run_native(
                 "thresholds: {}",
                 serde_json::to_string(t).expect("thresholds summary is always serializable")
             ),
+            &secrets,
         )
         .await;
     }
@@ -814,7 +842,7 @@ pub async fn run_native(
     // (timeseries included) — consumed like the thresholds line downstream.
     if let Some(ref g) = gpu_summary {
         for line in g.console_lines() {
-            emit(&tx, LogSource::Stdout, &line).await;
+            emit(&tx, LogSource::Stdout, &line, &secrets).await;
         }
         emit(
             &tx,
@@ -823,6 +851,7 @@ pub async fn run_native(
                 "gpu: {}",
                 serde_json::to_string(g).expect("gpu summary is always serializable")
             ),
+            &secrets,
         )
         .await;
     }
@@ -830,6 +859,7 @@ pub async fn run_native(
         &tx,
         LogSource::System,
         &format!("Done — {wall_secs:.1}s wall clock"),
+        &secrets,
     )
     .await;
     interrupt_handler.abort();
@@ -913,6 +943,10 @@ struct VuShared {
     allow_file_actions: bool,
     allow_process_actions: bool,
     processes: Arc<ProcessRegistry>,
+    /// The run's secret registry — every VU context records its resolved
+    /// `${{ env.NAME }}` values here, and `execute_step` masks them out of
+    /// the run log.
+    secrets: SecretRegistry,
     stop: Arc<AtomicBool>,
     quiet: bool,
     tx: mpsc::Sender<LogLine>,
@@ -932,6 +966,7 @@ impl VuShared {
         ctx.fs_root = self.fs_root.clone();
         ctx.processes = Some(Arc::clone(&self.processes));
         ctx.log_tx = Some(self.tx.clone());
+        ctx.secrets = self.secrets.clone();
         if !self.config_seed.is_null() {
             ctx.set("config", (*self.config_seed).clone());
         }
@@ -1109,6 +1144,7 @@ async fn supervise_ramping(
             segments.len(),
             total_secs as u64
         ),
+        &shared.secrets,
     )
     .await;
 
@@ -1190,6 +1226,7 @@ async fn supervise_arrival(
             segments.len(),
             total_secs as u64
         ),
+        &shared.secrets,
     )
     .await;
 
@@ -1250,6 +1287,7 @@ async fn supervise_arrival(
                     &format!(
                         "dropped iteration: all {max_vus} VUs busy — raise arrival.max_vus or lower the rate (this warning repeats at most once per 5s)"
                     ),
+                    &shared.secrets,
                 )
                 .await;
             }
@@ -1287,6 +1325,7 @@ async fn supervise_arrival(
 fn spawn_interrupt_handler(
     stop: Arc<AtomicBool>,
     tx: mpsc::Sender<LogLine>,
+    secrets: SecretRegistry,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // SIGTERM only exists on unix; elsewhere Ctrl-C (SIGINT) is all we get.
@@ -1330,6 +1369,7 @@ fn spawn_interrupt_handler(
                 &tx,
                 LogSource::System,
                 "Interrupt received — stopping load, running teardown (interrupt again to force-quit)",
+                &secrets,
             )
             .await;
         }
@@ -1351,12 +1391,14 @@ fn spawn_interrupt_handler(
 /// `config` carries the filesystem policy (`allow_file_actions`, `fs_root`)
 /// and the process policy (`allow_process_actions`, shared `registry`) into
 /// setup steps — they run the same actions as test steps, so the same gates
-/// apply.
+/// apply. `secrets` is the run's shared masking registry, seeded into the
+/// setup context and applied to every emitted line.
 async fn run_before(
     before: &[Step],
     vars: &Value,
     config: &RunConfig,
     registry: &Arc<ProcessRegistry>,
+    secrets: &SecretRegistry,
     quiet: bool,
     tx: &mpsc::Sender<LogLine>,
 ) -> Result<Value, String> {
@@ -1372,6 +1414,7 @@ async fn run_before(
             before.len(),
             if before.len() == 1 { "" } else { "s" }
         ),
+        secrets,
     )
     .await;
 
@@ -1381,6 +1424,7 @@ async fn run_before(
     ctx.fs_root = config.fs_root.clone();
     ctx.processes = Some(Arc::clone(registry));
     ctx.log_tx = Some(tx.clone());
+    ctx.secrets = secrets.clone();
     if !vars.is_null() {
         ctx.set("vars", vars.clone());
     }
@@ -1397,7 +1441,7 @@ async fn run_before(
             if quiet && *tag != LogTag::Err {
                 continue;
             }
-            emit(tx, LogSource::from(*tag), text).await;
+            emit(tx, LogSource::from(*tag), text, secrets).await;
         }
 
         if !output.success {
@@ -1421,11 +1465,13 @@ async fn run_before(
 // ---------------------------------------------------------------------------
 
 /// Run-scoped shared state handed to `after:` steps: the managed-process
-/// registry (a typical teardown step kills what `before` started) and the
-/// run's metrics (what `std/thresholds@v1` gates evaluate over).
+/// registry (a typical teardown step kills what `before` started), the
+/// run's metrics (what `std/thresholds@v1` gates evaluate over), and the
+/// run's secret registry (masking for teardown log lines).
 struct AfterShared {
     registry: Arc<ProcessRegistry>,
     metrics: Arc<Mutex<Metrics>>,
+    secrets: SecretRegistry,
 }
 
 /// Run the `after` steps once, best-effort: a failing step is logged but does
@@ -1460,6 +1506,7 @@ async fn run_after(
             after.len(),
             if after.len() == 1 { "" } else { "s" }
         ),
+        &shared.secrets,
     )
     .await;
 
@@ -1470,6 +1517,7 @@ async fn run_after(
     ctx.processes = Some(Arc::clone(&shared.registry));
     ctx.log_tx = Some(tx.clone());
     ctx.run_metrics = Some(Arc::clone(&shared.metrics));
+    ctx.secrets = shared.secrets.clone();
     if !vars.is_null() {
         ctx.set("vars", vars.clone());
     }
@@ -1488,7 +1536,7 @@ async fn run_after(
             if quiet && *tag != LogTag::Err {
                 continue;
             }
-            emit(tx, LogSource::from(*tag), text).await;
+            emit(tx, LogSource::from(*tag), text, &shared.secrets).await;
         }
 
         if !output.success {
@@ -1496,6 +1544,7 @@ async fn run_after(
                 tx,
                 LogSource::Stderr,
                 &format!("teardown step '{step_name}' failed (continuing)"),
+                &shared.secrets,
             )
             .await;
         }
@@ -1559,7 +1608,7 @@ async fn execute_step(
         if quiet && *tag != LogTag::Err {
             continue;
         }
-        emit(tx, LogSource::from(*tag), text).await;
+        emit(tx, LogSource::from(*tag), text, &ctx.secrets).await;
     }
 
     // Store output for later interpolation / checks
@@ -1580,7 +1629,7 @@ async fn execute_step(
             if quiet && *tag != LogTag::Err {
                 continue;
             }
-            emit(tx, LogSource::from(*tag), text).await;
+            emit(tx, LogSource::from(*tag), text, &ctx.secrets).await;
         }
     }
 }
@@ -1615,11 +1664,15 @@ fn step_params(step: &Step) -> std::borrow::Cow<'_, Value> {
     std::borrow::Cow::Owned(Value::Object(obj))
 }
 
-async fn emit(tx: &mpsc::Sender<LogLine>, source: LogSource, text: &str) {
+/// Send one line to the run log. Every line funnels through here, and here
+/// it is masked against the run's [`SecretRegistry`] first — the single
+/// choke point that keeps resolved `${{ env.NAME }}` values out of the log,
+/// no matter which step printed them.
+async fn emit(tx: &mpsc::Sender<LogLine>, source: LogSource, text: &str, secrets: &SecretRegistry) {
     let _ = tx
         .send(LogLine {
             source,
-            text: text.to_string(),
+            text: secrets.mask(text).into_owned(),
         })
         .await;
 }

@@ -1146,7 +1146,12 @@ async fn child_process_action(params: &Value, step_name: &str, ctx: &Context) ->
         backoff,
         buffer_cap,
     };
-    let mp = match ManagedProcess::spawn(spec, step_name.to_string(), ctx.log_tx.clone()) {
+    let mp = match ManagedProcess::spawn(
+        spec,
+        step_name.to_string(),
+        ctx.log_tx.clone(),
+        ctx.secrets.clone(),
+    ) {
         Ok(mp) => mp,
         Err(msg) => return err(step_name, &msg),
     };

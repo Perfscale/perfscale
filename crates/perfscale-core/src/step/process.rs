@@ -32,6 +32,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
+use crate::log_mask::SecretRegistry;
 use crate::runner::{LogLine, LogSource};
 use crate::step::parse_duration_secs;
 
@@ -392,6 +393,10 @@ pub(crate) struct ManagedProcess {
     child: Mutex<Option<Child>>,
     /// Live log stream of the run (prefixed lines), when it has one.
     log_tx: Option<mpsc::Sender<LogLine>>,
+    /// The run's secret registry: mirrored output lines are masked against
+    /// it before they reach `log_tx` — a child may echo a secret it was
+    /// given via an interpolated `env` param or argument.
+    secrets: SecretRegistry,
 }
 
 impl ManagedProcess {
@@ -400,6 +405,7 @@ impl ManagedProcess {
         spec: ProcSpec,
         name: String,
         log_tx: Option<mpsc::Sender<LogLine>>,
+        secrets: SecretRegistry,
     ) -> Result<Arc<Self>, String> {
         // `port: 0` asks for an auto-assigned free port, exported to the
         // child as PORT (standard PaaS convention). The bind-then-release
@@ -440,6 +446,7 @@ impl ManagedProcess {
             }),
             child: Mutex::new(None),
             log_tx,
+            secrets,
         });
         spawn_reader(
             &mp,
@@ -637,7 +644,7 @@ impl ManagedProcess {
             let _ = tx
                 .send(LogLine {
                     source: LogSource::System,
-                    text: format!("{}: {text}", self.name),
+                    text: format!("{}: {}", self.name, self.secrets.mask(text)),
                 })
                 .await;
         }
@@ -802,7 +809,7 @@ where
             if let Some(tx) = &mp.log_tx {
                 let log = LogLine {
                     source,
-                    text: format!("{}: {line}", mp.name),
+                    text: format!("{}: {}", mp.name, mp.secrets.mask(&line)),
                 };
                 if tx.send(log).await.is_err() {
                     break;
@@ -1136,7 +1143,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn spawn_captures_output_and_kills_cleanly() {
-        let mp = ManagedProcess::spawn(sh_spec("echo ready; sleep 60"), "t".into(), None).unwrap();
+        let mp = ManagedProcess::spawn(
+            sh_spec("echo ready; sleep 60"),
+            "t".into(),
+            None,
+            SecretRegistry::new(),
+        )
+        .unwrap();
         let w = WaitUntil::parse(&json!({ "stdout_contains": "ready", "timeout": "5s" })).unwrap();
         mp.wait_until(&w).await.unwrap();
 
@@ -1168,6 +1181,7 @@ mod tests {
             sh_spec("echo hello-log; echo oops-log >&2; sleep 60"),
             "logger".into(),
             Some(tx),
+            SecretRegistry::new(),
         )
         .unwrap();
         let mut texts = Vec::new();
@@ -1185,10 +1199,43 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn mirrored_output_is_masked_against_the_secret_registry() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let secrets = SecretRegistry::new();
+        secrets.record("child-echoed-secret");
+        let mp = ManagedProcess::spawn(
+            sh_spec("echo token=child-echoed-secret; sleep 60"),
+            "masked".into(),
+            Some(tx),
+            secrets,
+        )
+        .unwrap();
+        let line = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .expect("a log line");
+        assert_eq!(line.text, "masked: token=***");
+        // The captured tail buffer keeps the raw line — masking applies to
+        // the log stream, not to `outputs` snapshots.
+        assert!(mp.snapshot()["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("child-echoed-secret"));
+        mp.kill("KILL", Duration::from_secs(2), true).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn wait_until_port_open_probes_tcp() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let mp = ManagedProcess::spawn(sh_spec("sleep 60"), "probe".into(), None).unwrap();
+        let mp = ManagedProcess::spawn(
+            sh_spec("sleep 60"),
+            "probe".into(),
+            None,
+            SecretRegistry::new(),
+        )
+        .unwrap();
 
         let w = WaitUntil::parse(&json!({ "port_open": port, "timeout": "5s" })).unwrap();
         mp.wait_until(&w).await.unwrap();
@@ -1203,7 +1250,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn wait_until_times_out_when_never_ready() {
-        let mp = ManagedProcess::spawn(sh_spec("sleep 60"), "slow".into(), None).unwrap();
+        let mp = ManagedProcess::spawn(
+            sh_spec("sleep 60"),
+            "slow".into(),
+            None,
+            SecretRegistry::new(),
+        )
+        .unwrap();
         let w = WaitUntil::parse(&json!({ "stdout_contains": "never", "timeout": "1s" })).unwrap();
         let start = Instant::now();
         let msg = mp.wait_until(&w).await.unwrap_err();
@@ -1215,8 +1268,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn wait_until_reports_early_exit_with_stderr_tail() {
-        let mp =
-            ManagedProcess::spawn(sh_spec("echo boom >&2; exit 3"), "early".into(), None).unwrap();
+        let mp = ManagedProcess::spawn(
+            sh_spec("echo boom >&2; exit 3"),
+            "early".into(),
+            None,
+            SecretRegistry::new(),
+        )
+        .unwrap();
         let w = WaitUntil::parse(&json!({ "stdout_contains": "never-comes", "timeout": "10s" }))
             .unwrap();
         let msg = mp.wait_until(&w).await.unwrap_err();
@@ -1231,7 +1289,7 @@ mod tests {
         spec.restart = Restart::OnFailure;
         spec.max_restarts = 2;
         spec.backoff = Duration::from_millis(20);
-        let mp = ManagedProcess::spawn(spec, "flaky".into(), None).unwrap();
+        let mp = ManagedProcess::spawn(spec, "flaky".into(), None, SecretRegistry::new()).unwrap();
 
         // The supervisor gives up after 2 restarts → final exit with code 1.
         let code = mp
@@ -1249,7 +1307,7 @@ mod tests {
         let mut spec = sh_spec("exit 0");
         spec.restart = Restart::OnFailure;
         spec.backoff = Duration::from_millis(20);
-        let mp = ManagedProcess::spawn(spec, "ok".into(), None).unwrap();
+        let mp = ManagedProcess::spawn(spec, "ok".into(), None, SecretRegistry::new()).unwrap();
 
         let code = mp
             .wait_until_exited(Duration::from_secs(10))
@@ -1266,7 +1324,8 @@ mod tests {
         spec.restart = Restart::Always;
         spec.max_restarts = 1;
         spec.backoff = Duration::from_millis(20);
-        let mp = ManagedProcess::spawn(spec, "once-more".into(), None).unwrap();
+        let mp =
+            ManagedProcess::spawn(spec, "once-more".into(), None, SecretRegistry::new()).unwrap();
 
         let _ = mp
             .wait_until_exited(Duration::from_secs(10))
@@ -1283,7 +1342,7 @@ mod tests {
         spec.restart = Restart::Always;
         spec.max_restarts = 100;
         spec.backoff = Duration::from_millis(20);
-        let mp = ManagedProcess::spawn(spec, "svc".into(), None).unwrap();
+        let mp = ManagedProcess::spawn(spec, "svc".into(), None, SecretRegistry::new()).unwrap();
         registry.insert("svc", &mp);
         let first_pid = mp.inner.lock().unwrap().pid.unwrap();
 
@@ -1324,6 +1383,7 @@ mod tests {
             sh_spec("sleep 1000 & echo grandchild=$!; wait"),
             "tree".into(),
             None,
+            SecretRegistry::new(),
         )
         .unwrap();
         let w = WaitUntil::parse(&json!({ "stdout_contains": "grandchild=", "timeout": "5s" }))
@@ -1353,7 +1413,7 @@ mod tests {
     async fn port_zero_auto_assigns_and_exports_port_env() {
         let mut spec = sh_spec("echo port=$PORT; sleep 60");
         spec.port = Some(0);
-        let mp = ManagedProcess::spawn(spec, "auto".into(), None).unwrap();
+        let mp = ManagedProcess::spawn(spec, "auto".into(), None, SecretRegistry::new()).unwrap();
         let port = mp.port.expect("auto-assigned port");
         assert!(port > 0);
 
@@ -1381,7 +1441,8 @@ mod tests {
             command: "perfscale-no-such-binary-xyz".into(),
             ..sh_spec("")
         };
-        let msg = ManagedProcess::spawn(spec, "nope".into(), None).unwrap_err();
+        let msg =
+            ManagedProcess::spawn(spec, "nope".into(), None, SecretRegistry::new()).unwrap_err();
         assert!(msg.contains("failed to spawn"), "{msg}");
     }
 
@@ -1394,7 +1455,7 @@ mod tests {
             args: vec!["300".into()],
             ..sh_spec("")
         };
-        let mp = ManagedProcess::spawn(spec, "raw".into(), None).unwrap();
+        let mp = ManagedProcess::spawn(spec, "raw".into(), None, SecretRegistry::new()).unwrap();
         let pid = mp.inner.lock().unwrap().pid.unwrap();
 
         let outcome = kill_raw_pid(pid, "TERM", Duration::from_secs(5), false)
@@ -1415,7 +1476,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn unknown_signal_is_rejected_before_any_state_change() {
-        let mp = ManagedProcess::spawn(sh_spec("sleep 60"), "sig".into(), None).unwrap();
+        let mp = ManagedProcess::spawn(
+            sh_spec("sleep 60"),
+            "sig".into(),
+            None,
+            SecretRegistry::new(),
+        )
+        .unwrap();
         let msg = mp
             .kill("WAT", Duration::from_secs(1), true)
             .await
@@ -1436,7 +1503,7 @@ mod tests {
                 args: vec!["300".into()],
                 ..sh_spec("")
             };
-            ManagedProcess::spawn(spec, name.into(), None).unwrap()
+            ManagedProcess::spawn(spec, name.into(), None, SecretRegistry::new()).unwrap()
         };
         let a = sleep("a");
         let b = sleep("b");

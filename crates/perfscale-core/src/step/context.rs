@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::log_mask::SecretRegistry;
 use crate::runner::LogLine;
 use crate::step::process::ProcessRegistry;
 
@@ -46,6 +47,12 @@ pub struct Context {
     /// `step::actions`). Seeded by the runner from the VU id so every VU
     /// keeps exactly one warm connection pool; 0 in hand-built contexts.
     pub(crate) http_client_shard: usize,
+    /// Run-scoped registry of resolved `${{ env.NAME }}` values, shared by
+    /// every context of the run. Each successful env resolution is recorded
+    /// here (see [`Context::resolve_expr`]); the log pipeline masks every
+    /// recorded value out of the run log. A hand-built context gets its own
+    /// empty registry, which masks nothing.
+    pub(crate) secrets: SecretRegistry,
 }
 
 impl Context {
@@ -132,15 +139,20 @@ impl Context {
     /// The `env.` prefix is special: `${{ env.NAME }}` reads the process
     /// environment variable `NAME` (everything after `env.` is the variable
     /// name), and a missing variable is an `Err`, never a silent empty — the
-    /// non-strict wrappers downgrade that error to an empty string. The
-    /// resolved value is only ever substituted into step parameters; it is
-    /// never written to logs by the interpolation layer itself.
+    /// non-strict wrappers downgrade that error to an empty string. A
+    /// successfully resolved env value is recorded in the context's
+    /// run-scoped [`SecretRegistry`] (`secrets`), and the native runner's
+    /// log pipeline masks every recorded value out of the run log — the
+    /// "env values never appear in logs" contract is enforced there, not by
+    /// withholding the value from steps that legitimately need it.
     fn resolve_expr(&self, expr: &str) -> Result<String, String> {
         if let Some(name) = expr.strip_prefix("env.") {
             if name.is_empty() {
                 return Err("env placeholder needs a variable name: ${{ env.NAME }}".into());
             }
-            return std::env::var(name).map_err(|_| format!("env var '{name}' is not set"));
+            return std::env::var(name)
+                .inspect(|value| self.secrets.record(value))
+                .map_err(|_| format!("env var '{name}' is not set"));
         }
         let mut segments = expr.split('.');
         let root = segments.next().unwrap_or("");
@@ -330,6 +342,26 @@ mod tests {
             "key=s3cret"
         );
         std::env::remove_var("PERFSCALE_TEST_CTX_ENV_RESOLVE");
+    }
+
+    #[test]
+    fn env_resolution_records_the_value_for_log_masking() {
+        std::env::set_var("PERFSCALE_TEST_CTX_ENV_RECORD", "rec0rded-secret");
+        let ctx = Context::new();
+        ctx.interpolate("key=${{ env.PERFSCALE_TEST_CTX_ENV_RECORD }}");
+        // The value the step received is now masked out of any log line.
+        assert_eq!(
+            ctx.secrets.mask("saw rec0rded-secret in a header"),
+            "saw *** in a header"
+        );
+        // A failed resolution records nothing.
+        let err = ctx.try_interpolate("${{ env.PERFSCALE_TEST_CTX_ENV_RECORD_UNSET }}");
+        assert!(err.is_err());
+        assert!(matches!(
+            ctx.secrets.mask("nothing recorded"),
+            std::borrow::Cow::Borrowed("nothing recorded")
+        ));
+        std::env::remove_var("PERFSCALE_TEST_CTX_ENV_RECORD");
     }
 
     #[test]
