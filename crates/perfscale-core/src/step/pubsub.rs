@@ -237,7 +237,8 @@ pub fn register_pubsub_driver(driver: Arc<dyn PubSubDriver>) {
 /// Resolve a driver by name, registering the built-ins lazily on first use
 /// (no init call needed from outside). An unknown name fails with the list
 /// of registered drivers — the user's cue that their build lacks a pro crate.
-fn lookup_driver(name: &str) -> Result<Arc<dyn PubSubDriver>, String> {
+/// Public so benchmarks and downstream crates can drive a transport directly.
+pub fn lookup_driver(name: &str) -> Result<Arc<dyn PubSubDriver>, String> {
     static BUILTINS: Once = Once::new();
     BUILTINS.call_once(|| {
         register_pubsub_driver(Arc::new(MemoryDriver));

@@ -399,8 +399,9 @@ fn register_builtins() {
 
 /// Resolve a driver by name, registering the built-ins lazily on first use.
 /// An unknown name fails with the list of registered drivers — the user's cue
-/// that their build lacks a pro crate.
-fn lookup_driver(name: &str) -> Result<Arc<dyn SharedVariableDriver>, String> {
+/// that their build lacks a pro crate. Public so benchmarks and downstream
+/// crates can drive a store directly.
+pub fn lookup_driver(name: &str) -> Result<Arc<dyn SharedVariableDriver>, String> {
     register_builtins();
     let reg = driver_registry().read().unwrap();
     reg.iter()
