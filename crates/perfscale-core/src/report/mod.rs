@@ -7,10 +7,10 @@
 //! `interval_ms` over an optional channel (`run_native`'s `metrics_tx`), and a
 //! [`DuringRunShipper`](stream::DuringRunShipper) batches those snapshots into
 //! samples and POSTs them to `<url>/api/v1/metrics` — the same endpoint the
-//! end-of-run summary report uses. Shipping is adaptive: a CPU gate drops and
-//! holds work while the host is saturated (the VU loop always wins), pending
-//! batches are bounded with drop-oldest, and failures retry with exponential
-//! backoff.
+//! end-of-run summary report uses. Shipping is adaptive: a CPU gate holds
+//! sends and defers snapshots while the host is saturated (the VU loop always
+//! wins), undelivered batches are kept (soft `max_pending` warn cap), and
+//! failures retry with exponential backoff.
 //!
 //! Off by default: with no `report` block (or `during_run: false`) the engine
 //! spawns no task and no channel traffic exists — the zero-overhead path.
@@ -57,13 +57,15 @@ pub struct ReportRunConfig {
     pub batch_size: usize,
 
     /// CPU gate: while the host's busy CPU% is at or above this value the
-    /// shipper drops incoming snapshots and holds pending batches (no POSTs).
-    /// `0.0` disables the gate. Off-Linux (no reading) the gate is inert.
+    /// shipper holds pending batches (no POSTs) and defers incoming
+    /// snapshots — queued, shipped in order once the gate opens. `0.0`
+    /// disables the gate. Off-Linux (no reading) the gate is inert.
     #[serde(default = "default_max_cpu_percent")]
     pub max_cpu_percent: f64,
 
-    /// Maximum sealed batches awaiting delivery; beyond that the oldest is
-    /// dropped with a warning (default 24).
+    /// Soft cap on sealed batches awaiting delivery: crossing it logs a
+    /// rate-limited warning, but batches are never dropped while the run is
+    /// alive (default 24).
     #[serde(default = "default_max_pending")]
     pub max_pending: usize,
 }

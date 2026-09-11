@@ -29,13 +29,14 @@ pub struct ReportConfig {
     pub batch_size: usize,
 
     /// CPU gate for during-run shipping: while the host's busy CPU% is at or
-    /// above this value snapshots are dropped and batches held. `0` disables
-    /// the gate (default 90); off-Linux the gate is inert.
+    /// above this value batches are held (no POSTs) and snapshots deferred —
+    /// queued, not dropped, shipped in order once the gate opens. `0`
+    /// disables the gate (default 90); off-Linux the gate is inert.
     #[serde(default = "crate::report::default_max_cpu_percent")]
     pub max_cpu_percent: f64,
 
-    /// Maximum sealed batches awaiting delivery before drop-oldest kicks in
-    /// (default 24).
+    /// Soft cap on sealed batches awaiting delivery: crossing it warns, but
+    /// batches are never dropped while the run is alive (default 24).
     #[serde(default = "crate::report::default_max_pending")]
     pub max_pending: usize,
 }

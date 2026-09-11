@@ -159,13 +159,13 @@
         },
         "max_cpu_percent": {
           "default": 90.0,
-          "description": "CPU gate for during-run shipping: while the host's busy CPU% is at or above this value snapshots are dropped and batches held. `0` disables the gate (default 90); off-Linux the gate is inert.",
+          "description": "CPU gate for during-run shipping: while the host's busy CPU% is at or above this value batches are held (no POSTs) and snapshots deferred — queued, not dropped, shipped in order once the gate opens. `0` disables the gate (default 90); off-Linux the gate is inert.",
           "format": "double",
           "type": "number"
         },
         "max_pending": {
           "default": 24,
-          "description": "Maximum sealed batches awaiting delivery before drop-oldest kicks in (default 24).",
+          "description": "Soft cap on sealed batches awaiting delivery: crossing it warns, but batches are never dropped while the run is alive (default 24).",
           "format": "uint",
           "minimum": 0.0,
           "type": "integer"

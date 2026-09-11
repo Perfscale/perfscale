@@ -872,9 +872,10 @@ pub async fn run_native(
 /// Snapshot pump for during-run metrics streaming: every `interval`, lock
 /// [`Metrics`], ship one cumulative [`MetricSnapshot`] via `try_send`. A full
 /// channel drops the snapshot (rate-limited warning) — streaming must never
-/// backpressure the VU loop; the shipper applies its own shedding downstream
-/// (CPU gate, bounded pending). Abort to stop; aborting drops the sender,
-/// which closes the channel for the shipper's final drain.
+/// backpressure the VU loop; downstream the shipper queues through CPU gates
+/// and outages (soft `max_pending` cap) rather than dropping. Abort to stop;
+/// aborting drops the sender, which closes the channel for the shipper's
+/// final drain.
 ///
 /// With `gpu` set (a running [`crate::gpu::GpuSession`]'s buffer), each
 /// snapshot also carries the GPU gauge samples appended since the previous

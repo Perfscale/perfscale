@@ -31,8 +31,9 @@
 //!   `gpu_power_w`, each with a `gpu="<index>"` label (plus any
 //!   collector-specific extras under their own names).
 //! - **Backpressure**: none, by design — the engine drops snapshots when the
-//!   channel is full, and the shipper sheds load (CPU gate, bounded pending)
-//!   rather than slow the VU loop.
+//!   channel is full (the only mid-run shed), while the shipper queues
+//!   snapshots through CPU gates and network outages rather than slow the
+//!   VU loop.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -267,11 +268,14 @@ pub enum Auth {
 ///   batch gets a monotonically increasing `seq` that is reused across
 ///   retries, so the receiver can deduplicate redeliveries.
 /// - **CPU gate**: if `max_cpu_percent > 0` and the reader reports a busy CPU
-///   ≥ the limit, incoming snapshots are dropped (every 10th logs a warning)
-///   and pending batches are held — no POSTs. A `None` reading (non-Linux)
-///   leaves the gate inert.
-/// - **Bounded pending**: sealed-but-undelivered batches are capped at
-///   `max_pending`; beyond that the oldest is dropped with a warning.
+///   ≥ the limit, incoming snapshots are deferred — queued, not dropped —
+///   and pending batches are held (no POSTs). Once the gate opens the
+///   deferred snapshots are flushed first, in arrival order. A `None`
+///   reading (non-Linux) leaves the gate inert.
+/// - **Soft pending cap**: sealed-but-undelivered batches are never dropped
+///   while the run is alive; growing past `max_pending` only logs a
+///   rate-limited warning. Delivery resumes in order when the target
+///   responds again.
 /// - **Retries**: network errors, 5xx and 429 retry the same batch with
 ///   exponential backoff ×2 from 1s, capped at 60s. Any other 4xx marks the
 ///   batch poison — it is dropped with a warning, never retried.
@@ -359,10 +363,28 @@ impl DuringRunShipper {
 
         let mut open: Vec<Sample> = Vec::new();
         let mut pending: VecDeque<PendingBatch> = VecDeque::new();
+        // Snapshots that arrived while the CPU gate was closed — queued, not
+        // dropped, flushed in arrival order once the gate opens.
+        let mut deferred: VecDeque<MetricSnapshot> = VecDeque::new();
         let mut seq: u64 = 0;
-        let mut gated_drops: u64 = 0;
+        let mut gated_deferred: u64 = 0;
+        let mut backlog_overflow: u64 = 0;
 
         loop {
+            // Gate open again? Deferred snapshots go first so series keep
+            // arrival order.
+            if !self.cpu_gated() {
+                while let Some(snap) = deferred.pop_front() {
+                    self.absorb(
+                        &snap,
+                        &mut open,
+                        &mut pending,
+                        &mut seq,
+                        &mut backlog_overflow,
+                    );
+                }
+            }
+
             // While gated, the delivery arm stays off — recv/tick still wake
             // the loop, so there is no busy spin.
             let due = if self.cpu_gated() {
@@ -375,22 +397,27 @@ impl DuringRunShipper {
                 maybe = rx.recv() => match maybe {
                     Some(snap) => {
                         if self.cpu_gated() {
-                            gated_drops += 1;
-                            if gated_drops % 10 == 1 {
+                            gated_deferred += 1;
+                            if gated_deferred % 10 == 1 {
                                 tracing::warn!(
-                                    gated_drops,
+                                    gated_deferred,
                                     cpu_limit = self.cfg.max_cpu_percent,
-                                    "cpu gate active — dropping metric snapshot"
+                                    "cpu gate active — queueing metric snapshot"
                                 );
                             }
+                            deferred.push_back(snap);
                             continue;
                         }
-                        open.extend(snapshot_to_samples(&snap, &self.labels));
-                        if open.len() >= self.cfg.batch_size.max(1) {
-                            seq += 1;
-                            pending.push_back(PendingBatch::new(seq, std::mem::take(&mut open)));
-                            trim_pending(&mut pending, self.cfg.max_pending);
+                        // The gate may have opened since the loop-top check:
+                        // deferred snapshots go first, keeping arrival order.
+                        while let Some(old) = deferred.pop_front() {
+                            self.absorb(
+                                &old, &mut open, &mut pending, &mut seq, &mut backlog_overflow,
+                            );
                         }
+                        self.absorb(
+                            &snap, &mut open, &mut pending, &mut seq, &mut backlog_overflow,
+                        );
                     }
                     // Channel closed — final drain below.
                     None => break,
@@ -399,7 +426,7 @@ impl DuringRunShipper {
                     if !open.is_empty() {
                         seq += 1;
                         pending.push_back(PendingBatch::new(seq, std::mem::take(&mut open)));
-                        trim_pending(&mut pending, self.cfg.max_pending);
+                        note_backlog(pending.len(), self.cfg.max_pending, &mut backlog_overflow);
                     }
                 }
                 // Delivery wakeup: fires when the head batch's retry comes
@@ -439,7 +466,17 @@ impl DuringRunShipper {
             }
         }
 
-        // Seal whatever is still open and flush everything, best-effort.
+        // Seal whatever is still open — after flushing the snapshots the CPU
+        // gate deferred — and drain everything, best-effort.
+        while let Some(snap) = deferred.pop_front() {
+            self.absorb(
+                &snap,
+                &mut open,
+                &mut pending,
+                &mut seq,
+                &mut backlog_overflow,
+            );
+        }
         if !open.is_empty() {
             seq += 1;
             pending.push_back(PendingBatch::new(seq, open));
@@ -534,17 +571,40 @@ impl DuringRunShipper {
             None => false,
         }
     }
+
+    /// Convert one snapshot into samples on the open batch, sealing and
+    /// queueing a batch once it reaches `batch_size`.
+    fn absorb(
+        &self,
+        snap: &MetricSnapshot,
+        open: &mut Vec<Sample>,
+        pending: &mut VecDeque<PendingBatch>,
+        seq: &mut u64,
+        backlog_overflow: &mut u64,
+    ) {
+        open.extend(snapshot_to_samples(snap, &self.labels));
+        if open.len() >= self.cfg.batch_size.max(1) {
+            *seq += 1;
+            pending.push_back(PendingBatch::new(*seq, std::mem::take(open)));
+            note_backlog(pending.len(), self.cfg.max_pending, backlog_overflow);
+        }
+    }
 }
 
-/// Cap the sealed-but-undelivered backlog, dropping the oldest first.
-fn trim_pending(pending: &mut VecDeque<PendingBatch>, max_pending: usize) {
-    let max = max_pending.max(1);
-    while pending.len() > max {
-        let dropped = pending.pop_front().expect("len checked above");
+/// Warn when the sealed-but-undelivered backlog grows past the
+/// `max_pending` soft cap — first crossing, then every 10th batch beyond.
+/// Batches are never dropped while the run is alive; the cap only paces the
+/// warning.
+fn note_backlog(len: usize, max_pending: usize, overflow: &mut u64) {
+    if len <= max_pending.max(1) {
+        return;
+    }
+    *overflow += 1;
+    if *overflow % 10 == 1 {
         tracing::warn!(
-            seq = dropped.seq,
-            max_pending = max,
-            "pending metrics batches full — dropping oldest"
+            backlog = len,
+            max_pending,
+            "metrics backlog past the soft cap — batches kept for delivery"
         );
     }
 }
@@ -906,7 +966,7 @@ mod tests {
     // -------------------------------------------------------------
 
     #[tokio::test]
-    async fn cpu_gate_drops_snapshots_and_recovers() {
+    async fn cpu_gate_defers_snapshots_and_ships_them_on_recovery() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/v1/metrics"))
@@ -926,7 +986,7 @@ mod tests {
         };
         let (tx, _handle) = spawn_shipper(&server, cfg, reader);
 
-        // Gated: the snapshot is dropped, nothing is POSTed.
+        // Gated: the snapshot is queued, nothing is POSTed.
         tx.send(sample_snapshot(1000, 4.0)).await.unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(
@@ -938,20 +998,32 @@ mod tests {
             "gated shipper must not POST"
         );
 
-        // Recovered: only the post-recovery snapshot is shipped.
+        // Recovered: the deferred snapshot ships first, then the fresh one —
+        // nothing is dropped and arrival order is preserved.
         cpu.store(10, Ordering::Relaxed);
         tx.send(sample_snapshot(2000, 9.0)).await.unwrap();
-        let reqs = wait_requests(&server, 1, Duration::from_secs(3)).await;
+        let reqs = wait_requests(&server, 2, Duration::from_secs(3)).await;
         let bodies = bodies(&reqs);
-        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies.len(), 2, "deferred + fresh snapshot both ship");
+        assert_eq!(bodies[0]["seq"], 1);
         assert!(
             bodies[0]["samples"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|s| s["ts"] == "1970-01-01T00:00:02.000Z"),
-            "dropped (gated) snapshot must never be shipped: {}",
+                .all(|s| s["ts"] == "1970-01-01T00:00:01.000Z"),
+            "the snapshot gated at ts=1s must ship after recovery: {}",
             bodies[0]["samples"]
+        );
+        assert_eq!(bodies[1]["seq"], 2);
+        assert!(
+            bodies[1]["samples"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["ts"] == "1970-01-01T00:00:02.000Z"),
+            "the post-recovery snapshot ships second: {}",
+            bodies[1]["samples"]
         );
     }
 
@@ -1000,42 +1072,86 @@ mod tests {
     }
 
     // -------------------------------------------------------------
-    // Shipper: shedding / retries / drain
+    // Shipper: backlog / retries / drain
     // -------------------------------------------------------------
 
     #[tokio::test]
-    async fn shipper_drops_oldest_batch_when_pending_is_full() {
+    async fn shipper_keeps_all_batches_past_the_pending_soft_cap() {
         let server = MockServer::start().await;
+        // The first POST fails; everything after it succeeds.
+        Mock::given(method("POST"))
+            .and(path("/api/v1/metrics"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
         Mock::given(method("POST"))
             .and(path("/api/v1/metrics"))
             .respond_with(ResponseTemplate::new(500))
+            .with_priority(1)
+            .up_to_n_times(1)
             .mount(&server)
             .await;
 
         let cfg = ReportRunConfig {
             batch_size: 1,
-            max_pending: 2,
+            max_pending: 2, // soft cap — exceeded, yet nothing is dropped
             ..test_cfg()
         };
         let (tx, _handle) = spawn_shipper(&server, cfg, || None);
 
-        // Four snapshots → four sealed batches; the backlog caps at 2, so
-        // seq 1 and 2 are shed before their retries come due, and in-order
-        // delivery keeps seq 4 stuck behind the retrying seq 3.
+        // Four snapshots → four sealed batches. The first POST 500s, so
+        // seqs 2–4 pile up behind the retrying head — past the soft cap.
         for i in 1..=4 {
             tx.send(sample_snapshot(i * 1000, 4.0)).await.unwrap();
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
-        let _ = wait_requests(&server, 4, Duration::from_secs(4)).await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // 1 failed attempt + 4 deliveries: every batch is kept and lands in
+        // order once the target responds (the retry reuses seq 1).
+        let reqs = wait_requests(&server, 5, Duration::from_secs(5)).await;
+        let bodies = bodies(&reqs);
+        assert_eq!(bodies.len(), 5, "retry + all four batches: {bodies:?}");
+        let seqs: Vec<u64> = bodies.iter().map(|b| b["seq"].as_u64().unwrap()).collect();
+        assert_eq!(
+            seqs,
+            vec![1, 1, 2, 3, 4],
+            "no drops past the soft cap, in-order delivery"
+        );
+    }
+
+    #[tokio::test]
+    async fn final_drain_flushes_snapshots_deferred_by_the_cpu_gate() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/metrics"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        // The gate never opens during the run…
+        let cfg = ReportRunConfig {
+            max_cpu_percent: 90.0,
+            ..test_cfg()
+        };
+        let (tx, handle) = spawn_shipper(&server, cfg, || Some(95.0));
+        tx.send(sample_snapshot(1000, 4.0)).await.unwrap();
+        tx.send(sample_snapshot(2000, 9.0)).await.unwrap();
+        drop(tx);
+
+        // …but the final drain ignores the gate (the VUs have stopped), so
+        // the deferred snapshots still ship.
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("shipper exits after the final drain")
+            .unwrap();
         let reqs = server.received_requests().await.unwrap_or_default();
-        assert!(reqs.len() >= 4, "expected retries, got {}", reqs.len());
-        let count_seq = |seq: u64| bodies(&reqs).iter().filter(|b| b["seq"] == seq).count();
-        assert_eq!(count_seq(1), 1, "seq 1 attempted once, then dropped");
-        assert_eq!(count_seq(2), 1, "seq 2 attempted once, then dropped");
-        assert!(count_seq(3) >= 2, "seq 3 kept and retried");
-        assert_eq!(count_seq(4), 0, "seq 4 waits behind the retrying head");
+        let bodies = bodies(&reqs);
+        assert_eq!(
+            bodies.len(),
+            1,
+            "deferred snapshots sealed into one batch: {bodies:?}"
+        );
+        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 12);
     }
 
     #[tokio::test]

@@ -236,7 +236,7 @@ report:
   interval_ms: 5000       # snapshot/flush interval, min 1000
   batch_size: 500         # flush a batch once it holds this many samples
   max_cpu_percent: 90     # CPU gate; 0 disables it
-  max_pending: 24         # max undelivered batches before drop-oldest
+  max_pending: 24         # soft warn cap — batches are never dropped mid-run
 ```
 
 The engine emits one snapshot per `interval_ms` (independent of the 5 s
@@ -277,26 +277,29 @@ Fields the source reported as `N/A` are skipped (never shipped as zeros), and
 pro-collector extras ride under their own names. Without `gpu.enabled` the
 snapshots carry no GPU data at all.
 
-**Protective strategies** (the VU loop always wins; streaming sheds first):
+**Protective strategies** (the VU loop always wins; streaming yields first):
 
 - *CPU gate*: while the host's busy CPU% (from `/proc/stat`) is at or above
-  `max_cpu_percent`, incoming snapshots are dropped (every 10th logs a
-  warning) and pending batches are held — no POSTs. Off-Linux there is no
-  CPU reading, so the gate is inert. `max_cpu_percent: 0` disables it.
-- *Bounded backlog*: sealed-but-undelivered batches are capped at
-  `max_pending`; beyond that the oldest is dropped with a warning.
+  `max_cpu_percent`, pending batches are held — no POSTs — and incoming
+  snapshots are deferred (queued, every 10th logs a warning), then flushed
+  in arrival order once the gate opens. Off-Linux there is no CPU reading,
+  so the gate is inert. `max_cpu_percent: 0` disables it.
+- *Unbounded backlog, soft cap*: sealed-but-undelivered batches are never
+  dropped while the run is alive; growing past `max_pending` only logs a
+  rate-limited warning. Delivery resumes in order when the target responds.
 - *Retries*: network errors, 5xx and 429 retry the same batch with
   exponential backoff ×2 from 1 s, capped at 60 s. Any other 4xx is treated
   as poison — the batch is dropped, never retried.
-- *Shutdown*: when the run ends, everything still pending is flushed with
-  short bounded retries (1/2/5/10 s), then the shipper exits. The CLI waits
-  for this final drain (bounded) so the last batch lands before the process
-  exits.
+- *Shutdown*: when the run ends, everything still pending — including
+  snapshots deferred by the CPU gate — is flushed with short bounded
+  retries (1/2/5/10 s), then the shipper exits. The CLI waits for this
+  final drain (bounded) so the last batch lands before the process exits.
 
 The engine never blocks on streaming: snapshots go over a bounded channel
 with `try_send`, and a full channel drops the snapshot rather than
-backpressuring VUs. With `during_run` absent or `false` there is no extra
-task and no channel traffic at all.
+backpressuring VUs — the only place a point can be shed mid-run. With
+`during_run` absent or `false` there is no extra task and no channel
+traffic at all.
 
 Auth note: the CLI ships unauthenticated (same as the end-of-run report).
 The authenticated path is the agent's — it runs the same shipper with a

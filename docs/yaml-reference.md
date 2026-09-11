@@ -162,8 +162,8 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `report.during_run` | `false` | Also stream cumulative metric snapshots during the run (batched POSTs to `<url>/api/v1/metrics`), not just the summary at the end — see [During-run metrics](core/metrics.md#during-run-metrics-reportduring_run). Native engine only |
 | `report.interval_ms` | `5000` | During-run snapshot/flush interval, milliseconds (min 1000) |
 | `report.batch_size` | `500` | Flush a batch once it holds this many samples |
-| `report.max_cpu_percent` | `90` | CPU gate: while host CPU% ≥ this, snapshots are dropped and batches held; `0` disables; inert off-Linux |
-| `report.max_pending` | `24` | Max undelivered batches before the oldest is dropped |
+| `report.max_cpu_percent` | `90` | CPU gate: while host CPU% ≥ this, batches are held (no POSTs) and snapshots queued — never dropped — until the gate opens; `0` disables; inert off-Linux |
+| `report.max_pending` | `24` | Soft cap on undelivered batches — crossing it warns, but batches are kept and delivered in order, never dropped mid-run |
 | `gpu` | — | GPU metrics collection — see [GPU metrics](#gpu-metrics-gpu). Native engine only |
 | `before` | `[]` | One-time setup steps — see [Setup and variables](#setup-and-variables) |
 | `after` | `[]` | One-time teardown steps — see [Teardown](#teardown-after) |
