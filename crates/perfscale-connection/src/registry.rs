@@ -165,13 +165,16 @@ impl<C: Connection> std::fmt::Debug for ConnectionRegistry<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    /// A parked handle with a label and an observable `close()`, so tests
-    /// can see both trait items at work without a real socket.
+    /// A parked handle with a label, an observable `close()`, and an
+    /// observable `Drop`, so tests can see both trait items at work — and
+    /// tell graceful teardown apart from an abrupt drop — without a real
+    /// socket.
     struct TestConn {
         label: String,
         closed: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
     }
 
     impl TestConn {
@@ -179,7 +182,14 @@ mod tests {
             Self {
                 label: label.into(),
                 closed: Arc::new(AtomicBool::new(false)),
+                dropped: Arc::new(AtomicBool::new(false)),
             }
+        }
+    }
+
+    impl Drop for TestConn {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
         }
     }
 
@@ -298,5 +308,135 @@ mod tests {
         let reg = registry();
         reg.insert(TestConn::new("a"));
         assert_eq!(format!("{reg:?}"), "ConnectionRegistry(ws: 1 live)");
+    }
+
+    #[test]
+    fn new_registry_is_empty_and_reports_its_prefix() {
+        let reg = registry();
+        assert_eq!(reg.prefix(), "ws");
+        assert_eq!(reg.len(), 0);
+        assert!(reg.is_empty());
+        assert_eq!(reg.drain(), 0);
+    }
+
+    #[test]
+    fn same_prefix_instances_do_not_share_a_pool() {
+        let a = registry();
+        let b = registry();
+        let id = a.insert(TestConn::new("x"));
+        assert!(
+            b.take(&id).is_none(),
+            "only clones alias a pool; fresh instances are disjoint"
+        );
+        assert!(b.is_empty());
+        assert_eq!(a.len(), 1);
+    }
+
+    #[test]
+    fn put_back_parks_under_any_id_even_an_unminted_one() {
+        let reg = registry();
+        // `put_back` never fails, so an error path can call it
+        // unconditionally — even with an id the registry never minted.
+        reg.put_back("ws-custom", TestConn::new("x"));
+        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.take("ws-custom").unwrap().label(), "x");
+    }
+
+    #[test]
+    fn drain_is_an_abrupt_drop_not_a_graceful_close() {
+        let reg = registry();
+        let id = reg.insert(TestConn::new("a"));
+        let conn = reg.take(&id).unwrap();
+        let closed = Arc::clone(&conn.closed);
+        let dropped = Arc::clone(&conn.dropped);
+        reg.put_back(&id, conn);
+
+        assert_eq!(reg.drain(), 1);
+        assert!(dropped.load(Ordering::SeqCst), "handle was dropped");
+        assert!(
+            !closed.load(Ordering::SeqCst),
+            "drain must not run the close() hook"
+        );
+    }
+
+    #[test]
+    fn drain_only_drops_what_is_parked() {
+        let reg = registry();
+        let id = reg.insert(TestConn::new("in-use"));
+        let conn = reg.take(&id).expect("parked");
+        let dropped = Arc::clone(&conn.dropped);
+
+        assert_eq!(reg.drain(), 0, "nothing parked while the handle is out");
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "a handle taken by a step outlives the drain"
+        );
+        reg.put_back(&id, conn);
+        assert_eq!(reg.len(), 1);
+    }
+
+    #[test]
+    fn concurrent_take_of_one_id_has_exactly_one_winner() {
+        let reg = registry();
+        let id = reg.insert(TestConn::new("hot"));
+        let winners = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+
+        let mut threads = Vec::new();
+        for _ in 0..8 {
+            let reg = reg.clone();
+            let id = id.clone();
+            let winners = Arc::clone(&winners);
+            let barrier = Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                if reg.take(&id).is_some() {
+                    winners.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
+        }
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        assert_eq!(
+            winners.load(Ordering::SeqCst),
+            1,
+            "one taker gets the handle, the rest see None instead of deadlocking"
+        );
+        assert!(reg.is_empty(), "the winning take removed the handle");
+    }
+
+    #[test]
+    fn concurrent_inserts_mint_unique_ids() {
+        let reg = registry();
+        const THREADS: usize = 4;
+        const PER_THREAD: usize = 25;
+        let barrier = Arc::new(std::sync::Barrier::new(THREADS));
+
+        let mut threads = Vec::new();
+        for _ in 0..THREADS {
+            let reg = reg.clone();
+            let barrier = Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                (0..PER_THREAD)
+                    .map(|_| reg.insert(TestConn::new("x")))
+                    .collect::<Vec<_>>()
+            }));
+        }
+        let mut ids: Vec<String> = threads
+            .into_iter()
+            .flat_map(|t| t.join().unwrap())
+            .collect();
+
+        assert_eq!(reg.len(), THREADS * PER_THREAD);
+        let minted = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), minted, "no id was minted twice");
+        for id in &ids {
+            assert!(reg.take(id).is_some(), "every minted id resolves");
+        }
     }
 }
