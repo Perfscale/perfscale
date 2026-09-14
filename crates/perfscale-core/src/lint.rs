@@ -205,12 +205,10 @@ pub async fn lint_graphql_remote(yaml: &str, offline: bool) -> (Vec<LintIssue>, 
 // ---------------------------------------------------------------------------
 
 fn schema_issues(value: &Value, kind: DocKind, issues: &mut Vec<LintIssue>) {
-    let schema = match kind {
-        DocKind::Test => crate::schema::test_schema(),
-        DocKind::Config => crate::schema::config_schema(),
+    let compiled = match kind {
+        DocKind::Test => crate::schema::compiled_test_schema(),
+        DocKind::Config => crate::schema::compiled_config_schema(),
     };
-    let compiled =
-        jsonschema::JSONSchema::compile(&schema).expect("generated schemas always compile");
 
     let collected: Vec<(String, String)> = match compiled.validate(value) {
         Ok(()) => Vec::new(),

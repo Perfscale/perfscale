@@ -115,39 +115,37 @@ pub struct ConfigFile {
 
 /// Parse a test-definition YAML document (`-f test.yaml`).
 pub fn parse_test_file(yaml: &str) -> Result<TestDef, String> {
-    parse_with_schema(yaml, crate::schema::test_schema())
+    parse_with_schema(yaml, crate::schema::compiled_test_schema())
 }
 
 /// Parse a config YAML document (`-c config.yaml`).
 pub fn parse_config_file(yaml: &str) -> Result<ConfigFile, String> {
-    parse_with_schema(yaml, crate::schema::config_schema())
+    parse_with_schema(yaml, crate::schema::compiled_config_schema())
 }
 
 /// Validate an already-parsed (import-merged) JSON value as a test definition.
 pub fn test_from_value(value: serde_json::Value) -> Result<TestDef, String> {
-    validate_with_schema(value, crate::schema::test_schema())
+    validate_with_schema(value, crate::schema::compiled_test_schema())
 }
 
 /// Validate an already-parsed (import-merged) JSON value as a config document.
 pub fn config_from_value(value: serde_json::Value) -> Result<ConfigFile, String> {
-    validate_with_schema(value, crate::schema::config_schema())
+    validate_with_schema(value, crate::schema::compiled_config_schema())
 }
 
 fn parse_with_schema<T: serde::de::DeserializeOwned>(
     yaml: &str,
-    schema: serde_json::Value,
+    compiled: &jsonschema::JSONSchema,
 ) -> Result<T, String> {
     let value: serde_json::Value =
         serde_yaml::from_str(yaml).map_err(|e| format!("invalid YAML: {e}"))?;
-    validate_with_schema(value, schema)
+    validate_with_schema(value, compiled)
 }
 
 fn validate_with_schema<T: serde::de::DeserializeOwned>(
     value: serde_json::Value,
-    schema: serde_json::Value,
+    compiled: &jsonschema::JSONSchema,
 ) -> Result<T, String> {
-    let compiled = jsonschema::JSONSchema::compile(&schema)
-        .map_err(|e| format!("internal schema error: {e}"))?;
     if let Err(errors) = compiled.validate(&value) {
         let messages: Vec<String> = errors
             .map(|e| format!("{} — {e}", e.instance_path))
@@ -284,6 +282,25 @@ report:
             err.contains("schema validation failed"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn cached_schema_still_rejects_after_successful_parse() {
+        // The compiled schema is cached process-wide; a warmed cache must not
+        // make later invalid documents pass, in either order.
+        let valid = "vus: 10\nduration: 30s\n";
+        let invalid = "vus: not-a-number\n";
+        parse_config_file(valid).unwrap();
+        assert!(parse_config_file(invalid).is_err());
+        assert!(parse_config_file(invalid).is_err());
+        parse_config_file(valid).unwrap();
+
+        let valid_test = "steps:\n  - use: std/log@v1\n    with: { message: hi }\n";
+        let invalid_test = "steps: not-a-list\n";
+        parse_test_file(valid_test).unwrap();
+        assert!(parse_test_file(invalid_test).is_err());
+        assert!(parse_test_file(invalid_test).is_err());
+        parse_test_file(valid_test).unwrap();
     }
 
     #[test]

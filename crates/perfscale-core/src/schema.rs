@@ -2,6 +2,8 @@
 //! pre-execution validation ([`crate::yaml`]) and for IDE autocomplete via a
 //! `# yaml-language-server: $schema=...` modeline in example files.
 
+use std::sync::OnceLock;
+
 use schemars::schema_for;
 use serde_json::json;
 
@@ -22,6 +24,25 @@ pub fn config_schema() -> serde_json::Value {
         .expect("ConfigFile schema is always valid JSON");
     relax_use_alias(&mut schema);
     schema
+}
+
+/// Compiled [`test_schema`], built once and cached. Schema compilation
+/// dominates YAML parse cost (~99%), and the schema is static — derived from
+/// the types — so a process-wide cache is correct.
+pub fn compiled_test_schema() -> &'static jsonschema::JSONSchema {
+    static CACHE: OnceLock<jsonschema::JSONSchema> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        jsonschema::JSONSchema::compile(&test_schema()).expect("test schema always compiles")
+    })
+}
+
+/// Compiled [`config_schema`], built once and cached; see
+/// [`compiled_test_schema`].
+pub fn compiled_config_schema() -> &'static jsonschema::JSONSchema {
+    static CACHE: OnceLock<jsonschema::JSONSchema> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        jsonschema::JSONSchema::compile(&config_schema()).expect("config schema always compiles")
+    })
 }
 
 /// schemars emits `use` as the sole required property of a step, but the
