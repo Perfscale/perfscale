@@ -151,11 +151,14 @@ fn spawn_k6(script_path: &PathBuf) -> Result<tokio::process::Child, String> {
 }
 
 /// Write the script to a stable temp path (UUID-named to avoid collisions).
+///
+/// Runner-only fields are stripped from the options block first — what k6
+/// reads off disk must be a clean k6 script.
 fn write_script(script: &str) -> Result<(PathBuf, String), String> {
     let run_id = Uuid::new_v4().to_string();
     let path = std::env::temp_dir().join(format!("perfscale-{run_id}.js"));
 
-    std::fs::write(&path, script)
+    std::fs::write(&path, strip_runner_only_options(script))
         .map_err(|e| format!("Failed to write k6 script to {}: {e}", path.display()))?;
 
     debug!(run_id, path = %path.display(), "Script written");
@@ -168,6 +171,57 @@ fn k6_exec_error(e: &std::io::Error) -> String {
     } else {
         format!("Failed to spawn k6: {e}")
     }
+}
+
+/// Drop runner-only fields from an injected `export const options` block.
+///
+/// Agent-side runs arrive with an options block injected from the full run
+/// config, which carries fields meant for the agent/runner only — `report`
+/// (during-run metrics shipping; the shipper reads it from the typed run
+/// config, never from the script). k6 v2 warns on every unknown option
+/// (`unknown field "report"`), so strip them before k6 sees the script.
+/// Only pure-JSON options blocks are rewritten; a hand-written block with
+/// JS expressions is left untouched.
+fn strip_runner_only_options(script: &str) -> String {
+    let unchanged = || script.to_string();
+    let Some(start) = script.find("export const options") else {
+        return unchanged();
+    };
+    let Some(brace_rel) = script[start..].find('{') else {
+        return unchanged();
+    };
+    let brace_abs = start + brace_rel;
+    let mut depth = 0usize;
+    let mut end = None;
+    for (i, ch) in script[brace_abs..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(brace_abs + i + 1);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(end) = end else { return unchanged() };
+    let Ok(mut opts) = serde_json::from_str::<serde_json::Value>(&script[brace_abs..end]) else {
+        return unchanged();
+    };
+    let Some(obj) = opts.as_object_mut() else {
+        return unchanged();
+    };
+    if obj.remove("report").is_none() {
+        return unchanged();
+    }
+    let opts_str = serde_json::to_string(&opts).unwrap_or_else(|_| "{}".into());
+    format!(
+        "{}export const options = {opts_str};{}",
+        &script[..start],
+        &script[end..]
+    )
 }
 
 #[cfg(test)]
@@ -207,6 +261,45 @@ mod tests {
             "export default function(){}"
         );
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn strip_runner_only_options_removes_report_from_injected_block() {
+        let script = "import http from 'k6/http';\nexport const options = {\"vus\":2,\"duration\":\"30s\",\"report\":{\"during_run\":true,\"interval_ms\":2000}};\nexport default function() { http.get('https://x'); }";
+        let out = strip_runner_only_options(script);
+        assert!(
+            !out.contains("\"report\""),
+            "report must not reach k6: {out}"
+        );
+        assert!(out.contains("\"vus\":2"), "load fields survive: {out}");
+        assert!(out.contains("\"duration\":\"30s\""), "{out}");
+        assert!(out.contains("export default function()"), "{out}");
+    }
+
+    #[test]
+    fn strip_runner_only_options_without_report_is_noop() {
+        let script = "export const options = {\"vus\":1};\nexport default function(){}";
+        assert_eq!(strip_runner_only_options(script), script);
+    }
+
+    #[test]
+    fn strip_runner_only_options_leaves_handwritten_js_block_untouched() {
+        // Not pure JSON (trailing comma, JS expression) — cannot safely
+        // rewrite, leave for k6 to parse.
+        let script = "export const options = { vus: 1, duration: '30s', report: __ENV.REPORT, };\nexport default function(){}";
+        assert_eq!(strip_runner_only_options(script), script);
+    }
+
+    #[test]
+    fn written_script_options_never_contain_report() {
+        let script = "export const options = {\"vus\":1,\"report\":{\"during_run\":true}};\nexport default function(){}";
+        let (path, _) = write_script(script).unwrap();
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            !on_disk.contains("\"report\""),
+            "k6 must never see report: {on_disk}"
+        );
     }
 
     #[tokio::test]
