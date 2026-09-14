@@ -1,6 +1,6 @@
 # RFC 004: Setup and teardown
 
-- **Status**: Draft
+- **Status**: Implemented
 - **Author**: Perfscale Team
 - **Created**: 2026-07-09
 - **Requires**: none
