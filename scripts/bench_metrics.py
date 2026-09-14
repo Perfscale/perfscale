@@ -292,11 +292,13 @@ def cmd_boundary(kind, path, max_vus, duration_s, err_pct):
 
 
 def coerce(raw):
-    for cast in (int, float):
-        try:
-            return cast(raw)
-        except ValueError:
-            pass
+    # Only plain decimal literals become numbers: float() would also accept
+    # scientific notation, turning a digit-leading git SHA like "6963e24"
+    # into 6.963e+27 in the results JSON.
+    if re.fullmatch(r"-?\d+", raw):
+        return int(raw)
+    if re.fullmatch(r"-?(?:\d+\.\d*|\.\d+)", raw):
+        return float(raw)
     return raw
 
 
