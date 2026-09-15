@@ -46,7 +46,10 @@ Exactly one engine flag is required: `--k6`, `--locust`, `--jmeter`, or `-f`.
 ### Output streams
 
 - **stdout** — engine output and the final metric summary (machine-friendly)
-- **stderr** — errors, failed checks, and `[system]` progress markers
+- **stderr** — errors, failed checks, and `[system]` progress markers. Runs
+  executed through the machine agent end with a final
+  `[sys] __perfscale_exit__=<code>` marker carrying the engine's exit code —
+  see [Runners → exit marker](../core/runners.md#exit-marker-on-agent-streams)
 
 ### Summary export
 

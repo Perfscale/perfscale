@@ -36,6 +36,27 @@ runs keep the historical formats unchanged.
 
 - Per-VU `Context` — step outputs and `${{ }}` interpolation are isolated
   between VUs, persistent across iterations of the same VU
+
+### Exit marker on agent streams
+
+When a run executes through the machine agent (`perfscaled`), every engine's
+log stream ends with exactly one system line after all engine output:
+
+```
+[sys] __perfscale_exit__=<code|signal|unknown>
+```
+
+- `code` — the engine's exit code (`0` = success; the native engine reports
+  `1` for a violated `severity: fail` thresholds gate or an invalid load
+  profile)
+- `signal` — the engine process was killed by a signal (e.g. OOM killer)
+- `unknown` — the exit code could not be determined
+
+Consumers should treat the marker as the authoritative run result: stderr
+noise (for example k6 `console.log`) does **not** mean failure when the exit
+code is `0`. Consumers older than agent `0.3.6` see no marker and fall back
+to heuristics; older consumers reading a new agent's stream simply print the
+line as a regular system message.
 - HTTP timings from `std/http@v1` feed the shared metrics; other actions
   (WebSocket, gRPC, TCP/UDP) contribute counters and latency histograms
   (e.g. `ws_msg_rtt`, `grpc_req_duration`) through the same collector
