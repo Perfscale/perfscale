@@ -328,6 +328,35 @@ provide: seeded PRNG, `memo()`, argument parsing, error mapping, and a
 local test harness that feeds recorded contexts so a library can be unit
 tested without the engine.
 
+### Repository layout, docs, and Docker
+
+Decided after phase 1 (2026-09-24):
+
+- **Rust SDK** lives in the perfscale workspace as
+  `crates/perfscale-library-sdk`, versioned with the engine; the WIT files
+  live beside it as the single source of truth. Publishes to crates.io.
+- **TS/JS and Go SDKs** live in a new public repo
+  `Perfscale/sdk-libraries` (`ts/`, `go/`). (The existing `Perfscale/sdk-js`
+  is private and is the *test-authoring* SDK of RFC 001 — a different
+  product surface; do not mix them.)
+- **`Perfscale/library-random`** — new public repo with the WASM source of
+  `@std/random`, doubling as the reference implementation and author
+  template. The engine keeps the native implementation for benchmarks and
+  embeds the compiled component from this repo at build time
+  (`include_bytes!` of the released artifact), because `@std/*` must
+  resolve offline without `perfscale install`.
+- **Docs**: OSS docs are `perfscale/docs/`, which the site serves at
+  `/docs/oss` via a git submodule — the `libraries:` reference shipped in
+  phase 1 and publishes on the next submodule bump. Platform docs
+  (`Perfscale/docs`, en/ru) get their libraries page with phase 4 (agent
+  support), when the feature stops being CLI-only.
+- **Docker**: running needs only mounted `.wasm` files (paths resolve
+  relative to the declaring config) plus network access for `net`-granted
+  libraries. Authoring gets a Dockerfile/devcontainer per SDK repo so the
+  cargo-component/jco/TinyGo toolchains are reproducible. The agent
+  (phase 4) keeps its library cache on a named volume so installs survive
+  container restarts.
+
 ### Lint, schema, metrics
 
 - `libraries:` fields derive from serde structs with `schemars`, so JSON
@@ -479,8 +508,9 @@ tested without the engine.
    zero new heavy dependencies.
 2. **WASM runtime**: wasmtime + WIT 0.1 + capability model (fs/net/clock,
    host-mediated HTTP with allowlists) + local-path loading + Rust SDK.
-   Dogfood: `@std/random` reimplemented as a WASM component in-repo,
-   keeping the native one for comparison/benchmarks.
+   Dogfood: `@std/random` reimplemented as a WASM component in the public
+   `Perfscale/library-random` repo and embedded into the engine at build
+   time; the native implementation stays for comparison/benchmarks.
 3. **Distribution**: `perfscale install` + `perfscale.lock` + HTTPS/git
    sources + offline cache.
 4. **Agent**: managed install path, digest-keyed cache, fleet policy ∩
