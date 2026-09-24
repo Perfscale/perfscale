@@ -11,5 +11,3 @@ Release notes for the next release, written as features land.
 - If this file has no entries at tag time, the release falls back to
   auto-generated notes and the workflow prints a warning.
 -->
-
-- Fix: `perfscale lint` resolved relative `libraries[].use` paths against the current working directory instead of the declaring file's directory, so linting a config from another directory reported a bogus "file not found" while `perfscale run` worked. Lint now anchors library paths exactly like run.
