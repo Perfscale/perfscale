@@ -770,13 +770,9 @@ pub fn lint_warnings(yaml: &str, kind: DocKind) -> Vec<String> {
 /// The `allow_library_capabilities` gate lives in the config file, so a test
 /// document cannot know it; the test pass validates with the gate open (the
 /// run itself stays fail-closed either way) and the config pass enforces it.
-fn declared_libraries(
-    value: &Value,
-    kind: DocKind,
-) -> (
-    Vec<LintIssue>,
-    Vec<(String, std::sync::Arc<dyn crate::library::LibraryProvider>)>,
-) {
+type ResolvedProviders = Vec<(String, std::sync::Arc<dyn crate::library::LibraryProvider>)>;
+
+fn declared_libraries(value: &Value, kind: DocKind) -> (Vec<LintIssue>, ResolvedProviders) {
     let Some(entries) = value.get("libraries").and_then(|v| v.as_array()) else {
         return (Vec::new(), Vec::new());
     };

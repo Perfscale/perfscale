@@ -390,9 +390,9 @@ impl LibraryInstance for StdRandom {
             "seq" => {
                 let name = string_arg(args, 0, func, "seq(name)")?;
                 if args.len() > 1 {
-                    return Err(format!(
-                        "random.seq: expected seq(name) — counters are never memoized"
-                    ));
+                    return Err(
+                        "random.seq: expected seq(name) — counters are never memoized".to_string(),
+                    );
                 }
                 let next = self.counters.entry(name).or_insert(0);
                 *next += 1;
@@ -593,9 +593,9 @@ fn float_args(args: &[Value]) -> Result<(f64, f64, usize, Option<String>), Strin
                 .trim()
                 .parse()
                 .map_err(|_| format!("random.float: '{s}' is not a number ({what})")),
-            _ => Err(format!(
-                "random.float: expected float(a, b[, dp][, key]) with numeric a, b"
-            )),
+            _ => {
+                Err("random.float: expected float(a, b[, dp][, key]) with numeric a, b".to_string())
+            }
         }
     };
     let a = num(args.first(), "a")?;
@@ -615,10 +615,7 @@ fn float_args(args: &[Value]) -> Result<(f64, f64, usize, Option<String>), Strin
             _ => key_index = 2, // non-numeric third arg is the memo key
         }
     }
-    let key = match args.get(key_index) {
-        Some(v) => Some(key_of(v)),
-        None => None,
-    };
+    let key = args.get(key_index).map(key_of);
     if args.len() > key_index + 1 {
         return Err("random.float: too many arguments — expected float(a, b[, dp][, key])".into());
     }

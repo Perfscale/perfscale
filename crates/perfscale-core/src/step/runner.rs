@@ -1482,6 +1482,7 @@ fn spawn_interrupt_handler(
 /// setup steps — they run the same actions as test steps, so the same gates
 /// apply. `secrets` is the run's shared masking registry, seeded into the
 /// setup context and applied to every emitted line.
+#[allow(clippy::too_many_arguments)]
 async fn run_before(
     before: &[Step],
     vars: &Value,
