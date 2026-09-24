@@ -33,6 +33,31 @@
       ],
       "type": "object"
     },
+    "Capability": {
+      "anyOf": [
+        {
+          "description": "A bare grant: `fs`, `clock`.",
+          "type": "string"
+        },
+        {
+          "description": "Network egress restricted to an allowlist of destination hosts.",
+          "properties": {
+            "net": {
+              "description": "Allowed destination hosts (`*` wildcards allowed).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "net"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "A capability grant in a `libraries:` entry (RFC 005 capability model)."
+    },
     "GitImport": {
       "additionalProperties": false,
       "description": "`import: { git, ref, file }` — fetch `file` from `git` at `ref`.",
@@ -115,6 +140,39 @@
         }
       ],
       "description": "The value of a top-level `import:` key."
+    },
+    "LibraryRef": {
+      "description": "One `libraries:` entry — a value-generator library bound to a token alias.",
+      "properties": {
+        "as": {
+          "description": "Token alias — `${alias.fn(...)}`. Default: the library's name part (`random` for `@std/random@v1`). Must be a lowercase identifier and unique across all declared libraries.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capabilities": {
+          "description": "Explicit capability grants, fail-closed: any non-empty grant requires `allow_library_capabilities: true` in the config. `fs` / `clock` are bare strings; network egress is an object with a host allowlist (`net: [\"api.example.com\"]`) — raw sockets are never granted.",
+          "items": {
+            "$ref": "#/definitions/Capability"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "use": {
+          "description": "Library reference: `@std/random@v1` (built-in, native). Local paths, HTTPS URLs and git refs are WASM libraries — accepted syntactically but rejected at validation until phase 2 lands the WASM runtime.",
+          "type": "string"
+        },
+        "with": {
+          "description": "JSON config handed to the library at instantiation (`with:`). May use `${{ env.X }}` like any other parameter block."
+        }
+      },
+      "required": [
+        "use"
+      ],
+      "type": "object"
     },
     "RateStage": {
       "description": "One `arrival.stages:` entry — ramp the arrival rate linearly to `rate` over `duration`.",
@@ -276,6 +334,11 @@
       "description": "Allow filesystem-touching steps: `std/file-read@v1`, `std/file-write@v1`, and `file` parts in `std/http@v1` multipart uploads. Fail-closed: defaults to `false` so a step list from an untrusted source cannot read or write arbitrary paths.",
       "type": "boolean"
     },
+    "allow_library_capabilities": {
+      "default": false,
+      "description": "Allow `libraries:` entries to carry a non-empty `capabilities:` grant (fs/net/clock for WASM libraries, RFC 005). Fail-closed: defaults to `false`, and any grant without it is a validation error.",
+      "type": "boolean"
+    },
     "allow_process_actions": {
       "default": false,
       "description": "Allow process-touching steps: `std/child_process@v1` and `std/kill_process@v1`. Fail-closed: defaults to `false` so a step list from an untrusted source cannot spawn or signal OS processes.",
@@ -327,6 +390,16 @@
       ],
       "description": "Base document to inherit from — a relative path, an `http(s)://` URL, or `{ git, ref, file }`. The base loads first (recursively), then this document deep-merges on top: objects merge, scalars/arrays here win. Remote sources require the caller's `--allow-remote-import`."
     },
+    "libraries": {
+      "description": "Value-generator libraries for `${alias.fn(...)}` tokens (RFC 005). Concatenates with the test file's and with imported documents' declarations; a duplicate alias is a validation error. Non-empty `capabilities:` grants require `allow_library_capabilities: true`.",
+      "items": {
+        "$ref": "#/definitions/LibraryRef"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
     "report": {
       "anyOf": [
         {
@@ -335,6 +408,15 @@
         {
           "type": "null"
         }
+      ]
+    },
+    "seed": {
+      "description": "Run-level determinism seed (RFC 005): when set, every `${…}` generator and library instance derives its seed as `hash(seed, vu_id, conn_seq)`, making the run's generated values reproducible. Wall-clock time stays non-deterministic.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
       ]
     },
     "shared_variables": {

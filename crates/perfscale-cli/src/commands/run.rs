@@ -136,6 +136,7 @@ fn build_export(
         summary: perfscale_core::summary::parse_summary(&summary_lines.join("\n")),
         thresholds: perfscale_core::summary::parse_thresholds(&summary_lines.join("\n")),
         gpu: perfscale_core::summary::parse_gpu_summary(&summary_lines.join("\n")),
+        libraries: perfscale_core::summary::parse_libraries_summary(&summary_lines.join("\n")),
     }
 }
 
@@ -179,7 +180,7 @@ fn write_summary_export(
 /// to hundreds of thousands of lines and would blow past any collector's
 /// request-size limit.
 fn is_summary_line(text: &str) -> bool {
-    const MARKERS: [&str; 10] = [
+    const MARKERS: [&str; 11] = [
         "vus",
         "iterations",
         "iteration_duration",
@@ -190,6 +191,7 @@ fn is_summary_line(text: &str) -> bool {
         "checks",
         "thresholds",
         "gpu",
+        "libraries",
     ];
     let trimmed = text.trim_start();
     if MARKERS.iter().any(|m| trimmed.starts_with(m)) {
@@ -313,6 +315,14 @@ fn resolve_plan(
         if let Some(report) = &cfg.report {
             run.report = Some(report.to_run_config());
         }
+        // `libraries:` from the config and the test file concatenate (RFC
+        // 005); a duplicate alias across them is a validation error at run
+        // start (engine-side, so the agent path gets the same check).
+        let libraries = {
+            let mut libs = cfg.libraries.clone().unwrap_or_default();
+            libs.extend(test.libraries.clone().unwrap_or_default());
+            libs
+        };
         return Ok(ExecutionPlan::NativeSteps {
             test,
             config: Box::new(run),
@@ -320,6 +330,7 @@ fn resolve_plan(
             after: cfg.after.clone(),
             variables: cfg.variables.clone(),
             shared_variables: cfg.shared_variables.clone(),
+            libraries,
             quiet: args.quiet,
             // Set later by the caller once the report URL is resolved.
             metrics_tx: None,
@@ -438,6 +449,7 @@ mod tests {
     fn sample_test() -> TestDef {
         TestDef {
             import: None,
+            libraries: None,
             steps: vec![],
         }
     }
@@ -445,6 +457,7 @@ mod tests {
     fn sample_config(report_url: Option<&str>) -> ConfigFile {
         ConfigFile {
             import: None,
+            libraries: None,
             run: RunConfig {
                 vus: 4,
                 duration: "2m".into(),
@@ -570,6 +583,7 @@ mod tests {
                 after: Vec::new(),
                 variables: serde_json::Map::new(),
                 shared_variables: serde_json::Map::new(),
+                libraries: Vec::new(),
                 quiet: false,
                 metrics_tx: None,
             }
@@ -703,6 +717,7 @@ mod tests {
             after: Vec::new(),
             variables: serde_json::Map::new(),
             shared_variables: serde_json::Map::new(),
+            libraries: Vec::new(),
             quiet: false,
             metrics_tx: None,
         };
@@ -752,6 +767,7 @@ mod tests {
             after: Vec::new(),
             variables: serde_json::Map::new(),
             shared_variables: serde_json::Map::new(),
+            libraries: Vec::new(),
             quiet: false,
             metrics_tx: None,
         };

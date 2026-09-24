@@ -22,8 +22,8 @@
 //! | `endpoint`   | string          | `"openai"` | `openai`, `anthropic`, or `generic` |
 //! | `url`        | string          | required   | Completion endpoint URL |
 //! | `model`      | string          | —          | Model name; required for `openai` / `anthropic` |
-//! | `prompt`     | string          | —          | Sugar for a single `user` message (mutually exclusive with `messages`) |
-//! | `messages`   | array           | —          | `[{ role, content }]` chat messages |
+//! | `prompt`     | string          | —          | Sugar for a single `user` message (mutually exclusive with `messages`); `${…}` generator tokens expand per execution |
+//! | `messages`   | array           | —          | `[{ role, content }]` chat messages; `content` strings expand |
 //! | `max_tokens` | integer         | `256`      | Completion token cap |
 //! | `stream`     | bool            | `true` (`openai`/`anthropic`), `false` (`generic`) | Stream the response as SSE |
 //! | `api_key`    | string          | —          | `Authorization: Bearer` (`openai`/`generic`), `x-api-key` (`anthropic`, which also sends `anthropic-version: 2023-06-01`) |
@@ -845,10 +845,31 @@ fn tokens_per_sec(ex: &Exchange, duration_ms: f64) -> Option<f64> {
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn llm_action(params: &Value, ctx: &Context, step_name: &str) -> ActionOutput {
-    let parsed = match LlmParams::from_params(params) {
+    let mut parsed = match LlmParams::from_params(params) {
         Ok(p) => p,
         Err(msg) => return err(step_name, msg.as_str()),
     };
+
+    // `${…}` generator tokens expand per execution in the message texts and
+    // the passthrough/`generic` body params — one request is one message
+    // (see `Context::token_expander`). An expansion error fails the step
+    // before any network call, like ws/grpc.
+    {
+        let mut expander = ctx.token_expander();
+        for m in &mut parsed.messages {
+            m.content = match expander.expand(&m.content) {
+                Ok(c) => c,
+                Err(msg) => return err(step_name, &msg),
+            };
+        }
+        if !parsed.params.is_empty() {
+            parsed.params = match expander.expand_value(&Value::Object(parsed.params.clone())) {
+                Ok(Value::Object(m)) => m,
+                Ok(_) => unreachable!("expanding an object yields an object"),
+                Err(msg) => return err(step_name, &msg),
+            };
+        }
+    }
 
     let t0 = Instant::now();
     let result = run_exchange(&parsed, ctx, t0).await;
@@ -1699,6 +1720,53 @@ mod tests {
         assert!(err.contains("HTTP 429"), "{err}");
         assert!(err.contains("rate limit exceeded"), "{err}");
         assert!(out.logs.iter().any(|(tag, _)| *tag == LogTag::Err));
+    }
+
+    #[tokio::test]
+    async fn prompt_generator_tokens_expand_per_execution() {
+        let cap = Capture::default();
+        let state = cap.clone();
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |body: axum::body::Bytes| {
+                let state = state.clone();
+                async move {
+                    state
+                        .bodies
+                        .lock()
+                        .unwrap()
+                        .push(serde_json::from_slice::<Value>(&body).unwrap());
+                    axum::Json(json!({
+                        "choices": [{ "message": { "role": "assistant", "content": "ok" } }],
+                        "usage": { "prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4 },
+                    }))
+                }
+            }),
+        );
+        let base = serve(app).await;
+        let out = execute_action(
+            "std/llm@v1",
+            &json!({
+                "url": format!("{base}/v1/chat/completions"),
+                "model": "gpt-test",
+                "messages": [
+                    { "role": "system", "content": "run ${seq}" },
+                    { "role": "user", "content": "say hi (${bogus} stays)" },
+                ],
+                "stream": false,
+                "params": { "request_id": "req-${seq}" },
+            }),
+            &Context::new(),
+            "chat",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        let body = &cap.bodies()[0];
+        assert_eq!(body["messages"][0]["content"], "run 1");
+        // Unknown tokens stay verbatim.
+        assert_eq!(body["messages"][1]["content"], "say hi (${bogus} stays)");
+        // Passthrough body params expand too, sharing the message context.
+        assert_eq!(body["request_id"], "req-1");
     }
 
     // -----------------------------------------------------------------

@@ -16,7 +16,9 @@ the offending field path, not a raw parser dump. The schemas live in
 A single `steps` array. Each virtual user (VU) executes the whole list in a
 loop until the configured duration expires. An optional top-level `import:`
 inherits a base document — see
-[Composing documents](#composing-documents-import).
+[Composing documents](#composing-documents-import). An optional top-level
+`libraries:` declares value-generator libraries for `${alias.fn(...)}`
+tokens — see [Libraries](#libraries-libraries).
 
 ```yaml
 steps:
@@ -170,6 +172,9 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `variables` | `{}` | Static values exposed to steps as `${{ vars.* }}`. Keep secrets out of this block — it is plain YAML, checked into repos and shown in diffs; use `${{ env.NAME }}` (process environment, masked in run logs) for those |
 | `shared_variables` | `{}` | Mutable cross-VU shared state for `std/set_shared_variable@v1` / `std/get_shared_variable@v1`: a map of name → initial JSON value (the type is inferred from it). Declaring is mandatory — a step referencing an undeclared name, or an `op` incompatible with the declared type, fails validation before the run starts. See [Shared variables guide](core/shared-variables.md). Native engine only |
 | `allow_process_actions` | `false` | Let steps spawn/signal OS processes (`std/child_process@v1`, `std/kill_process@v1`). Fail-closed: a step list from an untrusted source cannot touch processes until you opt in |
+| `allow_library_capabilities` | `false` | Let `libraries:` entries carry non-empty `capabilities:` grants. Fail-closed, same pattern as `allow_file_actions` |
+| `seed` | — | Run-level determinism seed: every `${…}` generator and library instance derives its seed as `hash(seed, vu_id, conn_seq)`, so a seeded run reproduces the same generated values. Wall-clock time stays non-deterministic |
+| `libraries` | — | Value-generator libraries for `${alias.fn(...)}` tokens — see [Libraries](#libraries-libraries) |
 | `import` | — | Base document to inherit from — see [Composing documents](#composing-documents-import) |
 
 ### GPU metrics (`gpu:`)
@@ -249,12 +254,82 @@ with `--k6` the config file is ignored anyway. See
 [examples/spike.config.yaml](../examples/spike.config.yaml), and
 [examples/arrival-rate.config.yaml](../examples/arrival-rate.config.yaml).
 
+### Libraries (`libraries:`)
+
+Libraries provide value-generating functions for `${...}` generator tokens
+(RFC 005) — real UUIDs, ULIDs, faker-style data, dates — beyond the
+hardcoded `${seq}`/`${rand(a,b)}`/`${uuid}`/`${now}` built-ins. Declared in
+the config file, the test file, or both (declarations concatenate; a
+duplicate alias is a validation error):
+
+```yaml
+libraries:
+  - use: '@std/random@v1'          # built-in; default alias: random
+  - use: '@std/random@v1'
+    as: ids                        # alias → token prefix ${ids.fn(...)}
+```
+
+Payloads in actions that expand `${...}` (ws/gRPC/GraphQL today) can then
+call the library's functions:
+
+```yaml
+with:
+  send: '{ "id": "${random.ulid()}", "who": "${random.email()}", "n": "${ids.int(1000,9999)}" }'
+```
+
+Rules:
+
+- Built-in tokens (`${seq}`, `${rand}`, …) match first and are unchanged.
+  An alias may not shadow their names.
+- Unknown alias → token left verbatim. Known alias + unknown function (or
+  bad arguments) → the step **fails** — a typo must not ship silently into
+  a payload.
+- Arguments map text → JSON by a fixed contract: split on commas not inside
+  double quotes, trim, strip one pair of surrounding quotes, parse as JSON
+  if possible, else treat as a string. So `pick(a|b|c)` passes one string
+  `"a|b|c"` and `int(1,100)` passes two numbers.
+- Any function's optional trailing `key` argument memoizes the result
+  **within one message**: `${random.uuid4(order)}` appearing twice in one
+  message yields one id; the next message generates a fresh one.
+- `seed: 42` in the config makes a run reproducible: per-instance seeds
+  derive as `hash(seed, vu_id, conn_seq)`.
+- `capabilities:` grants (for future WASM libraries: `fs`, `clock`, or
+  `{ net: [hosts] }`) require `allow_library_capabilities: true`
+  (fail-closed, same pattern as `allow_file_actions`). `@std/random@v1`
+  declares no capabilities — granting it any is a validation error.
+- Local paths / URLs (`use: ./libs/fixer-ids.wasm`) are WASM libraries —
+  rejected with a clear error until phase 2 lands the WASM runtime.
+
+`@std/random@v1` functions:
+
+| Function | Returns |
+|---|---|
+| `uuid4([key])` | Random RFC 4122 v4 UUID |
+| `uuid7([key])` | Time-ordered RFC 9562 v7 UUID (48-bit unix-ms prefix) |
+| `ulid([key])` | 26-char Crockford-base32 ULID (unix-ms prefix) |
+| `nanoid([len], [key])` | URL-safe id from `A-Za-z0-9_-` (default len 21) |
+| `int(a, b, [key])` | Random integer in `[a, b]` inclusive |
+| `float(a, b, [dp], [key])` | Random float in `[a, b]`, `dp` decimals (default 2) |
+| `pick(a\|b\|c, [key])` | Random pick among `\|`-separated options |
+| `weighted(a:10\|b:90, [key])` | Weighted random pick among `value:weight` pairs |
+| `seq(name)` | Named monotonic counter per generator instance, starting at 1 |
+| `pattern("ORD-####-????")` | Template fill: `#`→digit, `?`→a-z, `^`→A-Z, `*`→alphanumeric |
+| `first_name()` / `last_name()` / `name()` | Random names (small embedded corpora) |
+| `username()` / `email()` / `company()` | Random username / email / company |
+| `lorem([words])` | Lorem-ipsum words (default 5) |
+| `phone()` | Random phone number (`+1-NNN-NNN-NNNN`) |
+| `date(a, b)` | Random date between `YYYY-MM-DD` a and b inclusive, `YYYY-MM-DD` out |
+| `timestamp(a, b)` | Random unix-ms timestamp in `[a, b]` |
+| `datetime(a, b)` | Random RFC 3339 datetime between dates a and b (whole end day included) |
+
 ### Composing documents: `import`
 
 Both test definitions and configs accept a top-level `import:` naming a base
 document. The base loads first (it may import its own base, recursively),
 then the current document deep-merges on top: **objects merge key-by-key,
-scalars and arrays (including `steps:`) are replaced** by the importing side.
+scalars and arrays (including `steps:`) are replaced** by the importing
+side. The one exception is `libraries:`, which concatenates across the
+chain — a duplicate alias is a validation error.
 
 ```yaml
 # team config — inherits the org-wide base, overrides one variable

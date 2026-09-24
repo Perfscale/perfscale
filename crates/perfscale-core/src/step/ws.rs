@@ -497,13 +497,13 @@ impl Payload {
     }
 
     /// Materialize one wire message, expanding `${…}` for text templates.
-    fn render(&self, generator: &mut Gen) -> Message {
+    fn render(&self, generator: &mut Gen) -> Result<Message, String> {
         match self {
             Payload::Template(t) => {
                 generator.begin_message();
-                Message::Text(generator.expand(t).into())
+                Ok(Message::Text(generator.expand(t)?.into()))
             }
-            Payload::Binary(b) => Message::Binary(b.clone().into()),
+            Payload::Binary(b) => Ok(Message::Binary(b.clone().into())),
         }
     }
 }
@@ -526,7 +526,7 @@ async fn send_repeated(
         if Instant::now() >= deadline {
             return Err(format!("timeout after {sent} of {repeat} sends"));
         }
-        let msg = payload.render(generator);
+        let msg = payload.render(generator)?;
         bytes += msg.len() as u64;
         stream.send(msg).await.map_err(|e| error_chain(&e))?;
         sent += 1;
@@ -586,10 +586,14 @@ pub(crate) async fn ws_connect_action(
     };
 
     let url = profile.url;
+    let generator = match ctx.new_generator() {
+        Ok(g) => g,
+        Err(msg) => return err(step_name, &msg),
+    };
     let id = ctx.resources.insert(WsConn {
         stream,
         url: url.clone(),
-        generator: Gen::new(uuid::Uuid::new_v4().as_u128() as u64),
+        generator,
         last_send: None,
         pending: Default::default(),
     });
@@ -998,7 +1002,11 @@ pub(crate) async fn ws_close_action(
 // fails on handshake errors, transport errors, or any entry whose until rule
 // did not match in time.
 
-pub(crate) async fn ws_session_action(params: &Value, step_name: &str) -> ActionOutput {
+pub(crate) async fn ws_session_action(
+    params: &Value,
+    ctx: &Context,
+    step_name: &str,
+) -> ActionOutput {
     let profile = match resolve_profile(params) {
         Ok(p) => p,
         Err(msg) => return err(step_name, &msg),
@@ -1012,11 +1020,15 @@ pub(crate) async fn ws_session_action(params: &Value, step_name: &str) -> Action
         Some(Value::Array(a)) => a.clone(),
         Some(_) => return err(step_name, "'messages' must be an array"),
     };
+    let generator = match ctx.new_generator() {
+        Ok(g) => g,
+        Err(msg) => return err(step_name, &msg),
+    };
 
     let t0 = Instant::now();
     let deadline = t0 + Duration::from_millis(timeout_ms);
 
-    let session = run_session(&profile, &entries, deadline).await;
+    let session = run_session(&profile, &entries, deadline, generator).await;
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     match session {
@@ -1083,13 +1095,13 @@ async fn run_session(
     profile: &Profile,
     entries: &[Value],
     deadline: Instant,
+    mut generator: Gen,
 ) -> Result<SessionOutcome, String> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     let (mut stream, subprotocol) = tokio::time::timeout(remaining, ws_handshake(profile))
         .await
         .map_err(|_| "handshake TIMEOUT".to_string())??;
 
-    let mut generator = Gen::new(uuid::Uuid::new_v4().as_u128() as u64);
     let mut outcome = SessionOutcome {
         subprotocol,
         sent: 0,

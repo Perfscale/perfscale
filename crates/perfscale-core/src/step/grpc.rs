@@ -639,7 +639,7 @@ fn build_message(
     match (params.get("payload"), params.get("payload_base64")) {
         (Some(_), Some(_)) => Err("'payload' and 'payload_base64' are mutually exclusive".into()),
         (Some(v), None) => {
-            let expanded = expand_tokens(v, generator);
+            let expanded = expand_tokens(v, generator)?;
             DynamicMessage::deserialize(desc.clone(), expanded)
                 .map_err(|e| format!("'payload' does not match {}: {e}", desc.full_name()))
         }
@@ -955,11 +955,15 @@ pub(crate) async fn grpc_connect_action(
 
     let services = pool.services().len();
     let url = profile.url;
+    let generator = match ctx.new_generator() {
+        Ok(g) => g,
+        Err(msg) => return err(step_name, &msg),
+    };
     let id = ctx.resources.insert_grpc(GrpcConn {
         channel,
         url: url.clone(),
         pool,
-        generator: Gen::new(uuid::Uuid::new_v4().as_u128() as u64),
+        generator,
         metadata: profile.metadata,
         max_recv_size: profile.max_recv_size,
     });
@@ -1083,7 +1087,11 @@ fn prepare_call(
 //
 // Output: same shape as std/grpc-call@v1.
 
-pub(crate) async fn grpc_unary_action(params: &Value, step_name: &str) -> ActionOutput {
+pub(crate) async fn grpc_unary_action(
+    params: &Value,
+    ctx: &Context,
+    step_name: &str,
+) -> ActionOutput {
     let profile = match resolve_profile(params) {
         Ok(p) => p,
         Err(msg) => return err(step_name, &msg),
@@ -1163,7 +1171,10 @@ pub(crate) async fn grpc_unary_action(params: &Value, step_name: &str) -> Action
         );
     }
 
-    let mut generator = Gen::new(uuid::Uuid::new_v4().as_u128() as u64);
+    let mut generator = match ctx.new_generator() {
+        Ok(g) => g,
+        Err(msg) => return err(step_name, &msg),
+    };
     generator.begin_message();
     let message = match build_message(&method.input(), params, &mut generator) {
         Ok(m) => m,
@@ -1330,6 +1341,10 @@ pub(crate) async fn grpc_stream_open_action(
         }
     });
 
+    let generator = match ctx.new_generator() {
+        Ok(g) => g,
+        Err(msg) => return err(step_name, &msg),
+    };
     let stream = GrpcStream {
         sender: if kind == StreamKind::Server {
             None
@@ -1338,7 +1353,7 @@ pub(crate) async fn grpc_stream_open_action(
         },
         receiver: resp_rx,
         method: method.clone(),
-        generator: Gen::new(uuid::Uuid::new_v4().as_u128() as u64),
+        generator,
         url: url.clone(),
         last_send: None,
     };

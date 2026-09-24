@@ -33,7 +33,7 @@
 //! | `driver`     | string          | `"memory"` | `memory` or `nats` (plus any registered downstream drivers) |
 //! | `subject`    | string          | required   | NATS subject / in-memory topic name |
 //! | `url`        | string          | —          | Broker URL; required by `nats`, ignored by `memory` |
-//! | `publish`    | string \| array | —          | One message, or a list; non-strings are serialized to JSON text |
+//! | `publish`    | string \| array | —          | One message, or a list; non-strings are serialized to JSON text; `${…}` generator tokens expand per execution |
 //! | `subscribe`  | object          | —          | `{ count, until_contains, timeout_ms }` — wait for `count` messages (default 1) that each contain `until_contains` (optional), within `timeout_ms` (default 5000) |
 //! | `options`    | object          | —          | Driver-specific tuning, passed through verbatim (ignored by the built-in drivers; pro drivers use it for QoS, consumer groups, auth, …) |
 //!
@@ -71,6 +71,7 @@ use tokio::sync::broadcast;
 use tokio::time::Duration;
 
 use super::actions::{err, ActionOutput, LogTag};
+use super::context::Context;
 use super::ws::u64_param;
 
 // ---------------------------------------------------------------------------
@@ -420,7 +421,30 @@ impl PubSubDriver for NatsDriver {
 // std/pubsub@v1
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn pubsub_action(params: &Value, step_name: &str) -> ActionOutput {
+pub(crate) async fn pubsub_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
+    // `${…}` generator tokens expand per execution in the publish payloads —
+    // one step is one message (see `Context::token_expander`). An expansion
+    // error fails the step before any I/O, like ws/grpc.
+    let expanded_publish = match params.get("publish") {
+        Some(p) if crate::generate::contains_token(p) => {
+            match ctx.token_expander().expand_value(p) {
+                Ok(v) => Some(v),
+                Err(msg) => return err(step_name, &msg),
+            }
+        }
+        _ => None,
+    };
+    let owned;
+    let params = match &expanded_publish {
+        Some(v) => {
+            let mut p = params.clone();
+            p["publish"] = v.clone();
+            owned = p;
+            &owned
+        }
+        None => params,
+    };
+
     let parsed = match PubSubParams::from_params(params) {
         Ok(p) => p,
         Err(msg) => return err(step_name, msg.as_str()),
@@ -802,6 +826,25 @@ mod tests {
         assert_eq!(out.value["metrics"]["pubsub_msgs_published"], 2);
         assert!(out.value["metrics"].get("pubsub_msgs_received").is_none());
         assert!(out.value["metrics"].get("pubsub_e2e_ms").is_none());
+    }
+
+    #[tokio::test]
+    async fn publish_generator_tokens_expand_per_execution() {
+        let subject = unique_subject("expand");
+        let out = execute_action(
+            "std/pubsub@v1",
+            &json!({
+                "subject": subject,
+                "publish": ["order-${seq}", "keep ${bogus}"],
+                "subscribe": { "count": 2, "timeout_ms": 2000 },
+            }),
+            &Context::new(),
+            "expand",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        // Built-in tokens expanded; unknown tokens stayed verbatim.
+        assert_eq!(out.value["body"], "order-1\nkeep ${bogus}");
     }
 
     // -----------------------------------------------------------------

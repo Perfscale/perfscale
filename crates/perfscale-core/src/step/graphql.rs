@@ -89,7 +89,7 @@ use super::http::{
     ClientPool,
 };
 use super::ws::{bool_param, u64_param};
-use crate::generate::{expand_tokens, Gen};
+use crate::generate::expand_tokens;
 use crate::lint::closest_name;
 
 /// Recursion guard for the validation walk: fragment spreads can cycle
@@ -762,11 +762,20 @@ pub(crate) async fn graphql_action(params: &Value, ctx: &Context, step_name: &st
     // call, like the one-shot `std/grpc@v1`: `${uuid}`/`${rand}`/`${now}`
     // give per-iteration values (`${seq}` restarts at 1 without a live
     // connection to carry the counter).
-    let variables = params.variables.as_ref().map(|v| {
-        let mut gen = Gen::new(uuid::Uuid::new_v4().as_u128() as u64);
-        gen.begin_message();
-        expand_tokens(v, &mut gen)
-    });
+    let variables = match params.variables.as_ref() {
+        Some(v) => {
+            let mut gen = match ctx.new_generator() {
+                Ok(g) => g,
+                Err(msg) => return err(step_name, &msg),
+            };
+            gen.begin_message();
+            match expand_tokens(v, &mut gen) {
+                Ok(expanded) => Some(expanded),
+                Err(msg) => return err(step_name, &msg),
+            }
+        }
+        None => None,
+    };
 
     let client = http_client(params.pool, params.insecure, ctx.http_client_shard);
 

@@ -82,6 +82,9 @@ pub enum ExecutionPlan {
         /// Shared mutable variables from the config file's `shared_variables:`
         /// block (name → initial value), used by the shared-variable steps.
         shared_variables: serde_json::Map<String, serde_json::Value>,
+        /// Value-generator libraries (RFC 005): the config file's and test
+        /// file's `libraries:` declarations, concatenated.
+        libraries: Vec<crate::library::LibraryRef>,
         /// Drop per-iteration success output at the source (`--quiet`);
         /// errors and the final metric summary still stream.
         quiet: bool,
@@ -111,6 +114,7 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
             after,
             variables,
             shared_variables,
+            libraries,
             quiet,
             metrics_tx,
         } => {
@@ -124,6 +128,7 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
                     *config,
                     variables,
                     shared_variables,
+                    libraries,
                     quiet,
                     tx,
                     metrics_tx,
@@ -182,6 +187,7 @@ mod tests {
     async fn execute_native_steps_runs_the_step_engine() {
         let test = TestDef {
             import: None,
+            libraries: None,
             steps: vec![Step {
                 name: None,
                 action: "std/log@v1".into(),
@@ -207,6 +213,7 @@ mod tests {
             after: Vec::new(),
             variables: serde_json::Map::new(),
             shared_variables: serde_json::Map::new(),
+            libraries: Vec::new(),
             quiet: false,
             metrics_tx: None,
         })
@@ -301,6 +308,7 @@ mod tests {
         ExecutionPlan::NativeSteps {
             test: TestDef {
                 import: None,
+                libraries: None,
                 steps: vec![
                     crate::step::Step {
                         outputs: Some("conn".into()),
@@ -328,6 +336,7 @@ mod tests {
             }],
             variables: serde_json::Map::new(),
             shared_variables: serde_json::Map::new(),
+            libraries: Vec::new(),
             quiet: true,
             metrics_tx: None,
         }

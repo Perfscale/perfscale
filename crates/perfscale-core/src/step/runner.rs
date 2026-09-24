@@ -449,6 +449,7 @@ pub async fn run_steps(
         config,
         Map::new(),
         Map::new(),
+        Vec::new(),
         quiet,
         tx,
         None,
@@ -503,6 +504,7 @@ pub async fn run_native(
     config: RunConfig,
     variables: Map<String, Value>,
     shared_variables: Map<String, Value>,
+    libraries: Vec<crate::library::LibraryRef>,
     quiet: bool,
     tx: mpsc::Sender<LogLine>,
     metrics_tx: Option<mpsc::Sender<MetricSnapshot>>,
@@ -522,6 +524,45 @@ pub async fn run_native(
     // shares it, and every line sent to the run log is masked against it —
     // a resolved `${{ env.NAME }}` value must never appear in the log.
     let secrets = SecretRegistry::new();
+
+    // Library declarations are validated before anything runs (RFC 005):
+    // unknown refs, capability grants without `allow_library_capabilities`,
+    // and alias collisions are configuration errors, not mid-run surprises.
+    let library_set =
+        match crate::library::validate_libraries(&libraries, config.allow_library_capabilities) {
+            Ok(v) if v.is_empty() => None,
+            Ok(v) => Some(Arc::new(crate::library::LibrarySet { libraries: v })),
+            Err(msg) => {
+                emit(
+                    &tx,
+                    LogSource::Stderr,
+                    &format!("invalid library configuration: {msg}"),
+                    &secrets,
+                )
+                .await;
+                registry.shutdown_all().await;
+                emit(
+                    &tx,
+                    LogSource::System,
+                    "Done — configuration error",
+                    &secrets,
+                )
+                .await;
+                return NativeRunOutcome {
+                    config_error: Some(msg),
+                    ..NativeRunOutcome::default()
+                };
+            }
+        };
+
+    // Run-scoped per-library metrics recorder (RFC 005): every generator
+    // minted by any context of the run counts and times its library calls
+    // into this; the run summary reports it as the `libraries:` section.
+    let library_metrics = library_set.as_ref().map(|set| {
+        Arc::new(crate::library::LibraryMetrics::new(
+            set.libraries.iter().map(|l| l.alias.clone()),
+        ))
+    });
 
     // Shared-variable declarations are validated and seeded before anything
     // runs — a step referencing an undeclared name or an op incompatible with
@@ -573,6 +614,8 @@ pub async fn run_native(
         registry: Arc::clone(&registry),
         metrics: Arc::clone(&metrics),
         secrets: secrets.clone(),
+        libraries: library_set.clone(),
+        library_metrics: library_metrics.clone(),
     };
 
     // Resolve the load profile up front: a broken `stages:`/`arrival:` block
@@ -604,36 +647,47 @@ pub async fn run_native(
     };
 
     // --- One-time setup ---
-    let config_seed =
-        match run_before(&before, &vars, &config, &registry, &secrets, quiet, &tx).await {
-            Ok(v) => v,
-            Err(msg) => {
-                emit(
-                    &tx,
-                    LogSource::Stderr,
-                    &format!("Setup failed, aborting run: {msg}"),
-                    &secrets,
-                )
-                .await;
-                // Teardown still runs: a `before` step may have started a process
-                // (or grabbed anything else `after` exists to clean up) before
-                // the one that failed.
-                run_after(
-                    &after,
-                    &Value::Null,
-                    &vars,
-                    &config,
-                    &after_shared,
-                    quiet,
-                    &tx,
-                )
-                .await;
-                registry.shutdown_all().await;
-                emit(&tx, LogSource::System, "Done — setup error", &secrets).await;
-                interrupt_handler.abort();
-                return NativeRunOutcome::default();
-            }
-        };
+    let config_seed = match run_before(
+        &before,
+        &vars,
+        &config,
+        &registry,
+        &secrets,
+        &library_set,
+        &library_metrics,
+        quiet,
+        &tx,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(msg) => {
+            emit(
+                &tx,
+                LogSource::Stderr,
+                &format!("Setup failed, aborting run: {msg}"),
+                &secrets,
+            )
+            .await;
+            // Teardown still runs: a `before` step may have started a process
+            // (or grabbed anything else `after` exists to clean up) before
+            // the one that failed.
+            run_after(
+                &after,
+                &Value::Null,
+                &vars,
+                &config,
+                &after_shared,
+                quiet,
+                &tx,
+            )
+            .await;
+            registry.shutdown_all().await;
+            emit(&tx, LogSource::System, "Done — setup error", &secrets).await;
+            interrupt_handler.abort();
+            return NativeRunOutcome::default();
+        }
+    };
 
     let iter_count = Arc::new(AtomicU64::new(0));
     let started = Instant::now();
@@ -659,6 +713,9 @@ pub async fn run_native(
         fs_root: config.fs_root.clone(),
         allow_file_actions: config.allow_file_actions,
         allow_process_actions: config.allow_process_actions,
+        libraries: library_set.clone(),
+        library_metrics: library_metrics.clone(),
+        run_seed: config.seed,
         processes: Arc::clone(&registry),
         secrets: secrets.clone(),
         stop: Arc::clone(&stop),
@@ -855,6 +912,25 @@ pub async fn run_native(
         )
         .await;
     }
+    // Per-library metrics (RFC 005), when the run declared libraries and any
+    // call happened: one machine-readable `libraries: {...}` line, consumed
+    // like the thresholds/gpu lines downstream. No calls → no line, so
+    // non-library runs stay byte-identical to before.
+    if let Some(lm) = &library_metrics {
+        if let Some(summary) = lm.summary() {
+            emit(
+                &tx,
+                LogSource::Stdout,
+                &format!(
+                    "libraries: {}",
+                    serde_json::to_string(&summary)
+                        .expect("library summary is always serializable")
+                ),
+                &secrets,
+            )
+            .await;
+        }
+    }
     emit(
         &tx,
         LogSource::System,
@@ -943,6 +1019,12 @@ struct VuShared {
     fs_root: Option<std::path::PathBuf>,
     allow_file_actions: bool,
     allow_process_actions: bool,
+    /// Validated library bindings + the run's `seed:` — every VU context and
+    /// every generator it mints draws from these (RFC 005).
+    libraries: Option<Arc<crate::library::LibrarySet>>,
+    /// Run-scoped per-library metrics recorder (RFC 005).
+    library_metrics: Option<Arc<crate::library::LibraryMetrics>>,
+    run_seed: Option<u64>,
     processes: Arc<ProcessRegistry>,
     /// The run's secret registry — every VU context records its resolved
     /// `${{ env.NAME }}` values here, and `execute_step` masks them out of
@@ -965,6 +1047,10 @@ impl VuShared {
         ctx.allow_file_actions = self.allow_file_actions;
         ctx.allow_process_actions = self.allow_process_actions;
         ctx.fs_root = self.fs_root.clone();
+        ctx.libraries = self.libraries.clone();
+        ctx.library_metrics = self.library_metrics.clone();
+        ctx.run_seed = self.run_seed;
+        ctx.vu_id = vu_id as u64;
         ctx.processes = Some(Arc::clone(&self.processes));
         ctx.log_tx = Some(self.tx.clone());
         ctx.secrets = self.secrets.clone();
@@ -1048,6 +1134,7 @@ fn spawn_vu(
         let vu_stopped = || vu_stop.as_ref().is_some_and(|f| f.load(Ordering::Relaxed));
         while Instant::now() < deadline && !stop.load(Ordering::Relaxed) && !vu_stopped() {
             iter_count.fetch_add(1, Ordering::Relaxed);
+            ctx.iteration_seq += 1;
             for step in steps.iter() {
                 execute_step(step, &mut ctx, &tx, &metrics, quiet, vu_id).await;
                 if Instant::now() >= deadline || stop.load(Ordering::Relaxed) || vu_stopped() {
@@ -1096,6 +1183,7 @@ fn spawn_arrival_worker(
                 break;
             }
             iter_count.fetch_add(1, Ordering::Relaxed);
+            ctx.iteration_seq += 1;
             for step in steps.iter() {
                 execute_step(step, &mut ctx, &tx, &metrics, quiet, vu_id).await;
                 if Instant::now() >= deadline || stop.load(Ordering::Relaxed) {
@@ -1400,6 +1488,8 @@ async fn run_before(
     config: &RunConfig,
     registry: &Arc<ProcessRegistry>,
     secrets: &SecretRegistry,
+    libraries: &Option<Arc<crate::library::LibrarySet>>,
+    library_metrics: &Option<Arc<crate::library::LibraryMetrics>>,
     quiet: bool,
     tx: &mpsc::Sender<LogLine>,
 ) -> Result<Value, String> {
@@ -1423,6 +1513,9 @@ async fn run_before(
     ctx.allow_file_actions = config.allow_file_actions;
     ctx.allow_process_actions = config.allow_process_actions;
     ctx.fs_root = config.fs_root.clone();
+    ctx.libraries = libraries.clone();
+    ctx.library_metrics = library_metrics.clone();
+    ctx.run_seed = config.seed;
     ctx.processes = Some(Arc::clone(registry));
     ctx.log_tx = Some(tx.clone());
     ctx.secrets = secrets.clone();
@@ -1473,6 +1566,8 @@ struct AfterShared {
     registry: Arc<ProcessRegistry>,
     metrics: Arc<Mutex<Metrics>>,
     secrets: SecretRegistry,
+    libraries: Option<Arc<crate::library::LibrarySet>>,
+    library_metrics: Option<Arc<crate::library::LibraryMetrics>>,
 }
 
 /// Run the `after` steps once, best-effort: a failing step is logged but does
@@ -1515,6 +1610,9 @@ async fn run_after(
     ctx.allow_file_actions = config.allow_file_actions;
     ctx.allow_process_actions = config.allow_process_actions;
     ctx.fs_root = config.fs_root.clone();
+    ctx.libraries = shared.libraries.clone();
+    ctx.library_metrics = shared.library_metrics.clone();
+    ctx.run_seed = config.seed;
     ctx.processes = Some(Arc::clone(&shared.registry));
     ctx.log_tx = Some(tx.clone());
     ctx.run_metrics = Some(Arc::clone(&shared.metrics));
@@ -2707,6 +2805,7 @@ mod tests {
             config,
             variables,
             Map::new(),
+            Vec::new(),
             false,
             tx,
             None,
@@ -2733,6 +2832,7 @@ mod tests {
             config,
             Map::new(),
             shared_variables,
+            Vec::new(),
             false,
             tx,
             None,
@@ -3404,6 +3504,72 @@ mod tests {
         }
     }
 
+    /// RFC 005 metrics: a run whose steps make `${alias.fn(...)}` calls ends
+    /// with a machine-readable `libraries: {...}` summary line; a run without
+    /// libraries emits none (byte-identical output to before).
+    #[tokio::test]
+    async fn library_calls_land_in_the_run_summary_line() {
+        let libraries = vec![crate::library::LibraryRef {
+            use_: "@std/random@v1".into(),
+            r#as: None,
+            capabilities: None,
+            with: None,
+        }];
+        let mut steps = sqlite_db_steps("SELECT ?");
+        // `${…}` tokens expand in db bind params only (the SQL text is never
+        // expanded) — the token lives in `params`.
+        steps[1].with = Some(json!({
+            "id": "${{ conn.id }}",
+            "query": "SELECT ?",
+            "params": ["${random.int(1,100)}"],
+        }));
+        let (tx, mut rx) = mpsc::channel(512);
+        let handle = tokio::spawn(run_native(
+            steps,
+            Vec::new(),
+            Vec::new(),
+            one_second(),
+            Map::new(),
+            Map::new(),
+            libraries,
+            false,
+            tx,
+            None,
+        ));
+        let mut lines = Vec::new();
+        while let Some(line) = rx.recv().await {
+            lines.push(line);
+        }
+        handle.await.unwrap();
+
+        let text: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
+        let line = text
+            .iter()
+            .find(|t| t.starts_with("libraries: "))
+            .expect("libraries summary line emitted");
+        let parsed = crate::summary::parse_libraries_summary(line).expect("line parses");
+        let random = &parsed["random"];
+        assert!(random.calls > 0, "{random:?}");
+        assert_eq!(random.errors, 0, "{random:?}");
+        assert!(random.max_ms >= random.p95_ms && random.p95_ms >= random.p50_ms);
+    }
+
+    #[tokio::test]
+    async fn run_without_libraries_emits_no_libraries_line() {
+        let (lines, _) = run_native_full(
+            sqlite_db_steps("SELECT 1"),
+            Vec::new(),
+            Vec::new(),
+            Map::new(),
+            one_second(),
+        )
+        .await;
+        assert!(
+            !lines.iter().any(|l| l.text.starts_with("libraries:")),
+            "no libraries declared → no libraries summary line"
+        );
+    }
+
     /// Passing gate: all queries succeed, every threshold met, the run
     /// summary gains a `thresholds: {"status":"pass",…}` line.
     #[tokio::test]
@@ -3609,6 +3775,7 @@ mod tests {
             config,
             Map::new(),
             Map::new(),
+            Vec::new(),
             true, // quiet — the request firehose is irrelevant here
             tx,
             Some(mtx),

@@ -161,11 +161,11 @@ pub async fn execute_action(
         "std/graphql@v1" | "graphql" => {
             super::graphql::graphql_action(&resolved, ctx, step_name).await
         }
-        "std/tcp@v1" | "tcp" => tcp_action(&resolved, step_name).await,
-        "std/udp@v1" | "udp" => udp_action(&resolved, step_name).await,
-        "std/pubsub@v1" | "pubsub" => super::pubsub::pubsub_action(&resolved, step_name).await,
+        "std/tcp@v1" | "tcp" => tcp_action(&resolved, step_name, ctx).await,
+        "std/udp@v1" | "udp" => udp_action(&resolved, step_name, ctx).await,
+        "std/pubsub@v1" | "pubsub" => super::pubsub::pubsub_action(&resolved, step_name, ctx).await,
         "std/llm@v1" | "llm" => super::llm::llm_action(&resolved, ctx, step_name).await,
-        "std/ws@v1" | "ws" => super::ws::ws_session_action(&resolved, step_name).await,
+        "std/ws@v1" | "ws" => super::ws::ws_session_action(&resolved, ctx, step_name).await,
         "std/ws-connect@v1" | "ws-connect" => {
             super::ws::ws_connect_action(&resolved, ctx, step_name).await
         }
@@ -175,7 +175,7 @@ pub async fn execute_action(
         "std/ws-close@v1" | "ws-close" => {
             super::ws::ws_close_action(&resolved, ctx, step_name).await
         }
-        "std/grpc@v1" | "grpc" => super::grpc::grpc_unary_action(&resolved, step_name).await,
+        "std/grpc@v1" | "grpc" => super::grpc::grpc_unary_action(&resolved, ctx, step_name).await,
         "std/grpc-connect@v1" | "grpc-connect" => {
             super::grpc::grpc_connect_action(&resolved, ctx, step_name).await
         }
@@ -315,9 +315,10 @@ pub(crate) use super::http::{client_shard_count, error_chain};
 //
 // Parameters:
 //   host / port  – target; alternatively `address: "host:port"`
-//   send         – optional string payload to write after connecting
+//   send         – optional string payload to write after connecting; `${…}`
+//                  generator tokens expand per execution
 //   send_base64  – optional base64 payload (mutually exclusive with `send`);
-//                  use for binary protocols
+//                  use for binary protocols (never expanded)
 //   read         – optional bool (default: true when the target is expected to
 //                  reply — i.e. whenever `expect` is set, otherwise false).
 //                  When true, read one chunk of the response.
@@ -334,7 +335,7 @@ pub(crate) use super::http::{client_shard_count, error_chain};
 // as HTTP (reported under `http_req_duration`), so percentiles are comparable
 // across transports.
 
-async fn tcp_action(params: &Value, step_name: &str) -> ActionOutput {
+async fn tcp_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpStream;
 
@@ -343,7 +344,7 @@ async fn tcp_action(params: &Value, step_name: &str) -> ActionOutput {
         Err(msg) => return err(step_name, &msg),
     };
     let timeout_ms = params["timeout"].as_u64().unwrap_or(10_000);
-    let payload = match resolve_payload(params, step_name) {
+    let payload = match resolve_payload(params, step_name, ctx) {
         Ok(p) => p,
         Err(out) => return out,
     };
@@ -427,7 +428,9 @@ async fn tcp_action(params: &Value, step_name: &str) -> ActionOutput {
 //
 // Parameters:
 //   host / port  – target; alternatively `address: "host:port"`
-//   send         – string payload (or `send_base64` for binary); required
+//   send         – string payload (or `send_base64` for binary); required.
+//                  `${…}` generator tokens expand per execution (`send_base64`
+//                  is never expanded)
 //   read         – optional bool: wait for a reply datagram
 //                  (default: true when `expect` is set, otherwise false)
 //   read_bytes   – optional cap on the reply size, default 65536
@@ -441,7 +444,7 @@ async fn tcp_action(params: &Value, step_name: &str) -> ActionOutput {
 // UDP is connectionless: a "successful" send only means the datagram left the
 // host. Set `read`/`expect` to actually validate a response.
 
-async fn udp_action(params: &Value, step_name: &str) -> ActionOutput {
+async fn udp_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
     use tokio::net::UdpSocket;
 
     let addr = match resolve_address(params) {
@@ -449,7 +452,7 @@ async fn udp_action(params: &Value, step_name: &str) -> ActionOutput {
         Err(msg) => return err(step_name, &msg),
     };
     let timeout_ms = params["timeout"].as_u64().unwrap_or(10_000);
-    let payload = match resolve_payload(params, step_name) {
+    let payload = match resolve_payload(params, step_name, ctx) {
         Ok(Some(p)) => p,
         Ok(None) => return err(step_name, "'send' (or 'send_base64') is required for UDP"),
         Err(out) => return out,
@@ -538,7 +541,10 @@ fn resolve_address(params: &Value) -> Result<String, String> {
 
 /// Resolve an outbound payload from `send` (text) or `send_base64` (binary).
 /// Returns `Ok(None)` when neither is present. The two are mutually exclusive.
-fn resolve_payload(params: &Value, step_name: &str) -> Result<Option<Vec<u8>>, ActionOutput> {
+/// `${…}` generator tokens in the text `send` expand per execution (an
+/// expansion error fails the step); `send_base64` is binary by contract and
+/// never expanded.
+fn resolve_payload(params: &Value, step_name: &str, ctx: &Context) -> Result<Option<Vec<u8>>, ActionOutput> {
     let text = params["send"].as_str();
     let b64 = params["send_base64"].as_str();
     match (text, b64) {
@@ -546,7 +552,10 @@ fn resolve_payload(params: &Value, step_name: &str) -> Result<Option<Vec<u8>>, A
             step_name,
             "'send' and 'send_base64' are mutually exclusive",
         )),
-        (Some(s), None) => Ok(Some(s.as_bytes().to_vec())),
+        (Some(s), None) => match ctx.token_expander().expand(s) {
+            Ok(expanded) => Ok(Some(expanded.into_bytes())),
+            Err(msg) => Err(err(step_name, &msg)),
+        },
         (None, Some(b)) => {
             use base64::Engine as _;
             match base64::engine::general_purpose::STANDARD.decode(b) {
@@ -956,11 +965,18 @@ async fn file_write_action(params: &Value, step_name: &str, ctx: &Context) -> Ac
     let Some(content) = params["content"].as_str() else {
         return err(step_name, "'content' is required (a string)");
     };
+    // `${…}` generator tokens in the written text expand per execution (an
+    // expansion error fails the step). Base64 content contains no `$` by
+    // alphabet, so this is a no-op for binary writes.
+    let content = match ctx.token_expander().expand(content) {
+        Ok(c) => c,
+        Err(msg) => return err(step_name, &msg),
+    };
     let encoding = params["encoding"].as_str().unwrap_or("text");
     let append = params["append"].as_bool().unwrap_or(false);
 
     let bytes: Vec<u8> = match encoding {
-        "text" => content.as_bytes().to_vec(),
+        "text" => content.into_bytes(),
         "base64" => {
             use base64::Engine as _;
             match base64::engine::general_purpose::STANDARD.decode(content) {
@@ -1888,6 +1904,124 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // std/http@v1 — `${…}` generator token expansion (RFC 005)
+    // -----------------------------------------------------------------
+
+    /// A context with the `@std/random@v1` built-in library declared, so
+    /// `${random.…}` tokens resolve (see `Context::new_generator`).
+    fn ctx_with_random_library() -> Context {
+        let mut ctx = Context::new();
+        let libraries = crate::library::validate_libraries(
+            &[crate::library::LibraryRef {
+                use_: "@std/random@v1".into(),
+                r#as: None,
+                capabilities: None,
+                with: None,
+            }],
+            false,
+        )
+        .unwrap();
+        ctx.libraries = Some(std::sync::Arc::new(crate::library::LibrarySet {
+            libraries,
+        }));
+        ctx
+    }
+
+    #[tokio::test]
+    async fn http_action_expands_tokens_in_url_headers_and_body() {
+        use wiremock::matchers::body_string_contains;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            // `${seq}` in the URL → 1 (fresh generator, one begin_message).
+            .and(path("/items/1"))
+            // `${seq}` in a header value shares the same message context.
+            .and(header("x-request", "req-1"))
+            // JSON body string leaves expand: a library token…
+            .and(body_string_contains(r#""kind":"a""#))
+            // …and a built-in token.
+            .and(body_string_contains(r#""n":"7""#))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ctx = ctx_with_random_library();
+        let params = json!({
+            "method": "POST",
+            "url": format!("{}/items/${{seq}}", server.uri()),
+            "headers": { "x-request": "req-${seq}" },
+            "body": {
+                "id": "${random.nanoid(4)}",
+                "kind": "${random.pick(a)}",
+                "n": "${rand(7,7)}",
+            },
+        });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        server.verify().await;
+
+        // The library token produced a 4-char id; no token text leaked.
+        let reqs = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        let id = body["id"].as_str().unwrap();
+        assert_eq!(id.len(), 4, "{id}");
+        assert!(!reqs[0].body.windows(2).any(|w| w == b"${"));
+    }
+
+    #[tokio::test]
+    async fn http_action_leaves_unknown_tokens_verbatim() {
+        use wiremock::matchers::body_string_contains;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v"))
+            .and(body_string_contains("${bogus}"))
+            .and(body_string_contains("${faker.email()}"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // Even with a library declared, an unknown alias stays verbatim.
+        let ctx = ctx_with_random_library();
+        let params = json!({
+            "method": "POST",
+            "url": format!("{}/v", server.uri()),
+            "body": "keep ${bogus} and ${faker.email()}",
+        });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn http_action_known_alias_unknown_function_fails_before_sending() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0) // no request may go out
+            .mount(&server)
+            .await;
+
+        let ctx = ctx_with_random_library();
+        let params = json!({
+            "method": "POST",
+            "url": format!("{}/never", server.uri()),
+            "body": "id=${random.uuid9()}",
+        });
+        let out = execute_action("std/http@v1", &params, &ctx, "step").await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("unknown function"),
+            "{:?}",
+            out.logs
+        );
+        assert!(out.http_sample.is_none(), "no request must be attempted");
+        server.verify().await;
+    }
+
+    // -----------------------------------------------------------------
     // std/tcp@v1
     // -----------------------------------------------------------------
 
@@ -1981,6 +2115,21 @@ mod tests {
         let out = execute_action("std/tcp@v1", &params, &ctx, "step").await;
         assert!(!out.success);
         assert!(out.logs[0].1.contains("mutually exclusive"));
+    }
+
+    #[tokio::test]
+    async fn tcp_action_expands_generator_tokens_in_send_payload() {
+        let addr = spawn_tcp_echo().await;
+        let ctx = ctx_with_random_library();
+        let params = json!({
+            "address": addr,
+            "send": "ping-${seq}-${random.pick(x|y)}",
+            "expect": "ping-1-",
+        });
+        let out = execute_action("std/tcp@v1", &params, &ctx, "step").await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        let response = out.value["response"].as_str().unwrap();
+        assert!(response == "ping-1-x" || response == "ping-1-y", "{response}");
     }
 
     // -----------------------------------------------------------------
@@ -2614,6 +2763,23 @@ mod tests {
         .await;
         let read2 = execute_action("std/file-read@v1", &json!({ "path": p }), &ctx, "r").await;
         assert_eq!(read2.value["content"], "new-content!");
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_write_expands_generator_tokens_in_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gen.txt");
+        let ctx = file_ctx();
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": path.to_str().unwrap(), "content": "run-${seq}" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "logs: {:?}", out.logs);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "run-1");
     }
 
     #[tokio::test]

@@ -82,6 +82,13 @@ pub struct ConfigFile {
     pub run: RunConfig,
     pub report: Option<ReportConfig>,
 
+    /// Value-generator libraries for `${alias.fn(...)}` tokens (RFC 005).
+    /// Concatenates with the test file's and with imported documents'
+    /// declarations; a duplicate alias is a validation error. Non-empty
+    /// `capabilities:` grants require `allow_library_capabilities: true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub libraries: Option<Vec<crate::library::LibraryRef>>,
+
     /// Setup steps run **once** before the load starts (not per VU iteration).
     /// Each step's `outputs` is exposed to test steps under the `config`
     /// namespace, e.g. a `before` step with `outputs: fix_config` is read in a
@@ -382,6 +389,7 @@ steps:
                 url: "http://localhost:7999".into(),
                 ..ReportConfig::default()
             }),
+            libraries: None,
             before: Vec::new(),
             after: Vec::new(),
             variables: serde_json::Map::new(),
@@ -481,6 +489,43 @@ after:
         // Fail-closed default.
         let cfg = parse_config_file("vus: 1\n").unwrap();
         assert!(!cfg.run.allow_process_actions);
+    }
+
+    #[test]
+    fn parses_libraries_in_config_and_test() {
+        let cfg = parse_config_file(
+            "allow_library_capabilities: true\nseed: 42\nlibraries:\n  - use: '@std/random@v1'\n  - use: '@std/random@v1'\n    as: ids\n",
+        )
+        .unwrap();
+        assert!(cfg.run.allow_library_capabilities);
+        assert_eq!(cfg.run.seed, Some(42));
+        let libs = cfg.libraries.unwrap();
+        assert_eq!(libs.len(), 2);
+        assert_eq!(libs[0].use_, "@std/random@v1");
+        assert!(libs[0].r#as.is_none());
+        assert_eq!(libs[1].r#as.as_deref(), Some("ids"));
+
+        let test = parse_test_file(
+            "libraries:\n  - use: '@std/random@v1'\n    with: { locale: en }\nsteps:\n  - use: std/log@v1\n    with: { message: hi }\n",
+        )
+        .unwrap();
+        let libs = test.libraries.unwrap();
+        assert_eq!(libs[0].with.as_ref().unwrap()["locale"], "en");
+
+        // Fail-closed defaults stay wire-compatible.
+        let cfg = parse_config_file("vus: 1\n").unwrap();
+        assert!(!cfg.run.allow_library_capabilities);
+        assert!(cfg.run.seed.is_none());
+        assert!(cfg.libraries.is_none());
+    }
+
+    #[test]
+    fn parses_capability_grants_as_strings_or_net_objects() {
+        let yaml = "allow_library_capabilities: true\nlibraries:\n  - use: '@std/random@v1'\n    capabilities: [fs, clock, { net: ['api.example.com', '*.internal'] }]\n";
+        let cfg = parse_config_file(yaml).unwrap();
+        let caps = cfg.libraries.unwrap().remove(0).capabilities.unwrap();
+        assert_eq!(caps.len(), 3);
+        assert!(matches!(&caps[2], crate::library::Capability::Net { net } if net.len() == 2));
     }
 
     #[test]

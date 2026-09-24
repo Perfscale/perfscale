@@ -51,7 +51,8 @@
 //! interpolated** — a `${{` sequence inside the SQL text is passed to the
 //! database verbatim.
 //! Values move through `params`, a positional array; each entry *is*
-//! interpolated by the engine's usual value interpolation, then bound:
+//! interpolated by the engine's usual value interpolation, `${…}` generator
+//! tokens expand per execution, and the result is then bound:
 //! strings → text, numbers → i64/f64, booleans → bool, null → a typed NULL
 //! (text-typed on PostgreSQL — cast in SQL, e.g. `$1::int`, when inserting
 //! into a non-text column). Arrays/objects cannot be bound. INSERT, UPDATE,
@@ -1161,9 +1162,9 @@ async fn probe_roundtrip(cp: &ConnectParams) -> Result<(), String> {
 //                 `id: "${{ conn.id }}"` interpolation is the norm)
 //   query       – SQL text with driver-native placeholders ($1/?) — NEVER
 //                 interpolated; 64 KiB hard limit (max_query_bytes)
-//   params      – positional bind values (each entry MAY be interpolated);
-//                 strings/numbers/booleans/null bind, arrays/objects are
-//                 rejected
+//   params      – positional bind values (each entry MAY be interpolated, and
+//                 `${…}` generator tokens expand per execution); strings/
+//                 numbers/booleans/null bind, arrays/objects are rejected
 //   max_rows    – hard cap on rows read into memory, default 10000; extra
 //                 rows only set `truncated: true`
 //   timeout_ms  – ms for the query (per-query mode: connect + query),
@@ -1184,10 +1185,32 @@ pub(crate) async fn db_query_action(
     ctx: &Context,
     step_name: &str,
 ) -> ActionOutput {
-    let spec = match parse_query_spec(params) {
+    // `${…}` generator tokens expand in the bind parameters only — the SQL
+    // text itself is never expanded, the same boundary `${{ }}`
+    // interpolation follows (`interpolate_query_params`).
+    let expanded_binds = match params.get("params") {
+        Some(p) if crate::generate::contains_token(p) => {
+            let mut gen = match ctx.new_generator() {
+                Ok(g) => g,
+                Err(msg) => return err(step_name, &msg),
+            };
+            // One query is one message: every bind value shares one `${seq}`.
+            gen.begin_message();
+            match crate::generate::expand_tokens(p, &mut gen) {
+                Ok(v) => Some(v),
+                Err(msg) => return err(step_name, &msg),
+            }
+        }
+        _ => None,
+    };
+
+    let mut spec = match parse_query_spec(params) {
         Ok(s) => s,
         Err(msg) => return err(step_name, &msg),
     };
+    if let Some(Value::Array(a)) = &expanded_binds {
+        spec.binds = a;
+    }
     let (id, mut conn) = match take_conn(params, ctx) {
         Ok(pair) => pair,
         Err(msg) => return err(step_name, &msg),
@@ -2336,6 +2359,49 @@ mod tests {
             "{:?}",
             out.logs
         );
+    }
+
+    /// `${…}` generator tokens expand in bind parameters; the SQL text keeps
+    /// them verbatim — the same boundary `${{ }}` interpolation follows.
+    #[tokio::test]
+    async fn sqlite_generator_tokens_expand_in_params_not_sql_text() {
+        let ctx = Context::new();
+        let out = run(
+            &ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "sqlite", "dsn": "sqlite::memory:" }),
+        )
+        .await;
+        let id = out.value["id"].as_str().unwrap().to_string();
+
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "CREATE TABLE g (v TEXT)" }),
+        )
+        .await;
+        // The SQL text carries a literal '${seq}' string; the bind parameter
+        // carries the token — only the parameter expands.
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({
+                "id": id,
+                "query": "INSERT INTO g VALUES ('${seq}'), (?)",
+                "params": ["${seq}"],
+            }),
+        )
+        .await;
+        assert!(out.success, "insert: {:?}", out.logs);
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT v FROM g ORDER BY rowid" }),
+        )
+        .await;
+        let data = out.value["data"].as_array().unwrap();
+        assert_eq!(data[0]["v"], "${seq}", "SQL text reached the DB verbatim");
+        assert_eq!(data[1]["v"], "1", "the bind parameter expanded");
     }
 
     #[tokio::test]

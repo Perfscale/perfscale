@@ -1,6 +1,31 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "Capability": {
+      "anyOf": [
+        {
+          "description": "A bare grant: `fs`, `clock`.",
+          "type": "string"
+        },
+        {
+          "description": "Network egress restricted to an allowlist of destination hosts.",
+          "properties": {
+            "net": {
+              "description": "Allowed destination hosts (`*` wildcards allowed).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "net"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "A capability grant in a `libraries:` entry (RFC 005 capability model)."
+    },
     "GitImport": {
       "additionalProperties": false,
       "description": "`import: { git, ref, file }` — fetch `file` from `git` at `ref`.",
@@ -41,6 +66,39 @@
         }
       ],
       "description": "The value of a top-level `import:` key."
+    },
+    "LibraryRef": {
+      "description": "One `libraries:` entry — a value-generator library bound to a token alias.",
+      "properties": {
+        "as": {
+          "description": "Token alias — `${alias.fn(...)}`. Default: the library's name part (`random` for `@std/random@v1`). Must be a lowercase identifier and unique across all declared libraries.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capabilities": {
+          "description": "Explicit capability grants, fail-closed: any non-empty grant requires `allow_library_capabilities: true` in the config. `fs` / `clock` are bare strings; network egress is an object with a host allowlist (`net: [\"api.example.com\"]`) — raw sockets are never granted.",
+          "items": {
+            "$ref": "#/definitions/Capability"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "use": {
+          "description": "Library reference: `@std/random@v1` (built-in, native). Local paths, HTTPS URLs and git refs are WASM libraries — accepted syntactically but rejected at validation until phase 2 lands the WASM runtime.",
+          "type": "string"
+        },
+        "with": {
+          "description": "JSON config handed to the library at instantiation (`with:`). May use `${{ env.X }}` like any other parameter block."
+        }
+      },
+      "required": [
+        "use"
+      ],
+      "type": "object"
     },
     "Step": {
       "anyOf": [
@@ -115,6 +173,16 @@
         }
       ],
       "description": "Base document to inherit from — a relative path, an `http(s)://` URL, or `{ git, ref, file }`. The base loads first (recursively), then this document deep-merges on top; a local `steps:` list replaces the base's. Remote sources require the caller's `--allow-remote-import`."
+    },
+    "libraries": {
+      "description": "Value-generator libraries for `${alias.fn(...)}` tokens (RFC 005). Concatenates with the config file's and with imported documents' declarations; a duplicate alias is a validation error.",
+      "items": {
+        "$ref": "#/definitions/LibraryRef"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "steps": {
       "items": {

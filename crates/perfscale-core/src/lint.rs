@@ -56,6 +56,8 @@ pub fn lint(yaml: &str, kind: DocKind) -> Vec<LintIssue> {
         DocKind::Test => lint_test_fields(&value, &mut issues),
         DocKind::Config => lint_config_fields(&value, &mut issues),
     }
+    let (lib_issues, _) = library_token_checks(&value, kind);
+    issues.extend(lib_issues);
     issues
 }
 
@@ -257,11 +259,11 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
 // Unknown / typo'd fields (beyond what the schema rejects)
 // ---------------------------------------------------------------------------
 
-const TEST_TOP_FIELDS: [&str; 1] = ["steps"];
+const TEST_TOP_FIELDS: [&str; 2] = ["steps", "libraries"];
 const STEP_FIELDS: [&str; 8] = [
     "name", "use", "uses", "with", "check", "outputs", "severity", "message",
 ];
-const CONFIG_TOP_FIELDS: [&str; 12] = [
+const CONFIG_TOP_FIELDS: [&str; 15] = [
     "vus",
     "duration",
     "stages",
@@ -274,6 +276,9 @@ const CONFIG_TOP_FIELDS: [&str; 12] = [
     "shared_variables",
     "allow_file_actions",
     "allow_process_actions",
+    "allow_library_capabilities",
+    "seed",
+    "libraries",
 ];
 const REPORT_FIELDS: [&str; 6] = [
     "url",
@@ -728,26 +733,276 @@ fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
 /// Currently: a config that sets both a load profile (`stages:`/`arrival:`)
 /// and explicit `vus:`/`duration:` — the profile wins and the fixed fields
 /// are silently ignored at run time, which usually isn't what the author
-/// meant.
+/// meant; and `${alias.fn(...)}` tokens whose alias is not declared — the
+/// runtime leaves those verbatim (backward compatibility), which is legal
+/// but almost always a typo worth surfacing.
 pub fn lint_warnings(yaml: &str, kind: DocKind) -> Vec<String> {
-    if kind != DocKind::Config {
-        return Vec::new();
-    }
     let Ok(value) = serde_yaml::from_str::<Value>(yaml) else {
         return Vec::new();
     };
-    let Some(map) = value.as_object() else {
-        return Vec::new();
-    };
-    let has_profile = map.contains_key("stages") || map.contains_key("arrival");
-    let has_fixed = map.contains_key("vus") || map.contains_key("duration");
-    if has_profile && has_fixed {
-        return vec![
-            "`stages`/`arrival` override `vus`/`duration` — the fixed fields are ignored; remove them to avoid confusion"
-                .into(),
-        ];
+    let mut warnings = Vec::new();
+    if kind == DocKind::Config {
+        if let Some(map) = value.as_object() {
+            let has_profile = map.contains_key("stages") || map.contains_key("arrival");
+            let has_fixed = map.contains_key("vus") || map.contains_key("duration");
+            if has_profile && has_fixed {
+                warnings.push(
+                    "`stages`/`arrival` override `vus`/`duration` — the fixed fields are ignored; remove them to avoid confusion"
+                        .into(),
+                );
+            }
+        }
     }
-    Vec::new()
+    let (_, lib_warnings) = library_token_checks(&value, kind);
+    warnings.extend(lib_warnings);
+    warnings
+}
+
+// ---------------------------------------------------------------------------
+// Library declarations and `${alias.fn(...)}` tokens (RFC 005)
+// ---------------------------------------------------------------------------
+
+/// Validate a document's `libraries:` block with the same rule the run
+/// applies ([`crate::library::validate_libraries`]) — lint surfaces its
+/// error instead of duplicating the checks. Returns the declaration issues
+/// plus the resolved `alias → provider` bindings for token checking.
+///
+/// The `allow_library_capabilities` gate lives in the config file, so a test
+/// document cannot know it; the test pass validates with the gate open (the
+/// run itself stays fail-closed either way) and the config pass enforces it.
+fn declared_libraries(
+    value: &Value,
+    kind: DocKind,
+) -> (
+    Vec<LintIssue>,
+    Vec<(String, std::sync::Arc<dyn crate::library::LibraryProvider>)>,
+) {
+    let Some(entries) = value.get("libraries").and_then(|v| v.as_array()) else {
+        return (Vec::new(), Vec::new());
+    };
+    let refs: Vec<crate::library::LibraryRef> = entries
+        .iter()
+        .filter_map(|e| serde_json::from_value(e.clone()).ok())
+        .collect();
+    if refs.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let allow = kind == DocKind::Test
+        || value
+            .get("allow_library_capabilities")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    match crate::library::validate_libraries(&refs, allow) {
+        Ok(resolved) => (
+            Vec::new(),
+            resolved
+                .into_iter()
+                .map(|r| (r.alias, r.provider))
+                .collect(),
+        ),
+        Err(msg) => (
+            vec![LintIssue {
+                location: "/libraries".into(),
+                problem: msg,
+                suggestion: None,
+            }],
+            Vec::new(),
+        ),
+    }
+}
+
+/// Check `${alias.fn(...)}` tokens in step `with:` payloads against the
+/// document's declared libraries. Returns `(issues, warnings)`:
+///
+/// - an invalid declaration is an issue (the run refuses to start);
+/// - a **known alias with an unknown function** — or a malformed call — is an
+///   issue (the run fails the step);
+/// - an **unknown alias** is a warning: the runtime leaves the token verbatim
+///   (backward compatibility), so lint must not fail on it — but it almost
+///   always means a typo'd or undeclared alias.
+///
+/// Only the cheap checks run here: the call shape (`fn(args)`, balanced
+/// parens/quotes) and the function name. Arguments are never evaluated, and
+/// `${{ … }}` interpolation is the engine's business, not lint's.
+fn library_token_checks(value: &Value, kind: DocKind) -> (Vec<LintIssue>, Vec<String>) {
+    let (mut issues, aliases) = declared_libraries(value, kind);
+    let mut warnings = Vec::new();
+    if aliases.is_empty() {
+        return (issues, warnings);
+    }
+
+    let step_lists: &[&str] = match kind {
+        DocKind::Test => &["steps"],
+        DocKind::Config => &["before", "after"],
+    };
+    for key in step_lists {
+        let Some(steps) = value.get(key).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for (i, step) in steps.iter().enumerate() {
+            if let Some(with) = step.get("with") {
+                scan_library_tokens(
+                    with,
+                    &format!("/{key}/{i}/with"),
+                    &aliases,
+                    &mut issues,
+                    &mut warnings,
+                );
+            }
+        }
+    }
+    (issues, warnings)
+}
+
+/// Recursive walk over a `with:` value — string leaves only, the same
+/// traversal `generate::expand_tokens` applies at run time.
+fn scan_library_tokens(
+    v: &Value,
+    loc: &str,
+    aliases: &[(String, std::sync::Arc<dyn crate::library::LibraryProvider>)],
+    issues: &mut Vec<LintIssue>,
+    warnings: &mut Vec<String>,
+) {
+    match v {
+        Value::String(s) => lint_string_tokens(s, loc, aliases, issues, warnings),
+        Value::Array(a) => {
+            for x in a {
+                scan_library_tokens(x, loc, aliases, issues, warnings);
+            }
+        }
+        Value::Object(m) => {
+            for x in m.values() {
+                scan_library_tokens(x, loc, aliases, issues, warnings);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract every `${…}` token from one string (skipping `${{ … }}`) the same
+/// way `Gen::expand` scans at run time, and check each against the aliases.
+fn lint_string_tokens(
+    s: &str,
+    loc: &str,
+    aliases: &[(String, std::sync::Arc<dyn crate::library::LibraryProvider>)],
+    issues: &mut Vec<LintIssue>,
+    warnings: &mut Vec<String>,
+) {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'{'
+            && bytes.get(i + 2) != Some(&b'{')
+        {
+            if let Some(close) = s[i + 2..].find('}') {
+                let token = &s[i + 2..i + 2 + close];
+                lint_library_token(token, loc, aliases, issues, warnings);
+                i = i + 2 + close + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
+fn lint_library_token(
+    token: &str,
+    loc: &str,
+    aliases: &[(String, std::sync::Arc<dyn crate::library::LibraryProvider>)],
+    issues: &mut Vec<LintIssue>,
+    warnings: &mut Vec<String>,
+) {
+    // Library tokens carry a dot; bare built-ins (`${seq}`, …) never do.
+    let Some(dot) = token.find('.') else {
+        return;
+    };
+    let alias = &token[..dot];
+    // A built-in name in the alias position resolves verbatim at run time
+    // (built-ins match whole tokens first) — not a library call, not lint's
+    // business.
+    if crate::library::RESERVED_TOKEN_NAMES.contains(&alias) {
+        return;
+    }
+    let Some((_, provider)) = aliases.iter().find(|(a, _)| a == alias) else {
+        warnings.push(format!(
+            "{loc}: unknown library alias '{alias}' in '${{{token}}}' — the token is left verbatim at runtime"
+        ));
+        return;
+    };
+
+    // Cheap call-shape checks only: `fn(args)`, balanced parens/quotes —
+    // arguments are never evaluated.
+    let call = &token[dot + 1..];
+    let Some((func, inner)) = call_shape(call) else {
+        issues.push(LintIssue {
+            location: loc.to_string(),
+            problem: format!("invalid library call '${{{token}}}'"),
+            suggestion: Some("expected `${alias.fn(args)}`".into()),
+        });
+        return;
+    };
+    if let Err(msg) = balanced_args(inner) {
+        issues.push(LintIssue {
+            location: loc.to_string(),
+            problem: format!("invalid library call '${{{token}}}': {msg}"),
+            suggestion: Some("check the argument list: balanced parens and double quotes".into()),
+        });
+        return;
+    }
+
+    if !provider.functions().iter().any(|f| f.name == func) {
+        let names: Vec<&str> = provider.functions().iter().map(|f| f.name).collect();
+        issues.push(LintIssue {
+            location: loc.to_string(),
+            problem: format!("unknown function '{alias}.{func}'"),
+            suggestion: closest_name(func, names.iter().copied())
+                .map(|c| format!("did you mean '{c}'?"))
+                .or_else(|| Some(format!("available functions: {}", names.join(", ")))),
+        });
+    }
+}
+
+/// `fn(args)` → `(fn, args-text)`. The alias is already stripped; anything
+/// that is not a plain call shape is `None`.
+fn call_shape(call: &str) -> Option<(&str, &str)> {
+    let open = call.find('(')?;
+    if !call.ends_with(')') {
+        return None;
+    }
+    let name = &call[..open];
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, &call[open + 1..call.len() - 1]))
+}
+
+/// Balanced-parens/quotes check over the raw argument text (double quotes
+/// shield parens, mirroring the runtime's comma-splitting rule).
+fn balanced_args(inner: &str) -> Result<(), String> {
+    let mut depth = 0i32;
+    let mut in_quotes = false;
+    for ch in inner.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            '(' if !in_quotes => depth += 1,
+            ')' if !in_quotes => {
+                depth -= 1;
+                if depth < 0 {
+                    return Err("unbalanced parentheses".into());
+                }
+            }
+            _ => {}
+        }
+    }
+    if in_quotes {
+        return Err("unterminated double quote".into());
+    }
+    if depth != 0 {
+        return Err("unbalanced parentheses".into());
+    }
+    Ok(())
 }
 
 fn is_known_action(action: &str) -> bool {
@@ -1765,5 +2020,178 @@ steps:
         assert!(issues
             .iter()
             .any(|i| i.problem == "missing required field 'query'"));
+    }
+
+    // -----------------------------------------------------------------
+    // Libraries: declarations and ${alias.fn(...)} tokens (RFC 005)
+    // -----------------------------------------------------------------
+
+    const LIB_TEST: &str = r#"
+libraries:
+  - use: '@std/random@v1'
+steps:
+  - use: std/http@v1
+    with:
+      url: https://x
+      body: '{"id": "${random.uuid4()}", "n": "${random.int(1,100)}", "seq": "${seq}"}'
+"#;
+
+    #[test]
+    fn clean_library_usage_lints_without_issues_or_warnings() {
+        assert_eq!(lint(LIB_TEST, DocKind::Test), vec![]);
+        assert!(lint_warnings(LIB_TEST, DocKind::Test).is_empty());
+    }
+
+    #[test]
+    fn unknown_alias_is_a_warning_not_an_issue() {
+        let yaml = r#"
+libraries:
+  - use: '@std/random@v1'
+steps:
+  - use: std/http@v1
+    with:
+      url: https://x
+      body: "${faker.email()}"
+"#;
+        // Backward compatibility: verbatim at runtime, so lint must not fail…
+        assert_eq!(lint(yaml, DocKind::Test), vec![]);
+        // …but the warning names the alias and the verbatim behavior.
+        let warnings = lint_warnings(yaml, DocKind::Test);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("unknown library alias 'faker'"), "{warnings:?}");
+        assert!(warnings[0].contains("left verbatim at runtime"), "{warnings:?}");
+        assert!(warnings[0].contains("/steps/0/with"), "{warnings:?}");
+    }
+
+    #[test]
+    fn known_alias_unknown_function_is_an_error_listing_functions() {
+        let yaml = r#"
+libraries:
+  - use: '@std/random@v1'
+steps:
+  - use: std/http@v1
+    with:
+      url: https://x
+      body: "${random.uuid9()}"
+"#;
+        let issues = lint(yaml, DocKind::Test);
+        let bad = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown function 'random.uuid9'"))
+            .unwrap_or_else(|| panic!("no unknown-function issue: {issues:?}"));
+        assert_eq!(bad.location, "/steps/0/with");
+        assert_eq!(bad.suggestion.as_deref(), Some("did you mean 'uuid4'?"));
+
+        // A function name with no near miss lists everything available.
+        let yaml = yaml.replace("uuid9", "frobnicate");
+        let issues = lint(&yaml, DocKind::Test);
+        let bad = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown function 'random.frobnicate'"))
+            .unwrap();
+        assert!(
+            bad.suggestion
+                .as_deref()
+                .unwrap()
+                .contains("available functions: "),
+            "{bad:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_library_call_is_an_issue() {
+        let yaml = r#"
+libraries:
+  - use: '@std/random@v1'
+steps:
+  - use: std/http@v1
+    with:
+      url: https://x
+      body: "${random.int(1,100}"
+"#;
+        // Unterminated `(`: the token scan closes at `}`, the call shape
+        // fails (does not end with `)`).
+        let issues = lint(yaml, DocKind::Test);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.problem.contains("invalid library call")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_library_declaration_is_surfaced_not_duplicated() {
+        // Non-@std refs are a core validation error; lint reports the same
+        // message at /libraries instead of reimplementing the check.
+        let yaml = r#"
+libraries:
+  - use: './libs/fixer-ids.wasm'
+steps:
+  - use: std/log@v1
+    with: { message: hi }
+"#;
+        let issues = lint(yaml, DocKind::Test);
+        let bad = issues
+            .iter()
+            .find(|i| i.location == "/libraries")
+            .unwrap_or_else(|| panic!("no /libraries issue: {issues:?}"));
+        assert!(bad.problem.contains("WASM libraries are not supported yet"), "{bad:?}");
+
+        // Same for a config document.
+        let yaml = "libraries:\n  - use: '@std/faker@v1'\n";
+        let issues = lint(yaml, DocKind::Config);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.location == "/libraries" && i.problem.contains("unknown library")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn config_before_steps_are_checked_against_config_libraries() {
+        let yaml = r#"
+vus: 1
+duration: 5s
+libraries:
+  - use: '@std/random@v1'
+    as: ids
+before:
+  - use: std/log@v1
+    with:
+      message: "run ${ids.uuid4()} ${ids.nope()}"
+"#;
+        let issues = lint(yaml, DocKind::Config);
+        let bad = issues
+            .iter()
+            .find(|i| i.problem.contains("unknown function 'ids.nope'"))
+            .unwrap_or_else(|| panic!("no unknown-function issue: {issues:?}"));
+        assert_eq!(bad.location, "/before/0/with");
+        // The valid call produced nothing.
+        assert!(!issues.iter().any(|i| i.problem.contains("uuid4")), "{issues:?}");
+    }
+
+    #[test]
+    fn tokens_are_not_checked_without_declared_libraries() {
+        // No `libraries:` block → dotted tokens stay lint-invisible (they may
+        // be pro-engine tokens or plain literal text).
+        let yaml = "steps:\n  - use: std/log@v1\n    with:\n      message: \"${faker.email()}\"\n";
+        assert_eq!(lint(yaml, DocKind::Test), vec![]);
+        assert!(lint_warnings(yaml, DocKind::Test).is_empty());
+    }
+
+    #[test]
+    fn double_brace_interpolation_is_not_token_scanned() {
+        let yaml = r#"
+libraries:
+  - use: '@std/random@v1'
+steps:
+  - use: std/log@v1
+    with:
+      message: "${{ config.url }} ${random.uuid4()}"
+"#;
+        assert_eq!(lint(yaml, DocKind::Test), vec![]);
+        assert!(lint_warnings(yaml, DocKind::Test).is_empty());
     }
 }

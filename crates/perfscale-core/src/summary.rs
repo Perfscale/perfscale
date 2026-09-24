@@ -291,6 +291,11 @@ pub struct SummaryExport {
     /// summary. `None` when GPU collection was off or unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu: Option<crate::gpu::GpuSummary>,
+    /// Per-library call metrics (RFC 005), parsed from the `libraries: {...}`
+    /// line the native engine emits after the metric summary. `None` when the
+    /// run declared no libraries or no library call happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub libraries: Option<std::collections::BTreeMap<String, crate::library::LibraryAliasSummary>>,
 }
 
 /// Extract the `thresholds: {...}` line the native engine emits at the end of
@@ -316,6 +321,23 @@ pub fn parse_gpu_summary(output: &str) -> Option<crate::gpu::GpuSummary> {
     for line in output.lines() {
         let t = line.trim();
         if let Some(rest) = t.strip_prefix("gpu:") {
+            if let Ok(parsed) = serde_json::from_str(rest.trim()) {
+                return Some(parsed);
+            }
+        }
+    }
+    None
+}
+
+/// Extract the `libraries: {...}` line the native engine emits at the end of
+/// a run that declared `libraries:` and made at least one library call (see
+/// [`crate::step::runner::run_native`]). Returns `None` for non-library runs.
+pub fn parse_libraries_summary(
+    output: &str,
+) -> Option<std::collections::BTreeMap<String, crate::library::LibraryAliasSummary>> {
+    for line in output.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("libraries:") {
             if let Ok(parsed) = serde_json::from_str(rest.trim()) {
                 return Some(parsed);
             }
@@ -398,6 +420,19 @@ impl SummaryExport {
                         f(d.max_temperature_c, "°C"),
                         f(d.max_power_w, "W")
                     ),
+                );
+            }
+        }
+
+        if let Some(ref libs) = self.libraries {
+            for (alias, m) in libs {
+                row(
+                    &format!("Library {alias} calls/errors"),
+                    format!("{} / {}", m.calls, m.errors),
+                );
+                row(
+                    &format!("Library {alias} p50/p95/max"),
+                    format!("{:.2} / {:.2} / {:.2} ms", m.p50_ms, m.p95_ms, m.max_ms),
                 );
             }
         }
@@ -673,6 +708,7 @@ grpc_req_failed: 1 0.10/s
             summary: with_summary.then(|| parse_summary(NATIVE_OUTPUT).unwrap()),
             thresholds: None,
             gpu: None,
+            libraries: None,
         }
     }
 
@@ -807,5 +843,65 @@ grpc_req_failed: 1 0.10/s
             md.contains("| GPU0 temp/power max | 61.0°C / 250.4W |"),
             "{md}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Libraries section (RFC 005 per-library metrics)
+    // -----------------------------------------------------------------
+
+    const LIBRARIES_LINE: &str = r#"libraries: {"random":{"calls":1200,"errors":3,"p50_ms":0.02,"p95_ms":0.05,"max_ms":0.31},"ids":{"calls":40,"errors":0,"p50_ms":0.01,"p95_ms":0.02,"max_ms":0.04}}"#;
+
+    #[test]
+    fn parse_libraries_summary_extracts_json_line() {
+        let out = format!("{NATIVE_OUTPUT}\n{LIBRARIES_LINE}\n");
+        let libs = parse_libraries_summary(&out).expect("libraries line parsed");
+        assert_eq!(libs["random"].calls, 1200);
+        assert_eq!(libs["random"].errors, 3);
+        assert_eq!(libs["ids"].calls, 40);
+
+        assert!(parse_libraries_summary(NATIVE_OUTPUT).is_none());
+        assert!(parse_libraries_summary("").is_none());
+    }
+
+    #[test]
+    fn export_json_carries_libraries_section_when_present() {
+        let mut export = sample_export(true);
+        export.libraries = parse_libraries_summary(LIBRARIES_LINE);
+        let json = export.to_json();
+        assert!(json.contains("\"libraries\""), "{json}");
+        assert!(json.contains("\"p95_ms\": 0.05"), "{json}");
+        let back: SummaryExport = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, export);
+
+        // Without libraries the field is omitted entirely.
+        let json = sample_export(true).to_json();
+        assert!(!json.contains("\"libraries\""), "{json}");
+
+        // …and the markdown summary surfaces per-alias aggregates.
+        let md = export.to_markdown();
+        assert!(md.contains("| Library random calls/errors | 1200 / 3 |"), "{md}");
+        assert!(
+            md.contains("| Library random p50/p95/max | 0.02 / 0.05 / 0.31 ms |"),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn old_export_json_without_libraries_still_parses() {
+        // A summary export written before the libraries section existed must
+        // still deserialize (additive change with serde defaults).
+        let old = r#"{
+          "meta": {
+            "perfscale_version": "0.2.0",
+            "engine": "native",
+            "vus": 10,
+            "duration": "30s",
+            "timestamp": "2026-07-08T12:00:00Z"
+          },
+          "summary": null
+        }"#;
+        let export: SummaryExport = serde_json::from_str(old).unwrap();
+        assert!(export.libraries.is_none());
+        assert!(export.thresholds.is_none() && export.gpu.is_none());
     }
 }

@@ -12,6 +12,7 @@ pub mod generate;
 pub mod gpu;
 pub mod import;
 pub mod introspect;
+pub mod library;
 pub mod lint;
 pub(crate) mod log_mask;
 pub mod models;

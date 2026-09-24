@@ -341,9 +341,12 @@ pub fn error_chain(e: &dyn std::error::Error) -> String {
 //   method    – HTTP method, default "GET". Any valid token is accepted,
 //               including extension methods like QUERY (safe method with a
 //               body, draft-ietf-httpbis-safe-method-w-body)
-//   url       – required
-//   headers   – optional JSON object { "Name": "Value" }
-//   body      – optional: JSON object → application/json, string → text/plain
+//   url       – required; `${…}` generator tokens (`${uuid}`, `${rand}`,
+//               `${alias.fn(…)}`) expand per execution — in the URL, header
+//               values, and the body
+//   headers   – optional JSON object { "Name": "Value" }; values expand
+//   body      – optional: JSON object → application/json, string → text/plain;
+//               string leaves expand
 //   multipart – optional array of multipart/form-data parts (mutually
 //               exclusive with body). Each part: `name` plus either `value`
 //               (text field) or `file` (path on disk); optional `filename`
@@ -377,6 +380,16 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         Err(msg) => return err(step_name, &msg),
     };
 
+    // `${…}` generator tokens expand per execution — one request is one
+    // message: the URL, header values, and body share one generator context
+    // (see `Context::token_expander`). An expansion error fails the step
+    // before any network call, like ws/grpc.
+    let mut expander = ctx.token_expander();
+    let url = match expander.expand(&url) {
+        Ok(u) => u,
+        Err(msg) => return err(step_name, &msg),
+    };
+
     let reqwest_method = match reqwest::Method::from_bytes(method.as_bytes()) {
         Ok(m) => m,
         Err(_) => return err(step_name, &format!("invalid HTTP method '{method}'")),
@@ -390,6 +403,10 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
     if let Some(headers) = params["headers"].as_object() {
         for (k, v) in headers {
             if let Some(val) = v.as_str() {
+                let val = match expander.expand(val) {
+                    Ok(val) => val,
+                    Err(msg) => return err(step_name, &msg),
+                };
                 req = req.header(k.as_str(), val);
             }
         }
@@ -405,11 +422,21 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         }
     } else if !params["body"].is_null() {
         match &params["body"] {
-            Value::String(s) => req = req.header("content-type", "text/plain").body(s.clone()),
+            Value::String(s) => {
+                let body = match expander.expand(s) {
+                    Ok(b) => b,
+                    Err(msg) => return err(step_name, &msg),
+                };
+                req = req.header("content-type", "text/plain").body(body);
+            }
             other => {
+                let body = match expander.expand_value(other) {
+                    Ok(b) => b,
+                    Err(msg) => return err(step_name, &msg),
+                };
                 req = req
                     .header("content-type", "application/json")
-                    .body(other.to_string())
+                    .body(body.to_string());
             }
         }
     }

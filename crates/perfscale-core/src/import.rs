@@ -289,12 +289,21 @@ async fn resolve_parsed(
 /// Deep-merge `overlay` on top of `base`: objects merge key-by-key
 /// (recursively), any other pair — scalars, arrays, mismatched types — is
 /// won by the overlay. This makes `variables:` from a base composable while
-/// a local `steps:` list replaces the base's outright.
+/// a local `steps:` list replaces the base's outright. `libraries:` is the
+/// one array that concatenates instead (RFC 005): the importing file adds
+/// bindings on top of the base's, and a duplicate alias fails validation
+/// later (see [`crate::library::validate_libraries`]).
 fn deep_merge(base: Value, overlay: Value) -> Value {
     match (base, overlay) {
         (Value::Object(mut base_map), Value::Object(overlay_map)) => {
             for (key, overlay_val) in overlay_map {
                 let merged = match base_map.remove(&key) {
+                    Some(Value::Array(mut base_items))
+                        if key == "libraries" && overlay_val.is_array() =>
+                    {
+                        base_items.extend(overlay_val.as_array().unwrap().iter().cloned());
+                        Value::Array(base_items)
+                    }
                     Some(base_val) => deep_merge(base_val, overlay_val),
                     None => overlay_val,
                 };
@@ -780,6 +789,32 @@ mod tests {
             2,
             "arrays replace"
         );
+    }
+
+    #[test]
+    fn deep_merge_libraries_concatenate() {
+        let base = serde_json::json!({
+            "libraries": [ { "use": "@std/random@v1" } ]
+        });
+        let overlay = serde_json::json!({
+            "libraries": [ { "use": "@std/random@v1", "as": "ids" } ]
+        });
+        let merged = deep_merge(base, overlay);
+        let libs = merged["libraries"].as_array().unwrap();
+        assert_eq!(
+            libs.len(),
+            2,
+            "imported + importing declarations concatenate"
+        );
+        assert_eq!(libs[0]["use"], "@std/random@v1", "base entries come first");
+        assert_eq!(libs[1]["as"], "ids");
+
+        // A non-array overlay still wins outright (garbage fails validation later).
+        let merged = deep_merge(
+            serde_json::json!({ "libraries": [ { "use": "@std/random@v1" } ] }),
+            serde_json::json!({ "libraries": "junk" }),
+        );
+        assert_eq!(merged["libraries"], "junk");
     }
 
     #[test]

@@ -53,6 +53,24 @@ pub struct Context {
     /// recorded value out of the run log. A hand-built context gets its own
     /// empty registry, which masks nothing.
     pub(crate) secrets: SecretRegistry,
+    /// Validated `libraries:` bindings (RFC 005), shared by every context of
+    /// the run; each generator built by [`Context::new_generator`] mints its
+    /// own instances from these. `None` when no libraries are declared.
+    pub(crate) libraries: Option<Arc<crate::library::LibrarySet>>,
+    /// Run-scoped per-library metrics recorder (RFC 005), shared by every
+    /// generator of the run. `None` when no libraries are declared.
+    pub(crate) library_metrics: Option<Arc<crate::library::LibraryMetrics>>,
+    /// Run-level determinism seed (`seed:` in the config, RFC 005). When set,
+    /// generators derive `hash(seed, vu_id, conn_seq)` instead of a random
+    /// seed.
+    pub(crate) run_seed: Option<u64>,
+    /// This VU's id (1-based) and current loop iteration — carried into
+    /// library call contexts. 0 in hand-built contexts.
+    pub(crate) vu_id: u64,
+    pub(crate) iteration_seq: u64,
+    /// Counts generators minted by this context — the `conn_seq` input of the
+    /// per-instance seed derivation.
+    gen_counter: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Context {
@@ -71,6 +89,47 @@ impl Context {
     /// hand-built contexts.
     pub fn http_client_shard(&self) -> usize {
         self.http_client_shard
+    }
+
+    /// A fresh `${…}` generator for a new connection or one-shot action.
+    /// Seeded deterministically as `hash(run_seed, vu_id, conn_seq)` when the
+    /// config sets `seed:`, randomly otherwise; every declared library is
+    /// attached as a fresh instance behind its alias (one instance per
+    /// generator owner — RFC 005 instance lifecycle). Fails only when a
+    /// library rejects its `with:` config at instantiation.
+    pub fn new_generator(&self) -> Result<crate::generate::Gen, String> {
+        let conn_seq = self
+            .gen_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        let seed = match self.run_seed {
+            Some(run_seed) => crate::library::derive_seed(run_seed, self.vu_id, conn_seq),
+            None => uuid::Uuid::new_v4().as_u128() as u64,
+        };
+        let mut gen = crate::generate::Gen::new(seed).with_vu(self.vu_id, self.iteration_seq);
+        if let Some(metrics) = &self.library_metrics {
+            gen = gen.with_library_metrics(Arc::clone(metrics));
+        }
+        if let Some(set) = &self.libraries {
+            for lib in &set.libraries {
+                let instance = lib
+                    .provider
+                    .instantiate(lib.config.clone(), seed)
+                    .map_err(|e| format!("library '{}' ({}): {e}", lib.alias, lib.provider.id()))?;
+                gen.attach_library(lib.alias.clone(), instance);
+            }
+        }
+        Ok(gen)
+    }
+
+    /// A lazily-built `${…}` expander for one-shot actions (http, tcp/udp,
+    /// llm, pub/sub, file-write): every expansion done through it shares one
+    /// message context — one `begin_message`, so `${seq}` reads 1 and library
+    /// `memo` keys see one message. The generator (and its library instances)
+    /// is only constructed on the first token-bearing string, so token-free
+    /// executions pay nothing. See [`TokenExpander`].
+    pub(crate) fn token_expander(&self) -> TokenExpander<'_> {
+        TokenExpander { ctx: self, gen: None }
     }
 
     /// Interpolate `${{ expr }}` placeholders in a string.
@@ -201,6 +260,51 @@ impl Context {
             ),
             other => other.clone(),
         })
+    }
+}
+
+/// One message's worth of `${…}` expansion for a one-shot action, built by
+/// [`Context::token_expander`]. Strings expand through one lazily-built
+/// [`crate::generate::Gen`], so every field of the request shares one
+/// `begin_message` (one `${seq}` value, one library message context) while a
+/// token-free execution never constructs a generator — or its library
+/// instances — at all. `Err` from any expand call is a step failure (known
+/// alias + unknown function / bad args / library error — see
+/// [`crate::generate::Gen::expand`]); unknown tokens stay verbatim.
+pub(crate) struct TokenExpander<'a> {
+    ctx: &'a Context,
+    gen: Option<crate::generate::Gen>,
+}
+
+impl TokenExpander<'_> {
+    /// Expand one string. Token-free strings return unchanged without
+    /// building the generator.
+    pub(crate) fn expand(&mut self, s: &str) -> Result<String, String> {
+        if !s.contains("${") {
+            return Ok(s.to_string());
+        }
+        self.gen()?.expand(s)
+    }
+
+    /// Expand every string leaf of a JSON value (keys untouched — see
+    /// [`crate::generate::expand_tokens`]).
+    pub(crate) fn expand_value(&mut self, v: &Value) -> Result<Value, String> {
+        if !crate::generate::contains_token(v) {
+            return Ok(v.clone());
+        }
+        crate::generate::expand_tokens(v, self.gen()?)
+    }
+
+    fn gen(&mut self) -> Result<&mut crate::generate::Gen, String> {
+        if self.gen.is_none() {
+            let mut gen = self.ctx.new_generator()?;
+            // One execution is one message: every expansion through this
+            // expander shares one `${seq}` value and one library message
+            // context (memo keys repeat within the request).
+            gen.begin_message();
+            self.gen = Some(gen);
+        }
+        Ok(self.gen.as_mut().expect("generator set above"))
     }
 }
 
@@ -425,5 +529,57 @@ mod tests {
     fn stored_vars_still_miss_to_empty_in_strict_mode() {
         let ctx = Context::new();
         assert_eq!(ctx.try_interpolate("${{ missing.field }}").unwrap(), "");
+    }
+
+    // -----------------------------------------------------------------
+    // new_generator (RFC 005 wiring)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn new_generator_attaches_declared_libraries() {
+        let mut ctx = Context::new();
+        let libraries = crate::library::validate_libraries(
+            &[crate::library::LibraryRef {
+                use_: "@std/random@v1".into(),
+                r#as: None,
+                capabilities: None,
+                with: None,
+            }],
+            false,
+        )
+        .unwrap();
+        ctx.libraries = Some(Arc::new(crate::library::LibrarySet { libraries }));
+        let mut gen = ctx.new_generator().unwrap();
+        gen.begin_message();
+        let v = gen.expand("${random.nanoid(8)}").unwrap();
+        assert_eq!(v.len(), 8, "{v}");
+    }
+
+    #[test]
+    fn new_generator_is_deterministic_with_a_run_seed() {
+        let make = || {
+            let mut ctx = Context::new();
+            ctx.run_seed = Some(42);
+            ctx.vu_id = 3;
+            ctx.new_generator().unwrap()
+        };
+        let mut a = make();
+        let mut b = make();
+        assert_eq!(
+            a.expand("${rand(1,1000000)}").unwrap(),
+            b.expand("${rand(1,1000000)}").unwrap(),
+            "same run seed + vu + conn_seq → same generator stream"
+        );
+        // The next generator from the same context draws a different
+        // conn_seq and therefore a different stream.
+        let mut ctx = Context::new();
+        ctx.run_seed = Some(42);
+        ctx.vu_id = 3;
+        let mut first = ctx.new_generator().unwrap();
+        let mut second = ctx.new_generator().unwrap();
+        assert_ne!(
+            first.expand("${rand(1,1000000)}").unwrap(),
+            second.expand("${rand(1,1000000)}").unwrap(),
+        );
     }
 }

@@ -59,6 +59,12 @@ pub struct TestDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub import: Option<crate::import::ImportSpec>,
 
+    /// Value-generator libraries for `${alias.fn(...)}` tokens (RFC 005).
+    /// Concatenates with the config file's and with imported documents'
+    /// declarations; a duplicate alias is a validation error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub libraries: Option<Vec<crate::library::LibraryRef>>,
+
     pub steps: Vec<Step>,
 }
 
@@ -126,6 +132,19 @@ pub struct RunConfig {
     /// from an untrusted source cannot spawn or signal OS processes.
     #[serde(default)]
     pub allow_process_actions: bool,
+
+    /// Allow `libraries:` entries to carry a non-empty `capabilities:` grant
+    /// (fs/net/clock for WASM libraries, RFC 005). Fail-closed: defaults to
+    /// `false`, and any grant without it is a validation error.
+    #[serde(default)]
+    pub allow_library_capabilities: bool,
+
+    /// Run-level determinism seed (RFC 005): when set, every `${…}`
+    /// generator and library instance derives its seed as
+    /// `hash(seed, vu_id, conn_seq)`, making the run's generated values
+    /// reproducible. Wall-clock time stays non-deterministic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 
     /// Ramping-VU load profile (k6-style): ramp the number of virtual users
     /// linearly to each stage's `target` over its `duration`. Mutually
@@ -236,6 +255,8 @@ impl Default for RunConfig {
             duration: default_duration(),
             allow_file_actions: false,
             allow_process_actions: false,
+            allow_library_capabilities: false,
+            seed: None,
             stages: Vec::new(),
             arrival: None,
             gpu: None,
