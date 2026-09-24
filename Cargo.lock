@@ -2781,7 +2781,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "perfscale-cli"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "assert_cmd",
  "axum 0.7.9",
@@ -2811,11 +2811,11 @@ dependencies = [
 
 [[package]]
 name = "perfscale-connection"
-version = "0.21.0"
+version = "0.21.1"
 
 [[package]]
 name = "perfscale-core"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "async-graphql",
  "async-graphql-axum",
@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "perfscale-library-sdk"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "serde_json",
  "wit-bindgen",
