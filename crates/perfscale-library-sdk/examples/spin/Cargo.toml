@@ -1,0 +1,16 @@
+[package]
+name = "perfscale-spin-library"
+version = "0.1.0"
+edition = "2021"
+description = "Test fixture perfscale WASM library: an infinite loop to trip the fuel limit (RFC 005)"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+perfscale-library-sdk = { path = "../.." }
+serde_json = "1"
+
+# Standalone fixture crate, built on demand by perfscale-core tests.
+[workspace]

@@ -1,0 +1,45 @@
+// perfscale library ABI, version 0.1 (RFC 005 phase 2).
+//
+// Single source of truth for the contract between the engine (host,
+// `crates/perfscale-core/src/library/wasm.rs`) and WASM value-generator
+// libraries (guests, e.g. via `crates/perfscale-library-sdk`). Both sides
+// generate bindings from this file — keep it in sync with the RFC and bump
+// the package version on any change.
+package perfscale:library@0.1.0;
+
+interface library {
+    /// The context every call receives (RFC 005 "Call context").
+    record context {
+        /// Same counter as the `${seq}` generator token; bumped per message
+        /// send. `memo(key)` scopes to it.
+        message-seq: u64,
+        /// VU loop iteration.
+        iteration-seq: u64,
+        /// Virtual-user id, for per-VU partitioning.
+        vu-id: u64,
+        /// Per-instance deterministic seed.
+        seed: u64,
+        /// Wall clock, unix milliseconds.
+        time-ms: u64,
+    }
+
+    /// Library metadata as JSON:
+    /// `{ "name": "...", "version": "...",
+    ///    "functions": [{ "name", "description", "secret" }] }`.
+    info: func() -> string;
+
+    /// Initialize the instance with the `with:` block from YAML (JSON).
+    /// Failure is fatal to the run.
+    init: func(config-json: string) -> result<_, string>;
+
+    /// Invoke one exported function. `args-json` is a JSON array of the
+    /// token arguments; the result is the string placed into the payload.
+    call: func(ctx: context, func-name: string, args-json: string) -> result<string, string>;
+}
+
+world perfscale-library {
+    export library;
+    // WASI imports (wasi:filesystem, wasi:clocks, wasi:http) are optional
+    // capabilities: the host connects exactly the granted subset and refuses
+    // to load a component importing more than granted.
+}

@@ -552,3 +552,118 @@ async fn k6_script_against_backend_reports_success() {
     assert!(all.contains("2 complete"), "k6 output was:\n{all}");
     server.verify().await;
 }
+
+// ---------------------------------------------------------------------------
+// WASM value-generator libraries (RFC 005 phase 2)
+// ---------------------------------------------------------------------------
+
+/// Build the SDK `hello` example component once; `None` (skip) when the
+/// wasm32-wasip2 target is not installed.
+#[cfg(feature = "wasm-libs")]
+fn hello_component() -> Option<std::path::PathBuf> {
+    use std::sync::OnceLock;
+    static HELLO: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    HELLO
+        .get_or_init(|| {
+            let installed = std::process::Command::new("rustup")
+                .args(["target", "list", "--installed"])
+                .output()
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .any(|l| l.trim() == "wasm32-wasip2")
+                })
+                .unwrap_or(false);
+            if !installed {
+                eprintln!(
+                    "skipping WASM library e2e test: wasm32-wasip2 target not installed \
+                     (rustup target add wasm32-wasip2)"
+                );
+                return None;
+            }
+            let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .canonicalize()
+                .unwrap();
+            let target = ws.join("target/wasm-libs-fixtures");
+            let status = std::process::Command::new(
+                std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()),
+            )
+            .args(["build", "--release", "--target", "wasm32-wasip2"])
+            .arg("--manifest-path")
+            .arg(ws.join("crates/perfscale-library-sdk/examples/hello/Cargo.toml"))
+            .arg("--target-dir")
+            .arg(&target)
+            .status()
+            .ok()?;
+            if !status.success() {
+                eprintln!("failed to build the hello fixture component");
+                return None;
+            }
+            Some(target.join("wasm32-wasip2/release/perfscale_hello_library.wasm"))
+        })
+        .clone()
+}
+
+/// A YAML config declaring a local `.wasm` library expands `${hello.*}`
+/// tokens through the component end to end (RFC 005 phase 2).
+#[cfg(feature = "wasm-libs")]
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn yaml_run_expands_wasm_library_tokens() {
+    let Some(component) = hello_component() else {
+        return;
+    };
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/greet"))
+        // std/http expands `${...}` in the body: this expectation only
+        // matches when the WASM component produced the greeting.
+        .and(body_string_contains("hello, world!"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1..)
+        .mount(&server)
+        .await;
+
+    let test_yaml = format!(
+        r#"
+steps:
+  - name: greet
+    use: std/http@v1
+    with:
+      method: POST
+      url: {0}/greet
+      body: |
+        {{ "msg": "${{hello.greet(world)}}" }}
+"#,
+        server.uri()
+    );
+    let config_yaml = "vus: 1\nduration: 1s\n";
+
+    let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
+    let config = yaml::parse_config_file(config_yaml).expect("config yaml parses");
+
+    let libraries = vec![perfscale_core::library::LibraryRef {
+        use_: component.to_string_lossy().into_owned(),
+        r#as: Some("hello".into()),
+        capabilities: None,
+        with: None,
+    }];
+
+    let rx = runner::execute(ExecutionPlan::NativeSteps {
+        test,
+        before: config.before,
+        after: config.after,
+        variables: config.variables,
+        shared_variables: config.shared_variables,
+        libraries,
+        config: Box::new(config.run),
+        quiet: false,
+        metrics_tx: None,
+    })
+    .await
+    .unwrap();
+    let _lines = collect(rx).await;
+    // The mock only matched if the body contained the component's output.
+    server.verify().await;
+}

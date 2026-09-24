@@ -293,12 +293,35 @@ Rules:
   message yields one id; the next message generates a fresh one.
 - `seed: 42` in the config makes a run reproducible: per-instance seeds
   derive as `hash(seed, vu_id, conn_seq)`.
-- `capabilities:` grants (for future WASM libraries: `fs`, `clock`, or
-  `{ net: [hosts] }`) require `allow_library_capabilities: true`
-  (fail-closed, same pattern as `allow_file_actions`). `@std/random@v1`
-  declares no capabilities — granting it any is a validation error.
-- Local paths / URLs (`use: ./libs/fixer-ids.wasm`) are WASM libraries —
-  rejected with a clear error until phase 2 lands the WASM runtime.
+- `capabilities:` grants (`fs`, `clock`, or `{ net: [hosts] }`) require
+  `allow_library_capabilities: true` (fail-closed, same pattern as
+  `allow_file_actions`). `@std/random@v1` declares no capabilities —
+  granting it any is a validation error.
+- Local paths (`use: ./libs/fixer-ids.wasm`) load WASM component libraries
+  (WASI Preview 2, `perfscale:library@0.1.0` WIT — see
+  [RFC 005](../rfcs/005-libraries.md)). Paths resolve **relative to the
+  declaring file's directory**, like `import:` paths. The perfscale CLI
+  binary ships WASM support; embedders of `perfscale-core` need the
+  `wasm-libs` cargo feature. HTTPS/git refs are `perfscale install`
+  territory (phase 3) and are rejected for now.
+
+WASM library rules:
+
+- The sandbox is fail-closed: the component's WIT imports are inspected at
+  load, and anything beyond the YAML `capabilities:` grant is a hard load
+  error naming the needed vs granted capabilities. `fs` is a read-only
+  preopen confined to `fs_root` (default: the directory containing the
+  `.wasm`); `clock` is `wasi:clocks`; `net: [hosts]` is **not yet
+  supported** (a `net` grant fails the load with a clear error);
+  `wasi:random` and raw sockets are never provided — libraries draw
+  randomness from the seeded PRNG (`ctx.seed`) in their SDK.
+- `with:` is passed to the component's `init()` as JSON; an init failure is
+  fatal to the run.
+- A trapping or runaway call fails the step: every call runs under a
+  per-call fuel budget (~50M) and each instance is capped at 64 MiB of
+  memory.
+- Author libraries in Rust with
+  [`perfscale-library-sdk`](../crates/perfscale-library-sdk/README.md).
 
 `@std/random@v1` functions:
 

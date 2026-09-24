@@ -162,7 +162,7 @@
           ]
         },
         "use": {
-          "description": "Library reference: `@std/random@v1` (built-in, native). Local paths, HTTPS URLs and git refs are WASM libraries — accepted syntactically but rejected at validation until phase 2 lands the WASM runtime.",
+          "description": "Library reference: `@std/random@v1` (built-in, native) or a local `.wasm` path (WASM component, relative to the declaring file's directory — resolved by `import:` handling; requires a build with the `wasm-libs` feature, which the CLI enables). HTTPS URLs and git refs are distribution sources (phase 3) and are rejected at validation.",
           "type": "string"
         },
         "with": {

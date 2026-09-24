@@ -528,32 +528,35 @@ pub async fn run_native(
     // Library declarations are validated before anything runs (RFC 005):
     // unknown refs, capability grants without `allow_library_capabilities`,
     // and alias collisions are configuration errors, not mid-run surprises.
-    let library_set =
-        match crate::library::validate_libraries(&libraries, config.allow_library_capabilities) {
-            Ok(v) if v.is_empty() => None,
-            Ok(v) => Some(Arc::new(crate::library::LibrarySet { libraries: v })),
-            Err(msg) => {
-                emit(
-                    &tx,
-                    LogSource::Stderr,
-                    &format!("invalid library configuration: {msg}"),
-                    &secrets,
-                )
-                .await;
-                registry.shutdown_all().await;
-                emit(
-                    &tx,
-                    LogSource::System,
-                    "Done — configuration error",
-                    &secrets,
-                )
-                .await;
-                return NativeRunOutcome {
-                    config_error: Some(msg),
-                    ..NativeRunOutcome::default()
-                };
-            }
-        };
+    let library_set = match crate::library::validate_libraries(
+        &libraries,
+        config.allow_library_capabilities,
+        config.fs_root.as_deref(),
+    ) {
+        Ok(v) if v.is_empty() => None,
+        Ok(v) => Some(Arc::new(crate::library::LibrarySet { libraries: v })),
+        Err(msg) => {
+            emit(
+                &tx,
+                LogSource::Stderr,
+                &format!("invalid library configuration: {msg}"),
+                &secrets,
+            )
+            .await;
+            registry.shutdown_all().await;
+            emit(
+                &tx,
+                LogSource::System,
+                "Done — configuration error",
+                &secrets,
+            )
+            .await;
+            return NativeRunOutcome {
+                config_error: Some(msg),
+                ..NativeRunOutcome::default()
+            };
+        }
+    };
 
     // Run-scoped per-library metrics recorder (RFC 005): every generator
     // minted by any context of the run counts and times its library calls

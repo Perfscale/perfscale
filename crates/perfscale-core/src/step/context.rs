@@ -549,6 +549,7 @@ mod tests {
                 with: None,
             }],
             false,
+            None,
         )
         .unwrap();
         ctx.libraries = Some(Arc::new(crate::library::LibrarySet { libraries }));

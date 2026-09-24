@@ -1923,6 +1923,7 @@ mod tests {
                 with: None,
             }],
             false,
+            None,
         )
         .unwrap();
         ctx.libraries = Some(std::sync::Arc::new(crate::library::LibrarySet {

@@ -11,7 +11,10 @@ name = "perfscale"
 path = "src/main.rs"
 
 [dependencies]
-perfscale-core = { path = "../perfscale-core" }
+# `wasm-libs` (RFC 005 phase 2) is enabled unconditionally: the shipped CLI
+# binary always supports WASM libraries, while embedders of the core crate
+# stay lean by default.
+perfscale-core = { path = "../perfscale-core", features = ["wasm-libs"] }
 
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "process"] }

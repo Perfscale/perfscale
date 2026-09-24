@@ -7,11 +7,11 @@
 //! @std/random@v1`), addressed through an alias (`${random.ulid()}`), and
 //! validated before the run starts.
 //!
-//! Phase 1 is native-only: only built-in `@std/*` libraries resolve, and the
-//! provider traits below are the exact contract external WASM libraries will
-//! implement in phase 2 (wasmtime + WIT) — `@std/random@v1` dogfoods them.
-//! Local paths and URL refs are rejected at validation time with a clear
-//! phase-2 error.
+//! Phase 1 shipped the native built-in `@std/random@v1`; phase 2 (feature
+//! `wasm-libs`, always on in the CLI) adds WASM libraries: local `.wasm`
+//! paths (relative to the declaring file) load as WASI Preview 2 components
+//! under the fail-closed capability model (see the `wasm` module). HTTPS/git refs are
+//! phase-3 distribution and are rejected at validation.
 //!
 //! # Token resolution
 //!
@@ -46,6 +46,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod metrics;
 pub mod std_random;
+#[cfg(feature = "wasm-libs")]
+pub mod wasm;
 
 pub use metrics::{LibraryAliasSummary, LibraryMetrics};
 
@@ -66,9 +68,11 @@ pub const RESERVED_TOKEN_NAMES: &[&str] = &[
 /// One `libraries:` entry — a value-generator library bound to a token alias.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LibraryRef {
-    /// Library reference: `@std/random@v1` (built-in, native). Local paths,
-    /// HTTPS URLs and git refs are WASM libraries — accepted syntactically
-    /// but rejected at validation until phase 2 lands the WASM runtime.
+    /// Library reference: `@std/random@v1` (built-in, native) or a local
+    /// `.wasm` path (WASM component, relative to the declaring file's
+    /// directory — resolved by `import:` handling; requires a build with the
+    /// `wasm-libs` feature, which the CLI enables). HTTPS URLs and git refs
+    /// are distribution sources (phase 3) and are rejected at validation.
     #[serde(rename = "use")]
     pub use_: String,
 
@@ -249,55 +253,117 @@ pub fn builtin_provider(id: &str) -> Option<Arc<dyn LibraryProvider>> {
     }
 }
 
+/// Resolve a local `.wasm` path to a WASM provider (RFC 005 phase 2). The
+/// path arrives anchored to the declaring file's directory (see
+/// [`crate::import`]); the file must exist and carry a `.wasm` extension.
+#[cfg(feature = "wasm-libs")]
+fn resolve_wasm(
+    lib: &LibraryRef,
+    fs_root: Option<&std::path::Path>,
+) -> Result<(Arc<dyn LibraryProvider>, String), String> {
+    let path = std::path::Path::new(&lib.use_);
+    if !path.exists() {
+        return Err(format!(
+            "library '{}': file not found (paths resolve relative to the declaring file's directory)",
+            lib.use_
+        ));
+    }
+    if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
+        return Err(format!(
+            "library '{}': expected a .wasm component file",
+            lib.use_
+        ));
+    }
+    let provider = wasm::WasmLibraryProvider::load(path, lib.capabilities.as_deref(), fs_root)?;
+    let name = provider.library_name().to_string();
+    Ok((Arc::new(provider), name))
+}
+
+/// Local `.wasm` paths without the runtime: a clear error instead of a
+/// confusing "unknown library".
+#[cfg(not(feature = "wasm-libs"))]
+fn resolve_wasm(
+    lib: &LibraryRef,
+    _fs_root: Option<&std::path::Path>,
+) -> Result<(Arc<dyn LibraryProvider>, String), String> {
+    Err(format!(
+        "library '{}': this perfscale build has no WASM support (feature wasm-libs) — use a perfscale CLI binary, which ships it",
+        lib.use_
+    ))
+}
+
 /// Validate declared `libraries:` and resolve them to providers. Catches —
-/// before anything runs — non-`@std/*` refs (WASM, phase 2), unknown
-/// libraries, capability grants without `allow_library_capabilities: true`,
-/// grants to libraries that declare no capabilities, bad aliases, alias
-/// collisions (between libraries or with the built-in token names).
+/// before anything runs — unknown libraries, capability grants without
+/// `allow_library_capabilities: true`, grants to libraries that declare no
+/// capabilities, bad aliases, alias collisions (between libraries or with the
+/// built-in token names), and (for WASM libraries) missing files, unsupported
+/// WIT versions and capability grants narrower than the component's imports.
+///
+/// `fs_root` confines the `fs` capability preopen of WASM libraries
+/// ([`crate::step::RunConfig::fs_root`]; lint passes `None`).
 pub fn validate_libraries(
     refs: &[LibraryRef],
     allow_capabilities: bool,
+    fs_root: Option<&std::path::Path>,
 ) -> Result<Vec<ResolvedLibrary>, String> {
     let mut resolved = Vec::with_capacity(refs.len());
     let mut aliases: HashSet<String> = HashSet::new();
     for lib in refs {
-        if !lib.use_.starts_with('@') {
-            return Err(format!(
-                "library '{}': WASM libraries are not supported yet (phase 2) — only built-in @std/* libraries are available",
-                lib.use_
-            ));
-        }
-        let name = parse_std_ref(&lib.use_).ok_or_else(|| {
-            format!(
-                "library '{}': unknown library — available libraries: {}",
-                lib.use_,
-                AVAILABLE_LIBRARIES.join(", ")
-            )
-        })?;
-        let provider = builtin_provider(&lib.use_).ok_or_else(|| {
-            format!(
-                "library '{}': unknown library — available libraries: {}",
-                lib.use_,
-                AVAILABLE_LIBRARIES.join(", ")
-            )
-        })?;
+        let has_grants = lib.capabilities.as_ref().is_some_and(|c| !c.is_empty());
+        let (provider, default_alias): (Arc<dyn LibraryProvider>, String) = if lib
+            .use_
+            .starts_with('@')
+        {
+            let name = parse_std_ref(&lib.use_).ok_or_else(|| {
+                format!(
+                    "library '{}': unknown library — available libraries: {}",
+                    lib.use_,
+                    AVAILABLE_LIBRARIES.join(", ")
+                )
+            })?;
+            let provider = builtin_provider(&lib.use_).ok_or_else(|| {
+                format!(
+                    "library '{}': unknown library — available libraries: {}",
+                    lib.use_,
+                    AVAILABLE_LIBRARIES.join(", ")
+                )
+            })?;
 
-        if lib.capabilities.as_ref().is_some_and(|c| !c.is_empty()) {
-            if !allow_capabilities {
+            if has_grants {
+                if !allow_capabilities {
+                    return Err(format!(
+                            "library '{}' grants capabilities but the config does not set `allow_library_capabilities: true` (fail-closed, like allow_file_actions)",
+                            lib.use_
+                        ));
+                }
+                // No phase-1 built-in declares capabilities; keep the
+                // check provider-driven once one does.
                 return Err(format!(
-                    "library '{}' grants capabilities but the config does not set `allow_library_capabilities: true` (fail-closed, like allow_file_actions)",
-                    lib.use_
+                    "library {} has no capabilities to grant",
+                    provider.id()
                 ));
             }
-            // No phase-1 built-in declares capabilities; keep the check
-            // provider-driven once one does.
-            return Err(format!(
-                "library {} has no capabilities to grant",
-                provider.id()
-            ));
-        }
+            (provider, name.to_string())
+        } else {
+            if lib.use_.starts_with("https://")
+                || lib.use_.starts_with("http://")
+                || lib.use_.starts_with("git+")
+            {
+                return Err(format!(
+                        "library '{}': remote sources are fetched by `perfscale install` (phase 3, not yet available) — use a local .wasm path or a built-in @std/* library",
+                        lib.use_
+                    ));
+            }
+            if has_grants && !allow_capabilities {
+                return Err(format!(
+                        "library '{}' grants capabilities but the config does not set `allow_library_capabilities: true` (fail-closed, like allow_file_actions)",
+                        lib.use_
+                    ));
+            }
+            resolve_wasm(lib, fs_root)?
+        };
 
-        let alias = lib.r#as.clone().unwrap_or_else(|| name.to_string());
+        let alias = lib.r#as.clone().unwrap_or(default_alias);
         if !is_valid_alias(&alias) {
             return Err(format!(
                 "library '{}': invalid alias '{alias}' — aliases match [a-z][a-z0-9_]*",
@@ -379,26 +445,35 @@ mod tests {
 
     #[test]
     fn validates_std_random_with_default_alias() {
-        let resolved = validate_libraries(&[std_random_ref()], false).unwrap();
+        let resolved = validate_libraries(&[std_random_ref()], false, None).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].alias, "random");
         assert_eq!(resolved[0].provider.id(), "@std/random@v1");
     }
 
     #[test]
-    fn rejects_non_std_refs_as_phase_2() {
+    fn rejects_remote_refs_as_phase_3() {
         for path in [
-            "./libs/fixer-ids.wasm",
             "https://x.test/l.wasm",
+            "http://x.test/l.wasm",
             "git+https://t/r@v1",
         ] {
             let mut r = std_random_ref();
             r.use_ = path.into();
-            let err = validate_libraries(&[r], true).unwrap_err();
-            assert!(
-                err.contains("WASM libraries are not supported yet (phase 2)"),
-                "{path} → {err}"
-            );
+            let err = validate_libraries(&[r], true, None).unwrap_err();
+            assert!(err.contains("phase 3"), "{path} → {err}");
+        }
+    }
+
+    #[test]
+    fn local_wasm_paths_resolve_or_error_clearly() {
+        let mut r = std_random_ref();
+        r.use_ = "./libs/missing.wasm".into();
+        let err = validate_libraries(&[r], true, None).unwrap_err();
+        if cfg!(feature = "wasm-libs") {
+            assert!(err.contains("file not found"), "{err}");
+        } else {
+            assert!(err.contains("no WASM support"), "{err}");
         }
     }
 
@@ -413,7 +488,7 @@ mod tests {
         ] {
             let mut r = std_random_ref();
             r.use_ = id.into();
-            let err = validate_libraries(&[r], false).unwrap_err();
+            let err = validate_libraries(&[r], false, None).unwrap_err();
             assert!(
                 err.contains("available libraries: @std/random@v1"),
                 "{id} → {err}"
@@ -425,7 +500,7 @@ mod tests {
     fn capabilities_need_the_global_gate() {
         let mut r = std_random_ref();
         r.capabilities = Some(vec![Capability::Simple("clock".into())]);
-        let err = validate_libraries(&[r], false).unwrap_err();
+        let err = validate_libraries(&[r], false, None).unwrap_err();
         assert!(err.contains("allow_library_capabilities"), "{err}");
     }
 
@@ -433,7 +508,7 @@ mod tests {
     fn std_random_has_no_capabilities_to_grant() {
         let mut r = std_random_ref();
         r.capabilities = Some(vec![Capability::Simple("clock".into())]);
-        let err = validate_libraries(&[r], true).unwrap_err();
+        let err = validate_libraries(&[r], true, None).unwrap_err();
         assert!(err.contains("has no capabilities to grant"), "{err}");
     }
 
@@ -442,12 +517,12 @@ mod tests {
         for bad in ["Random", "1x", "r-x", "r.x", ""] {
             let mut r = std_random_ref();
             r.r#as = Some(bad.into());
-            let err = validate_libraries(&[r], false).unwrap_err();
+            let err = validate_libraries(&[r], false, None).unwrap_err();
             assert!(err.contains("invalid alias"), "{bad} → {err}");
         }
         let mut r = std_random_ref();
         r.r#as = Some("my_random2".into());
-        assert!(validate_libraries(&[r], false).is_ok());
+        assert!(validate_libraries(&[r], false, None).is_ok());
     }
 
     #[test]
@@ -455,7 +530,7 @@ mod tests {
         for name in RESERVED_TOKEN_NAMES {
             let mut r = std_random_ref();
             r.r#as = Some((*name).into());
-            let err = validate_libraries(&[r], false).unwrap_err();
+            let err = validate_libraries(&[r], false, None).unwrap_err();
             assert!(err.contains("built-in token"), "{name} → {err}");
         }
     }
@@ -466,7 +541,7 @@ mod tests {
         a.r#as = Some("ids".into());
         let mut b = std_random_ref();
         b.r#as = Some("ids".into());
-        let err = validate_libraries(&[a, b], false).unwrap_err();
+        let err = validate_libraries(&[a, b], false, None).unwrap_err();
         assert!(err.contains("duplicate library alias 'ids'"), "{err}");
     }
 

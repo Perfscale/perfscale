@@ -788,7 +788,7 @@ fn declared_libraries(value: &Value, kind: DocKind) -> (Vec<LintIssue>, Resolved
             .get("allow_library_capabilities")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-    match crate::library::validate_libraries(&refs, allow) {
+    match crate::library::validate_libraries(&refs, allow, None) {
         Ok(resolved) => (
             Vec::new(),
             resolved
@@ -2124,11 +2124,12 @@ steps:
 
     #[test]
     fn invalid_library_declaration_is_surfaced_not_duplicated() {
-        // Non-@std refs are a core validation error; lint reports the same
-        // message at /libraries instead of reimplementing the check.
+        // Remote refs are a core validation error (phase-3 distribution);
+        // lint reports the same message at /libraries instead of
+        // reimplementing the check.
         let yaml = r#"
 libraries:
-  - use: './libs/fixer-ids.wasm'
+  - use: 'https://x.test/fixer-ids.wasm'
 steps:
   - use: std/log@v1
     with: { message: hi }
@@ -2138,10 +2139,7 @@ steps:
             .iter()
             .find(|i| i.location == "/libraries")
             .unwrap_or_else(|| panic!("no /libraries issue: {issues:?}"));
-        assert!(
-            bad.problem.contains("WASM libraries are not supported yet"),
-            "{bad:?}"
-        );
+        assert!(bad.problem.contains("phase 3"), "{bad:?}");
 
         // Same for a config document.
         let yaml = "libraries:\n  - use: '@std/faker@v1'\n";

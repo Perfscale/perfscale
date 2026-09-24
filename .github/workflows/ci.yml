@@ -25,6 +25,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          # wasm32-wasip2: the WASM-library tests build the SDK example
+          # components (RFC 005 phase 2); without the target they skip.
+          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
 
       # k6 + locust — several tests exercise the real binaries end-to-end

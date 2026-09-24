@@ -253,6 +253,18 @@ async fn resolve_parsed(
     chain: &mut Vec<String>,
     resolved: &mut usize,
 ) -> Result<Value, String> {
+    // Anchor relative `libraries[].use` paths (RFC 005 phase 2) to this
+    // document's directory — the same rule `import:` applies to its own
+    // relative paths. Per document, *before* merging, so an imported base's
+    // library paths stay relative to the base, not the importing file.
+    match &origin {
+        Origin::Local { dir } => anchor_library_paths(&mut value, dir),
+        Origin::Git { dir, .. } => anchor_library_paths(&mut value, dir),
+        // URL/detached documents have no local filesystem to anchor to; a
+        // relative `.wasm` path there fails validation with a clear error.
+        Origin::Url { .. } | Origin::Detached => {}
+    }
+
     let Some(import_value) = value.as_object_mut().and_then(|obj| obj.remove("import")) else {
         return Ok(value);
     };
@@ -284,6 +296,30 @@ async fn resolve_parsed(
     chain.pop();
 
     Ok(deep_merge(base, value))
+}
+
+/// Rewrite relative `libraries[].use` paths to be anchored at `dir` (the
+/// declaring file's directory). Built-in refs (`@std/...`) and remote sources
+/// (`https://`, `git+`) pass through untouched.
+fn anchor_library_paths(value: &mut Value, dir: &Path) {
+    let Some(libs) = value.get_mut("libraries").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for entry in libs.iter_mut() {
+        let Some(use_val) = entry.get_mut("use") else {
+            continue;
+        };
+        let Some(s) = use_val.as_str() else {
+            continue;
+        };
+        if s.starts_with('@') || s.contains("://") || s.starts_with("git+") {
+            continue;
+        }
+        let path = Path::new(s);
+        if !path.is_absolute() {
+            *use_val = Value::String(dir.join(path).to_string_lossy().into_owned());
+        }
+    }
 }
 
 /// Deep-merge `overlay` on top of `base`: objects merge key-by-key

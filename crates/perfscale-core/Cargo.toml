@@ -94,6 +94,18 @@ sqlx = { version = "0.8", default-features = false, features = ["postgres", "mys
 # no JetStream; the in-process `memory` driver needs no client at all.
 async-nats = "0.50.0"
 
+# RFC 005 phase 2: WASM value-generator libraries (see `wit/library.wit` and
+# `src/library/wasm.rs`). Optional — embedders of the core crate stay lean;
+# the CLI enables `wasm-libs` unconditionally so the shipped binary always
+# has WASM support. Synchronous wasmtime API (the `LibraryInstance` contract
+# is sync); the p2-only feature set of wasmtime-wasi keeps wasip1 out.
+wasmtime = { version = "49", optional = true }
+wasmtime-wasi = { version = "49", optional = true, default-features = false, features = ["p2"] }
+
+[features]
+# WASM value-generator libraries (RFC 005 phase 2).
+wasm-libs = ["dep:wasmtime", "dep:wasmtime-wasi"]
+
 # kill(2)/killpg(2) for the managed child processes of `std/child_process@v1`
 # and `std/kill_process@v1` (signal delivery + tree kill by process group).
 # Non-unix platforms degrade to `Child::kill` without process groups.

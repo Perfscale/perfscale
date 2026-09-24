@@ -3,6 +3,7 @@ members = [
     "crates/perfscale-cli",
     "crates/perfscale-connection",
     "crates/perfscale-core",
+    "crates/perfscale-library-sdk",
 ]
 resolver = "2"
 
