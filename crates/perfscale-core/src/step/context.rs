@@ -129,7 +129,10 @@ impl Context {
     /// is only constructed on the first token-bearing string, so token-free
     /// executions pay nothing. See [`TokenExpander`].
     pub(crate) fn token_expander(&self) -> TokenExpander<'_> {
-        TokenExpander { ctx: self, gen: None }
+        TokenExpander {
+            ctx: self,
+            gen: None,
+        }
     }
 
     /// Interpolate `${{ expr }}` placeholders in a string.

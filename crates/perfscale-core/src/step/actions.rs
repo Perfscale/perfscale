@@ -544,7 +544,11 @@ fn resolve_address(params: &Value) -> Result<String, String> {
 /// `${…}` generator tokens in the text `send` expand per execution (an
 /// expansion error fails the step); `send_base64` is binary by contract and
 /// never expanded.
-fn resolve_payload(params: &Value, step_name: &str, ctx: &Context) -> Result<Option<Vec<u8>>, ActionOutput> {
+fn resolve_payload(
+    params: &Value,
+    step_name: &str,
+    ctx: &Context,
+) -> Result<Option<Vec<u8>>, ActionOutput> {
     let text = params["send"].as_str();
     let b64 = params["send_base64"].as_str();
     match (text, b64) {
@@ -2012,11 +2016,7 @@ mod tests {
         });
         let out = execute_action("std/http@v1", &params, &ctx, "step").await;
         assert!(!out.success);
-        assert!(
-            out.logs[0].1.contains("unknown function"),
-            "{:?}",
-            out.logs
-        );
+        assert!(out.logs[0].1.contains("unknown function"), "{:?}", out.logs);
         assert!(out.http_sample.is_none(), "no request must be attempted");
         server.verify().await;
     }
@@ -2129,7 +2129,10 @@ mod tests {
         let out = execute_action("std/tcp@v1", &params, &ctx, "step").await;
         assert!(out.success, "logs: {:?}", out.logs);
         let response = out.value["response"].as_str().unwrap();
-        assert!(response == "ping-1-x" || response == "ping-1-y", "{response}");
+        assert!(
+            response == "ping-1-x" || response == "ping-1-y",
+            "{response}"
+        );
     }
 
     // -----------------------------------------------------------------

@@ -2058,8 +2058,14 @@ steps:
         // …but the warning names the alias and the verbatim behavior.
         let warnings = lint_warnings(yaml, DocKind::Test);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains("unknown library alias 'faker'"), "{warnings:?}");
-        assert!(warnings[0].contains("left verbatim at runtime"), "{warnings:?}");
+        assert!(
+            warnings[0].contains("unknown library alias 'faker'"),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings[0].contains("left verbatim at runtime"),
+            "{warnings:?}"
+        );
         assert!(warnings[0].contains("/steps/0/with"), "{warnings:?}");
     }
 
@@ -2136,7 +2142,10 @@ steps:
             .iter()
             .find(|i| i.location == "/libraries")
             .unwrap_or_else(|| panic!("no /libraries issue: {issues:?}"));
-        assert!(bad.problem.contains("WASM libraries are not supported yet"), "{bad:?}");
+        assert!(
+            bad.problem.contains("WASM libraries are not supported yet"),
+            "{bad:?}"
+        );
 
         // Same for a config document.
         let yaml = "libraries:\n  - use: '@std/faker@v1'\n";
@@ -2169,7 +2178,10 @@ before:
             .unwrap_or_else(|| panic!("no unknown-function issue: {issues:?}"));
         assert_eq!(bad.location, "/before/0/with");
         // The valid call produced nothing.
-        assert!(!issues.iter().any(|i| i.problem.contains("uuid4")), "{issues:?}");
+        assert!(
+            !issues.iter().any(|i| i.problem.contains("uuid4")),
+            "{issues:?}"
+        );
     }
 
     #[test]

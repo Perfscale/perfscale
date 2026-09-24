@@ -395,13 +395,8 @@ fn bench_pubsub(c: &mut Criterion) {
                     timeout_ms: 60_000,
                 };
                 let mut out = pubsub::PubSubOutcome::default();
-                pubsub::collect_matching(
-                    &mut stream,
-                    &spec,
-                    std::time::Instant::now(),
-                    &mut out,
-                )
-                .await;
+                pubsub::collect_matching(&mut stream, &spec, std::time::Instant::now(), &mut out)
+                    .await;
                 std::hint::black_box((out.matched.len(), out.rejected))
             })
         })

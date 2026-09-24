@@ -879,7 +879,10 @@ grpc_req_failed: 1 0.10/s
 
         // …and the markdown summary surfaces per-alias aggregates.
         let md = export.to_markdown();
-        assert!(md.contains("| Library random calls/errors | 1200 / 3 |"), "{md}");
+        assert!(
+            md.contains("| Library random calls/errors | 1200 / 3 |"),
+            "{md}"
+        );
         assert!(
             md.contains("| Library random p50/p95/max | 0.02 / 0.05 / 0.31 ms |"),
             "{md}"
