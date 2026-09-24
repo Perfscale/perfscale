@@ -88,36 +88,36 @@ async fn lint_file(
             .docs("yaml-reference.md")
     })?;
 
-    // Documents with an `import:` key lint the *merged* result — that is
-    // what would actually run. Resolution failures (cycle, missing base,
-    // remote blocked without --allow-remote-import) surface as findings.
-    let effective = if has_import_key(&text) {
-        match import::load_document(path, import_opts).await {
-            Ok((value, _)) => serde_yaml::to_string(&value).unwrap_or_else(|_| text.clone()),
-            Err(e) => {
-                let suggestion = if e.contains("--allow-remote-import") {
-                    Some("network imports are opt-in: add --allow-remote-import".to_string())
-                } else {
-                    None
-                };
-                let kind = match schema {
-                    SchemaKind::Auto => detect_kind(&text),
-                    SchemaKind::Test => DocKind::Test,
-                    SchemaKind::Config => DocKind::Config,
-                };
-                return Ok((
-                    kind,
-                    text,
-                    vec![LintIssue {
-                        location: "/import".into(),
-                        problem: e,
-                        suggestion,
-                    }],
-                ));
-            }
+    // Documents go through the import loader even without an `import:` key:
+    // it anchors relative `libraries[].use` paths to the file's directory
+    // (RFC 005) — without this, lint would resolve them against the cwd
+    // while `run` resolves them against the declaring file. With imports,
+    // the *merged* result is linted — that is what would actually run.
+    // Resolution failures (cycle, missing base, remote blocked without
+    // --allow-remote-import) surface as findings.
+    let effective = match import::load_document(path, import_opts).await {
+        Ok((value, _)) => serde_yaml::to_string(&value).unwrap_or_else(|_| text.clone()),
+        Err(e) => {
+            let suggestion = if e.contains("--allow-remote-import") {
+                Some("network imports are opt-in: add --allow-remote-import".to_string())
+            } else {
+                None
+            };
+            let kind = match schema {
+                SchemaKind::Auto => detect_kind(&text),
+                SchemaKind::Test => DocKind::Test,
+                SchemaKind::Config => DocKind::Config,
+            };
+            return Ok((
+                kind,
+                text,
+                vec![LintIssue {
+                    location: "/import".into(),
+                    problem: e,
+                    suggestion,
+                }],
+            ));
         }
-    } else {
-        text
     };
 
     let kind = match schema {
@@ -127,14 +127,6 @@ async fn lint_file(
     };
     let issues = lint(&effective, kind);
     Ok((kind, effective, issues))
-}
-
-/// Cheap check whether a document has a top-level `import` key (avoids the
-/// resolve path — with its canonicalize/network cost — for plain files).
-fn has_import_key(text: &str) -> bool {
-    serde_yaml::from_str::<serde_json::Value>(text)
-        .map(|v| v.get("import").is_some())
-        .unwrap_or(false)
 }
 
 /// The GraphQL schema pass: steps with a `schema_file` validate against the

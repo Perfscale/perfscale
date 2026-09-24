@@ -567,3 +567,31 @@ fn lint_shipped_examples_are_clean() {
         .assert()
         .success();
 }
+
+#[test]
+fn lint_anchors_relative_library_paths_to_the_declaring_file() {
+    // Regression: `libraries[].use` resolved against the cwd instead of the
+    // declaring file's directory, so `perfscale lint sub/config.yaml` from a
+    // parent dir reported a bogus "file not found" (run anchored correctly).
+    // The error message must name the anchored path.
+    let dir = tempfile::tempdir().unwrap();
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let config = sub.join("config.yaml");
+    std::fs::write(
+        &config,
+        "libraries:\n  - use: ./lib.wasm\nvus: 1\nduration: 1s\n",
+    )
+    .unwrap();
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    cmd()
+        .current_dir(elsewhere.path())
+        .args(["lint", config.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(format!(
+            "{}/./lib.wasm",
+            sub.display()
+        )));
+}
