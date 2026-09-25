@@ -11,3 +11,7 @@ Release notes for the next release, written as features land.
 - If this file has no entries at tag time, the release falls back to
   auto-generated notes and the workflow prints a warning.
 -->
+
+## Library distribution (RFC 005 phase 3)
+
+- **`perfscale install`** fetches remote value-generator libraries declared in `libraries:` and pins them: `https://…/lib.wasm` sources (with a required `sha256:`) and `git+<repo>@<ref>#<path>` sources are fetched once, digest-verified, stored in the content-addressed cache (`<cache>/libraries/<sha256>.wasm`), and recorded in a TOML **`perfscale.lock`** next to the declaring file (commit-pinned for git). `run`/`lint` afterwards resolve remote refs through lock + cache **fully offline** — a missing pin or cache artifact is a hard error that says to run `perfscale install`. `--refresh` re-resolves git refs. Cache honors `PERFSCALE_CACHE_DIR`.

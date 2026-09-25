@@ -79,6 +79,33 @@ uses). Argument:
 or
 .BR config .
 .TP
+.B install
+Fetch remote libraries (RFC 005) declared in the given YAML documents and
+pin them. Every
+.B libraries:
+entry whose
+.B use:
+is an
+.I https://
+URL (with a required
+.BR sha256: )
+or a
+.I git+<repo>@<ref>#<path>
+ref is fetched once, digest-verified, stored in the content-addressed cache
+.RI ( <cache>/libraries/<sha256>.wasm ),
+and recorded in a TOML
+.I perfscale.lock
+next to the declaring file (git refs are pinned to the resolved commit).
+Afterwards
+.B run
+and
+.B lint
+resolve remote libraries through lock + cache, fully offline. Options:
+.B \-\-refresh
+re-resolves git refs (branches/tags) instead of trusting the lock. The
+cache honors
+.BR PERFSCALE_CACHE_DIR .
+.TP
 .B man
 Print this manual as plain text (the Windows path, where no
 .B man

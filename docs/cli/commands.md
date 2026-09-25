@@ -186,6 +186,28 @@ gate:
 - run: perfscale lint tests/*.yaml
 ```
 
+## `perfscale install`
+
+Fetch remote value-generator libraries (RFC 005) declared in
+`libraries:` and pin them for offline runs.
+
+```sh
+perfscale install test.yaml config.yaml
+perfscale install test.yaml --refresh   # re-resolve git refs
+```
+
+Every `use:` that is an `https://…` URL (requires a `sha256:` field) or a
+`git+<repo>@<ref>#<path>` ref is fetched once — including declarations
+found through `import:` chains — digest-verified, stored in the
+content-addressed cache (`<cache>/libraries/<sha256>.wasm`), and recorded
+in a TOML `perfscale.lock` next to the declaring file (git refs pinned to
+the resolved commit). Commit the lockfile: `run` and `lint` resolve remote
+libraries through lock + cache **fully offline**, and a missing pin or
+cache artifact is a hard error that says to run `perfscale install`.
+
+Exit code: `0` when every remote library is installed (or already pinned),
+`1` on fetch/verification errors (a sha256 mismatch names both digests).
+
 ## `perfscale schema`
 
 Print the JSON Schema perfscale validates YAML files against — the exact
@@ -296,3 +318,4 @@ offline.
 |---|---|
 | `RUST_LOG` | `tracing` filter, e.g. `RUST_LOG=debug perfscale run ...` |
 | `PERFSCALE_NO_UPDATE_CHECK` | `1` disables the update-available hint |
+| `PERFSCALE_CACHE_DIR` | Cache root for `import:` git clones and installed libraries (default `~/.cache/perfscale`) |

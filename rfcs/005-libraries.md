@@ -250,18 +250,38 @@ Two surfaces, two existing mechanisms:
 
 ### Distribution and fetching
 
+**Implemented in v0.22.0** (`perfscale install`, `perfscale.lock`, HTTPS/git
+sources, offline cache).
+
 Resolution order: built-ins (`@std/*`) → local paths → cache. Network
 sources (HTTPS, git) are fetched **only** by `perfscale install`, which
 verifies integrity and writes `perfscale.lock`:
 
+```yaml
+libraries:
+  - use: 'https://vendor.example.com/fixer-ids.wasm'
+    sha256: '…64 hex…'   # required for HTTPS
+  - use: 'git+https://github.com/org/repo.git@v1.2.3#libs/fixer-ids.wasm'
+```
+
 - HTTPS entries pin the declared `sha256`; a re-published artifact with a
   different digest is a hard error, never a silent swap.
 - git refs resolve to a commit sha recorded in the lock along with the
-  artifact digest (tags are mutable; commits are not).
-- Run and lint are fully offline against the cache. This is the RFC 002
-  discipline ("explicit install; run time is offline") adopted from day
-  one, so the future marketplace registry becomes a pure addition, not a
-  migration.
+  artifact digest (tags are mutable; commits are not). The `git+` syntax is
+  `git+<repo-url>@<ref>#<path>`: the ref split is at the *last* `@` (a
+  userinfo `@` in the URL survives), and the `#path` artifact name is
+  mandatory. `perfscale install --refresh` re-resolves the ref.
+- `perfscale.lock` is TOML, keyed by the exact `use:` string, and lives
+  next to the declaring document (repository root for git-imported
+  documents). Artifacts are content-addressed under
+  `<cache>/libraries/<sha256>.wasm` (same cache root as `import:` clones,
+  `PERFSCALE_CACHE_DIR` respected).
+- Run and lint are fully offline against the cache: load-time resolution
+  rewrites each remote ref to its cached artifact path before validation,
+  and a missing lock/entry/artifact is a hard error pointing at
+  `perfscale install`. This is the RFC 002 discipline ("explicit install;
+  run time is offline") adopted from day one, so the future marketplace
+  registry becomes a pure addition, not a migration.
 
 ### The `@std/random@v1` built-in
 
@@ -512,7 +532,7 @@ Decided after phase 1 (2026-09-24):
    `Perfscale/library-random` repo and embedded into the engine at build
    time; the native implementation stays for comparison/benchmarks.
 3. **Distribution**: `perfscale install` + `perfscale.lock` + HTTPS/git
-   sources + offline cache.
+   sources + offline cache. **(Shipped in v0.22.0.)**
 4. **Agent**: managed install path, digest-keyed cache, fleet policy ∩
    task grant enforcement on perfscaled.
 5. **SDK breadth**: TS/JS SDK, Go SDK, author docs, examples; then

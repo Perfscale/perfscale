@@ -267,6 +267,10 @@ libraries:
   - use: '@std/random@v1'          # built-in; default alias: random
   - use: '@std/random@v1'
     as: ids                        # alias → token prefix ${ids.fn(...)}
+  - use: ./libs/fixer-ids.wasm     # local WASM component (path relative to this file)
+  - use: 'https://vendor.example.com/fixer-ids.wasm'   # remote: perfscale install
+    sha256: '9f2c…64 hex…'
+  - use: 'git+https://github.com/org/repo.git@v1.2.3#libs/fixer-ids.wasm'  # git: perfscale install
 ```
 
 Payloads in actions that expand `${...}` (ws/gRPC/GraphQL today) can then
@@ -302,8 +306,58 @@ Rules:
   [RFC 005](../rfcs/005-libraries.md)). Paths resolve **relative to the
   declaring file's directory**, like `import:` paths. The perfscale CLI
   binary ships WASM support; embedders of `perfscale-core` need the
-  `wasm-libs` cargo feature. HTTPS/git refs are `perfscale install`
-  territory (phase 3) and are rejected for now.
+  `wasm-libs` cargo feature.
+
+Remote sources (`https://…` and `git+…`) are **distribution refs** — they
+are never fetched at run time. `perfscale install <files>` fetches each
+remote library once, verifies its digest, stores it in the
+content-addressed cache (`<cache>/libraries/<sha256>.wasm`), and writes
+`perfscale.lock` next to the declaring file. `perfscale run` and
+`perfscale lint` then resolve every remote ref through lock + cache,
+**fully offline**: a missing lock, a missing entry, or a missing cache
+artifact is a hard error that says to run `perfscale install`.
+
+```yaml
+# HTTPS: sha256 is required and pinned — a re-published artifact with a
+# different digest is a hard error, never a silent swap.
+- use: 'https://vendor.example.com/fixer-ids.wasm'
+  sha256: '9f2c…(64 hex)…'
+
+# git: repo URL + ref (tag/branch/commit) + artifact path inside the repo.
+# The ref is resolved to a commit at install time and pinned with the
+# artifact digest; `perfscale install --refresh` re-resolves it.
+- use: 'git+https://github.com/org/repo.git@v1.2.3#libs/fixer-ids.wasm'
+```
+
+`perfscale.lock` is TOML, keyed by the exact `use:` string, and meant to be
+committed:
+
+```toml
+version = 1
+
+[[libraries]]
+use = "https://vendor.example.com/fixer-ids.wasm"
+sha256 = "…"
+
+[[libraries]]
+use = "git+https://github.com/org/repo.git@v1.2.3#libs/fixer-ids.wasm"
+commit = "…resolved sha…"
+sha256 = "…artifact digest…"
+```
+
+Notes:
+
+- The cache honors `PERFSCALE_CACHE_DIR` (then `XDG_CACHE_HOME/perfscale`,
+  default `~/.cache/perfscale`) — the same root as the `import:` git clone
+  cache.
+- Libraries declared in a git-imported document (`import: { git: … }`) are
+  pinned by the `perfscale.lock` **inside that repository** (at its root);
+  run `perfscale install` on the importing file and it is written there.
+  Install follows `import:` chains (including remote ones) for exactly
+  this reason.
+- For `git+` refs a YAML `sha256:` is optional: the commit pin is the
+  integrity anchor. When present, install verifies it and a mismatch is a
+  hard error.
 
 WASM library rules:
 
