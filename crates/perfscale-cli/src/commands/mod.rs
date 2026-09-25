@@ -1,3 +1,4 @@
+pub mod install;
 pub mod lint;
 pub mod man;
 pub mod run;

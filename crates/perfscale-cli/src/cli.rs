@@ -69,6 +69,8 @@ pub enum Commands {
     Serve(ServeArgs),
     /// Validate test/config YAML files without running them.
     Lint(LintArgs),
+    /// Fetch remote (https/git) libraries and pin them in perfscale.lock.
+    Install(InstallArgs),
     /// Print the JSON Schema for test or config YAML files.
     Schema(SchemaArgs),
     /// Print the perfscale manual as plain text, or install it for `man perfscale`.
@@ -311,6 +313,35 @@ pub struct LintArgs {
     pub refresh_imports: bool,
 }
 
+fn install_after_help() -> String {
+    format!(
+        "Fetches every remote library (`https://…` with `sha256:`, or\n\
+         `git+<repo>@<ref>#<path>`) declared in the given documents — including\n\
+         documents pulled in via `import:` — verifies its digest, stores it in the\n\
+         content-addressed cache (<cache>/libraries/<sha256>.wasm), and writes or\n\
+         updates perfscale.lock next to each declaring document. Afterwards\n\
+         `perfscale run` and `perfscale lint` work fully offline.\n\n\
+         Examples:\n  \
+         perfscale install test.yaml config.yaml\n  \
+         perfscale install test.yaml --refresh    re-resolve git refs (branches/tags)\n\n\
+         The cache honors PERFSCALE_CACHE_DIR (default ~/.cache/perfscale).\n\n\
+         YAML reference: {DOCS_BASE}/yaml-reference.md#libraries"
+    )
+}
+
+#[derive(Args)]
+#[command(after_help = install_after_help())]
+pub struct InstallArgs {
+    /// YAML documents whose remote libraries should be fetched and pinned.
+    #[arg(required = true, value_name = "FILE.yaml")]
+    pub files: Vec<PathBuf>,
+
+    /// Re-resolve git refs (branches/tags) and refetch instead of trusting
+    /// the pins in perfscale.lock.
+    #[arg(long)]
+    pub refresh: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,6 +581,28 @@ mod tests {
     #[test]
     fn serve_invalid_port_is_rejected() {
         assert!(parse(&["serve", "--port", "not-a-port"]).is_err());
+    }
+
+    #[test]
+    fn install_requires_at_least_one_file() {
+        assert!(parse(&["install"]).is_err());
+    }
+
+    #[test]
+    fn install_parses_files_and_refresh() {
+        let cli = parse(&["install", "a.yaml", "b.yaml", "--refresh"]).unwrap();
+        match cli.command {
+            Commands::Install(args) => {
+                assert_eq!(args.files.len(), 2);
+                assert!(args.refresh);
+            }
+            _ => panic!("expected Install"),
+        }
+        let cli = parse(&["install", "a.yaml"]).unwrap();
+        match cli.command {
+            Commands::Install(args) => assert!(!args.refresh),
+            _ => panic!("expected Install"),
+        }
     }
 
     #[test]

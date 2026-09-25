@@ -28,8 +28,7 @@ pub async fn run(args: LintArgs) -> Result<(), CliError> {
     let import_opts = ImportOptions {
         allow_remote: args.allow_remote_import,
         refresh: args.refresh_imports,
-        cache_dir: None,
-        remote_guard: None,
+        ..Default::default()
     };
 
     for path in &args.files {

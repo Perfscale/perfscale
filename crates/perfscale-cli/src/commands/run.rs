@@ -15,8 +15,7 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
     let import_opts = ImportOptions {
         allow_remote: args.allow_remote_import,
         refresh: args.refresh_imports,
-        cache_dir: None,
-        remote_guard: None,
+        ..Default::default()
     };
     let config = load_config(args.config.as_deref(), &import_opts).await?;
     let native_test = match &args.file {
