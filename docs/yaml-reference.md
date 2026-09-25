@@ -273,7 +273,8 @@ libraries:
   - use: 'git+https://github.com/org/repo.git@v1.2.3#libs/fixer-ids.wasm'  # git: perfscale install
 ```
 
-Payloads in actions that expand `${...}` (ws/gRPC/GraphQL today) can then
+Payloads in actions that expand `${...}` (http, ws, gRPC, GraphQL, tcp, udp,
+llm, db parameters, pubsub, file-write — everything except std/log) can then
 call the library's functions:
 
 ```yaml
