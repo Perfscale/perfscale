@@ -700,6 +700,7 @@ mod tests {
     fn lib_ref(path: &Path) -> LibraryRef {
         LibraryRef {
             use_: path.to_string_lossy().into_owned(),
+            sha256: None,
             r#as: Some("hello".into()),
             capabilities: None,
             with: None,

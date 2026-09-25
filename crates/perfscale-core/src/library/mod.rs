@@ -10,8 +10,12 @@
 //! Phase 1 shipped the native built-in `@std/random@v1`; phase 2 (feature
 //! `wasm-libs`, always on in the CLI) adds WASM libraries: local `.wasm`
 //! paths (relative to the declaring file) load as WASI Preview 2 components
-//! under the fail-closed capability model (see the `wasm` module). HTTPS/git refs are
-//! phase-3 distribution and are rejected at validation.
+//! under the fail-closed capability model (see the `wasm` module). Phase 3
+//! adds distribution: HTTPS (`https://…/lib.wasm` + `sha256:`) and git
+//! (`git+<repo>@<ref>#<path>`) sources are fetched once by
+//! `perfscale install`, pinned in `perfscale.lock` (see the [`lockfile`]
+//! module) next to the declaring file, and served from the content-addressed
+//! cache at run/lint time — runs stay fully offline.
 //!
 //! # Token resolution
 //!
@@ -44,6 +48,7 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub mod lockfile;
 pub mod metrics;
 pub mod std_random;
 #[cfg(feature = "wasm-libs")]
@@ -68,13 +73,30 @@ pub const RESERVED_TOKEN_NAMES: &[&str] = &[
 /// One `libraries:` entry — a value-generator library bound to a token alias.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LibraryRef {
-    /// Library reference: `@std/random@v1` (built-in, native) or a local
-    /// `.wasm` path (WASM component, relative to the declaring file's
-    /// directory — resolved by `import:` handling; requires a build with the
-    /// `wasm-libs` feature, which the CLI enables). HTTPS URLs and git refs
-    /// are distribution sources (phase 3) and are rejected at validation.
+    /// Library reference:
+    ///
+    /// - `@std/random@v1` — built-in, native;
+    /// - a local `.wasm` path — WASM component, relative to the declaring
+    ///   file's directory (resolved by `import:` handling; requires a build
+    ///   with the `wasm-libs` feature, which the CLI enables);
+    /// - `https://…/lib.wasm` — fetched by `perfscale install`; requires
+    ///   `sha256:` and is pinned in `perfscale.lock`;
+    /// - `git+<repo-url>@<ref>#<path>` — a `.wasm` artifact inside a git
+    ///   repository at a tag/branch/commit, fetched by `perfscale install`
+    ///   and pinned to the resolved commit in `perfscale.lock`.
+    ///
+    /// Remote sources are resolved to the local cache at load time, so
+    /// `run`/`lint` stay fully offline.
     #[serde(rename = "use")]
     pub use_: String,
+
+    /// SHA-256 of the artifact (64 lowercase hex characters). Required for
+    /// `https://` sources — `perfscale install` refuses to fetch without it
+    /// and a mismatch with the fetched bytes is a hard error. Optional for
+    /// `git+` sources (the commit pin in `perfscale.lock` is the integrity
+    /// anchor); when present it is verified against the fetched artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 
     /// Token alias — `${alias.fn(...)}`. Default: the library's name part
     /// (`random` for `@std/random@v1`). Must be a lowercase identifier and
@@ -345,14 +367,11 @@ pub fn validate_libraries(
             }
             (provider, name.to_string())
         } else {
-            if lib.use_.starts_with("https://")
-                || lib.use_.starts_with("http://")
-                || lib.use_.starts_with("git+")
-            {
+            if is_remote_ref(&lib.use_) {
                 return Err(format!(
-                        "library '{}': remote sources are fetched by `perfscale install` (phase 3, not yet available) — use a local .wasm path or a built-in @std/* library",
-                        lib.use_
-                    ));
+                    "library '{}': remote sources must be resolved through perfscale.lock (perfscale install) — embedders: resolve via import::load_document",
+                    lib.use_
+                ));
             }
             if has_grants && !allow_capabilities {
                 return Err(format!(
@@ -416,6 +435,80 @@ fn is_valid_alias(alias: &str) -> bool {
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// A `use:` source that lives on the network and therefore resolves through
+/// `perfscale.lock` + the artifact cache (RFC 005 phase 3).
+pub fn is_remote_ref(use_: &str) -> bool {
+    use_.starts_with("https://") || use_.starts_with("http://") || use_.starts_with("git+")
+}
+
+/// Validate a declared `sha256:` digest, returning it normalized to
+/// lowercase. Anything but 64 hex characters is an error naming the ref.
+pub fn normalize_sha256(use_: &str, digest: &str) -> Result<String, String> {
+    let lower = digest.to_ascii_lowercase();
+    if lower.len() == 64 && lower.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(lower)
+    } else {
+        Err(format!(
+            "library '{use_}': invalid sha256 '{digest}' — expected 64 hex characters"
+        ))
+    }
+}
+
+/// A parsed `git+<repo-url>@<ref>#<path>` library ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitLibraryRef {
+    /// Repository URL/remote (anything `git clone` accepts).
+    pub repo: String,
+    /// Tag, branch, or commit SHA.
+    pub git_ref: String,
+    /// Artifact path inside the repository (relative, confined to the repo).
+    pub path: String,
+}
+
+/// Parse a `git+` library ref. The split is `rsplit_once('@')` so a
+/// userinfo `@` inside the URL (`git@host:org/repo.git`,
+/// `https://user@host/…`) is not mistaken for the ref separator. The
+/// `#path` part is mandatory — a bare repo does not name an artifact.
+pub fn parse_git_library_ref(use_: &str) -> Result<GitLibraryRef, String> {
+    let Some(rest) = use_.strip_prefix("git+") else {
+        return Err(format!(
+            "library '{use_}': git refs use the form git+URL@ref#path/to/lib.wasm"
+        ));
+    };
+    let Some((repo, ref_and_path)) = rest.rsplit_once('@') else {
+        return Err(format!(
+            "library '{use_}': git refs must pin a ref: git+URL@ref#path/to/lib.wasm"
+        ));
+    };
+    let Some((git_ref, path)) = ref_and_path.split_once('#') else {
+        return Err(format!(
+            "library '{use_}': git library refs must name an artifact path: git+URL@ref#path/to/lib.wasm"
+        ));
+    };
+    if repo.is_empty() || git_ref.is_empty() {
+        return Err(format!(
+            "library '{use_}': git refs must pin a ref: git+URL@ref#path/to/lib.wasm"
+        ));
+    }
+    let rel = std::path::Path::new(path);
+    if path.is_empty()
+        || rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!(
+            "library '{use_}': artifact path '{path}' escapes the repository root — \
+             it must be a relative path inside the repository"
+        ));
+    }
+    Ok(GitLibraryRef {
+        repo: repo.to_string(),
+        git_ref: git_ref.to_string(),
+        path: path.to_string(),
+    })
+}
+
 /// Per-instance seed derivation (RFC 005): `hash(seed, vu_id, conn_seq)` as
 /// FNV-1a over the three words — deterministic, dependency-free. The result
 /// is forced non-zero (xorshift degenerates at 0).
@@ -437,6 +530,7 @@ mod tests {
     fn std_random_ref() -> LibraryRef {
         LibraryRef {
             use_: "@std/random@v1".into(),
+            sha256: None,
             r#as: None,
             capabilities: None,
             with: None,
@@ -452,16 +546,75 @@ mod tests {
     }
 
     #[test]
-    fn rejects_remote_refs_as_phase_3() {
+    fn rejects_unresolved_remote_refs() {
+        // A remote ref reaching validate_libraries means the caller skipped
+        // lock resolution (import::load_document) — a hard error, since the
+        // engine itself never fetches.
         for path in [
             "https://x.test/l.wasm",
             "http://x.test/l.wasm",
-            "git+https://t/r@v1",
+            "git+https://t/r@v1#l.wasm",
         ] {
             let mut r = std_random_ref();
             r.use_ = path.into();
             let err = validate_libraries(&[r], true, None).unwrap_err();
-            assert!(err.contains("phase 3"), "{path} → {err}");
+            assert!(err.contains("perfscale.lock"), "{path} → {err}");
+        }
+    }
+
+    #[test]
+    fn git_library_ref_parses_userinfo_and_pins() {
+        let r =
+            parse_git_library_ref("git+https://github.com/org/repo.git@v1.2.3#lib.wasm").unwrap();
+        assert_eq!(r.repo, "https://github.com/org/repo.git");
+        assert_eq!(r.git_ref, "v1.2.3");
+        assert_eq!(r.path, "lib.wasm");
+
+        // SCP-style remote: the userinfo `@` must survive (rsplit at the
+        // ref separator, not the first `@`).
+        let r = parse_git_library_ref("git+git@gitlab.example.com:group/repo.git@main#libs/a.wasm")
+            .unwrap();
+        assert_eq!(r.repo, "git@gitlab.example.com:group/repo.git");
+        assert_eq!(r.git_ref, "main");
+        assert_eq!(r.path, "libs/a.wasm");
+
+        // HTTPS with userinfo.
+        let r = parse_git_library_ref("git+https://user@host/repo.git@v1#x.wasm").unwrap();
+        assert_eq!(r.repo, "https://user@host/repo.git");
+        assert_eq!(r.git_ref, "v1");
+    }
+
+    #[test]
+    fn git_library_ref_rejects_bad_shapes() {
+        // Missing #path.
+        let err = parse_git_library_ref("git+https://t/r@v1").unwrap_err();
+        assert!(err.contains("artifact path"), "{err}");
+        // Missing @ref.
+        let err = parse_git_library_ref("git+https://t/r#lib.wasm").unwrap_err();
+        assert!(err.contains("pin a ref"), "{err}");
+        // Empty path.
+        let err = parse_git_library_ref("git+https://t/r@v1#").unwrap_err();
+        assert!(err.contains("escapes the repository root"), "{err}");
+        // `..` escape and absolute paths.
+        for bad in [
+            "git+https://t/r@v1#../x.wasm",
+            "git+https://t/r@v1#a/../../x.wasm",
+            "git+https://t/r@v1#/abs/x.wasm",
+        ] {
+            let err = parse_git_library_ref(bad).unwrap_err();
+            assert!(err.contains("escapes the repository root"), "{bad} → {err}");
+        }
+    }
+
+    #[test]
+    fn sha256_normalization() {
+        let upper = "A1".repeat(32);
+        assert_eq!(
+            normalize_sha256("https://x/l.wasm", &upper).unwrap(),
+            "a1".repeat(32)
+        );
+        for bad in ["xyz", &"a".repeat(63), &"g".repeat(64)] {
+            assert!(normalize_sha256("https://x/l.wasm", bad).is_err(), "{bad}");
         }
     }
 

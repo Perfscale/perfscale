@@ -3515,6 +3515,7 @@ mod tests {
     async fn library_calls_land_in_the_run_summary_line() {
         let libraries = vec![crate::library::LibraryRef {
             use_: "@std/random@v1".into(),
+            sha256: None,
             r#as: None,
             capabilities: None,
             with: None,

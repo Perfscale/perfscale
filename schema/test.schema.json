@@ -87,8 +87,15 @@
             "null"
           ]
         },
+        "sha256": {
+          "description": "SHA-256 of the artifact (64 lowercase hex characters). Required for `https://` sources — `perfscale install` refuses to fetch without it and a mismatch with the fetched bytes is a hard error. Optional for `git+` sources (the commit pin in `perfscale.lock` is the integrity anchor); when present it is verified against the fetched artifact.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "use": {
-          "description": "Library reference: `@std/random@v1` (built-in, native) or a local `.wasm` path (WASM component, relative to the declaring file's directory — resolved by `import:` handling; requires a build with the `wasm-libs` feature, which the CLI enables). HTTPS URLs and git refs are distribution sources (phase 3) and are rejected at validation.",
+          "description": "Library reference:\n\n- `@std/random@v1` — built-in, native; - a local `.wasm` path — WASM component, relative to the declaring file's directory (resolved by `import:` handling; requires a build with the `wasm-libs` feature, which the CLI enables); - `https://…/lib.wasm` — fetched by `perfscale install`; requires `sha256:` and is pinned in `perfscale.lock`; - `git+<repo-url>@<ref>#<path>` — a `.wasm` artifact inside a git repository at a tag/branch/commit, fetched by `perfscale install` and pinned to the resolved commit in `perfscale.lock`.\n\nRemote sources are resolved to the local cache at load time, so `run`/`lint` stay fully offline.",
           "type": "string"
         },
         "with": {

@@ -645,6 +645,7 @@ steps:
 
     let libraries = vec![perfscale_core::library::LibraryRef {
         use_: component.to_string_lossy().into_owned(),
+        sha256: None,
         r#as: Some("hello".into()),
         capabilities: None,
         with: None,

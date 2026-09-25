@@ -53,6 +53,10 @@ plist = "1"
 # cache that outlives the binary.
 sha2 = "0.10"
 
+# `perfscale.lock` (library distribution pins, RFC 005 phase 3) is TOML —
+# line-friendly for diffs and hand edits, unlike the YAML surface it pins.
+toml = "0.8"
+
 # GraphQL query parsing (syntax validation, operation-name extraction) and SDL
 # schema parsing for the `std/graphql@v1` action family. The schema the query
 # is validated against arrives at run time (server introspection or an SDL

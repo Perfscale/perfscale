@@ -51,6 +51,14 @@
 //! Cloning shells out to the system `git` binary (like the `--k6`/`--locust`
 //! runners shell out to theirs) — no libgit2/gitoxide dependency, and the
 //! user's existing SSH agent, credential helpers, and proxy config all apply.
+//!
+//! Remote **library** sources (RFC 005 phase 3 — `https://…` and
+//! `git+…@ref#path` in `libraries[].use`) share this machinery: at load time
+//! they resolve through the `perfscale.lock` sitting next to the declaring
+//! document and are rewritten to their content-addressed artifact under
+//! `<cache>/libraries/<sha256>.wasm`, so `run`/`lint` stay fully offline.
+//! `perfscale install` loads with [`ImportOptions::collect_libraries`]
+//! instead, which gathers the declarations without resolving them.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -59,6 +67,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+
+use crate::library::lockfile;
+use crate::library::{is_remote_ref, normalize_sha256};
 
 /// How long a cached *branch* ref is trusted before `git ls-remote`
 /// revalidates it. Tags and SHAs never expire.
@@ -114,9 +125,26 @@ pub struct GitImport {
 /// loopback/private hosts; the CLI leaves it unset.
 pub type RemoteGuard = dyn Fn(&str) -> Result<(), String> + Send + Sync;
 
+/// A remote (`https://` / `git+`) library declaration collected while
+/// loading a document — install mode ([`ImportOptions::collect_libraries`])
+/// gathers these instead of resolving them, so the caller
+/// (`perfscale install`) can fetch, verify, and pin each one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectedLibrary {
+    /// Directory the declaring document's `perfscale.lock` belongs to: the
+    /// document's own directory, or the repository root for a document
+    /// loaded out of a git clone.
+    pub declaring_dir: PathBuf,
+    /// The exact `use:` string — the lockfile key.
+    pub use_: String,
+    /// The declared `sha256:` field, if any (required for HTTPS sources,
+    /// optional for git).
+    pub sha256: Option<String>,
+}
+
 /// Caller-side policy for import resolution. Fail-closed by construction:
 /// `Default` allows local file imports only.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ImportOptions {
     /// Permit `http(s)://` and `git:` imports. Set by the *caller* (CLI flag
     /// `--allow-remote-import`), never parsed from the document.
@@ -129,6 +157,27 @@ pub struct ImportOptions {
     pub cache_dir: Option<PathBuf>,
     /// Per-target veto for remote fetches; see [`RemoteGuard`].
     pub remote_guard: Option<std::sync::Arc<RemoteGuard>>,
+    /// Resolve remote (`https://` / `git+`) `libraries[].use` refs through
+    /// `perfscale.lock` + the artifact cache at load time (default: true).
+    /// `perfscale install` turns this off and collects instead.
+    pub resolve_libraries: bool,
+    /// Install mode: collect remote library declarations per document
+    /// instead of resolving them. Takes precedence over
+    /// `resolve_libraries`.
+    pub collect_libraries: Option<std::sync::Arc<std::sync::Mutex<Vec<CollectedLibrary>>>>,
+}
+
+impl Default for ImportOptions {
+    fn default() -> Self {
+        Self {
+            allow_remote: false,
+            refresh: false,
+            cache_dir: None,
+            remote_guard: None,
+            resolve_libraries: true,
+            collect_libraries: None,
+        }
+    }
 }
 
 impl std::fmt::Debug for ImportOptions {
@@ -138,6 +187,8 @@ impl std::fmt::Debug for ImportOptions {
             .field("refresh", &self.refresh)
             .field("cache_dir", &self.cache_dir)
             .field("remote_guard", &self.remote_guard.as_ref().map(|_| "<fn>"))
+            .field("resolve_libraries", &self.resolve_libraries)
+            .field("collect_libraries", &self.collect_libraries.is_some())
             .finish()
     }
 }
@@ -257,11 +308,25 @@ async fn resolve_parsed(
     // document's directory — the same rule `import:` applies to its own
     // relative paths. Per document, *before* merging, so an imported base's
     // library paths stay relative to the base, not the importing file.
+    // Remote refs (phase 3) are then resolved through perfscale.lock + the
+    // artifact cache — or collected, in install mode.
     match &origin {
-        Origin::Local { dir } => anchor_library_paths(&mut value, dir),
-        Origin::Git { dir, .. } => anchor_library_paths(&mut value, dir),
+        Origin::Local { dir } => {
+            anchor_library_paths(&mut value, dir);
+            process_remote_libraries(&mut value, dir, opts)?;
+        }
+        Origin::Git { repo_root, dir, .. } => {
+            anchor_library_paths(&mut value, dir);
+            // The lockfile of a git-imported document lives at the root of
+            // the clone — that is "next to the declaring file" from the
+            // repository's point of view, and `perfscale install` writes it
+            // there.
+            process_remote_libraries(&mut value, repo_root, opts)?;
+        }
         // URL/detached documents have no local filesystem to anchor to; a
-        // relative `.wasm` path there fails validation with a clear error.
+        // relative `.wasm` path there fails validation with a clear error,
+        // and a remote ref fails library validation (no directory to pin a
+        // lockfile in).
         Origin::Url { .. } | Origin::Detached => {}
     }
 
@@ -296,6 +361,179 @@ async fn resolve_parsed(
     chain.pop();
 
     Ok(deep_merge(base, value))
+}
+
+/// Phase-3 library handling for one document, after path anchoring. In
+/// collect mode (install) remote declarations are recorded and left as-is;
+/// otherwise each remote `use:` is rewritten to its pinned artifact in the
+/// local cache, so downstream validation only ever sees a local path. Any
+/// missing pin or cache entry is a hard error pointing at
+/// `perfscale install` — `run`/`lint` never touch the network here.
+fn process_remote_libraries(
+    value: &mut Value,
+    declaring_dir: &Path,
+    opts: &ImportOptions,
+) -> Result<(), String> {
+    let Some(libs) = value.get_mut("libraries").and_then(Value::as_array_mut) else {
+        return Ok(());
+    };
+    let has_remote = libs.iter().any(|e| {
+        e.get("use")
+            .and_then(Value::as_str)
+            .is_some_and(is_remote_ref)
+    });
+    if !has_remote {
+        return Ok(());
+    }
+
+    if let Some(collect) = &opts.collect_libraries {
+        let mut out = collect
+            .lock()
+            .map_err(|_| "library collection poisoned".to_string())?;
+        for entry in libs.iter() {
+            let Some(use_) = entry.get("use").and_then(Value::as_str) else {
+                continue;
+            };
+            if !is_remote_ref(use_) {
+                continue;
+            }
+            out.push(CollectedLibrary {
+                declaring_dir: declaring_dir.to_path_buf(),
+                use_: use_.to_string(),
+                sha256: entry
+                    .get("sha256")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            });
+        }
+        return Ok(());
+    }
+    if !opts.resolve_libraries {
+        return Ok(());
+    }
+
+    // Authoring errors first (they should fail even before the lockfile is
+    // consulted): HTTPS sources must declare their digest.
+    for entry in libs.iter() {
+        let Some(use_) = entry.get("use").and_then(Value::as_str) else {
+            continue;
+        };
+        if (use_.starts_with("http://") || use_.starts_with("https://"))
+            && entry.get("sha256").and_then(Value::as_str).is_none()
+        {
+            return Err(format!(
+                "library '{use_}': https sources require a `sha256:` field \
+                 (64 hex) in the libraries: entry"
+            ));
+        }
+    }
+
+    let mut lock: Option<lockfile::Lockfile> = None;
+    for entry in libs.iter_mut() {
+        let use_ = match entry.get("use").and_then(Value::as_str) {
+            Some(s) if is_remote_ref(s) => s.to_string(),
+            _ => continue,
+        };
+        if lock.is_none() {
+            lock = Some(lockfile::Lockfile::load(declaring_dir)?.ok_or_else(|| {
+                format!(
+                    "library '{use_}': no {} found next to '{}' — run `perfscale install`",
+                    lockfile::LOCKFILE_NAME,
+                    declaring_dir.display()
+                )
+            })?);
+        }
+        let lock = lock.as_ref().expect("populated above");
+        let Some(pin) = lock.find(&use_) else {
+            return Err(format!(
+                "library '{use_}': no entry in {} — run `perfscale install`",
+                lockfile::lockfile_path(declaring_dir).display()
+            ));
+        };
+        let pin_sha = pin.sha256.clone();
+        if use_.starts_with("http://") || use_.starts_with("https://") {
+            let declared = entry.get("sha256").and_then(Value::as_str).ok_or_else(|| {
+                format!(
+                    "library '{use_}': https sources require a `sha256:` field \
+                         (64 hex) in the libraries: entry"
+                )
+            })?;
+            let declared = normalize_sha256(&use_, declared)?;
+            if declared != pin_sha {
+                return Err(format!(
+                    "library '{use_}': sha256 mismatch — the YAML declares {declared} but \
+                     {} pins {}. A re-published artifact is never swapped in silently; \
+                     verify the publisher, then update the YAML and re-run `perfscale install`",
+                    lockfile::LOCKFILE_NAME,
+                    pin_sha
+                ));
+            }
+            // Normalize the declared digest in place so validation and the
+            // lock always compare lowercase.
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert("sha256".to_string(), Value::String(declared));
+            }
+        }
+        let cache_path = library_artifact_path(&library_cache_root(opts), &pin_sha);
+        if !cache_path.is_file() {
+            return Err(format!(
+                "library '{use_}': artifact not in cache ({}) — run `perfscale install`",
+                cache_path.display()
+            ));
+        }
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert(
+                "use".to_string(),
+                Value::String(cache_path.to_string_lossy().into_owned()),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The content-addressed library artifact cache: `<cache>/libraries`, under
+/// the same root as the `import:` clone cache (`$PERFSCALE_CACHE_DIR` →
+/// `$XDG_CACHE_HOME/perfscale` → `~/.cache/perfscale`).
+pub fn library_cache_root(opts: &ImportOptions) -> PathBuf {
+    opts.cache_dir
+        .clone()
+        .unwrap_or_else(default_cache_dir)
+        .join("libraries")
+}
+
+/// Path of one cached artifact: `<cache>/libraries/<sha256>.wasm`.
+pub fn library_artifact_path(cache_root: &Path, sha256: &str) -> PathBuf {
+    cache_root.join(format!("{sha256}.wasm"))
+}
+
+/// Write an artifact into the cache, atomically (temp sibling + rename) so a
+/// concurrent run never sees a partial file. Content-addressed: an existing
+/// file under the same digest is by definition the same bytes.
+pub fn write_library_artifact(
+    cache_root: &Path,
+    sha256: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(cache_root)
+        .map_err(|e| format!("cache dir '{}': {e}", cache_root.display()))?;
+    let dest = library_artifact_path(cache_root, sha256);
+    if dest.is_file() {
+        return Ok(dest);
+    }
+    let tmp = cache_root.join(format!(".{sha256}.tmp-{}", std::process::id()));
+    std::fs::write(&tmp, bytes).map_err(|e| format!("cache write '{}': {e}", tmp.display()))?;
+    match std::fs::rename(&tmp, &dest) {
+        Ok(()) => {}
+        Err(_) if dest.is_file() => {
+            // Lost a race with a concurrent install of the same digest.
+            let _ = std::fs::remove_file(&tmp);
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("cache move '{}': {e}", dest.display()));
+        }
+    }
+    Ok(dest)
 }
 
 /// Rewrite relative `libraries[].use` paths to be anchored at `dir` (the
@@ -482,6 +720,29 @@ fn fingerprint_local(path: &Path) -> String {
         .to_string()
 }
 
+/// Read a raw artifact (bytes, not YAML) out of a git checkout — the
+/// `#path` of a git library ref at install time. Same confinement as
+/// [`read_repo_file`]: `../` and symlink escapes out of `repo_root` are
+/// rejected.
+pub async fn read_repo_artifact(repo_root: &Path, rel: &str) -> Result<Vec<u8>, String> {
+    let root = repo_root
+        .canonicalize()
+        .map_err(|e| format!("git cache dir '{}' vanished: {e}", repo_root.display()))?;
+    let path = root.join(rel);
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| format!("artifact '{rel}' not found in the repository: {e}"))?;
+    if !canonical.starts_with(&root) {
+        return Err(format!(
+            "artifact '{rel}' escapes the repository root — git library paths must stay \
+             inside the repository"
+        ));
+    }
+    tokio::fs::read(&canonical)
+        .await
+        .map_err(|e| format!("failed to read artifact '{}': {e}", canonical.display()))
+}
+
 // ---------------------------------------------------------------------------
 // HTTP
 // ---------------------------------------------------------------------------
@@ -621,8 +882,9 @@ async fn git(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// `git ls-remote` classification of a ref: (kind, remote sha).
-async fn ls_remote(git_url: &str, git_ref: &str) -> Result<(&'static str, String), String> {
+/// `git ls-remote` classification of a ref: (kind, remote sha). Public so
+/// `perfscale install` can pin the commit a git library ref resolves to.
+pub async fn ls_remote(git_url: &str, git_ref: &str) -> Result<(&'static str, String), String> {
     let out = git(&["ls-remote", "--tags", "--heads", git_url, git_ref], None).await?;
     let mut branch_sha = None;
     let mut tag_sha = None;
@@ -651,7 +913,9 @@ async fn ls_remote(git_url: &str, git_ref: &str) -> Result<(&'static str, String
 }
 
 /// Materialize `remote` in the cache and return the checkout directory.
-async fn git_fetch(remote: &GitImport, opts: &ImportOptions) -> Result<PathBuf, String> {
+/// Public so `perfscale install` reuses the exact clone cache (and its
+/// tag/branch/refresh semantics) for git library sources.
+pub async fn git_fetch(remote: &GitImport, opts: &ImportOptions) -> Result<PathBuf, String> {
     let entry = cache_entry_dir(opts, remote);
     let repo = entry.join("repo");
     let meta_path = entry.join("meta.json");
@@ -1342,6 +1606,200 @@ mod tests {
         assert!(
             err.contains("escape") || err.contains("not found"),
             "unexpected error: {err}"
+        );
+    }
+
+    // -- remote library resolution (RFC 005 phase 3) ------------------------
+
+    fn sha_hex(bytes: &[u8]) -> String {
+        let digest = Sha256::digest(bytes);
+        digest.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn lib_doc(dir: &Path, sha_line: &str) -> PathBuf {
+        let path = dir.join("config.yaml");
+        fs::write(
+            &path,
+            format!("libraries:\n  - use: \"https://example.com/l.wasm\"\n{sha_line}"),
+        )
+        .unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn remote_library_without_lockfile_points_at_install() {
+        let dir = tmpdir("lib-nolock");
+        let doc = lib_doc(&dir, &format!("    sha256: \"{}\"\n", "a".repeat(64)));
+        let err = load_document(&doc, &ImportOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("no perfscale.lock found"), "{err}");
+        assert!(err.contains("perfscale install"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn remote_library_without_lock_entry_points_at_install() {
+        let dir = tmpdir("lib-noentry");
+        let doc = lib_doc(&dir, &format!("    sha256: \"{}\"\n", "a".repeat(64)));
+        fs::write(dir.join("perfscale.lock"), "version = 1\n").unwrap();
+        let err = load_document(&doc, &ImportOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("no entry in"), "{err}");
+        assert!(err.contains("perfscale install"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn https_library_requires_declared_sha256() {
+        let dir = tmpdir("lib-nosha");
+        let doc = lib_doc(&dir, "");
+        let err = load_document(&doc, &ImportOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("require a `sha256:` field"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn https_library_sha_mismatch_is_a_hard_error() {
+        let dir = tmpdir("lib-shamismatch");
+        let declared = "a".repeat(64);
+        let doc = lib_doc(&dir, &format!("    sha256: \"{declared}\"\n"));
+        let pinned = "b".repeat(64);
+        fs::write(
+            dir.join("perfscale.lock"),
+            format!(
+                "version = 1\n\n[[libraries]]\nuse = \"https://example.com/l.wasm\"\nsha256 = \"{pinned}\"\n"
+            ),
+        )
+        .unwrap();
+        let err = load_document(&doc, &ImportOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.contains("sha256 mismatch"), "{err}");
+        assert!(err.contains(&declared) && err.contains(&pinned), "{err}");
+    }
+
+    #[tokio::test]
+    async fn remote_library_cache_miss_points_at_install() {
+        let dir = tmpdir("lib-cachemiss");
+        let sha = sha_hex(b"wasm-bytes");
+        let doc = lib_doc(&dir, &format!("    sha256: \"{sha}\"\n"));
+        fs::write(
+            dir.join("perfscale.lock"),
+            format!(
+                "version = 1\n\n[[libraries]]\nuse = \"https://example.com/l.wasm\"\nsha256 = \"{sha}\"\n"
+            ),
+        )
+        .unwrap();
+        let opts = ImportOptions {
+            cache_dir: Some(tmpdir("lib-cachemiss-cache")),
+            ..Default::default()
+        };
+        let err = load_document(&doc, &opts).await.unwrap_err();
+        assert!(err.contains("artifact not in cache"), "{err}");
+        assert!(err.contains("perfscale install"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn remote_library_resolves_to_cache_path_offline() {
+        let dir = tmpdir("lib-happy");
+        // Uppercase declared digest: normalized before comparison.
+        let sha = sha_hex(b"wasm-bytes");
+        let doc = lib_doc(&dir, &format!("    sha256: \"{}\"\n", sha.to_uppercase()));
+        fs::write(
+            dir.join("perfscale.lock"),
+            format!(
+                "version = 1\n\n[[libraries]]\nuse = \"https://example.com/l.wasm\"\nsha256 = \"{sha}\"\n"
+            ),
+        )
+        .unwrap();
+        let opts = ImportOptions {
+            cache_dir: Some(tmpdir("lib-happy-cache")),
+            ..Default::default()
+        };
+        let cache_path = write_library_artifact(&library_cache_root(&opts), &sha, b"wasm-bytes")
+            .expect("cache write");
+
+        let (value, _) = load_document(&doc, &opts).await.unwrap();
+        let libs = value["libraries"].as_array().unwrap();
+        assert_eq!(libs[0]["use"], cache_path.to_string_lossy().as_ref());
+        assert_eq!(libs[0]["sha256"], sha.as_str(), "normalized to lowercase");
+    }
+
+    #[tokio::test]
+    async fn collect_mode_gathers_declarations_without_resolving() {
+        let dir = tmpdir("lib-collect");
+        let sha = "a".repeat(64);
+        let doc = lib_doc(&dir, &format!("    sha256: \"{sha}\"\n"));
+        let collected = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let opts = ImportOptions {
+            resolve_libraries: false,
+            collect_libraries: Some(collected.clone()),
+            ..Default::default()
+        };
+        // No lockfile, no cache — collect mode must not care.
+        let (value, _) = load_document(&doc, &opts).await.unwrap();
+        assert_eq!(value["libraries"][0]["use"], "https://example.com/l.wasm");
+        let gathered = collected.lock().unwrap();
+        assert_eq!(gathered.len(), 1);
+        assert_eq!(
+            gathered[0],
+            CollectedLibrary {
+                declaring_dir: dir.clone(),
+                use_: "https://example.com/l.wasm".into(),
+                sha256: Some(sha),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn git_library_ref_resolves_through_lock_and_cache() {
+        let dir = tmpdir("lib-git");
+        let use_ = "git+https://example.com/o/r.git@v1#lib.wasm";
+        let sha = sha_hex(b"git-wasm");
+        fs::write(
+            dir.join("config.yaml"),
+            format!("libraries:\n  - use: \"{use_}\"\n"),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("perfscale.lock"),
+            format!(
+                "version = 1\n\n[[libraries]]\nuse = \"{use_}\"\ncommit = \"4471101ab\"\nsha256 = \"{sha}\"\n"
+            ),
+        )
+        .unwrap();
+        let opts = ImportOptions {
+            cache_dir: Some(tmpdir("lib-git-cache")),
+            ..Default::default()
+        };
+        let cache_path =
+            write_library_artifact(&library_cache_root(&opts), &sha, b"git-wasm").unwrap();
+        let (value, _) = load_document(&dir.join("config.yaml"), &opts)
+            .await
+            .unwrap();
+        assert_eq!(
+            value["libraries"][0]["use"],
+            cache_path.to_string_lossy().as_ref()
+        );
+    }
+
+    #[test]
+    fn library_artifact_write_is_atomic_and_idempotent() {
+        let root = tmpdir("lib-cache-write");
+        let sha = sha_hex(b"one");
+        let p1 = write_library_artifact(&root, &sha, b"one").unwrap();
+        assert_eq!(fs::read(&p1).unwrap(), b"one");
+        // Same digest again: no rewrite, no error.
+        let p2 = write_library_artifact(&root, &sha, b"one").unwrap();
+        assert_eq!(p1, p2);
+        assert!(
+            !fs::read_dir(&root).unwrap().any(|e| e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("tmp")),
+            "no temp files left behind"
         );
     }
 }

@@ -2124,12 +2124,13 @@ steps:
 
     #[test]
     fn invalid_library_declaration_is_surfaced_not_duplicated() {
-        // Remote refs are a core validation error (phase-3 distribution);
-        // lint reports the same message at /libraries instead of
-        // reimplementing the check.
+        // An unresolved remote ref is a core validation error (it means the
+        // caller skipped perfscale.lock resolution); lint reports the same
+        // message at /libraries instead of reimplementing the check.
         let yaml = r#"
 libraries:
   - use: 'https://x.test/fixer-ids.wasm'
+    sha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 steps:
   - use: std/log@v1
     with: { message: hi }
@@ -2139,7 +2140,7 @@ steps:
             .iter()
             .find(|i| i.location == "/libraries")
             .unwrap_or_else(|| panic!("no /libraries issue: {issues:?}"));
-        assert!(bad.problem.contains("phase 3"), "{bad:?}");
+        assert!(bad.problem.contains("perfscale.lock"), "{bad:?}");
 
         // Same for a config document.
         let yaml = "libraries:\n  - use: '@std/faker@v1'\n";

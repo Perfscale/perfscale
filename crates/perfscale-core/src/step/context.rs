@@ -544,6 +544,7 @@ mod tests {
         let libraries = crate::library::validate_libraries(
             &[crate::library::LibraryRef {
                 use_: "@std/random@v1".into(),
+                sha256: None,
                 r#as: None,
                 capabilities: None,
                 with: None,
