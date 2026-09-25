@@ -540,6 +540,14 @@ without stranding phases 1–2.
   expansion is uniform? Cheap to add in phase 1, expensive to retrofit.
 - Do generated values participate in `outputs:` capture ergonomics, or is
   the existing capture-what-was-sent flow sufficient?
+- **JS library ergonomics (found in phase 2):** jco/StarlingMonkey components
+  import `wasi:filesystem/types` + `preopens` + `wasi:clocks/wall-clock`
+  unconditionally, so a TS-authored library — even a pure one — needs an
+  `fs` grant today (Rust wasip2 components only carry import-free noise for
+  cli/io/monotonic-clock, which the engine sinks). Options: a JS-specific
+  allowance list in the engine, a `pure-js` source marker in `info()`, or
+  QuickJS-based componentize backends that link less WASI. Decide from real
+  JS-library adoption; the current fail-closed rule is the safe default.
 
 ## Success metrics
 
