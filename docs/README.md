@@ -30,6 +30,10 @@ tiny local dev server for collecting results.
 - [Imports](core/imports.md) — compose test/config documents from a shared
   base: local paths, HTTP URLs, git repos; merge semantics, caching, and the
   `--allow-remote-import` security gate
+- [Libraries guide](core/libraries.md) — custom value generators for
+  `${alias.fn(...)}` tokens: the `@std/random` built-in, WASM components,
+  the capability sandbox, and authoring your own with the Rust / TypeScript
+  / Go SDKs
 - [Metrics](core/metrics.md) — `http_req_*`, `[stats]` lines, custom
   counters/histograms, `--quiet`, summary forwarding
 - [WebSocket guide](core/websocket.md) — sessions, live connections, message
