@@ -125,17 +125,18 @@ pub struct GitImport {
 /// loopback/private hosts; the CLI leaves it unset.
 pub type RemoteGuard = dyn Fn(&str) -> Result<(), String> + Send + Sync;
 
-/// A remote (`https://` / `git+`) library declaration collected while
-/// loading a document — install mode ([`ImportOptions::collect_libraries`])
-/// gathers these instead of resolving them, so the caller
-/// (`perfscale install`) can fetch, verify, and pin each one.
+/// A library declaration collected while loading a document — install mode
+/// ([`ImportOptions::collect_libraries`]) gathers these instead of resolving
+/// them, so the caller (`perfscale install`) can fetch, verify, and pin each
+/// remote one and precompile (burn) every WASM one, local paths included.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CollectedLibrary {
     /// Directory the declaring document's `perfscale.lock` belongs to: the
     /// document's own directory, or the repository root for a document
     /// loaded out of a git clone.
     pub declaring_dir: PathBuf,
-    /// The exact `use:` string — the lockfile key.
+    /// The `use:` string — the lockfile key for remote refs; an absolute
+    /// path (anchored to the declaring document) for local `.wasm` refs.
     pub use_: String,
     /// The declared `sha256:` field, if any (required for HTTPS sources,
     /// optional for git).
@@ -364,11 +365,13 @@ async fn resolve_parsed(
 }
 
 /// Phase-3 library handling for one document, after path anchoring. In
-/// collect mode (install) remote declarations are recorded and left as-is;
-/// otherwise each remote `use:` is rewritten to its pinned artifact in the
-/// local cache, so downstream validation only ever sees a local path. Any
-/// missing pin or cache entry is a hard error pointing at
-/// `perfscale install` — `run`/`lint` never touch the network here.
+/// collect mode (install) declarations are recorded and left as-is — remote
+/// refs for fetch+pin, local `.wasm` paths (already anchored to the
+/// declaring directory) for burn-cache precompilation; otherwise each remote
+/// `use:` is rewritten to its pinned artifact in the local cache, so
+/// downstream validation only ever sees a local path. Any missing pin or
+/// cache entry is a hard error pointing at `perfscale install` — `run`/`lint`
+/// never touch the network here.
 fn process_remote_libraries(
     value: &mut Value,
     declaring_dir: &Path,
@@ -377,14 +380,6 @@ fn process_remote_libraries(
     let Some(libs) = value.get_mut("libraries").and_then(Value::as_array_mut) else {
         return Ok(());
     };
-    let has_remote = libs.iter().any(|e| {
-        e.get("use")
-            .and_then(Value::as_str)
-            .is_some_and(is_remote_ref)
-    });
-    if !has_remote {
-        return Ok(());
-    }
 
     if let Some(collect) = &opts.collect_libraries {
         let mut out = collect
@@ -394,7 +389,8 @@ fn process_remote_libraries(
             let Some(use_) = entry.get("use").and_then(Value::as_str) else {
                 continue;
             };
-            if !is_remote_ref(use_) {
+            // Built-ins are native — nothing to fetch or burn.
+            if use_.starts_with('@') {
                 continue;
             }
             out.push(CollectedLibrary {
@@ -406,6 +402,15 @@ fn process_remote_libraries(
                     .map(str::to_string),
             });
         }
+        return Ok(());
+    }
+
+    let has_remote = libs.iter().any(|e| {
+        e.get("use")
+            .and_then(Value::as_str)
+            .is_some_and(is_remote_ref)
+    });
+    if !has_remote {
         return Ok(());
     }
     if !opts.resolve_libraries {
@@ -506,6 +511,20 @@ pub fn library_artifact_path(cache_root: &Path, sha256: &str) -> PathBuf {
     cache_root.join(format!("{sha256}.wasm"))
 }
 
+/// Path of one precompiled burn artifact: `<cache>/libraries/<sha256>.cwasm`
+/// (RFC 005 burn — see `library::burn`).
+pub fn library_burn_path(cache_root: &Path, sha256: &str) -> PathBuf {
+    cache_root.join(format!("{sha256}.cwasm"))
+}
+
+/// The library cache root when no `ImportOptions` override exists — used by
+/// the library loader's burn-cache probe, which runs far from CLI option
+/// plumbing. Reads the environment at call time.
+#[cfg(feature = "wasm-libs")]
+pub fn default_library_cache_root() -> PathBuf {
+    default_cache_dir().join("libraries")
+}
+
 /// Write an artifact into the cache, atomically (temp sibling + rename) so a
 /// concurrent run never sees a partial file. Content-addressed: an existing
 /// file under the same digest is by definition the same bytes.
@@ -514,13 +533,35 @@ pub fn write_library_artifact(
     sha256: &str,
     bytes: &[u8],
 ) -> Result<PathBuf, String> {
+    write_cache_file(cache_root, &format!("{sha256}.wasm"), bytes, false)
+}
+
+/// Write a burn artifact into the cache, atomically. Unlike the `.wasm`
+/// artifact, a `.cwasm` is tied to the engine that produced it, not just to
+/// the content digest — an existing file may be a stale artifact from an
+/// older perfscale, so this replaces unconditionally (the temp+rename keeps
+/// the swap atomic).
+pub fn write_library_burn(
+    cache_root: &Path,
+    sha256: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    write_cache_file(cache_root, &format!("{sha256}.cwasm"), bytes, true)
+}
+
+fn write_cache_file(
+    cache_root: &Path,
+    name: &str,
+    bytes: &[u8],
+    replace: bool,
+) -> Result<PathBuf, String> {
     std::fs::create_dir_all(cache_root)
         .map_err(|e| format!("cache dir '{}': {e}", cache_root.display()))?;
-    let dest = library_artifact_path(cache_root, sha256);
-    if dest.is_file() {
+    let dest = cache_root.join(name);
+    if !replace && dest.is_file() {
         return Ok(dest);
     }
-    let tmp = cache_root.join(format!(".{sha256}.tmp-{}", std::process::id()));
+    let tmp = cache_root.join(format!(".{name}.tmp-{}", std::process::id()));
     std::fs::write(&tmp, bytes).map_err(|e| format!("cache write '{}': {e}", tmp.display()))?;
     match std::fs::rename(&tmp, &dest) {
         Ok(()) => {}

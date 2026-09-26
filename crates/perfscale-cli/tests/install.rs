@@ -226,3 +226,102 @@ async fn install_without_remote_libraries_is_a_noop() {
         .success()
         .stdout(predicates::str::contains("no remote libraries"));
 }
+
+/// Burn cache (RFC 005 burn, phase 1): installing a local `./x.wasm` library
+/// precompiles it into `<cache>/libraries/<sha256>.cwasm` — no lockfile
+/// entry (nothing to pin for a local file). A repeat install skips the burn.
+#[tokio::test]
+async fn install_burns_local_wasm_libraries_without_a_lockfile() {
+    let Some(component) = hello_component() else {
+        return;
+    };
+    let bytes = std::fs::read(component).unwrap();
+    let sha = sha256_hex(&bytes);
+
+    let dir = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    std::fs::copy(component, dir.path().join("lib.wasm")).unwrap();
+    let yaml = write_yaml(
+        dir.path(),
+        "test.yaml",
+        "libraries:\n  - use: ./lib.wasm\n    as: hello\nsteps:\n  - use: std/log@v1\n    with: { message: hi }\n",
+    );
+
+    cmd()
+        .arg("install")
+        .arg(&yaml)
+        .env("PERFSCALE_CACHE_DIR", cache.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("burned"));
+    assert!(
+        cache.path().join(format!("libraries/{sha}.cwasm")).is_file(),
+        "burn artifact written"
+    );
+    assert!(
+        !dir.path().join("perfscale.lock").exists(),
+        "local libraries get no lockfile"
+    );
+
+    // Idempotent: a valid burn artifact is not recompiled.
+    cmd()
+        .arg("install")
+        .arg(&yaml)
+        .env("PERFSCALE_CACHE_DIR", cache.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("up to date"));
+}
+
+/// Remote installs burn too: next to the `.wasm` artifact and the lock pin,
+/// the cache gains the precompiled `.cwasm`.
+#[tokio::test]
+async fn install_https_also_writes_the_burn_artifact() {
+    let Some(component) = hello_component() else {
+        return;
+    };
+    let bytes = std::fs::read(component).unwrap();
+    let sha = sha256_hex(&bytes);
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/lib.wasm"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let url = format!("{}/lib.wasm", server.uri());
+    let yaml = write_yaml(
+        dir.path(),
+        "test.yaml",
+        &format!(
+            "libraries:\n  - use: \"{url}\"\n    sha256: \"{sha}\"\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
+        ),
+    );
+
+    cmd()
+        .arg("install")
+        .arg(&yaml)
+        .env("PERFSCALE_CACHE_DIR", cache.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("burned"));
+    assert!(cache.path().join(format!("libraries/{sha}.wasm")).is_file());
+    assert!(
+        cache.path().join(format!("libraries/{sha}.cwasm")).is_file(),
+        "burn artifact written next to the .wasm"
+    );
+
+    // Second install: pin + artifact + burn all up to date, one network hit
+    // total (asserted by the mock's expect(1)).
+    cmd()
+        .arg("install")
+        .arg(&yaml)
+        .env("PERFSCALE_CACHE_DIR", cache.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("up to date"));
+}

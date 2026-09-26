@@ -344,7 +344,7 @@ impl StdRandom {
 }
 
 impl LibraryInstance for StdRandom {
-    fn call(&mut self, ctx: &CallCtx, func: &str, args: &[Value]) -> Result<String, String> {
+    fn call(&mut self, ctx: &CallCtx<'_>, func: &str, args: &[Value]) -> Result<String, String> {
         match func {
             "uuid4" => {
                 let key = optional_key(args, 0, func)?;
@@ -806,13 +806,14 @@ mod tests {
         StdRandomProvider.instantiate(None, seed).unwrap()
     }
 
-    fn ctx() -> CallCtx {
+    fn ctx() -> CallCtx<'static> {
         CallCtx {
             message_seq: 1,
             iteration_seq: 1,
             vu_id: 1,
             seed: 42,
             time_ms: 1_784_160_000_000, // 2026-07-16T00:00:00.000Z
+            settings_json: "{}",
         }
     }
 

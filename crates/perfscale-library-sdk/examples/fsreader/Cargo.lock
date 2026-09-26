@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "perfscale-library-sdk"
-version = "0.20.0"
+version = "0.22.0"
 dependencies = [
  "serde_json",
  "wit-bindgen",
@@ -353,4 +353,4 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[patch.unused]]
 name = "perfscale-core"
-version = "0.20.0"
+version = "0.22.0"

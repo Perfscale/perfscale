@@ -207,10 +207,10 @@ Design points:
   counted in the enclosing step's duration: library cost is visible in
   metrics, never hidden.
 - **Versioning.** The engine supports a range of WIT interface majors
-  (0.1.x now, 1.x later); a module built against an unsupported major fails
-  to load with both versions named in the error. Minors are additive-only
-  (new context fields are `option<>`). A library's own `@vN` is independent
-  semver resolved through the lockfile.
+  (0.1.x and 0.2.x now, 1.x later); a module built against an unsupported
+  major fails to load with both versions named in the error. Minors are
+  additive-only (new context fields are `option<>`). A library's own `@vN`
+  is independent semver resolved through the lockfile.
 - **Instance lifecycle.** One instance per (library × generator owner),
   parked alongside `Gen` in `step/resources.rs` (per VU, per live
   connection). `init` runs once per instance with its derived seed.
@@ -248,6 +248,59 @@ Two surfaces, two existing mechanisms:
    non-starter: registering short strings like `"7"` would mask half the
    log output.)
 
+### Settings, secrets and policy rules (phase 3.5)
+
+**Run settings in the call context.** The context record gained a field in
+WIT `0.2.0` (`perfscale:library@0.2.0`; the host keeps accepting `0.1.x`
+components — they simply never see it):
+
+```wit
+record context {
+    // … 0.1 fields unchanged …
+    settings-json: string, // run settings, frozen once at run start
+}
+```
+
+The JSON is identical for every VU, iteration, and call of the run:
+
+```json
+{
+  "vus": 10,             // fixed profile only, else null
+  "duration_ms": 300000, // fixed profile only, else null
+  "seed": 42,            // config seed, or null
+  "stages": null,        // staged profile: [{ "duration_ms", "target" }]
+  "arrival": null,       // arrival profile: { "max_vus", "pre_allocated_vus", "stages": [...] }
+  "variables": {}        // config `variables:` with ${{ env.* }} resolved
+}
+```
+
+`variables` are resolved through the same interpolation steps use, so
+env-sourced values land in the `SecretRegistry` before any library can
+read them — masking coverage does not regress by handing them to guests.
+
+**`FunctionInfo.secret` is now enforced.** Phases 1–3 declared the flag but
+never consumed it; the generator now records the result of every call into
+the run's `SecretRegistry` when the function's metadata says `secret`.
+
+**Entry-level policy rules** (all optional, on the `libraries:` entry):
+
+```yaml
+- use: '@std/random@v1'
+  secret: true          # mask every result of this library
+  allow: [uuid4, ulid]  # whitelist; other calls fail the step
+  deny: [email]         # blacklist; wins over allow
+  log: [uuid4]          # always mask these functions' results
+```
+
+- Gating happens at expansion: a `deny:`-listed or non-`allow:`-listed call
+  is a hard step failure with a message naming the rule; lint flags the
+  same tokens.
+- Masking is **additive** — the union of `FunctionInfo.secret`, entry
+  `secret: true`, and entry `log:`. There is deliberately no unmask.
+- Names in `allow:`/`deny:`/`log:` must exist in the library's
+  `functions()` — a typo'd rule that would silently never fire is a hard
+  validation error.
+
 ### Distribution and fetching
 
 **Implemented in v0.22.0** (`perfscale install`, `perfscale.lock`, HTTPS/git
@@ -282,6 +335,21 @@ libraries:
   `perfscale install`. This is the RFC 002 discipline ("explicit install;
   run time is offline") adopted from day one, so the future marketplace
   registry becomes a pure addition, not a migration.
+
+**Addendum — burn (AOT precompilation and embedding).** `perfscale install`
+additionally precompiles every declared WASM library (remote and local) into
+`<cache>/libraries/<sha256>.cwasm` — `Engine::precompile_component` output
+behind a `PFSBURN1` header pinning the format version, wasmtime version,
+target triple, engine-configuration tag, and source sha256. The loader
+deserializes it on a full header match and silently recompiles otherwise
+(deserialization is `unsafe`; the header is what makes the bytes trusted).
+`perfscale burn -f … [-c …] -o <bin>` goes further: it appends the
+documents' `.cwasm` artifacts to a copy of the binary behind a `PFSEMBED`
+trailer, and the engine resolves embedded libraries by exact `use:` string
+before touching the disk — a single self-contained file for load generators.
+A header mismatch on an embedded library is a hard "re-burn" error (there is
+no fallback in a shipped binary). Per-call overhead (JSON marshaling,
+per-VU instances) is explicitly out of scope.
 
 ### The `@std/random@v1` built-in
 

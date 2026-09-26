@@ -1,9 +1,12 @@
 //! WASM value-generator libraries (RFC 005 phase 2) — wasmtime host.
 //!
-//! A local `.wasm` component (WASI Preview 2, `perfscale:library@0.1.0` —
-//! see `wit/library.wit` at the workspace root) becomes a
+//! A local `.wasm` component (WASI Preview 2, `perfscale:library@0.2.0` —
+//! legacy `@0.1.x` components keep loading, they just never see the run
+//! settings; see `wit/library.wit` at the workspace root) becomes a
 //! [`WasmLibraryProvider`]: the component is compiled **once per run**
-//! (shared `Arc`-able [`Component`]), and every `instantiate()` mints a fresh
+//! (shared `Arc`-able [`Component`]; a `.cwasm` burn artifact in the cache —
+//! see `super::burn` — replaces that compilation with a deserialization),
+//! and every `instantiate()` mints a fresh
 //! `Store` + instance per generator owner (per VU / live connection),
 //! matching the native library lifecycle.
 //!
@@ -41,7 +44,8 @@ use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
 
 use super::{CallCtx, Capability, FunctionInfo, LibraryInstance, LibraryProvider};
 
-/// Host-side bindings generated from the same `wit/library.wit` the SDK uses.
+/// Host-side bindings generated from the same `wit/library.wit` the SDK uses
+/// (the current ABI, 0.2.x — context carries `settings-json`).
 mod bindings {
     wasmtime::component::bindgen!({
         path: "../../wit",
@@ -49,9 +53,18 @@ mod bindings {
     });
 }
 
-/// The WIT package version this host implements. A component built against
+/// Bindings for the legacy 0.1 ABI (`wit/v0.1/library.wit` — context without
+/// `settings-json`), so components built before 0.2 keep loading.
+mod bindings_v1 {
+    wasmtime::component::bindgen!({
+        path: "../../wit/v0.1",
+        world: "perfscale-library",
+    });
+}
+
+/// The WIT package versions this host implements. A component built against
 /// another major fails to load with both versions named.
-const SUPPORTED_WIT: &str = "perfscale:library/library@0.1";
+const SUPPORTED_WIT: &str = "perfscale:library/library@0.1.x and @0.2.x";
 
 /// Fuel budget per guest call (`init` and `call`). Fuel is the phase-2
 /// execution bound: ~50M fuel is generous for value generation (string
@@ -65,7 +78,9 @@ const MEMORY_CAP: usize = 64 << 20; // 64 MiB
 
 /// Shared engine: compilation settings are identical for every provider, and
 /// one engine lets `Component` compilation cache across libraries of a run.
-fn engine() -> Result<&'static Engine, String> {
+/// Also the engine burn artifacts are produced for and deserialized against
+/// (see `super::burn`); its `Config` changes must bump `burn::engine_tag`.
+pub(crate) fn engine() -> Result<&'static Engine, String> {
     static ENGINE: OnceLock<Result<Engine, String>> = OnceLock::new();
     ENGINE
         .get_or_init(|| {
@@ -201,43 +216,88 @@ pub struct WasmLibraryProvider {
     functions: Vec<FunctionInfo>,
     fs_root: Option<PathBuf>,
     grants: Grants,
+    /// WIT ABI major the component was built against (1 or 2) — picks the
+    /// bindings used at instantiation.
+    wit_major: u8,
 }
 
 impl WasmLibraryProvider {
     /// Load, compile and capability-check the component at `path` (anchored
     /// to the declaring file by import resolution). `capabilities` is the
     /// YAML grant; `fs_root` confines the `fs` preopen.
+    ///
+    /// Compilation goes through the burn cache (RFC 005 burn, phase 1): a
+    /// `<sha256>.cwasm` artifact written by `perfscale install` deserializes
+    /// in milliseconds; any miss or mismatch falls back to a full
+    /// `Component::new` compile.
     pub fn load(
         path: &Path,
         capabilities: Option<&[Capability]>,
         fs_root: Option<&Path>,
     ) -> Result<Self, String> {
         let display = || path.display().to_string();
-        let grants = Grants::parse(capabilities.unwrap_or(&[]))
-            .map_err(|e| format!("library '{}': {e}", display()))?;
-
-        // Phase 2 deviation: wasi:http egress (host-mediated, allowlisted) is
-        // not implemented in this build. The grant is still parsed and
-        // reported, but rejected — fail-closed rather than silently unmediated.
-        if !grants.net.is_empty() {
-            return Err(format!(
-                "library '{}': net capability is not yet supported in this build",
-                display()
-            ));
-        }
+        let grants = check_grants(&display(), capabilities)?;
 
         let bytes = std::fs::read(path)
             .map_err(|e| format!("library '{}': failed to read: {e}", display()))?;
         let engine = engine()?;
-        let component = Component::new(engine, &bytes).map_err(|e| {
-            format!(
-                "library '{}': failed to compile as a WASM component: {e}",
-                display()
-            )
-        })?;
 
-        // WIT version check: the component must export
-        // `perfscale:library/library@0.1.x`. The bindgen-generated bindings
+        // Burn-cache fast path. A missing or mismatched artifact is silent
+        // (the cache is advisory; `perfscale install` re-burns).
+        let sha = super::burn::sha256_bytes(&bytes);
+        let burn_path = crate::import::library_burn_path(
+            &crate::import::default_library_cache_root(),
+            &super::burn::hex(&sha),
+        );
+        let burned = std::fs::read(&burn_path).ok().and_then(|artifact| {
+            let hit = super::burn::load_burned(&artifact, &sha);
+            if hit.is_none() {
+                tracing::debug!(
+                    "library '{}': burn artifact '{}' does not match this build — compiling from source",
+                    path.display(),
+                    burn_path.display()
+                );
+            }
+            hit
+        });
+        let component = match burned {
+            Some(component) => component,
+            None => Component::new(engine, &bytes).map_err(|e| {
+                format!(
+                    "library '{}': failed to compile as a WASM component: {e}",
+                    display()
+                )
+            })?,
+        };
+        Self::assemble(path.to_path_buf(), component, grants, fs_root)
+    }
+
+    /// Load a component that was deserialized from the binary's embedded
+    /// burn payload (`perfscale burn`) — no `.wasm` file needs to exist.
+    /// `use_` is the exact `use:` string (error messages, fs_root default).
+    pub fn load_embedded(
+        use_: &str,
+        component: Component,
+        capabilities: Option<&[Capability]>,
+        fs_root: Option<&Path>,
+    ) -> Result<Self, String> {
+        let grants = check_grants(use_, capabilities)?;
+        Self::assemble(PathBuf::from(use_), component, grants, fs_root)
+    }
+
+    /// Shared tail of [`Self::load`]/[`Self::load_embedded`]: WIT version
+    /// check, capability enforcement, linker construction, `info()` probe.
+    fn assemble(
+        path: PathBuf,
+        component: Component,
+        grants: Grants,
+        fs_root: Option<&Path>,
+    ) -> Result<Self, String> {
+        let display = || path.display().to_string();
+        let engine = engine()?;
+
+        // WIT version check: the component must export a supported
+        // `perfscale:library/library@0.N.x`. The bindgen-generated bindings
         // would fail at instantiation anyway, but an explicit check names both
         // versions (RFC 005 "Versioning").
         let ty = component.component_type();
@@ -247,16 +307,17 @@ impl WasmLibraryProvider {
                 exported_wit = Some(rest.trim_start_matches('@').to_string());
             }
         }
-        match exported_wit.as_deref() {
-            Some(v) if v == "0.1.0" || v.starts_with("0.1.0+") || v.starts_with("0.1.") => {}
+        let wit_major: u8 = match exported_wit.as_deref() {
+            Some(v) if v.starts_with("0.1.") => 1,
+            Some(v) if v.starts_with("0.2.") => 2,
             other => {
                 return Err(format!(
-                    "library '{}': unsupported WIT interface version — this build supports {SUPPORTED_WIT}.x, the component exports perfscale:library/library@{}",
+                    "library '{}': unsupported WIT interface version — this build supports {SUPPORTED_WIT}, the component exports perfscale:library/library@{}",
                     display(),
                     other.unwrap_or("<none — not a perfscale library component>")
                 ));
             }
-        }
+        };
 
         // Capability enforcement: map every import to its capability and
         // refuse imports beyond the grant.
@@ -326,6 +387,7 @@ impl WasmLibraryProvider {
             functions: Vec::new(),
             fs_root,
             grants,
+            wit_major,
         };
 
         // `info()` once at load: populates id/name/functions for
@@ -343,9 +405,10 @@ impl WasmLibraryProvider {
     }
 
     /// One fresh instance: new `Store` (fresh fuel, memory limits, WASI ctx)
-    /// plus component instantiation. Shared by `load`'s info probe and
+    /// plus component instantiation through the bindings of the component's
+    /// WIT major. Shared by `load`'s info probe and
     /// [`LibraryProvider::instantiate`].
-    fn instantiate_store(&self) -> Result<(Store<HostState>, bindings::PerfscaleLibrary), String> {
+    fn instantiate_store(&self) -> Result<(Store<HostState>, Instantiated), String> {
         let mut ctx = WasiCtx::builder();
         if self.grants.fs {
             let root = self.fs_root.as_deref().ok_or_else(|| {
@@ -379,29 +442,46 @@ impl WasmLibraryProvider {
         store
             .set_fuel(PER_CALL_FUEL)
             .map_err(|e| format!("library '{}': {e}", self.path.display()))?;
-        let instance =
-            bindings::PerfscaleLibrary::instantiate(&mut store, &self.component, &self.linker)
+        let instance = match self.wit_major {
+            1 => Instantiated::V1(
+                bindings_v1::PerfscaleLibrary::instantiate(
+                    &mut store,
+                    &self.component,
+                    &self.linker,
+                )
                 .map_err(|e| {
                     format!(
                         "library '{}': failed to instantiate: {e}",
                         self.path.display()
                     )
-                })?;
+                })?,
+            ),
+            _ => Instantiated::V2(
+                bindings::PerfscaleLibrary::instantiate(&mut store, &self.component, &self.linker)
+                    .map_err(|e| {
+                        format!(
+                            "library '{}': failed to instantiate: {e}",
+                            self.path.display()
+                        )
+                    })?,
+            ),
+        };
         Ok((store, instance))
     }
 
     /// Call `info()` on a throwaway instance and parse the JSON contract.
     fn probe_info(&self) -> Result<WasmLibraryInfo, String> {
         let (mut store, instance) = self.instantiate_store()?;
-        let json = instance
-            .perfscale_library_library()
-            .call_info(&mut store)
-            .map_err(|e| {
-                format!(
-                    "library '{}': info() trapped or exhausted fuel: {e}",
-                    self.path.display()
-                )
-            })?;
+        let json = match &instance {
+            Instantiated::V1(i) => i.perfscale_library_library().call_info(&mut store),
+            Instantiated::V2(i) => i.perfscale_library_library().call_info(&mut store),
+        }
+        .map_err(|e| {
+            format!(
+                "library '{}': info() trapped or exhausted fuel: {e}",
+                self.path.display()
+            )
+        })?;
         let parsed: WasmLibraryInfoJson = serde_json::from_str(&json).map_err(|e| {
             format!(
                 "library '{}': info() returned invalid JSON: {e}",
@@ -438,6 +518,63 @@ impl WasmLibraryProvider {
             version: parsed.version,
             functions,
         })
+    }
+}
+
+/// A component instance, through the bindings of its WIT major: 0.1
+/// components get the legacy context (no `settings-json`), 0.2 components
+/// the current one.
+enum Instantiated {
+    V1(bindings_v1::PerfscaleLibrary),
+    V2(bindings::PerfscaleLibrary),
+}
+
+impl Instantiated {
+    fn call_init(
+        &self,
+        store: &mut Store<HostState>,
+        config_json: &str,
+    ) -> Result<Result<(), String>, wasmtime::Error> {
+        match self {
+            Instantiated::V1(i) => i.perfscale_library_library().call_init(store, config_json),
+            Instantiated::V2(i) => i.perfscale_library_library().call_init(store, config_json),
+        }
+    }
+
+    fn call_call(
+        &self,
+        store: &mut Store<HostState>,
+        ctx: &CallCtx<'_>,
+        func: &str,
+        args_json: &str,
+    ) -> Result<Result<String, String>, wasmtime::Error> {
+        match self {
+            Instantiated::V1(i) => {
+                // The 0.1 ABI has no settings field — the guest simply
+                // never sees them.
+                let wctx = bindings_v1::exports::perfscale::library::library::Context {
+                    message_seq: ctx.message_seq,
+                    iteration_seq: ctx.iteration_seq,
+                    vu_id: ctx.vu_id,
+                    seed: ctx.seed,
+                    time_ms: ctx.time_ms,
+                };
+                i.perfscale_library_library()
+                    .call_call(store, wctx, func, args_json)
+            }
+            Instantiated::V2(i) => {
+                let wctx = bindings::exports::perfscale::library::library::Context {
+                    message_seq: ctx.message_seq,
+                    iteration_seq: ctx.iteration_seq,
+                    vu_id: ctx.vu_id,
+                    seed: ctx.seed,
+                    time_ms: ctx.time_ms,
+                    settings_json: ctx.settings_json.to_string(),
+                };
+                i.perfscale_library_library()
+                    .call_call(store, &wctx, func, args_json)
+            }
+        }
     }
 }
 
@@ -485,7 +622,6 @@ impl LibraryProvider for WasmLibraryProvider {
         let config_json = serde_json::to_string(&config.unwrap_or(Value::Null))
             .map_err(|e| format!("library '{}': {e}", self.id))?; // Value → JSON cannot fail
         instance
-            .perfscale_library_library()
             .call_init(&mut store, &config_json)
             .map_err(|e| format!("library '{}': init trapped or exhausted fuel: {e}", self.id))?
             .map_err(|e| format!("library '{}': init failed: {e}", self.id))?;
@@ -500,31 +636,22 @@ impl LibraryProvider for WasmLibraryProvider {
 /// One live WASM library instance (per generator owner).
 struct WasmLibraryInstance {
     store: Store<HostState>,
-    instance: bindings::PerfscaleLibrary,
+    instance: Instantiated,
     id: String,
 }
 
 impl LibraryInstance for WasmLibraryInstance {
-    fn call(&mut self, ctx: &CallCtx, func: &str, args: &[Value]) -> Result<String, String> {
+    fn call(&mut self, ctx: &CallCtx<'_>, func: &str, args: &[Value]) -> Result<String, String> {
         let args_json = serde_json::to_string(args)
             .map_err(|e| format!("{}.{func}: failed to encode arguments: {e}", self.id))?;
         // Fresh fuel budget per call (the store's fuel is cumulative).
         self.store
             .set_fuel(PER_CALL_FUEL)
             .map_err(|e| format!("{}.{func}: {e}", self.id))?;
-        let wctx = bindings::exports::perfscale::library::library::Context {
-            message_seq: ctx.message_seq,
-            iteration_seq: ctx.iteration_seq,
-            vu_id: ctx.vu_id,
-            seed: ctx.seed,
-            time_ms: ctx.time_ms,
-        };
-        match self.instance.perfscale_library_library().call_call(
-            &mut self.store,
-            wctx,
-            func,
-            &args_json,
-        ) {
+        match self
+            .instance
+            .call_call(&mut self.store, ctx, func, &args_json)
+        {
             Ok(Ok(value)) => Ok(value),
             // Guest-level error (bad function/args): the step fails with it.
             Ok(Err(e)) => Err(format!("{}.{func}: {e}", self.id)),
@@ -539,6 +666,23 @@ impl LibraryInstance for WasmLibraryInstance {
 
 fn link_err(file: &str, e: wasmtime::Error) -> String {
     format!("library '{file}': failed to connect a granted capability: {e}")
+}
+
+/// Parse the YAML grant and reject `net` (not implemented in this build) —
+/// shared by the file and embedded load paths.
+fn check_grants(display: &str, capabilities: Option<&[Capability]>) -> Result<Grants, String> {
+    let grants = Grants::parse(capabilities.unwrap_or(&[]))
+        .map_err(|e| format!("library '{display}': {e}"))?;
+
+    // Phase 2 deviation: wasi:http egress (host-mediated, allowlisted) is
+    // not implemented in this build. The grant is still parsed and
+    // reported, but rejected — fail-closed rather than silently unmediated.
+    if !grants.net.is_empty() {
+        return Err(format!(
+            "library '{display}': net capability is not yet supported in this build"
+        ));
+    }
+    Ok(grants)
 }
 
 /// Build the per-provider linker: wasi:io plumbing and wasi:cli in sink form
@@ -635,6 +779,7 @@ mod tests {
 
     struct Fixtures {
         hello: PathBuf,
+        hello01: PathBuf,
         spin: PathBuf,
         fsreader: PathBuf,
     }
@@ -690,6 +835,7 @@ mod tests {
                 };
                 Some(Fixtures {
                     hello: build("hello", "perfscale_hello_library")?,
+                    hello01: build("hello01", "perfscale_hello01_library")?,
                     spin: build("spin", "perfscale_spin_library")?,
                     fsreader: build("fsreader", "perfscale_fsreader_library")?,
                 })
@@ -704,16 +850,21 @@ mod tests {
             r#as: Some("hello".into()),
             capabilities: None,
             with: None,
+            secret: None,
+            allow: None,
+            deny: None,
+            log: None,
         }
     }
 
-    fn ctx() -> CallCtx {
+    fn ctx() -> CallCtx<'static> {
         CallCtx {
             message_seq: 1,
             iteration_seq: 0,
             vu_id: 1,
             seed: 42,
             time_ms: 1_784_160_000_000,
+            settings_json: "{}",
         }
     }
 
@@ -770,7 +921,7 @@ mod tests {
             .iter()
             .map(|f| f.name)
             .collect();
-        assert_eq!(names, ["greet", "token"]);
+        assert_eq!(names, ["greet", "token", "settings"]);
 
         let mut inst = resolved[0].provider.instantiate(None, 42).unwrap();
         let v = inst.call(&ctx(), "greet", &[Value::from("world")]).unwrap();
@@ -820,6 +971,8 @@ mod tests {
         gen.attach_library(
             resolved[0].alias.clone(),
             resolved[0].provider.instantiate(None, 42).unwrap(),
+            resolved[0].rules.clone(),
+            resolved[0].provider.functions().to_vec(),
         );
         gen.begin_message();
         assert_eq!(
@@ -828,6 +981,36 @@ mod tests {
         );
         let err = gen.expand("${hello.nope()}").unwrap_err();
         assert!(err.contains("unknown function"), "{err}");
+    }
+
+    #[test]
+    fn wit_0_1_component_loads_without_settings() {
+        let Some(f) = fixtures() else { return };
+        // The legacy fixture exports `perfscale:library/library@0.1.0`; the
+        // host instantiates it through the 0.1 bindings (no settings field).
+        let resolved = validate_libraries(&[lib_ref(&f.hello01)], false, None).unwrap();
+        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+        let v = inst.call(&ctx(), "greet", &[Value::from("world")]).unwrap();
+        assert_eq!(v, "hello, world! (vu 1, seq 1)");
+        assert!(
+            resolved[0]
+                .provider
+                .functions()
+                .iter()
+                .any(|fi| fi.name == "token" && fi.secret),
+            "info() metadata (secret flags) parses for 0.1 components too"
+        );
+    }
+
+    #[test]
+    fn wit_0_2_component_sees_the_run_settings() {
+        let Some(f) = fixtures() else { return };
+        let resolved = validate_libraries(&[lib_ref(&f.hello)], false, None).unwrap();
+        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+        let mut c = ctx();
+        c.settings_json = r#"{"vus":10,"seed":42}"#;
+        let v = inst.call(&c, "settings", &[]).unwrap();
+        assert_eq!(v, r#"{"vus":10,"seed":42}"#);
     }
 
     #[test]
@@ -897,5 +1080,66 @@ mod tests {
         let mut fresh = resolved[0].provider.instantiate(None, 1).unwrap();
         let err = fresh.call(&ctx(), "other", &[]).unwrap_err();
         assert!(err.contains("unknown function"), "{err}");
+    }
+
+    // --- burn cache (RFC 005 burn) -------------------------------------------
+
+    /// A provider built from a burn artifact produces bit-identical values
+    /// to one compiled from source with the same seed.
+    #[test]
+    fn burned_load_matches_fresh_compile() {
+        let Some(f) = fixtures() else { return };
+        let bytes = std::fs::read(&f.hello).unwrap();
+        let sha = super::super::burn::sha256_bytes(&bytes);
+        let artifact = super::super::burn::burn_component(&bytes).unwrap();
+        let component = super::super::burn::load_burned(&artifact, &sha)
+            .expect("the burn artifact deserializes");
+        let burned =
+            WasmLibraryProvider::load_embedded(&f.hello.to_string_lossy(), component, None, None)
+                .unwrap();
+        let resolved = validate_libraries(&[lib_ref(&f.hello)], false, None).unwrap();
+
+        let args = [Value::from("order")];
+        let mut a = burned.instantiate(None, 7).unwrap();
+        let mut b = resolved[0].provider.instantiate(None, 7).unwrap();
+        assert_eq!(
+            a.call(&ctx(), "token", &args).unwrap(),
+            b.call(&ctx(), "token", &args).unwrap(),
+            "burned load is bit-identical to a fresh compile"
+        );
+        assert_eq!(burned.id(), resolved[0].provider.id());
+    }
+
+    /// `load()` itself probes the burn cache: with a matching `.cwasm` under
+    /// PERFSCALE_CACHE_DIR the provider loads identically (and the artifact
+    /// is exactly what `burn_component` would write).
+    #[test]
+    #[serial_test::file_serial(burn_cache_env)]
+    fn load_probes_the_burn_cache() {
+        let Some(f) = fixtures() else { return };
+        let bytes = std::fs::read(&f.hello).unwrap();
+        let sha = super::super::burn::sha256_hex(&bytes);
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::import::library_cache_root(&crate::import::ImportOptions {
+            cache_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        });
+        crate::import::write_library_burn(
+            &root,
+            &sha,
+            &super::super::burn::burn_component(&bytes).unwrap(),
+        )
+        .unwrap();
+
+        // Point the loader's default cache root at the prepared cache.
+        let prev = std::env::var_os("PERFSCALE_CACHE_DIR");
+        std::env::set_var("PERFSCALE_CACHE_DIR", dir.path());
+        let result = validate_libraries(&[lib_ref(&f.hello)], false, None);
+        match prev {
+            Some(v) => std::env::set_var("PERFSCALE_CACHE_DIR", v),
+            None => std::env::remove_var("PERFSCALE_CACHE_DIR"),
+        }
+        let resolved = result.unwrap();
+        assert_eq!(resolved[0].provider.id(), "perfscale_hello_library@v0.1.0");
     }
 }

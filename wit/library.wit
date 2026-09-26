@@ -1,11 +1,15 @@
-// perfscale library ABI, version 0.1 (RFC 005 phase 2).
+// perfscale library ABI, version 0.2 (RFC 005 phase 2/3.5).
 //
 // Single source of truth for the contract between the engine (host,
 // `crates/perfscale-core/src/library/wasm.rs`) and WASM value-generator
 // libraries (guests, e.g. via `crates/perfscale-library-sdk`). Both sides
 // generate bindings from this file — keep it in sync with the RFC and bump
 // the package version on any change.
-package perfscale:library@0.1.0;
+//
+// 0.2.0 adds `settings-json` to the call context (run settings frozen once
+// at run start). The host still accepts 0.1.x components (bindings from
+// `wit/v0.1/library.wit`) — they simply never see the settings.
+package perfscale:library@0.2.0;
 
 interface library {
     /// The context every call receives (RFC 005 "Call context").
@@ -21,6 +25,14 @@ interface library {
         seed: u64,
         /// Wall clock, unix milliseconds.
         time-ms: u64,
+        /// Run settings as a JSON object, frozen once at run start — the
+        /// string is identical for every call of the run:
+        /// `{"vus": N|null, "duration_ms": N|null, "seed": N|null,
+        ///   "stages": [...]|null, "arrival": {...}|null,
+        ///   "variables": {...}}`. `vus`/`duration_ms` are only set for the
+        /// fixed load profile; staged/arrival runs carry the profile in
+        /// `stages`/`arrival` (durations normalized to milliseconds).
+        settings-json: string,
     }
 
     /// Library metadata as JSON:

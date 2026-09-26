@@ -105,6 +105,10 @@ Then `${fix.clordid(new)}` in any `${...}`-expanding payload.
   than granted is a hard load error. `net` is not yet supported.
 - **Secrets**: mark credential-minting functions `secret: true` — the engine
   masks their results in logs.
+- **Run settings**: `ctx.settings_json` (or parsed via `ctx.settings()`)
+  carries the run's frozen settings — `vus`/`duration_ms` (fixed profile)
+  or `stages`/`arrival`, `seed`, and the config `variables:` with
+  `${{ env.* }}` resolved. Identical for every call of the run.
 
 ## Unit testing without the engine
 

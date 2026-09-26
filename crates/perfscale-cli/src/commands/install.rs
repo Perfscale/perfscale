@@ -1,4 +1,5 @@
-//! `perfscale install` — fetch remote libraries and pin them (RFC 005 phase 3).
+//! `perfscale install` — fetch remote libraries and pin them (RFC 005 phase 3),
+//! and precompile (burn) every WASM library into the AOT cache.
 //!
 //! For every `libraries[].use` that names a remote source (`https://…` or
 //! `git+<repo>@<ref>#<path>`) in the given documents — including documents
@@ -7,6 +8,12 @@
 //! (`<cache>/libraries/<sha256>.wasm`), and writes/updates `perfscale.lock`
 //! next to the declaring document. `run`/`lint` afterwards work fully
 //! offline against lock + cache.
+//!
+//! Every WASM library — remote or a local `./path.wasm` — is additionally
+//! precompiled into `<cache>/libraries/<sha256>.cwasm` (burn artifact,
+//! see `perfscale_core::library::burn`), so `run`/`lint` skip per-run
+//! Cranelift compilation. Local libraries get no lockfile entry (nothing to
+//! pin — the file is already local).
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -14,10 +21,11 @@ use std::sync::{Arc, Mutex};
 
 use perfscale_core::import::{self, CollectedLibrary, GitImport, ImportOptions};
 use perfscale_core::library::lockfile::{LockEntry, Lockfile};
-use perfscale_core::library::{normalize_sha256, parse_git_library_ref};
+use perfscale_core::library::{is_remote_ref, normalize_sha256, parse_git_library_ref};
 use sha2::{Digest, Sha256};
 
 use crate::cli::InstallArgs;
+use crate::commands::burn::ensure_burned;
 use crate::error::CliError;
 
 pub async fn run(args: InstallArgs) -> Result<(), CliError> {
@@ -52,11 +60,28 @@ pub async fn run(args: InstallArgs) -> Result<(), CliError> {
         return Ok(());
     }
 
+    // Split: remote refs are fetched + pinned in the lock; local paths only
+    // get burned into the AOT cache (nothing to pin — the file is local).
+    let (remote, local): (Vec<_>, Vec<_>) = gathered
+        .into_iter()
+        .partition(|lib| is_remote_ref(&lib.use_));
+
+    let cache_root = import::library_cache_root(&opts);
+    for lib in locals_deduped(local) {
+        let bytes = std::fs::read(&lib.use_).map_err(|e| {
+            CliError::new(format!("library '{}': failed to read: {e}", lib.use_))
+                .hint("local library paths resolve relative to the declaring file's directory")
+                .docs("yaml-reference.md#libraries")
+        })?;
+        let sha = sha256_hex(&bytes);
+        warn_on_burn_failure(&lib.use_, ensure_burned(&lib.use_, &sha, &bytes, &cache_root));
+    }
+
     // Dedup (same library imported through several files), then group by
     // declaring directory: one lockfile write per directory.
     let mut seen = HashSet::new();
     let mut by_dir: BTreeMap<PathBuf, Vec<CollectedLibrary>> = BTreeMap::new();
-    for lib in gathered {
+    for lib in remote {
         if seen.insert((lib.declaring_dir.clone(), lib.use_.clone())) {
             by_dir
                 .entry(lib.declaring_dir.clone())
@@ -65,13 +90,17 @@ pub async fn run(args: InstallArgs) -> Result<(), CliError> {
         }
     }
 
-    let cache_root = import::library_cache_root(&opts);
     for (dir, libs) in by_dir {
         let mut lock = Lockfile::load(&dir)
             .map_err(CliError::new)?
             .unwrap_or_default();
         for lib in &libs {
-            install_one(lib, &mut lock, &cache_root, &opts).await?;
+            let sha = install_one(lib, &mut lock, &cache_root, &opts).await?;
+            // The artifact is in the cache by now — precompile it so runs
+            // skip Cranelift compilation.
+            let bytes = std::fs::read(import::library_artifact_path(&cache_root, &sha))
+                .map_err(|e| CliError::new(format!("library '{}': {e}", lib.use_)))?;
+            warn_on_burn_failure(&lib.use_, ensure_burned(&lib.use_, &sha, &bytes, &cache_root));
         }
         let path = lock.save(&dir).map_err(CliError::new)?;
         println!(
@@ -83,13 +112,34 @@ pub async fn run(args: InstallArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Fetch, verify, cache, and pin one remote library.
+/// Deduped local library declarations (anchored absolute paths — the same
+/// file may be declared in several documents).
+fn locals_deduped(local: Vec<CollectedLibrary>) -> Vec<CollectedLibrary> {
+    let mut seen = HashSet::new();
+    local
+        .into_iter()
+        .filter(|lib| seen.insert(lib.use_.clone()))
+        .collect()
+}
+
+/// Burn is advisory for `install`: an artifact that does not compile (or a
+/// cache write failure) must not fail an install that was valid before burn
+/// existed — the library compiles (or reports its real error) at run time.
+fn warn_on_burn_failure(use_: &str, result: Result<(), String>) {
+    if let Err(e) = result {
+        println!("warning: {e}");
+        println!("  ({use_} will be compiled at run time instead)");
+    }
+}
+
+/// Fetch, verify, cache, and pin one remote library. Returns the artifact's
+/// sha256 (the cache key of its `.wasm`).
 async fn install_one(
     lib: &CollectedLibrary,
     lock: &mut Lockfile,
     cache_root: &Path,
     opts: &ImportOptions,
-) -> Result<(), CliError> {
+) -> Result<String, CliError> {
     if lib.use_.starts_with("http://") || lib.use_.starts_with("https://") {
         install_https(lib, lock, cache_root).await
     } else if lib.use_.starts_with("git+") {
@@ -115,7 +165,7 @@ async fn install_https(
     lib: &CollectedLibrary,
     lock: &mut Lockfile,
     cache_root: &Path,
-) -> Result<(), CliError> {
+) -> Result<String, CliError> {
     let declared = lib.sha256.as_deref().ok_or_else(|| {
         CliError::new(format!(
             "library '{}': https sources require a `sha256:` field (64 hex) in the libraries: entry",
@@ -130,7 +180,7 @@ async fn install_https(
         && import::library_artifact_path(cache_root, &declared).is_file();
     if already_pinned {
         println!("installed {} ({}…, up to date)", lib.use_, short(&declared));
-        return Ok(());
+        return Ok(declared);
     }
 
     let bytes = fetch_bytes(&lib.use_).await?;
@@ -150,7 +200,7 @@ async fn install_https(
         sha256: actual.clone(),
     });
     println!("installed {} ({}…)", lib.use_, short(&actual));
-    Ok(())
+    Ok(actual)
 }
 
 async fn install_git(
@@ -158,7 +208,7 @@ async fn install_git(
     lock: &mut Lockfile,
     cache_root: &Path,
     opts: &ImportOptions,
-) -> Result<(), CliError> {
+) -> Result<String, CliError> {
     let parsed = parse_git_library_ref(&lib.use_).map_err(CliError::new)?;
 
     // Without --refresh the lock is the truth: a pinned commit with the
@@ -184,7 +234,7 @@ async fn install_git(
                     lib.use_,
                     short(&existing.sha256)
                 );
-                return Ok(());
+                return Ok(existing.sha256.clone());
             }
         }
     }
@@ -227,7 +277,7 @@ async fn install_git(
         sha256: actual.clone(),
     });
     println!("installed {} ({}…)", lib.use_, short(&actual));
-    Ok(())
+    Ok(actual)
 }
 
 /// GET an artifact over HTTP(S), capped like the import fetcher.

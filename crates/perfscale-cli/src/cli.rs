@@ -71,6 +71,8 @@ pub enum Commands {
     Lint(LintArgs),
     /// Fetch remote (https/git) libraries and pin them in perfscale.lock.
     Install(InstallArgs),
+    /// Build a standalone binary with the documents' WASM libraries embedded.
+    Burn(BurnArgs),
     /// Print the JSON Schema for test or config YAML files.
     Schema(SchemaArgs),
     /// Print the perfscale manual as plain text, or install it for `man perfscale`.
@@ -342,6 +344,45 @@ pub struct InstallArgs {
     pub refresh: bool,
 }
 
+fn burn_after_help() -> String {
+    format!(
+        "Copies the running perfscale binary and appends the AOT-precompiled\n\
+         (.cwasm) artifacts of every WASM library declared in the -f/-c documents,\n\
+         behind a PFSEMBED trailer. The derived binary resolves those libraries\n\
+         from itself — no .wasm files, cache, or perfscale.lock needed on the\n\
+         machine it runs on. Remote refs must be installed first\n\
+         (`perfscale install`).\n\n\
+         Examples:\n  \
+         perfscale burn -f test.yaml -c config.yaml -o ./perfscale+libs\n\n\
+         Burn artifacts are tied to this perfscale build (wasmtime version,\n\
+         target triple, engine configuration): re-run `perfscale burn` after\n\
+         upgrading perfscale. Per-call library overhead is unchanged — burn\n\
+         removes per-run compilation, not call cost.\n\n\
+         YAML reference: {DOCS_BASE}/yaml-reference.md#libraries"
+    )
+}
+
+#[derive(Args)]
+#[command(after_help = burn_after_help())]
+pub struct BurnArgs {
+    /// Test YAML document(s) whose WASM libraries should be embedded.
+    #[arg(
+        short = 'f',
+        long = "file",
+        value_name = "TEST.yaml",
+        required = true
+    )]
+    pub files: Vec<PathBuf>,
+
+    /// Optional config YAML whose WASM libraries should also be embedded.
+    #[arg(short = 'c', long = "config", value_name = "CONFIG.yaml")]
+    pub config: Option<PathBuf>,
+
+    /// Output path of the derived (burned) binary.
+    #[arg(short = 'o', long = "output", value_name = "FILE")]
+    pub output: PathBuf,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,6 +644,26 @@ mod tests {
             Commands::Install(args) => assert!(!args.refresh),
             _ => panic!("expected Install"),
         }
+    }
+
+    #[test]
+    fn burn_parses_files_config_and_output() {
+        let cli = parse(&["burn", "-f", "t.yaml", "-c", "cfg.yaml", "-o", "out"]).unwrap();
+        match cli.command {
+            Commands::Burn(args) => {
+                assert_eq!(args.files, vec![PathBuf::from("t.yaml")]);
+                assert_eq!(args.config, Some(PathBuf::from("cfg.yaml")));
+                assert_eq!(args.output, PathBuf::from("out"));
+            }
+            _ => panic!("expected Burn"),
+        }
+    }
+
+    #[test]
+    fn burn_requires_file_and_output() {
+        assert!(parse(&["burn"]).is_err());
+        assert!(parse(&["burn", "-f", "t.yaml"]).is_err());
+        assert!(parse(&["burn", "-o", "out"]).is_err());
     }
 
     #[test]

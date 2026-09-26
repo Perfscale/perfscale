@@ -302,9 +302,62 @@ Rules:
   `allow_library_capabilities: true` (fail-closed, same pattern as
   `allow_file_actions`). `@std/random@v1` declares no capabilities —
   granting it any is a validation error.
+
+#### Run settings (`CallCtx.settings_json`)
+
+Every library call receives the run's settings as a JSON object, frozen
+once at run start — the string is identical for every VU, iteration, and
+call of the run:
+
+```json
+{
+  "vus": 10,            // fixed profile only, else null
+  "duration_ms": 300000, // fixed profile only, else null
+  "seed": 42,           // config seed, or null
+  "stages": null,       // staged profile: [{ "duration_ms", "target" }]
+  "arrival": null,      // arrival profile: { "max_vus", "pre_allocated_vus", "stages": [{ "duration_ms", "rate" }] }
+  "variables": {}       // config `variables:` with ${{ env.* }} resolved
+}
+```
+
+`vus`/`duration_ms` are only set for the fixed load profile; staged and
+arrival-rate runs leave them null and carry the profile in
+`stages`/`arrival` (durations normalized to milliseconds). `variables` are
+resolved through the same interpolation steps use — so an env-sourced value
+a library now receives is also recorded in the run's secret registry and
+stays masked in the run log. Components built against the WIT 0.1 ABI
+receive `"{}"` (the 0.1 context has no settings field).
+
+#### Policy rules: `secret` / `allow` / `deny` / `log`
+
+A library entry can restrict which functions are callable and force result
+masking (all optional):
+
+```yaml
+libraries:
+  - use: '@std/random@v1'
+    secret: true          # mask every result of this library in the run log
+    allow: [uuid4, ulid]  # whitelist: other calls fail the step
+    deny: [email]         # blacklist: wins over allow
+    log: [uuid4]          # always mask these functions' results
+```
+
+- `deny:` wins over `allow:` when a name appears in both; a blocked call
+  fails the step with a message naming the rule, and `perfscale lint`
+  flags it in `${alias.fn(...)}` tokens.
+- Masking is **additive**: a result is masked when the function declares
+  `secret: true` in its metadata, the entry sets `secret: true`, or the
+  function is in the entry's `log:` list. There is deliberately no way to
+  *un*mask. Masked values are recorded in the run's secret registry and
+  shown as `***` in the run log; the wire payload keeps the real value.
+- Every name in `allow:`/`deny:`/`log:` must be a function the library
+  actually exports — a typo is a hard validation error (it would silently
+  never fire).
+
 - Local paths (`use: ./libs/fixer-ids.wasm`) load WASM component libraries
-  (WASI Preview 2, `perfscale:library@0.1.0` WIT — see
-  [RFC 005](../rfcs/005-libraries.md)). Paths resolve **relative to the
+  (WASI Preview 2, `perfscale:library@0.2.0` WIT — components built against
+  the older `@0.1.x` ABI keep loading, they just never see the run settings;
+  see [RFC 005](../rfcs/005-libraries.md)). Paths resolve **relative to the
   declaring file's directory**, like `import:` paths. The perfscale CLI
   binary ships WASM support; embedders of `perfscale-core` need the
   `wasm-libs` cargo feature.
@@ -359,6 +412,35 @@ Notes:
 - For `git+` refs a YAML `sha256:` is optional: the commit pin is the
   integrity anchor. When present, install verifies it and a mismatch is a
   hard error.
+
+#### AOT compilation (burn cache) and `perfscale burn`
+
+Compiling a WASM component (Cranelift) costs real time on every `run`/
+`lint` — seconds for large components. Two mechanisms remove it:
+
+- **Burn cache.** `perfscale install` precompiles every declared WASM
+  library — remote *and* local `./path.wasm` (local libraries get no
+  `perfscale.lock` entry; the file itself is already local) — into
+  `<cache>/libraries/<sha256>.cwasm`. The loader probes this cache first and
+  deserializes the artifact (native code, mmap-fast); on any miss or
+  mismatch it silently falls back to a full compile, so the cache is purely
+  advisory. Artifacts carry a header pinning the wasmtime version, target
+  triple, engine configuration, and the source digest: **upgrading
+  perfscale invalidates them — re-run `perfscale install` to re-burn**.
+- **Binary embedding.** `perfscale burn -f test.yaml [-c config.yaml] -o
+  ./perfscale+libs` writes a copy of the running binary with the `.cwasm`
+  artifacts of the documents' libraries appended (a `PFSEMBED` trailer — no
+  executable-section patching, works for ELF/Mach-O/PE). The derived binary
+  resolves those libraries from itself by exact `use:` string, so it runs
+  with **no `.wasm` files, cache, or `perfscale.lock` on disk** — a single
+  file to ship to load generators. Remote refs must be installed first.
+  Because embedding bakes in the artifacts, a burned binary that detects a
+  header mismatch fails with a "re-burn" error rather than falling back;
+  re-run `perfscale burn` with the current perfscale.
+
+What burn does **not** change: per-call overhead (JSON marshaling of
+arguments, per-instance store/memory per VU) is unchanged — burn removes
+per-run compilation, not call cost.
 
 WASM library rules:
 

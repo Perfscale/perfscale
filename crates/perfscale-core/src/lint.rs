@@ -770,7 +770,11 @@ pub fn lint_warnings(yaml: &str, kind: DocKind) -> Vec<String> {
 /// The `allow_library_capabilities` gate lives in the config file, so a test
 /// document cannot know it; the test pass validates with the gate open (the
 /// run itself stays fail-closed either way) and the config pass enforces it.
-type ResolvedProviders = Vec<(String, std::sync::Arc<dyn crate::library::LibraryProvider>)>;
+type ResolvedProviders = Vec<(
+    String,
+    std::sync::Arc<dyn crate::library::LibraryProvider>,
+    crate::library::LibraryRules,
+)>;
 
 fn declared_libraries(value: &Value, kind: DocKind) -> (Vec<LintIssue>, ResolvedProviders) {
     let Some(entries) = value.get("libraries").and_then(|v| v.as_array()) else {
@@ -793,7 +797,7 @@ fn declared_libraries(value: &Value, kind: DocKind) -> (Vec<LintIssue>, Resolved
             Vec::new(),
             resolved
                 .into_iter()
-                .map(|r| (r.alias, r.provider))
+                .map(|r| (r.alias, r.provider, r.rules))
                 .collect(),
         ),
         Err(msg) => (
@@ -855,7 +859,11 @@ fn library_token_checks(value: &Value, kind: DocKind) -> (Vec<LintIssue>, Vec<St
 fn scan_library_tokens(
     v: &Value,
     loc: &str,
-    aliases: &[(String, std::sync::Arc<dyn crate::library::LibraryProvider>)],
+    aliases: &[(
+        String,
+        std::sync::Arc<dyn crate::library::LibraryProvider>,
+        crate::library::LibraryRules,
+    )],
     issues: &mut Vec<LintIssue>,
     warnings: &mut Vec<String>,
 ) {
@@ -880,7 +888,11 @@ fn scan_library_tokens(
 fn lint_string_tokens(
     s: &str,
     loc: &str,
-    aliases: &[(String, std::sync::Arc<dyn crate::library::LibraryProvider>)],
+    aliases: &[(
+        String,
+        std::sync::Arc<dyn crate::library::LibraryProvider>,
+        crate::library::LibraryRules,
+    )],
     issues: &mut Vec<LintIssue>,
     warnings: &mut Vec<String>,
 ) {
@@ -906,7 +918,11 @@ fn lint_string_tokens(
 fn lint_library_token(
     token: &str,
     loc: &str,
-    aliases: &[(String, std::sync::Arc<dyn crate::library::LibraryProvider>)],
+    aliases: &[(
+        String,
+        std::sync::Arc<dyn crate::library::LibraryProvider>,
+        crate::library::LibraryRules,
+    )],
     issues: &mut Vec<LintIssue>,
     warnings: &mut Vec<String>,
 ) {
@@ -921,7 +937,7 @@ fn lint_library_token(
     if crate::library::RESERVED_TOKEN_NAMES.contains(&alias) {
         return;
     }
-    let Some((_, provider)) = aliases.iter().find(|(a, _)| a == alias) else {
+    let Some((_, provider, rules)) = aliases.iter().find(|(a, _, _)| a == alias) else {
         warnings.push(format!(
             "{loc}: unknown library alias '{alias}' in '${{{token}}}' — the token is left verbatim at runtime"
         ));
@@ -944,6 +960,17 @@ fn lint_library_token(
             location: loc.to_string(),
             problem: format!("invalid library call '${{{token}}}': {msg}"),
             suggestion: Some("check the argument list: balanced parens and double quotes".into()),
+        });
+        return;
+    }
+
+    // Call policy (RFC 005 phase 3.5): a token naming a `deny:`-listed or
+    // non-`allow:`-listed function fails the step at run time — flag it.
+    if let Some(blocked) = rules.blocked(alias, func) {
+        issues.push(LintIssue {
+            location: loc.to_string(),
+            problem: format!("${{{token}}}: {blocked}"),
+            suggestion: Some("adjust the library entry's `allow:`/`deny:` lists".into()),
         });
         return;
     }
@@ -2120,6 +2147,77 @@ steps:
                 .any(|i| i.problem.contains("invalid library call")),
             "{issues:?}"
         );
+    }
+
+    #[test]
+    fn denied_function_in_a_token_is_an_issue() {
+        let yaml = r#"
+libraries:
+  - use: '@std/random@v1'
+    deny: [email]
+steps:
+  - use: std/http@v1
+    with:
+      url: https://x
+      body: '{"id": "${random.uuid4()}", "e": "${random.email()}"}'
+"#;
+        let issues = lint(yaml, DocKind::Test);
+        let bad = issues
+            .iter()
+            .find(|i| i.problem.contains("deny"))
+            .unwrap_or_else(|| panic!("no deny issue: {issues:?}"));
+        assert_eq!(bad.location, "/steps/0/with");
+        assert!(bad.problem.contains("random.email"), "{bad:?}");
+        // The whitelisted-by-default call stays clean.
+        assert!(
+            !issues.iter().any(|i| i.problem.contains("uuid4")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn function_outside_the_allow_list_is_an_issue() {
+        let yaml = r#"
+libraries:
+  - use: '@std/random@v1'
+    allow: [uuid4]
+steps:
+  - use: std/http@v1
+    with:
+      url: https://x
+      body: '{"id": "${random.uuid4()}", "n": "${random.int(1,100)}"}'
+"#;
+        let issues = lint(yaml, DocKind::Test);
+        let bad = issues
+            .iter()
+            .find(|i| i.problem.contains("allow"))
+            .unwrap_or_else(|| panic!("no allow issue: {issues:?}"));
+        assert!(bad.problem.contains("random.int"), "{bad:?}");
+        assert!(
+            !issues.iter().any(|i| i.problem.contains("uuid4")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn rule_names_unknown_to_the_library_are_declaration_issues() {
+        // A typo'd rule name would silently never fire — validate_libraries
+        // rejects it, and lint surfaces that same error at /libraries.
+        for field in ["allow", "deny", "log"] {
+            let yaml = format!(
+                "libraries:\n  - use: '@std/random@v1'\n    {field}: [nope]\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
+            );
+            let issues = lint(&yaml, DocKind::Test);
+            let bad = issues
+                .iter()
+                .find(|i| i.location == "/libraries")
+                .unwrap_or_else(|| panic!("{field}: no /libraries issue: {issues:?}"));
+            assert!(
+                bad.problem
+                    .contains(&format!("unknown function 'nope' in `{field}:`")),
+                "{field} → {bad:?}"
+            );
+        }
     }
 
     #[test]

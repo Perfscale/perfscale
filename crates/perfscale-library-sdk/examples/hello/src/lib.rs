@@ -24,6 +24,11 @@ impl Library for Hello {
                 description: "Random 16-char token; optional memo key reuses it within one message",
                 secret: true,
             },
+            FunctionInfo {
+                name: "settings",
+                description: "The frozen run settings JSON the host handed over (WIT 0.2 context)",
+                secret: false,
+            },
         ]
     }
 
@@ -55,8 +60,9 @@ impl Library for Hello {
                     None => mint(ctx),
                 }
             }
+            "settings" => Ok(ctx.settings_json.clone()),
             other => Err(Error::new(format!(
-                "hello.{other}: unknown function — exports: greet, token"
+                "hello.{other}: unknown function — exports: greet, token, settings"
             ))),
         }
     }

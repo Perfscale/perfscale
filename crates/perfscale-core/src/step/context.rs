@@ -15,7 +15,7 @@ use crate::step::process::ProcessRegistry;
 /// `${{ var_name.field }}` in string parameter values. Live resources (open
 /// WebSockets) are not JSON and live in `resources` instead — steps refer to
 /// them by the Connection ID a connect step returned.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct Context {
     pub(crate) vars: HashMap<String, Value>,
     pub(crate) resources: crate::step::resources::Resources,
@@ -64,6 +64,10 @@ pub struct Context {
     /// generators derive `hash(seed, vu_id, conn_seq)` instead of a random
     /// seed.
     pub(crate) run_seed: Option<u64>,
+    /// Run settings JSON frozen at run start, handed to every library call
+    /// as `CallCtx.settings_json` (RFC 005 settings). `"{}"` in hand-built
+    /// contexts.
+    pub(crate) settings_json: Arc<str>,
     /// This VU's id (1-based) and current loop iteration — carried into
     /// library call contexts. 0 in hand-built contexts.
     pub(crate) vu_id: u64,
@@ -71,6 +75,30 @@ pub struct Context {
     /// Counts generators minted by this context — the `conn_seq` input of the
     /// per-instance seed derivation.
     gen_counter: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self {
+            vars: HashMap::new(),
+            resources: Default::default(),
+            allow_file_actions: false,
+            allow_process_actions: false,
+            fs_root: None,
+            processes: None,
+            log_tx: None,
+            run_metrics: None,
+            http_client_shard: 0,
+            secrets: SecretRegistry::new(),
+            libraries: None,
+            library_metrics: None,
+            run_seed: None,
+            settings_json: Arc::from("{}"),
+            vu_id: 0,
+            iteration_seq: 0,
+            gen_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
 }
 
 impl Context {
@@ -106,7 +134,10 @@ impl Context {
             Some(run_seed) => crate::library::derive_seed(run_seed, self.vu_id, conn_seq),
             None => uuid::Uuid::new_v4().as_u128() as u64,
         };
-        let mut gen = crate::generate::Gen::new(seed).with_vu(self.vu_id, self.iteration_seq);
+        let mut gen = crate::generate::Gen::new(seed)
+            .with_vu(self.vu_id, self.iteration_seq)
+            .with_settings(Arc::clone(&self.settings_json))
+            .with_secrets(self.secrets.clone());
         if let Some(metrics) = &self.library_metrics {
             gen = gen.with_library_metrics(Arc::clone(metrics));
         }
@@ -116,7 +147,12 @@ impl Context {
                     .provider
                     .instantiate(lib.config.clone(), seed)
                     .map_err(|e| format!("library '{}' ({}): {e}", lib.alias, lib.provider.id()))?;
-                gen.attach_library(lib.alias.clone(), instance);
+                gen.attach_library(
+                    lib.alias.clone(),
+                    instance,
+                    lib.rules.clone(),
+                    lib.provider.functions().to_vec(),
+                );
             }
         }
         Ok(gen)
@@ -548,6 +584,10 @@ mod tests {
                 r#as: None,
                 capabilities: None,
                 with: None,
+                secret: None,
+                allow: None,
+                deny: None,
+                log: None,
             }],
             false,
             None,

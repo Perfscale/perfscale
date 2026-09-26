@@ -117,6 +117,15 @@ pub struct Ctx {
     pub seed: u64,
     /// Wall clock, unix milliseconds — the only time source a library gets.
     pub time_ms: u64,
+    /// Run settings as a JSON object, frozen once at run start — the string
+    /// is identical for every call of the run:
+    /// `{"vus": N|null, "duration_ms": N|null, "seed": N|null,
+    ///   "stages": [...]|null, "arrival": {...}|null, "variables": {...}}`.
+    /// `vus`/`duration_ms` are only set for the fixed load profile; staged
+    /// and arrival-rate runs carry the profile in `stages`/`arrival`.
+    /// `"{}"` for components built against the 0.1 ABI (they never see
+    /// settings) and in hand-built contexts. See [`Ctx::settings`].
+    pub settings_json: String,
     // --- SDK-managed state (not part of the ABI) ---
     memo_seq: u64,
     // Vec-backed, not HashMap: std's RandomState pulls in `wasi:random`,
@@ -134,10 +143,18 @@ impl Ctx {
             vu_id: 0,
             seed,
             time_ms: 0,
+            settings_json: "{}".to_string(),
             memo_seq: 0,
             memo: Vec::new(),
             prng: None,
         }
+    }
+
+    /// The parsed run settings — a convenience over parsing
+    /// [`Ctx::settings_json`] yourself. `Value::Null` when the string does
+    /// not parse (never a panic).
+    pub fn settings(&self) -> Value {
+        serde_json::from_str(&self.settings_json).unwrap_or(Value::Null)
     }
 
     /// The instance's seeded PRNG, created from `seed` on first use. All
@@ -489,6 +506,7 @@ pub mod __rt {
             c.vu_id = ctx.vu_id;
             c.seed = ctx.seed;
             c.time_ms = ctx.time_ms;
+            c.settings_json = ctx.settings_json;
             lib.call(c, func, args)
         })
         .map_err(|e: Error| e.message().to_string())

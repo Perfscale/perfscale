@@ -61,10 +61,11 @@
 pub struct Gen {
     seq: u64,
     rng: u64,
-    /// `${alias.fn(...)}` resolvers: alias → library instance (RFC 005).
-    /// Built-in tokens match first; libraries are only consulted after a
-    /// built-in miss on a token containing a `.`.
-    libraries: Vec<(String, Box<dyn crate::library::LibraryInstance>)>,
+    /// `${alias.fn(...)}` resolvers: alias → library instance + its call
+    /// policy and function metadata (RFC 005). Built-in tokens match first;
+    /// libraries are only consulted after a built-in miss on a token
+    /// containing a `.`.
+    libraries: Vec<AttachedLibrary>,
     /// The seed this generator was built with — reported to libraries as
     /// `CallCtx.seed`.
     seed: u64,
@@ -75,6 +76,22 @@ pub struct Gen {
     /// Run-scoped per-library metrics recorder (RFC 005), shared by every
     /// generator of the run; `None` in hand-built generators.
     library_metrics: Option<std::sync::Arc<crate::library::LibraryMetrics>>,
+    /// Run settings JSON handed to every library call as
+    /// `CallCtx.settings_json`; `"{}"` in hand-built generators.
+    settings_json: std::sync::Arc<str>,
+    /// Run's secret registry: results of secret-marked library functions are
+    /// recorded here so the log pipeline masks them (RFC 005 secrets).
+    secrets: Option<crate::log_mask::SecretRegistry>,
+}
+
+/// One library bound behind its alias: the live instance, the entry's call
+/// policy (`secret`/`allow`/`deny`/`log`), and the provider's function
+/// metadata (for `FunctionInfo.secret`).
+struct AttachedLibrary {
+    alias: String,
+    instance: Box<dyn crate::library::LibraryInstance>,
+    rules: crate::library::LibraryRules,
+    functions: Vec<crate::library::FunctionInfo>,
 }
 
 impl Gen {
@@ -88,6 +105,8 @@ impl Gen {
             vu_id: 0,
             iteration_seq: 0,
             library_metrics: None,
+            settings_json: std::sync::Arc::from("{}"),
+            secrets: None,
         }
     }
 
@@ -108,13 +127,37 @@ impl Gen {
         self
     }
 
-    /// Bind a library instance behind `alias` for `${alias.fn(...)}` tokens.
+    /// Attach the run's frozen settings JSON — passed to every library call
+    /// as `CallCtx.settings_json`.
+    pub fn with_settings(mut self, settings: std::sync::Arc<str>) -> Self {
+        self.settings_json = settings;
+        self
+    }
+
+    /// Attach the run's secret registry: results of functions marked secret
+    /// (by `FunctionInfo.secret`, the entry's `secret: true`, or its `log:`
+    /// list) are recorded for log masking.
+    pub fn with_secrets(mut self, secrets: crate::log_mask::SecretRegistry) -> Self {
+        self.secrets = Some(secrets);
+        self
+    }
+
+    /// Bind a library instance behind `alias` for `${alias.fn(...)}` tokens,
+    /// with the entry's resolved call policy and the provider's function
+    /// metadata.
     pub fn attach_library(
         &mut self,
         alias: impl Into<String>,
         instance: Box<dyn crate::library::LibraryInstance>,
+        rules: crate::library::LibraryRules,
+        functions: Vec<crate::library::FunctionInfo>,
     ) {
-        self.libraries.push((alias.into(), instance));
+        self.libraries.push(AttachedLibrary {
+            alias: alias.into(),
+            instance,
+            rules,
+            functions,
+        });
     }
 
     /// Advance to the next message: bumps the `${seq}` counter so every
@@ -234,42 +277,62 @@ impl Gen {
     /// Library token resolution after every built-in missed: `alias.fn(args)`
     /// splits at the first `.`. Unknown alias → `Ok(None)` (verbatim, like
     /// any unknown token). Known alias → the call runs; unknown functions and
-    /// call failures are `Err` (step failure).
+    /// call failures are `Err` (step failure). The entry's policy rules gate
+    /// the call (`deny:` / `allow:`) and mark results for log masking
+    /// (`secret:` / `log:` / `FunctionInfo.secret`).
     fn eval_library(&mut self, token: &str) -> Result<Option<String>, String> {
         let Some(dot) = token.find('.') else {
             return Ok(None);
         };
         let alias = &token[..dot];
-        if !self.libraries.iter().any(|(a, _)| a == alias) {
+        if !self.libraries.iter().any(|l| l.alias == alias) {
             return Ok(None);
         }
         let (func, args) = parse_library_call(&token[dot + 1..]).ok_or_else(|| {
             format!("invalid library call '${{{token}}}' — expected ${{alias.fn(args)}}")
         })?;
+
         let call_ctx = crate::library::CallCtx {
             message_seq: self.seq,
             iteration_seq: self.iteration_seq,
             vu_id: self.vu_id,
             seed: self.seed,
             time_ms: now_unix_millis() as u64,
+            settings_json: &self.settings_json,
         };
-        let instance = &mut self
+        let entry = self
             .libraries
             .iter_mut()
-            .find(|(a, _)| a == alias)
-            .expect("alias checked above")
-            .1;
-        match &self.library_metrics {
+            .find(|l| l.alias == alias)
+            .expect("alias checked above");
+
+        // Call policy: deny wins over allow; a blocked call fails the step.
+        if let Some(blocked) = entry.rules.blocked(alias, func) {
+            return Err(format!("${{{token}}}: {blocked}"));
+        }
+
+        let result = match &self.library_metrics {
             Some(recorder) => {
                 let started = std::time::Instant::now();
-                let result = instance.call(&call_ctx, func, &args);
+                let result = entry.instance.call(&call_ctx, func, &args);
                 recorder.record(alias, started.elapsed(), result.is_ok());
                 result
             }
-            None => instance.call(&call_ctx, func, &args),
+            None => entry.instance.call(&call_ctx, func, &args),
         }
-        .map(Some)
-        .map_err(|e| format!("${{{token}}}: {e}"))
+        .map_err(|e| format!("${{{token}}}: {e}"))?;
+
+        // Result masking is additive: the function's own `secret` flag, the
+        // entry-wide `secret: true`, and the entry's `log:` list all mark
+        // the value for the run's secret registry (the log pipeline masks
+        // every recorded value).
+        let function_secret = entry.functions.iter().any(|f| f.name == func && f.secret);
+        if entry.rules.masks(func, function_secret) {
+            if let Some(secrets) = &self.secrets {
+                secrets.record(&result);
+            }
+        }
+        Ok(Some(result))
     }
 }
 
@@ -593,7 +656,12 @@ mod tests {
     fn gen_with_random(seed: u64) -> Gen {
         let mut g = Gen::new(seed);
         let provider = crate::library::builtin_provider("@std/random@v1").unwrap();
-        g.attach_library("random", provider.instantiate(None, seed).unwrap());
+        g.attach_library(
+            "random",
+            provider.instantiate(None, seed).unwrap(),
+            crate::library::LibraryRules::default(),
+            provider.functions().to_vec(),
+        );
         g
     }
 
@@ -691,7 +759,7 @@ mod tests {
         impl LibraryInstance for Stub {
             fn call(
                 &mut self,
-                _ctx: &CallCtx,
+                _ctx: &CallCtx<'_>,
                 func: &str,
                 _args: &[serde_json::Value],
             ) -> Result<String, String> {
@@ -708,7 +776,12 @@ mod tests {
             "quiet".to_string(),
         ]));
         let mut g = Gen::new(1).with_library_metrics(std::sync::Arc::clone(&recorder));
-        g.attach_library("stub", Box::new(Stub { fail: false }));
+        g.attach_library(
+            "stub",
+            Box::new(Stub { fail: false }),
+            crate::library::LibraryRules::default(),
+            Vec::new(),
+        );
         g.begin_message();
         g.expand("${stub.fn(1)}").unwrap();
         g.expand("${stub.fn(2)}").unwrap();
@@ -740,5 +813,148 @@ mod tests {
                 "{token}"
             );
         }
+    }
+
+    // --- result masking and call policy rules (RFC 005 phase 3.5) ----------
+
+    use crate::library::{CallCtx, FunctionInfo, LibraryInstance, LibraryRules};
+
+    /// Native stub library: `secret_fn` returns a secret-looking value,
+    /// `plain_fn` a harmless one.
+    struct PolicyStub;
+    impl LibraryInstance for PolicyStub {
+        fn call(
+            &mut self,
+            _ctx: &CallCtx<'_>,
+            func: &str,
+            _args: &[serde_json::Value],
+        ) -> Result<String, String> {
+            match func {
+                "secret_fn" => Ok("s3cr3t-value".into()),
+                "plain_fn" => Ok("plain-value".into()),
+                other => Err(format!("unknown function '{other}'")),
+            }
+        }
+    }
+
+    fn policy_gen(
+        rules: LibraryRules,
+        functions: Vec<FunctionInfo>,
+    ) -> (Gen, crate::log_mask::SecretRegistry) {
+        let secrets = crate::log_mask::SecretRegistry::new();
+        let mut g = Gen::new(1).with_secrets(secrets.clone());
+        g.attach_library("lib", Box::new(PolicyStub), rules, functions);
+        g.begin_message();
+        (g, secrets)
+    }
+
+    fn finfo(name: &'static str, secret: bool) -> FunctionInfo {
+        FunctionInfo {
+            name,
+            description: "stub",
+            secret,
+        }
+    }
+
+    #[test]
+    fn function_level_secret_flag_marks_the_result_for_masking() {
+        let (mut g, secrets) = policy_gen(
+            LibraryRules::default(),
+            vec![finfo("secret_fn", true), finfo("plain_fn", false)],
+        );
+        g.expand("${lib.secret_fn()}").unwrap();
+        g.expand("${lib.plain_fn()}").unwrap();
+        assert_eq!(secrets.mask("got s3cr3t-value"), "got ***");
+        // Negative control: an ordinary result is not registered.
+        assert_eq!(secrets.mask("got plain-value"), "got plain-value");
+    }
+
+    #[test]
+    fn entry_secret_true_masks_every_result() {
+        let rules = LibraryRules {
+            secret: true,
+            ..Default::default()
+        };
+        let (mut g, secrets) = policy_gen(rules, vec![finfo("plain_fn", false)]);
+        g.expand("${lib.plain_fn()}").unwrap();
+        assert_eq!(secrets.mask("got plain-value"), "got ***");
+    }
+
+    #[test]
+    fn entry_log_list_masks_the_listed_function_only() {
+        let rules = LibraryRules {
+            log: vec!["secret_fn".into()],
+            ..Default::default()
+        };
+        let (mut g, secrets) = policy_gen(rules, vec![finfo("secret_fn", false)]);
+        g.expand("${lib.secret_fn()}").unwrap();
+        g.expand("${lib.plain_fn()}").unwrap();
+        assert_eq!(secrets.mask("got s3cr3t-value"), "got ***");
+        assert_eq!(secrets.mask("got plain-value"), "got plain-value");
+    }
+
+    #[test]
+    fn deny_listed_calls_fail_the_step() {
+        let rules = LibraryRules {
+            deny: vec!["secret_fn".into()],
+            ..Default::default()
+        };
+        let (mut g, _) = policy_gen(rules, vec![finfo("secret_fn", true)]);
+        let err = g.expand("${lib.secret_fn()}").unwrap_err();
+        assert!(err.contains("deny"), "{err}");
+        // A non-denied function of the same library still runs.
+        assert_eq!(g.expand("${lib.plain_fn()}").unwrap(), "plain-value");
+    }
+
+    #[test]
+    fn allow_blocks_unlisted_calls_and_deny_wins_over_allow() {
+        let rules = LibraryRules {
+            allow: Some(vec!["plain_fn".into(), "secret_fn".into()]),
+            deny: vec!["secret_fn".into()],
+            ..Default::default()
+        };
+        let (mut g, _) = policy_gen(rules, vec![finfo("secret_fn", true)]);
+        assert_eq!(g.expand("${lib.plain_fn()}").unwrap(), "plain-value");
+        // deny wins over allow, even when the name is whitelisted.
+        let err = g.expand("${lib.secret_fn()}").unwrap_err();
+        assert!(err.contains("deny"), "{err}");
+    }
+
+    #[test]
+    fn allow_list_blocks_functions_not_in_it() {
+        let rules = LibraryRules {
+            allow: Some(vec!["plain_fn".into()]),
+            ..Default::default()
+        };
+        let (mut g, _) = policy_gen(rules, Vec::new());
+        let err = g.expand("${lib.secret_fn()}").unwrap_err();
+        assert!(err.contains("allow"), "{err}");
+    }
+
+    #[test]
+    fn library_calls_receive_the_frozen_settings_json() {
+        struct SettingsProbe(std::sync::Arc<std::sync::Mutex<String>>);
+        impl LibraryInstance for SettingsProbe {
+            fn call(
+                &mut self,
+                ctx: &CallCtx<'_>,
+                _func: &str,
+                _args: &[serde_json::Value],
+            ) -> Result<String, String> {
+                *self.0.lock().unwrap() = ctx.settings_json.to_string();
+                Ok("ok".into())
+            }
+        }
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let mut g = Gen::new(1).with_settings(std::sync::Arc::from(r#"{"vus":7,"seed":3}"#));
+        g.attach_library(
+            "probe",
+            Box::new(SettingsProbe(std::sync::Arc::clone(&seen))),
+            LibraryRules::default(),
+            Vec::new(),
+        );
+        g.begin_message();
+        g.expand("${probe.f()}").unwrap();
+        assert_eq!(*seen.lock().unwrap(), r#"{"vus":7,"seed":3}"#);
     }
 }

@@ -52,6 +52,8 @@ pub mod lockfile;
 pub mod metrics;
 pub mod std_random;
 #[cfg(feature = "wasm-libs")]
+pub mod burn;
+#[cfg(feature = "wasm-libs")]
 pub mod wasm;
 
 pub use metrics::{LibraryAliasSummary, LibraryMetrics};
@@ -115,6 +117,72 @@ pub struct LibraryRef {
     /// `${{ env.X }}` like any other parameter block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub with: Option<serde_json::Value>,
+
+    /// Mark **every** result of this library as secret: each value a call
+    /// returns is recorded in the run's secret registry and masked (`***`)
+    /// in the run log. Additive on top of function-level `secret` flags —
+    /// there is deliberately no way to *un*mask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<bool>,
+
+    /// Whitelist of callable functions (`${alias.fn(...)}`). When present,
+    /// calling a function not listed fails the step. `deny:` wins over
+    /// `allow:` when a name appears in both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<String>>,
+
+    /// Blacklist of functions that must not be called; a call fails the
+    /// step. Wins over `allow:`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny: Option<Vec<String>>,
+
+    /// Functions whose results are always masked in the run log (same
+    /// effect as the function declaring `secret: true` in `info()`, but
+    /// decided by the config author).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<Vec<String>>,
+}
+
+/// Resolved call policy of one validated library entry (RFC 005
+/// "secrets and policy rules"). Carried from [`validate_libraries`] to the
+/// generator, which enforces it per call: `deny` first, then `allow`, and
+/// result masking is the union of `secret` / `log` / the function's own
+/// `secret` flag.
+#[derive(Debug, Clone, Default)]
+pub struct LibraryRules {
+    /// Mask every result of the library.
+    pub secret: bool,
+    /// Whitelist (`None` = everything callable).
+    pub allow: Option<Vec<String>>,
+    /// Blacklist — wins over `allow`.
+    pub deny: Vec<String>,
+    /// Functions whose results are masked.
+    pub log: Vec<String>,
+}
+
+impl LibraryRules {
+    /// Why a call to `func` is blocked, or `None` when it may run.
+    pub fn blocked(&self, alias: &str, func: &str) -> Option<String> {
+        if self.deny.iter().any(|f| f == func) {
+            return Some(format!(
+                "function '{alias}.{func}' is blocked by the library entry's `deny:` list"
+            ));
+        }
+        if let Some(allow) = &self.allow {
+            if !allow.iter().any(|f| f == func) {
+                return Some(format!(
+                    "function '{alias}.{func}' is not in the library entry's `allow:` list"
+                ));
+            }
+        }
+        None
+    }
+
+    /// Whether results of `func` must be masked, given the function's own
+    /// `secret` declaration.
+    pub fn masks(&self, func: &str, function_secret: bool) -> bool {
+        self.secret || function_secret || self.log.iter().any(|f| f == func)
+    }
 }
 
 /// A capability grant in a `libraries:` entry (RFC 005 capability model).
@@ -136,7 +204,7 @@ pub enum Capability {
 
 /// The context every library call receives (RFC 005 "Call context").
 #[derive(Debug, Clone, Copy)]
-pub struct CallCtx {
+pub struct CallCtx<'a> {
     /// Same counter as `${seq}` — bumped per message send. Memoization
     /// scopes to it: same `key` within one `message_seq` → same value.
     pub message_seq: u64,
@@ -150,6 +218,32 @@ pub struct CallCtx {
     /// Wall clock, unix milliseconds. Libraries never read the clock
     /// themselves — this is the only time source they get.
     pub time_ms: u64,
+    /// Run settings as a JSON object, frozen once at run start (same string
+    /// for every call of the run):
+    /// `{"vus": N|null, "duration_ms": N|null, "seed": N|null,
+    ///   "stages": [...]|null, "arrival": {...}|null, "variables": {...}}`.
+    /// `vus`/`duration_ms` are only set for the fixed load profile; staged
+    /// and arrival-rate runs carry the profile in `stages`/`arrival`
+    /// (durations normalized to milliseconds). `variables` are the config's
+    /// `variables:` with `${{ env.* }}` resolved. `"{}"` when the caller
+    /// wired nothing (hand-built generators, WIT 0.1 components).
+    pub settings_json: &'a str,
+}
+
+impl CallCtx<'_> {
+    /// The parsed run settings (`serde_json::Value::Null` when the frozen
+    /// string does not parse — never a panic, but logged).
+    pub fn settings(&self) -> serde_json::Value {
+        match serde_json::from_str(self.settings_json) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "library CallCtx settings_json is invalid JSON ({e}); reporting null"
+                );
+                serde_json::Value::Null
+            }
+        }
+    }
 }
 
 /// One exported function, as listed by [`LibraryProvider::functions`].
@@ -189,7 +283,7 @@ pub trait LibraryInstance: Send {
     /// arguments are `Err` — the engine fails the step with the message.
     fn call(
         &mut self,
-        ctx: &CallCtx,
+        ctx: &CallCtx<'_>,
         func: &str,
         args: &[serde_json::Value],
     ) -> Result<String, String>;
@@ -246,6 +340,9 @@ pub struct ResolvedLibrary {
     pub alias: String,
     pub provider: Arc<dyn LibraryProvider>,
     pub config: Option<serde_json::Value>,
+    /// Call policy resolved from the entry's `secret:`/`allow:`/`deny:`/`log:`
+    /// fields (defaults: everything callable, nothing extra masked).
+    pub rules: LibraryRules,
 }
 
 impl std::fmt::Debug for ResolvedLibrary {
@@ -277,12 +374,29 @@ pub fn builtin_provider(id: &str) -> Option<Arc<dyn LibraryProvider>> {
 
 /// Resolve a local `.wasm` path to a WASM provider (RFC 005 phase 2). The
 /// path arrives anchored to the declaring file's directory (see
-/// [`crate::import`]); the file must exist and carry a `.wasm` extension.
+/// [`crate::import`]); the file must exist and carry a `.wasm` extension —
+/// unless a burned binary ([`burn::embedded`]) carries the library under
+/// this exact `use:` string, in which case the file need not exist at all.
 #[cfg(feature = "wasm-libs")]
 fn resolve_wasm(
     lib: &LibraryRef,
     fs_root: Option<&std::path::Path>,
 ) -> Result<(Arc<dyn LibraryProvider>, String), String> {
+    if let Some(embedded) = burn::embedded().as_ref().and_then(|s| s.get(&lib.use_)) {
+        // Embedded libraries have no fallback: a header mismatch means the
+        // binary was burned by another perfscale build.
+        let component = burn::load_burned(&embedded.artifact, &embedded.source_sha256)
+            .ok_or_else(|| {
+                format!(
+                    "library '{}': the embedded burn artifact does not match this perfscale build — re-create the binary with `perfscale burn` using this perfscale version",
+                    lib.use_
+                )
+            })?;
+        let provider =
+            wasm::WasmLibraryProvider::load_embedded(&lib.use_, component, lib.capabilities.as_deref(), fs_root)?;
+        let name = provider.library_name().to_string();
+        return Ok((Arc::new(provider), name));
+    }
     let path = std::path::Path::new(&lib.use_);
     if !path.exists() {
         return Err(format!(
@@ -400,10 +514,37 @@ pub fn validate_libraries(
                 "duplicate library alias '{alias}' — aliases must be unique across imported and importing files"
             ));
         }
+
+        // Policy rules (RFC 005 phase 3.5): every name in allow/deny/log
+        // must be a function the library actually exports — a typo'd rule
+        // would silently never fire.
+        let rules = LibraryRules {
+            secret: lib.secret.unwrap_or(false),
+            allow: lib.allow.clone(),
+            deny: lib.deny.clone().unwrap_or_default(),
+            log: lib.log.clone().unwrap_or_default(),
+        };
+        let exported: Vec<&str> = provider.functions().iter().map(|f| f.name).collect();
+        for (field, names) in [
+            ("allow", rules.allow.as_deref().unwrap_or(&[])),
+            ("deny", rules.deny.as_slice()),
+            ("log", rules.log.as_slice()),
+        ] {
+            for name in names {
+                if !exported.contains(&name.as_str()) {
+                    return Err(format!(
+                        "library '{alias}': unknown function '{name}' in `{field}:` — available functions: {}",
+                        exported.join(", ")
+                    ));
+                }
+            }
+        }
+
         resolved.push(ResolvedLibrary {
             alias,
             provider,
             config: lib.with.clone(),
+            rules,
         });
     }
     Ok(resolved)
@@ -534,6 +675,10 @@ mod tests {
             r#as: None,
             capabilities: None,
             with: None,
+            secret: None,
+            allow: None,
+            deny: None,
+            log: None,
         }
     }
 
@@ -731,5 +876,45 @@ mod tests {
         assert_ne!(derive_seed(7, 1, 1), derive_seed(7, 2, 1));
         assert_ne!(derive_seed(7, 1, 1), derive_seed(8, 1, 1));
         assert_ne!(derive_seed(0, 0, 0) & 1, 0, "forced non-zero");
+    }
+
+    // --- policy rules: secret / allow / deny / log (RFC 005 phase 3.5) ----
+
+    #[test]
+    fn policy_rules_resolve_from_the_entry() {
+        let mut r = std_random_ref();
+        r.secret = Some(true);
+        r.allow = Some(vec!["uuid4".into(), "ulid".into()]);
+        r.deny = Some(vec!["uuid4".into()]);
+        r.log = Some(vec!["ulid".into()]);
+        let resolved = validate_libraries(&[r], false, None).unwrap();
+        let rules = &resolved[0].rules;
+        assert!(rules.secret);
+        // deny wins over allow.
+        assert!(rules.blocked("random", "uuid4").unwrap().contains("deny"));
+        assert!(rules.blocked("random", "email").unwrap().contains("allow"));
+        assert!(rules.blocked("random", "ulid").is_none());
+        // Masking is the union of entry secret/log and the function flag.
+        assert!(rules.masks("ulid", false));
+        assert!(rules.masks("anything", false), "entry secret masks all");
+    }
+
+    #[test]
+    fn policy_rule_names_must_be_exported_functions() {
+        // @std/random@v1 exports uuid4/ulid/… but not 'nope' — a typo'd rule
+        // would silently never fire, so it is a hard validation error.
+        for field in ["allow", "deny", "log"] {
+            let mut r = std_random_ref();
+            match field {
+                "allow" => r.allow = Some(vec!["nope".into()]),
+                "deny" => r.deny = Some(vec!["nope".into()]),
+                _ => r.log = Some(vec!["nope".into()]),
+            }
+            let err = validate_libraries(&[r], false, None).unwrap_err();
+            assert!(
+                err.contains(&format!("unknown function 'nope' in `{field}:`")),
+                "{field} → {err}"
+            );
+        }
     }
 }

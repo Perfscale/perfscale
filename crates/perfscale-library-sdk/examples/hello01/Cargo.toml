@@ -1,0 +1,17 @@
+[package]
+name = "perfscale-hello01-library"
+version = "0.1.0"
+edition = "2021"
+description = "Test fixture: a perfscale library built against the legacy WIT 0.1 ABI (no settings-json in the call context)"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.57.1", features = ["macros"] }
+serde_json = "1"
+
+# Standalone crate (built with `cargo build --release --target wasm32-wasip2`),
+# not part of the perfscale workspace.
+[workspace]

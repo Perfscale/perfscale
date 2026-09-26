@@ -482,6 +482,80 @@ pub async fn run_steps(
 /// steps) and the run proceeds through the usual teardown; a second signal
 /// exits the process immediately.
 ///
+/// Frozen run settings handed to every library call as
+/// `CallCtx.settings_json` (RFC 005 settings). Built once at run start —
+/// the string is identical for every VU, iteration, and call of the run.
+///
+/// Shape: `{"vus", "duration_ms", "seed", "stages", "arrival", "variables"}`.
+/// `vus`/`duration_ms` describe only the fixed load profile; staged and
+/// arrival-rate runs leave them null and carry the profile in
+/// `stages`/`arrival` as declared, with durations normalized to
+/// milliseconds. `variables` are the config's `variables:` with `${{ env.* }}`
+/// resolved through the same interpolation steps use — which also records
+/// every resolved env value into `secrets`, so the values libraries now
+/// receive stay masked in the run log.
+fn build_library_settings(config: &RunConfig, vars: &Value, secrets: &SecretRegistry) -> Arc<str> {
+    let staged = !config.stages.is_empty() || config.arrival.is_some();
+    let (vus, duration_ms, stages, arrival) = if staged {
+        let stages = if config.stages.is_empty() {
+            Value::Null
+        } else {
+            Value::Array(
+                config
+                    .stages
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "duration_ms": super::parse_duration_secs(&s.duration) * 1000,
+                            "target": s.target,
+                        })
+                    })
+                    .collect(),
+            )
+        };
+        let arrival = match &config.arrival {
+            None => Value::Null,
+            Some(a) => serde_json::json!({
+                "max_vus": a.max_vus,
+                "pre_allocated_vus": a.pre_allocated_vus,
+                "stages": a.stages.iter().map(|s| serde_json::json!({
+                    "duration_ms": super::parse_duration_secs(&s.duration) * 1000,
+                    "rate": s.rate,
+                })).collect::<Vec<_>>(),
+            }),
+        };
+        (Value::Null, Value::Null, stages, arrival)
+    } else {
+        (
+            Value::from(config.vus),
+            Value::from(super::parse_duration_secs(&config.duration) * 1000),
+            Value::Null,
+            Value::Null,
+        )
+    };
+
+    let mut scratch = Context::new();
+    scratch.secrets = secrets.clone();
+    let variables = match vars {
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .map(|(k, v)| (k.clone(), scratch.interpolate_value(v)))
+                .collect(),
+        ),
+        other => other.clone(),
+    };
+
+    let settings = serde_json::json!({
+        "vus": vus,
+        "duration_ms": duration_ms,
+        "seed": config.seed,
+        "stages": stages,
+        "arrival": arrival,
+        "variables": variables,
+    });
+    Arc::from(settings.to_string())
+}
+
 /// Returns a [`NativeRunOutcome`]: the combined `std/thresholds@v1` gate
 /// result, so the caller (CLI) can exit non-zero when a `severity: fail`
 /// gate was violated.
@@ -524,6 +598,10 @@ pub async fn run_native(
     // shares it, and every line sent to the run log is masked against it —
     // a resolved `${{ env.NAME }}` value must never appear in the log.
     let secrets = SecretRegistry::new();
+
+    // Run settings handed to every library call as `CallCtx.settings_json`
+    // (RFC 005): built once here, frozen for the whole run.
+    let settings_json = build_library_settings(&config, &vars, &secrets);
 
     // Library declarations are validated before anything runs (RFC 005):
     // unknown refs, capability grants without `allow_library_capabilities`,
@@ -619,6 +697,7 @@ pub async fn run_native(
         secrets: secrets.clone(),
         libraries: library_set.clone(),
         library_metrics: library_metrics.clone(),
+        settings_json: settings_json.clone(),
     };
 
     // Resolve the load profile up front: a broken `stages:`/`arrival:` block
@@ -658,6 +737,7 @@ pub async fn run_native(
         &secrets,
         &library_set,
         &library_metrics,
+        &settings_json,
         quiet,
         &tx,
     )
@@ -719,6 +799,7 @@ pub async fn run_native(
         libraries: library_set.clone(),
         library_metrics: library_metrics.clone(),
         run_seed: config.seed,
+        settings_json: settings_json.clone(),
         processes: Arc::clone(&registry),
         secrets: secrets.clone(),
         stop: Arc::clone(&stop),
@@ -1028,6 +1109,8 @@ struct VuShared {
     /// Run-scoped per-library metrics recorder (RFC 005).
     library_metrics: Option<Arc<crate::library::LibraryMetrics>>,
     run_seed: Option<u64>,
+    /// Frozen run settings JSON for library call contexts (RFC 005).
+    settings_json: Arc<str>,
     processes: Arc<ProcessRegistry>,
     /// The run's secret registry — every VU context records its resolved
     /// `${{ env.NAME }}` values here, and `execute_step` masks them out of
@@ -1053,6 +1136,7 @@ impl VuShared {
         ctx.libraries = self.libraries.clone();
         ctx.library_metrics = self.library_metrics.clone();
         ctx.run_seed = self.run_seed;
+        ctx.settings_json = self.settings_json.clone();
         ctx.vu_id = vu_id as u64;
         ctx.processes = Some(Arc::clone(&self.processes));
         ctx.log_tx = Some(self.tx.clone());
@@ -1494,6 +1578,7 @@ async fn run_before(
     secrets: &SecretRegistry,
     libraries: &Option<Arc<crate::library::LibrarySet>>,
     library_metrics: &Option<Arc<crate::library::LibraryMetrics>>,
+    settings_json: &Arc<str>,
     quiet: bool,
     tx: &mpsc::Sender<LogLine>,
 ) -> Result<Value, String> {
@@ -1520,6 +1605,7 @@ async fn run_before(
     ctx.libraries = libraries.clone();
     ctx.library_metrics = library_metrics.clone();
     ctx.run_seed = config.seed;
+    ctx.settings_json = settings_json.clone();
     ctx.processes = Some(Arc::clone(registry));
     ctx.log_tx = Some(tx.clone());
     ctx.secrets = secrets.clone();
@@ -1572,6 +1658,7 @@ struct AfterShared {
     secrets: SecretRegistry,
     libraries: Option<Arc<crate::library::LibrarySet>>,
     library_metrics: Option<Arc<crate::library::LibraryMetrics>>,
+    settings_json: Arc<str>,
 }
 
 /// Run the `after` steps once, best-effort: a failing step is logged but does
@@ -1617,6 +1704,7 @@ async fn run_after(
     ctx.libraries = shared.libraries.clone();
     ctx.library_metrics = shared.library_metrics.clone();
     ctx.run_seed = config.seed;
+    ctx.settings_json = shared.settings_json.clone();
     ctx.processes = Some(Arc::clone(&shared.registry));
     ctx.log_tx = Some(tx.clone());
     ctx.run_metrics = Some(Arc::clone(&shared.metrics));
@@ -3519,6 +3607,10 @@ mod tests {
             r#as: None,
             capabilities: None,
             with: None,
+            secret: None,
+            allow: None,
+            deny: None,
+            log: None,
         }];
         let mut steps = sqlite_db_steps("SELECT ?");
         // `${…}` tokens expand in db bind params only (the SQL text is never
@@ -3941,5 +4033,108 @@ mod tests {
         let (_lines, snaps) = run_native_streaming(vec![sleep_step(100)], config).await;
         assert!(!snaps.is_empty());
         assert!(snaps.iter().all(|s| s.gpu.is_empty()));
+    }
+
+    // --- frozen run settings handed to libraries (RFC 005 phase 3.5) ------
+
+    #[test]
+    fn library_settings_fixed_profile_shape() {
+        let config = RunConfig {
+            vus: 10,
+            duration: "5m".into(),
+            seed: Some(42),
+            ..Default::default()
+        };
+        let s = super::build_library_settings(
+            &config,
+            &json!({ "region": "eu-central" }),
+            &SecretRegistry::new(),
+        );
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["vus"], 10);
+        assert_eq!(v["duration_ms"], 300_000);
+        assert_eq!(v["seed"], 42);
+        assert!(v["stages"].is_null(), "fixed profile carries no stages");
+        assert!(v["arrival"].is_null());
+        assert_eq!(v["variables"]["region"], "eu-central");
+    }
+
+    #[test]
+    fn library_settings_staged_profile_nulls_the_fixed_fields() {
+        let config = RunConfig {
+            stages: vec![
+                crate::step::VuStage {
+                    duration: "30s".into(),
+                    target: 5,
+                },
+                crate::step::VuStage {
+                    duration: "1m".into(),
+                    target: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        let s = super::build_library_settings(&config, &json!({}), &SecretRegistry::new());
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert!(v["vus"].is_null());
+        assert!(v["duration_ms"].is_null());
+        assert!(v["seed"].is_null(), "no seed configured");
+        assert_eq!(
+            v["stages"],
+            json!([
+                { "duration_ms": 30_000, "target": 5 },
+                { "duration_ms": 60_000, "target": 0 },
+            ])
+        );
+        assert!(v["arrival"].is_null());
+        assert_eq!(v["variables"], json!({}));
+    }
+
+    #[test]
+    fn library_settings_arrival_profile_shape() {
+        let config = RunConfig {
+            arrival: Some(Box::new(crate::step::ArrivalConfig {
+                max_vus: 20,
+                pre_allocated_vus: Some(2),
+                stages: vec![crate::step::RateStage {
+                    duration: "90s".into(),
+                    rate: 10.0,
+                }],
+            })),
+            ..Default::default()
+        };
+        let s = super::build_library_settings(&config, &Value::Null, &SecretRegistry::new());
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert!(v["vus"].is_null());
+        assert!(v["stages"].is_null());
+        assert_eq!(v["arrival"]["max_vus"], 20);
+        assert_eq!(v["arrival"]["pre_allocated_vus"], 2);
+        assert_eq!(
+            v["arrival"]["stages"],
+            json!([{ "duration_ms": 90_000, "rate": 10.0 }])
+        );
+    }
+
+    #[test]
+    fn library_settings_resolve_env_variables_into_the_secret_registry() {
+        // Libraries receive the resolved value, so the run log must mask it
+        // — resolving through Context interpolation records it.
+        unsafe {
+            std::env::set_var("PERFSCALE_TEST_LIB_SETTINGS_ENV", "s3cr3t-t0ken");
+        }
+        let secrets = SecretRegistry::new();
+        let s = super::build_library_settings(
+            &RunConfig::default(),
+            &json!({
+                "api_key": "${{ env.PERFSCALE_TEST_LIB_SETTINGS_ENV }}",
+                "plain": "visible",
+            }),
+            &secrets,
+        );
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["variables"]["api_key"], "s3cr3t-t0ken");
+        assert_eq!(v["variables"]["plain"], "visible");
+        assert_eq!(secrets.mask("key=s3cr3t-t0ken"), "key=***");
+        assert_eq!(secrets.mask("plain=visible"), "plain=visible");
     }
 }

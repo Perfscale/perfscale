@@ -144,6 +144,16 @@
     "LibraryRef": {
       "description": "One `libraries:` entry — a value-generator library bound to a token alias.",
       "properties": {
+        "allow": {
+          "description": "Whitelist of callable functions (`${alias.fn(...)}`). When present, calling a function not listed fails the step. `deny:` wins over `allow:` when a name appears in both.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "as": {
           "description": "Token alias — `${alias.fn(...)}`. Default: the library's name part (`random` for `@std/random@v1`). Must be a lowercase identifier and unique across all declared libraries.",
           "type": [
@@ -158,6 +168,33 @@
           },
           "type": [
             "array",
+            "null"
+          ]
+        },
+        "deny": {
+          "description": "Blacklist of functions that must not be called; a call fails the step. Wins over `allow:`.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "log": {
+          "description": "Functions whose results are always masked in the run log (same effect as the function declaring `secret: true` in `info()`, but decided by the config author).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "secret": {
+          "description": "Mark **every** result of this library as secret: each value a call returns is recorded in the run's secret registry and masked (`***`) in the run log. Additive on top of function-level `secret` flags — there is deliberately no way to *un*mask.",
+          "type": [
+            "boolean",
             "null"
           ]
         },

@@ -649,6 +649,10 @@ steps:
         r#as: Some("hello".into()),
         capabilities: None,
         with: None,
+        secret: None,
+        allow: None,
+        deny: None,
+        log: None,
     }];
 
     let rx = runner::execute(ExecutionPlan::NativeSteps {
@@ -667,4 +671,379 @@ steps:
     let _lines = collect(rx).await;
     // The mock only matched if the body contained the component's output.
     server.verify().await;
+}
+
+/// RFC 005 phase 3.5: the frozen run settings JSON reaches the WASM library
+/// through the 0.2 call context — vus/seed/variables visible to the guest.
+#[cfg(feature = "wasm-libs")]
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn yaml_run_passes_frozen_settings_to_wasm_library() {
+    let Some(component) = hello_component() else {
+        return;
+    };
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/settings"))
+        .and(body_string_contains(r#""vus":1"#))
+        .and(body_string_contains(r#""seed":7"#))
+        .and(body_string_contains(r#""region":"eu-west""#))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1..)
+        .mount(&server)
+        .await;
+
+    let test_yaml = format!(
+        r#"
+steps:
+  - name: settings
+    use: std/http@v1
+    with:
+      method: POST
+      url: {0}/settings
+      body: ${{hello.settings()}}
+"#,
+        server.uri()
+    );
+    let config_yaml = "vus: 1\nduration: 1s\nseed: 7\nvariables:\n  region: eu-west\n";
+
+    let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
+    let config = yaml::parse_config_file(config_yaml).expect("config yaml parses");
+
+    let libraries = vec![perfscale_core::library::LibraryRef {
+        use_: component.to_string_lossy().into_owned(),
+        sha256: None,
+        r#as: Some("hello".into()),
+        capabilities: None,
+        with: None,
+        secret: None,
+        allow: None,
+        deny: None,
+        log: None,
+    }];
+
+    let rx = runner::execute(ExecutionPlan::NativeSteps {
+        test,
+        before: config.before,
+        after: config.after,
+        variables: config.variables,
+        shared_variables: config.shared_variables,
+        libraries,
+        config: Box::new(config.run),
+        quiet: false,
+        metrics_tx: None,
+    })
+    .await
+    .unwrap();
+    let _lines = collect(rx).await;
+    server.verify().await;
+}
+
+/// RFC 005 phase 3.5: `secret: true` on a library entry masks every result
+/// in the run log, while the wire still carries the real value.
+///
+/// Log surface: `std/log` never expands `${...}`, so the observable surface
+/// is the http per-request line — `GET <url> → 200 …` — which logs the
+/// *expanded* (pre-reqwest-encoding) URL. The library value goes into the
+/// URL path: run A (`secret: true`) must show `***` there, run B (no rule)
+/// must show the real value (proving the surface is real and the assertion
+/// non-vacuous), and in both runs the backend receives the real value
+/// (reqwest percent-encodes the space on the wire, the mock matches the
+/// encoded path).
+#[cfg(feature = "wasm-libs")]
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn library_entry_secret_masks_results_in_the_run_log() {
+    let Some(component) = hello_component() else {
+        return;
+    };
+
+    /// One run of the value-in-URL scenario. Returns (run log, paths the
+    /// backend actually saw on the wire).
+    async fn run_once(component: &std::path::Path, secret: Option<bool>) -> (String, Vec<String>) {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            // The encoded form of the library's "hello, world!" — the mock
+            // only matches when the real value reached the wire.
+            .and(path("/t/hello,%20world!"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1..)
+            .mount(&server)
+            .await;
+
+        let test_yaml = format!(
+            r#"
+steps:
+  - name: greet call
+    use: std/http@v1
+    with:
+      method: GET
+      url: "{0}/t/${{hello.greet(world)}}"
+"#,
+            server.uri()
+        );
+        let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
+        let config = RunConfig {
+            vus: 1,
+            duration: "1s".into(),
+            ..Default::default()
+        };
+        let libraries = vec![perfscale_core::library::LibraryRef {
+            use_: component.to_string_lossy().into_owned(),
+            sha256: None,
+            r#as: Some("hello".into()),
+            capabilities: None,
+            with: None,
+            secret,
+            allow: None,
+            deny: None,
+            log: None,
+        }];
+
+        let rx = runner::execute(ExecutionPlan::NativeSteps {
+            test,
+            before: Vec::new(),
+            after: Vec::new(),
+            variables: serde_json::Map::new(),
+            shared_variables: serde_json::Map::new(),
+            libraries,
+            config: Box::new(config),
+            quiet: false,
+            metrics_tx: None,
+        })
+        .await
+        .unwrap();
+        let lines = collect(rx).await;
+        server.verify().await; // real value on the wire, every iteration
+        let wire_paths = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.url.path().to_string())
+            .collect();
+        let log: String = lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        (log, wire_paths)
+    }
+
+    let (log_secret, wire_secret) = run_once(&component, Some(true)).await;
+    let (log_plain, _) = run_once(&component, None).await;
+
+    assert!(!wire_secret.is_empty(), "the run must have called the backend");
+
+    // Without the rule the value reaches the request line in the log…
+    assert!(
+        log_plain.contains("hello, world!"),
+        "the log surface must show the expanded URL without masking:\n{log_plain}"
+    );
+    // …with `secret: true` every occurrence is masked…
+    assert!(
+        !log_secret.contains("hello, world!"),
+        "secret library result leaked into the run log:\n{log_secret}"
+    );
+    assert!(
+        log_secret.contains("/t/***"),
+        "the request line must show the mask instead:\n{log_secret}"
+    );
+}
+
+/// RFC 005 phase 3.5: `deny:` blocks the call at expansion time — the step
+/// fails with a message naming the rule, before any network call. (`std/log`
+/// never expands `${...}`, so the denied token must live in an expanding
+/// action — here the http body.)
+#[cfg(feature = "wasm-libs")]
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn library_deny_rule_fails_the_step() {
+    let Some(component) = hello_component() else {
+        return;
+    };
+    // The blocked call must never reach the wire.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/greet"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let test_yaml = format!(
+        r#"
+steps:
+  - name: greet
+    use: std/http@v1
+    with:
+      method: POST
+      url: {0}/greet
+      body: "${{hello.greet(world)}}"
+"#,
+        server.uri()
+    );
+    let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
+    let config = RunConfig {
+        vus: 1,
+        duration: "1s".into(),
+        ..Default::default()
+    };
+    let libraries = vec![perfscale_core::library::LibraryRef {
+        use_: component.to_string_lossy().into_owned(),
+        sha256: None,
+        r#as: Some("hello".into()),
+        capabilities: None,
+        with: None,
+        secret: None,
+        allow: None,
+        deny: Some(vec!["greet".into()]),
+        log: None,
+    }];
+
+    let rx = runner::execute(ExecutionPlan::NativeSteps {
+        test,
+        before: Vec::new(),
+        after: Vec::new(),
+        variables: serde_json::Map::new(),
+        shared_variables: serde_json::Map::new(),
+        libraries,
+        config: Box::new(config),
+        quiet: false,
+        metrics_tx: None,
+    })
+    .await
+    .unwrap();
+    let lines = collect(rx).await;
+    let all: String = lines
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        all.contains("deny"),
+        "deny-blocked call must surface in the run log:\n{all}"
+    );
+    assert!(
+        !all.contains("hello, world!"),
+        "the denied call must not have run:\n{all}"
+    );
+    server.verify().await;
+}
+
+/// RFC 005 burn (phase 1): a run resolving the library through the burn
+/// cache (`.cwasm` artifact) produces exactly the values of a run compiling
+/// from source — same seed, same token on the wire.
+#[cfg(feature = "wasm-libs")]
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn run_with_burn_cache_matches_run_without() {
+    let Some(component) = hello_component() else {
+        return;
+    };
+
+    /// Run once against a fresh mock; returns the request bodies seen.
+    async fn run_token(component: &std::path::Path) -> Vec<String> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1..)
+            .mount(&server)
+            .await;
+        let test_yaml = format!(
+            r#"
+steps:
+  - name: token
+    use: std/http@v1
+    with:
+      method: POST
+      url: {0}/token
+      body: "${{hello.token(order)}}"
+"#,
+            server.uri()
+        );
+        let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
+        let config = RunConfig {
+            vus: 1,
+            duration: "1s".into(),
+            seed: Some(7),
+            ..Default::default()
+        };
+        let libraries = vec![perfscale_core::library::LibraryRef {
+            use_: component.to_string_lossy().into_owned(),
+            sha256: None,
+            r#as: Some("hello".into()),
+            capabilities: None,
+            with: None,
+            secret: None,
+            allow: None,
+            deny: None,
+            log: None,
+        }];
+        let rx = runner::execute(ExecutionPlan::NativeSteps {
+            test,
+            before: Vec::new(),
+            after: Vec::new(),
+            variables: serde_json::Map::new(),
+            shared_variables: serde_json::Map::new(),
+            libraries,
+            config: Box::new(config),
+            quiet: false,
+            metrics_tx: None,
+        })
+        .await
+        .unwrap();
+        let _lines = collect(rx).await;
+        server.verify().await; // the token call must have happened
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+            .collect()
+    }
+
+    // The burn-cache probe reads PERFSCALE_CACHE_DIR at load time.
+    let prev = std::env::var_os("PERFSCALE_CACHE_DIR");
+    let restore = |prev: &Option<std::ffi::OsString>| match prev {
+        Some(v) => std::env::set_var("PERFSCALE_CACHE_DIR", v),
+        None => std::env::remove_var("PERFSCALE_CACHE_DIR"),
+    };
+
+    // Without burn cache: an empty cache dir — full compile.
+    let empty = tempfile::tempdir().unwrap();
+    std::env::set_var("PERFSCALE_CACHE_DIR", empty.path());
+    let fresh = run_token(&component).await;
+
+    // With burn cache: precompiled artifact in place.
+    let bytes = std::fs::read(&component).unwrap();
+    let sha = perfscale_core::library::burn::sha256_hex(&bytes);
+    let cache = tempfile::tempdir().unwrap();
+    let root = cache.path().join("libraries");
+    perfscale_core::import::write_library_burn(
+        &root,
+        &sha,
+        &perfscale_core::library::burn::burn_component(&bytes).unwrap(),
+    )
+    .unwrap();
+    std::env::set_var("PERFSCALE_CACHE_DIR", cache.path());
+    let burned = run_token(&component).await;
+    restore(&prev);
+
+    assert!(!fresh.is_empty(), "the run must have POSTed");
+    assert!(!burned.is_empty(), "the burned-cache run must have POSTed");
+    // Iteration counts differ (compile time eats into the 1s window) — the
+    // token sequence must be identical where both ran.
+    let (short, long) = if fresh.len() <= burned.len() {
+        (&fresh, &burned)
+    } else {
+        (&burned, &fresh)
+    };
+    assert_eq!(
+        &long[..short.len()],
+        short.as_slice(),
+        "burn cache must not change the token sequence"
+    );
 }
