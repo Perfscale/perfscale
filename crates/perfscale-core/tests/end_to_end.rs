@@ -605,6 +605,56 @@ fn hello_component() -> Option<std::path::PathBuf> {
         .clone()
 }
 
+/// Build the SDK `fsreader` example component once; `None` (skip) when the
+/// wasm32-wasip2 target is not installed.
+#[cfg(feature = "wasm-libs")]
+fn fsreader_component() -> Option<std::path::PathBuf> {
+    use std::sync::OnceLock;
+    static FSREADER: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    FSREADER
+        .get_or_init(|| {
+            let installed = std::process::Command::new("rustup")
+                .args(["target", "list", "--installed"])
+                .output()
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .any(|l| l.trim() == "wasm32-wasip2")
+                })
+                .unwrap_or(false);
+            if !installed {
+                eprintln!(
+                    "skipping fsreader e2e test: wasm32-wasip2 target not installed \
+                     (rustup target add wasm32-wasip2)"
+                );
+                return None;
+            }
+            let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .canonicalize()
+                .unwrap();
+            let target = ws.join("target/wasm-libs-fixtures");
+            let status = std::process::Command::new(
+                std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()),
+            )
+            .args(["build", "--release", "--target", "wasm32-wasip2"])
+            .arg("--manifest-path")
+            .arg(ws.join(
+                "crates/perfscale-library-sdk/examples/fsreader/Cargo.toml",
+            ))
+            .arg("--target-dir")
+            .arg(&target)
+            .status()
+            .ok()?;
+            if !status.success() {
+                eprintln!("failed to build the fsreader fixture component");
+                return None;
+            }
+            Some(target.join("wasm32-wasip2/release/perfscale_fsreader_library.wasm"))
+        })
+        .clone()
+}
+
 /// A YAML config declaring a local `.wasm` library expands `${hello.*}`
 /// tokens through the component end to end (RFC 005 phase 2).
 #[cfg(feature = "wasm-libs")]
@@ -1046,4 +1096,77 @@ steps:
         short.as_slice(),
         "burn cache must not change the token sequence"
     );
+}
+
+/// Regression: an fs-capable WASM library called from the async runner must
+/// not panic ("Cannot start a runtime from within a runtime" — wasmtime-wasi
+/// sync hostcalls `block_on` internally). The guest call runs off the worker
+/// thread; the file content flows into the request body.
+#[cfg(feature = "wasm-libs")]
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn fs_capability_library_call_works_in_the_async_runner() {
+    let Some(component) = fsreader_component() else {
+        return;
+    };
+    let corpus = tempfile::tempdir().unwrap();
+    std::fs::write(corpus.path().join("corpus.txt"), "corpus-data\n").unwrap();
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/corpus"))
+        // Matches only when the guest actually read the file.
+        .and(body_string_contains("corpus-data"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1..)
+        .mount(&server)
+        .await;
+
+    let test_yaml = format!(
+        r#"
+steps:
+  - name: read corpus
+    use: std/http@v1
+    with:
+      method: POST
+      url: {0}/corpus
+      body: "${{corpus.read(/corpus.txt)}}"
+"#,
+        server.uri()
+    );
+    let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
+    let config = RunConfig {
+        vus: 1,
+        duration: "1s".into(),
+        allow_library_capabilities: true,
+        fs_root: Some(corpus.path().to_path_buf()),
+        ..Default::default()
+    };
+    let libraries = vec![perfscale_core::library::LibraryRef {
+        use_: component.to_string_lossy().into_owned(),
+        sha256: None,
+        r#as: Some("corpus".into()),
+        capabilities: Some(vec![perfscale_core::library::Capability::Simple("fs".into())]),
+        with: None,
+        secret: None,
+        allow: None,
+        deny: None,
+        log: None,
+    }];
+
+    let rx = runner::execute(ExecutionPlan::NativeSteps {
+        test,
+        before: Vec::new(),
+        after: Vec::new(),
+        variables: serde_json::Map::new(),
+        shared_variables: serde_json::Map::new(),
+        libraries,
+        config: Box::new(config),
+        quiet: false,
+        metrics_tx: None,
+    })
+    .await
+    .unwrap();
+    let _lines = collect(rx).await;
+    server.verify().await;
 }

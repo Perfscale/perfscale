@@ -156,7 +156,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L7",
       "id": "src_cli_top_level_after_help",
-      "community": 168,
+      "community": 31,
       "norm_label": "top_level_after_help()"
     },
     {
@@ -165,7 +165,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L7",
       "id": "crates_perfscale_cli_src_cli_rs_string",
-      "community": 168,
+      "community": 31,
       "norm_label": "string"
     },
     {
@@ -174,7 +174,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L18",
       "id": "src_cli_run_after_help",
-      "community": 168,
+      "community": 31,
       "norm_label": "run_after_help()"
     },
     {
@@ -183,7 +183,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L37",
       "id": "src_cli_serve_after_help",
-      "community": 168,
+      "community": 31,
       "norm_label": "serve_after_help()"
     },
     {
@@ -192,7 +192,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L59",
       "id": "src_cli_cli",
-      "community": 66,
+      "community": 31,
       "norm_label": "cli"
     },
     {
@@ -201,7 +201,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L61",
       "id": "commands",
-      "community": 66,
+      "community": 31,
       "norm_label": "commands"
     },
     {
@@ -219,7 +219,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L85",
       "id": "src_cli_schema_after_help",
-      "community": 168,
+      "community": 31,
       "norm_label": "schema_after_help()"
     },
     {
@@ -255,7 +255,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L111",
       "id": "src_cli_man_after_help",
-      "community": 168,
+      "community": 31,
       "norm_label": "man_after_help()"
     },
     {
@@ -264,7 +264,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L128",
       "id": "src_cli_manargs",
-      "community": 163,
+      "community": 31,
       "norm_label": "manargs"
     },
     {
@@ -273,7 +273,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L141",
       "id": "crates_perfscale_cli_src_cli_rs_option",
-      "community": 163,
+      "community": 31,
       "norm_label": "option"
     },
     {
@@ -282,7 +282,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L141",
       "id": "crates_perfscale_cli_src_cli_rs_pathbuf",
-      "community": 163,
+      "community": 31,
       "norm_label": "pathbuf"
     },
     {
@@ -291,7 +291,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L144",
       "id": "src_cli_self_update_after_help",
-      "community": 168,
+      "community": 31,
       "norm_label": "self_update_after_help()"
     },
     {
@@ -309,7 +309,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L178",
       "id": "src_cli_runargs",
-      "community": 163,
+      "community": 31,
       "norm_label": "runargs"
     },
     {
@@ -318,7 +318,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L226",
       "id": "crates_perfscale_cli_src_cli_rs_vec",
-      "community": 163,
+      "community": 31,
       "norm_label": "vec"
     },
     {
@@ -327,7 +327,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L232",
       "id": "crates_perfscale_cli_src_cli_rs_summaryformat",
-      "community": 163,
+      "community": 31,
       "norm_label": "summaryformat"
     },
     {
@@ -336,7 +336,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L248",
       "id": "src_cli_summaryformat",
-      "community": 163,
+      "community": 31,
       "norm_label": "summaryformat"
     },
     {
@@ -354,7 +354,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L267",
       "id": "src_cli_lint_after_help",
-      "community": 168,
+      "community": 31,
       "norm_label": "lint_after_help()"
     },
     {
@@ -363,7 +363,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L284",
       "id": "src_cli_schemakind",
-      "community": 163,
+      "community": 31,
       "norm_label": "schemakind"
     },
     {
@@ -372,7 +372,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L295",
       "id": "src_cli_lintargs",
-      "community": 163,
+      "community": 31,
       "norm_label": "lintargs"
     },
     {
@@ -381,7 +381,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L318",
       "id": "src_cli_install_after_help",
-      "community": 168,
+      "community": 31,
       "norm_label": "install_after_help()"
     },
     {
@@ -390,7 +390,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L336",
       "id": "src_cli_installargs",
-      "community": 163,
+      "community": 31,
       "norm_label": "installargs"
     },
     {
@@ -399,7 +399,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L347",
       "id": "src_cli_burn_after_help",
-      "community": 168,
+      "community": 31,
       "norm_label": "burn_after_help()"
     },
     {
@@ -408,7 +408,7 @@
       "source_file": "crates/perfscale-cli/src/cli.rs",
       "source_location": "L367",
       "id": "src_cli_burnargs",
-      "community": 163,
+      "community": 31,
       "norm_label": "burnargs"
     },
     {
@@ -723,7 +723,7 @@
       "source_file": "crates/perfscale-cli/src/commands/burn.rs",
       "source_location": "L1",
       "id": "commands_burn",
-      "community": 170,
+      "community": 136,
       "norm_label": "burn.rs"
     },
     {
@@ -732,7 +732,7 @@
       "source_file": "crates/perfscale-cli/src/commands/burn.rs",
       "source_location": "L23",
       "id": "commands_burn_run",
-      "community": 170,
+      "community": 136,
       "norm_label": "run()"
     },
     {
@@ -741,7 +741,7 @@
       "source_file": "crates/perfscale-cli/src/commands/burn.rs",
       "source_location": "L23",
       "id": "burnargs",
-      "community": 170,
+      "community": 136,
       "norm_label": "burnargs"
     },
     {
@@ -750,7 +750,7 @@
       "source_file": "crates/perfscale-cli/src/commands/burn.rs",
       "source_location": "L23",
       "id": "crates_perfscale_cli_src_commands_burn_rs_result",
-      "community": 170,
+      "community": 136,
       "norm_label": "result"
     },
     {
@@ -759,7 +759,7 @@
       "source_file": "crates/perfscale-cli/src/commands/burn.rs",
       "source_location": "L23",
       "id": "crates_perfscale_cli_src_commands_burn_rs_clierror",
-      "community": 170,
+      "community": 136,
       "norm_label": "clierror"
     },
     {
@@ -768,7 +768,7 @@
       "source_file": "crates/perfscale-cli/src/commands/burn.rs",
       "source_location": "L133",
       "id": "commands_burn_same_file",
-      "community": 170,
+      "community": 136,
       "norm_label": "same_file()"
     },
     {
@@ -777,7 +777,7 @@
       "source_file": "crates/perfscale-cli/src/commands/burn.rs",
       "source_location": "L133",
       "id": "crates_perfscale_cli_src_commands_burn_rs_path",
-      "community": 170,
+      "community": 136,
       "norm_label": "path"
     },
     {
@@ -786,7 +786,7 @@
       "source_file": "crates/perfscale-cli/src/commands/burn.rs",
       "source_location": "L144",
       "id": "commands_burn_ensure_burned",
-      "community": 170,
+      "community": 136,
       "norm_label": "ensure_burned()"
     },
     {
@@ -795,7 +795,7 @@
       "source_file": "crates/perfscale-cli/src/commands/burn.rs",
       "source_location": "L144",
       "id": "crates_perfscale_cli_src_commands_burn_rs_string",
-      "community": 170,
+      "community": 136,
       "norm_label": "string"
     },
     {
@@ -975,7 +975,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L1",
       "id": "commands_lint",
-      "community": 75,
+      "community": 24,
       "norm_label": "lint.rs"
     },
     {
@@ -984,7 +984,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L26",
       "id": "commands_lint_run",
-      "community": 75,
+      "community": 24,
       "norm_label": "run()"
     },
     {
@@ -993,7 +993,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L26",
       "id": "lintargs",
-      "community": 75,
+      "community": 24,
       "norm_label": "lintargs"
     },
     {
@@ -1002,7 +1002,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L26",
       "id": "crates_perfscale_cli_src_commands_lint_rs_result",
-      "community": 75,
+      "community": 24,
       "norm_label": "result"
     },
     {
@@ -1011,7 +1011,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L26",
       "id": "crates_perfscale_cli_src_commands_lint_rs_clierror",
-      "community": 75,
+      "community": 24,
       "norm_label": "clierror"
     },
     {
@@ -1020,7 +1020,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L78",
       "id": "commands_lint_lint_file",
-      "community": 75,
+      "community": 24,
       "norm_label": "lint_file()"
     },
     {
@@ -1029,7 +1029,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L78",
       "id": "crates_perfscale_cli_src_commands_lint_rs_path",
-      "community": 75,
+      "community": 24,
       "norm_label": "path"
     },
     {
@@ -1038,7 +1038,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L78",
       "id": "schemakind",
-      "community": 75,
+      "community": 24,
       "norm_label": "schemakind"
     },
     {
@@ -1047,7 +1047,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L78",
       "id": "crates_perfscale_cli_src_commands_lint_rs_importoptions",
-      "community": 75,
+      "community": 24,
       "norm_label": "importoptions"
     },
     {
@@ -1056,7 +1056,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L78",
       "id": "dockind",
-      "community": 75,
+      "community": 24,
       "norm_label": "dockind"
     },
     {
@@ -1065,7 +1065,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L78",
       "id": "crates_perfscale_cli_src_commands_lint_rs_string",
-      "community": 75,
+      "community": 24,
       "norm_label": "string"
     },
     {
@@ -1074,7 +1074,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L78",
       "id": "crates_perfscale_cli_src_commands_lint_rs_vec",
-      "community": 75,
+      "community": 24,
       "norm_label": "vec"
     },
     {
@@ -1083,7 +1083,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L78",
       "id": "lintissue",
-      "community": 75,
+      "community": 24,
       "norm_label": "lintissue"
     },
     {
@@ -1092,7 +1092,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L136",
       "id": "commands_lint_graphql_remote_pass",
-      "community": 75,
+      "community": 24,
       "norm_label": "graphql_remote_pass()"
     },
     {
@@ -1101,7 +1101,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L147",
       "id": "commands_lint_kind_label",
-      "community": 75,
+      "community": 24,
       "norm_label": "kind_label()"
     },
     {
@@ -1110,7 +1110,7 @@
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L154",
       "id": "commands_lint_print_issues",
-      "community": 75,
+      "community": 24,
       "norm_label": "print_issues()"
     },
     {
@@ -1398,7 +1398,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L14",
       "id": "commands_run_run",
-      "community": 5,
+      "community": 163,
       "norm_label": "run()"
     },
     {
@@ -1416,7 +1416,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L14",
       "id": "crates_perfscale_cli_src_commands_run_rs_result",
-      "community": 5,
+      "community": 163,
       "norm_label": "result"
     },
     {
@@ -1425,7 +1425,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L14",
       "id": "crates_perfscale_cli_src_commands_run_rs_clierror",
-      "community": 5,
+      "community": 163,
       "norm_label": "clierror"
     },
     {
@@ -1488,7 +1488,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L147",
       "id": "commands_run_export_format",
-      "community": 5,
+      "community": 163,
       "norm_label": "export_format()"
     },
     {
@@ -1497,7 +1497,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L147",
       "id": "crates_perfscale_cli_src_commands_run_rs_path",
-      "community": 5,
+      "community": 163,
       "norm_label": "path"
     },
     {
@@ -1506,7 +1506,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L147",
       "id": "crates_perfscale_cli_src_commands_run_rs_summaryformat",
-      "community": 5,
+      "community": 163,
       "norm_label": "summaryformat"
     },
     {
@@ -1515,7 +1515,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L155",
       "id": "commands_run_write_summary_export",
-      "community": 5,
+      "community": 163,
       "norm_label": "write_summary_export()"
     },
     {
@@ -1524,7 +1524,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L181",
       "id": "commands_run_is_summary_line",
-      "community": 5,
+      "community": 163,
       "norm_label": "is_summary_line()"
     },
     {
@@ -1533,7 +1533,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L216",
       "id": "commands_run_import_hint",
-      "community": 5,
+      "community": 163,
       "norm_label": "import_hint()"
     },
     {
@@ -1542,7 +1542,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L224",
       "id": "commands_run_load_config",
-      "community": 5,
+      "community": 163,
       "norm_label": "load_config()"
     },
     {
@@ -1551,7 +1551,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L224",
       "id": "crates_perfscale_cli_src_commands_run_rs_importoptions",
-      "community": 5,
+      "community": 163,
       "norm_label": "importoptions"
     },
     {
@@ -1569,7 +1569,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L251",
       "id": "commands_run_load_test_def",
-      "community": 5,
+      "community": 163,
       "norm_label": "load_test_def()"
     },
     {
@@ -1623,7 +1623,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L389",
       "id": "commands_run_should_print",
-      "community": 5,
+      "community": 163,
       "norm_label": "should_print()"
     },
     {
@@ -1632,7 +1632,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L389",
       "id": "crates_perfscale_cli_src_commands_run_rs_logline",
-      "community": 5,
+      "community": 163,
       "norm_label": "logline"
     },
     {
@@ -1641,7 +1641,7 @@
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L396",
       "id": "commands_run_print_line",
-      "community": 5,
+      "community": 163,
       "norm_label": "print_line()"
     },
     {
@@ -2235,7 +2235,7 @@
       "source_file": "crates/perfscale-cli/src/commands/serve.rs",
       "source_location": "L103",
       "id": "json",
-      "community": 176,
+      "community": 150,
       "norm_label": "json"
     },
     {
@@ -2379,7 +2379,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L1",
       "id": "src_error",
-      "community": 5,
+      "community": 162,
       "norm_label": "error.rs"
     },
     {
@@ -2388,7 +2388,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L17",
       "id": "src_error_clierror",
-      "community": 5,
+      "community": 162,
       "norm_label": "clierror"
     },
     {
@@ -2397,7 +2397,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L18",
       "id": "crates_perfscale_cli_src_error_rs_string",
-      "community": 5,
+      "community": 162,
       "norm_label": "string"
     },
     {
@@ -2406,7 +2406,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L19",
       "id": "crates_perfscale_cli_src_error_rs_option",
-      "community": 5,
+      "community": 162,
       "norm_label": "option"
     },
     {
@@ -2415,7 +2415,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L25",
       "id": "src_error_clierror_new",
-      "community": 5,
+      "community": 162,
       "norm_label": ".new()"
     },
     {
@@ -2424,7 +2424,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L25",
       "id": "crates_perfscale_cli_src_error_rs_into",
-      "community": 5,
+      "community": 162,
       "norm_label": "into"
     },
     {
@@ -2433,7 +2433,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L25",
       "id": "crates_perfscale_cli_src_error_rs_self",
-      "community": 5,
+      "community": 162,
       "norm_label": "self"
     },
     {
@@ -2442,7 +2442,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L34",
       "id": "src_error_clierror_cause",
-      "community": 5,
+      "community": 162,
       "norm_label": ".cause()"
     },
     {
@@ -2451,7 +2451,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L39",
       "id": "src_error_clierror_hint",
-      "community": 5,
+      "community": 162,
       "norm_label": ".hint()"
     },
     {
@@ -2460,7 +2460,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L46",
       "id": "src_error_clierror_docs",
-      "community": 5,
+      "community": 162,
       "norm_label": ".docs()"
     },
     {
@@ -2469,7 +2469,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L53",
       "id": "src_error_clierror_from_engine",
-      "community": 5,
+      "community": 162,
       "norm_label": ".from_engine()"
     },
     {
@@ -2478,7 +2478,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L72",
       "id": "crates_perfscale_cli_src_error_rs_display",
-      "community": 5,
+      "community": 162,
       "norm_label": "display"
     },
     {
@@ -2487,7 +2487,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L73",
       "id": "src_error_clierror_fmt",
-      "community": 5,
+      "community": 162,
       "norm_label": ".fmt()"
     },
     {
@@ -2496,7 +2496,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L73",
       "id": "crates_perfscale_cli_src_error_rs_formatter",
-      "community": 5,
+      "community": 162,
       "norm_label": "formatter"
     },
     {
@@ -2505,7 +2505,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L73",
       "id": "crates_perfscale_cli_src_error_rs_result",
-      "community": 5,
+      "community": 162,
       "norm_label": "result"
     },
     {
@@ -2514,7 +2514,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L95",
       "id": "src_error_plain_error_is_single_line",
-      "community": 5,
+      "community": 162,
       "norm_label": "plain_error_is_single_line()"
     },
     {
@@ -2523,7 +2523,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L101",
       "id": "src_error_full_error_renders_all_sections_in_order",
-      "community": 5,
+      "community": 162,
       "norm_label": "full_error_renders_all_sections_in_order()"
     },
     {
@@ -2532,7 +2532,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L121",
       "id": "src_error_multiline_cause_is_indented",
-      "community": 5,
+      "community": 162,
       "norm_label": "multiline_cause_is_indented()"
     },
     {
@@ -2541,7 +2541,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L127",
       "id": "src_error_from_engine_k6_not_found_points_at_install_docs",
-      "community": 5,
+      "community": 162,
       "norm_label": "from_engine_k6_not_found_points_at_install_docs()"
     },
     {
@@ -2550,7 +2550,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L137",
       "id": "src_error_from_engine_locust_not_found_points_at_install_docs",
-      "community": 5,
+      "community": 162,
       "norm_label": "from_engine_locust_not_found_points_at_install_docs()"
     },
     {
@@ -2559,7 +2559,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L147",
       "id": "src_error_from_engine_jmeter_not_found_points_at_install_docs",
-      "community": 5,
+      "community": 162,
       "norm_label": "from_engine_jmeter_not_found_points_at_install_docs()"
     },
     {
@@ -2568,7 +2568,7 @@
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L157",
       "id": "src_error_from_engine_other_errors_link_command_docs",
-      "community": 5,
+      "community": 162,
       "norm_label": "from_engine_other_errors_link_command_docs()"
     },
     {
@@ -5052,7 +5052,7 @@
       "source_file": "crates/perfscale-core/examples/graphql_server.rs",
       "source_location": "L58",
       "id": "examples_graphql_server_main",
-      "community": 154,
+      "community": 55,
       "norm_label": "main()"
     },
     {
@@ -9030,7 +9030,7 @@
       "source_file": "crates/perfscale-core/src/library/mod.rs",
       "source_location": "L587",
       "id": "library_mod_normalize_sha256",
-      "community": 136,
+      "community": 46,
       "norm_label": "normalize_sha256()"
     },
     {
@@ -9858,7 +9858,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L96",
       "id": "library_wasm_hoststate",
-      "community": 64,
+      "community": 170,
       "norm_label": "hoststate"
     },
     {
@@ -9867,7 +9867,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L97",
       "id": "wasictx",
-      "community": 64,
+      "community": 170,
       "norm_label": "wasictx"
     },
     {
@@ -9876,7 +9876,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L98",
       "id": "resourcetable",
-      "community": 64,
+      "community": 170,
       "norm_label": "resourcetable"
     },
     {
@@ -9885,7 +9885,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L99",
       "id": "storelimits",
-      "community": 64,
+      "community": 170,
       "norm_label": "storelimits"
     },
     {
@@ -9894,7 +9894,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L102",
       "id": "wasiview",
-      "community": 64,
+      "community": 170,
       "norm_label": "wasiview"
     },
     {
@@ -9903,7 +9903,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L103",
       "id": "library_wasm_hoststate_ctx",
-      "community": 64,
+      "community": 170,
       "norm_label": ".ctx()"
     },
     {
@@ -9912,7 +9912,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L103",
       "id": "wasictxview",
-      "community": 64,
+      "community": 170,
       "norm_label": "wasictxview"
     },
     {
@@ -10119,7 +10119,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L411",
       "id": "store",
-      "community": 64,
+      "community": 170,
       "norm_label": "store"
     },
     {
@@ -10155,7 +10155,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L527",
       "id": "library_wasm_instantiated",
-      "community": 64,
+      "community": 170,
       "norm_label": "instantiated"
     },
     {
@@ -10164,7 +10164,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L533",
       "id": "library_wasm_instantiated_call_init",
-      "community": 64,
+      "community": 170,
       "norm_label": ".call_init()"
     },
     {
@@ -10173,7 +10173,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L533",
       "id": "crates_perfscale_core_src_library_wasm_rs_error",
-      "community": 64,
+      "community": 170,
       "norm_label": "error"
     },
     {
@@ -10182,7 +10182,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L544",
       "id": "library_wasm_instantiated_call_call",
-      "community": 64,
+      "community": 170,
       "norm_label": ".call_call()"
     },
     {
@@ -10191,7 +10191,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L544",
       "id": "crates_perfscale_core_src_library_wasm_rs_callctx",
-      "community": 77,
+      "community": 170,
       "norm_label": "callctx"
     },
     {
@@ -10218,7 +10218,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L591",
       "id": "library_wasm_wasmfunctioninfojson",
-      "community": 64,
+      "community": 77,
       "norm_label": "wasmfunctioninfojson"
     },
     {
@@ -10290,7 +10290,7 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L614",
       "id": "crates_perfscale_core_src_library_wasm_rs_libraryinstance",
-      "community": 64,
+      "community": 170,
       "norm_label": "libraryinstance"
     },
     {
@@ -10299,23 +10299,68 @@
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L637",
       "id": "library_wasm_wasmlibraryinstance",
-      "community": 64,
+      "community": 170,
       "norm_label": "wasmlibraryinstance"
     },
     {
       "label": ".call()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L644",
+      "source_location": "L647",
       "id": "library_wasm_wasmlibraryinstance_call",
       "community": 77,
       "norm_label": ".call()"
     },
     {
+      "label": "call_guest()",
+      "file_type": "code",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L704",
+      "id": "library_wasm_call_guest",
+      "community": 170,
+      "norm_label": "call_guest()"
+    },
+    {
+      "label": "off_runtime()",
+      "file_type": "code",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L738",
+      "id": "library_wasm_off_runtime",
+      "community": 184,
+      "norm_label": "off_runtime()"
+    },
+    {
+      "label": "FnOnce",
+      "file_type": "code",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L738",
+      "id": "crates_perfscale_core_src_library_wasm_rs_fnonce",
+      "community": 184,
+      "norm_label": "fnonce"
+    },
+    {
+      "label": "R",
+      "file_type": "code",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L738",
+      "id": "crates_perfscale_core_src_library_wasm_rs_r",
+      "community": 184,
+      "norm_label": "r"
+    },
+    {
+      "label": "Send",
+      "file_type": "code",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L738",
+      "id": "crates_perfscale_core_src_library_wasm_rs_send",
+      "community": 184,
+      "norm_label": "send"
+    },
+    {
       "label": "link_err()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L667",
+      "source_location": "L748",
       "id": "library_wasm_link_err",
       "community": 64,
       "norm_label": "link_err()"
@@ -10324,7 +10369,7 @@
       "label": "check_grants()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L673",
+      "source_location": "L754",
       "id": "library_wasm_check_grants",
       "community": 64,
       "norm_label": "check_grants()"
@@ -10333,7 +10378,7 @@
       "label": "build_linker()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L691",
+      "source_location": "L772",
       "id": "library_wasm_build_linker",
       "community": 64,
       "norm_label": "build_linker()"
@@ -10342,7 +10387,7 @@
       "label": "Fixtures",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L780",
+      "source_location": "L861",
       "id": "library_wasm_fixtures",
       "community": 77,
       "norm_label": "fixtures"
@@ -10351,7 +10396,7 @@
       "label": "wasip2_installed()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L787",
+      "source_location": "L868",
       "id": "library_wasm_wasip2_installed",
       "community": 77,
       "norm_label": "wasip2_installed()"
@@ -10360,7 +10405,7 @@
       "label": "lib_ref()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L846",
+      "source_location": "L927",
       "id": "library_wasm_lib_ref",
       "community": 77,
       "norm_label": "lib_ref()"
@@ -10369,7 +10414,7 @@
       "label": "LibraryRef",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L846",
+      "source_location": "L927",
       "id": "crates_perfscale_core_src_library_wasm_rs_libraryref",
       "community": 77,
       "norm_label": "libraryref"
@@ -10378,7 +10423,7 @@
       "label": "ctx()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L860",
+      "source_location": "L941",
       "id": "library_wasm_ctx",
       "community": 77,
       "norm_label": "ctx()"
@@ -10387,7 +10432,7 @@
       "label": "import_capability_mapping()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L874",
+      "source_location": "L955",
       "id": "library_wasm_import_capability_mapping",
       "community": 77,
       "norm_label": "import_capability_mapping()"
@@ -10396,7 +10441,7 @@
       "label": "missing_file_and_wrong_extension_are_clear_errors()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L899",
+      "source_location": "L980",
       "id": "library_wasm_missing_file_and_wrong_extension_are_clear_errors",
       "community": 77,
       "norm_label": "missing_file_and_wrong_extension_are_clear_errors()"
@@ -10405,7 +10450,7 @@
       "label": "loads_and_calls_through_the_component_abi()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L914",
+      "source_location": "L995",
       "id": "library_wasm_loads_and_calls_through_the_component_abi",
       "community": 77,
       "norm_label": "loads_and_calls_through_the_component_abi()"
@@ -10414,7 +10459,7 @@
       "label": "with_config_reaches_init_and_unknown_functions_fail()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L932",
+      "source_location": "L1013",
       "id": "library_wasm_with_config_reaches_init_and_unknown_functions_fail",
       "community": 77,
       "norm_label": "with_config_reaches_init_and_unknown_functions_fail()"
@@ -10423,7 +10468,7 @@
       "label": "memo_key_reuses_within_one_message_seq()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L951",
+      "source_location": "L1032",
       "id": "library_wasm_memo_key_reuses_within_one_message_seq",
       "community": 77,
       "norm_label": "memo_key_reuses_within_one_message_seq()"
@@ -10432,7 +10477,7 @@
       "label": "expansion_through_the_generator()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L967",
+      "source_location": "L1048",
       "id": "library_wasm_expansion_through_the_generator",
       "community": 77,
       "norm_label": "expansion_through_the_generator()"
@@ -10441,7 +10486,7 @@
       "label": "wit_0_1_component_loads_without_settings()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L987",
+      "source_location": "L1068",
       "id": "library_wasm_wit_0_1_component_loads_without_settings",
       "community": 77,
       "norm_label": "wit_0_1_component_loads_without_settings()"
@@ -10450,7 +10495,7 @@
       "label": "wit_0_2_component_sees_the_run_settings()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L1006",
+      "source_location": "L1087",
       "id": "library_wasm_wit_0_2_component_sees_the_run_settings",
       "community": 77,
       "norm_label": "wit_0_2_component_sees_the_run_settings()"
@@ -10459,7 +10504,7 @@
       "label": "fs_import_without_grant_is_a_hard_load_error()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L1017",
+      "source_location": "L1098",
       "id": "library_wasm_fs_import_without_grant_is_a_hard_load_error",
       "community": 77,
       "norm_label": "fs_import_without_grant_is_a_hard_load_error()"
@@ -10468,7 +10513,7 @@
       "label": "fs_grant_reads_through_the_confined_preopen()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L1028",
+      "source_location": "L1109",
       "id": "library_wasm_fs_grant_reads_through_the_confined_preopen",
       "community": 77,
       "norm_label": "fs_grant_reads_through_the_confined_preopen()"
@@ -10477,7 +10522,7 @@
       "label": "net_grant_is_rejected_in_this_build()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L1048",
+      "source_location": "L1129",
       "id": "library_wasm_net_grant_is_rejected_in_this_build",
       "community": 77,
       "norm_label": "net_grant_is_rejected_in_this_build()"
@@ -10486,7 +10531,7 @@
       "label": "grants_require_the_global_gate()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L1059",
+      "source_location": "L1140",
       "id": "library_wasm_grants_require_the_global_gate",
       "community": 77,
       "norm_label": "grants_require_the_global_gate()"
@@ -10495,7 +10540,7 @@
       "label": "infinite_loop_trips_the_fuel_budget()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L1068",
+      "source_location": "L1149",
       "id": "library_wasm_infinite_loop_trips_the_fuel_budget",
       "community": 77,
       "norm_label": "infinite_loop_trips_the_fuel_budget()"
@@ -10504,7 +10549,7 @@
       "label": "burned_load_matches_fresh_compile()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L1090",
+      "source_location": "L1171",
       "id": "library_wasm_burned_load_matches_fresh_compile",
       "community": 77,
       "norm_label": "burned_load_matches_fresh_compile()"
@@ -10513,7 +10558,7 @@
       "label": "load_probes_the_burn_cache()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L1118",
+      "source_location": "L1199",
       "id": "library_wasm_load_probes_the_burn_cache",
       "community": 77,
       "norm_label": "load_probes_the_burn_cache()"
@@ -10542,7 +10587,7 @@
       "source_file": "crates/perfscale-core/src/lint.rs",
       "source_location": "L15",
       "id": "crates_perfscale_core_src_lint_rs_string",
-      "community": 169,
+      "community": 59,
       "norm_label": "string"
     },
     {
@@ -10560,7 +10605,7 @@
       "source_file": "crates/perfscale-core/src/lint.rs",
       "source_location": "L24",
       "id": "src_lint_dockind",
-      "community": 156,
+      "community": 59,
       "norm_label": "dockind"
     },
     {
@@ -10569,7 +10614,7 @@
       "source_file": "crates/perfscale-core/src/lint.rs",
       "source_location": "L31",
       "id": "src_lint_detect_kind",
-      "community": 75,
+      "community": 24,
       "norm_label": "detect_kind()"
     },
     {
@@ -10668,7 +10713,7 @@
       "source_file": "crates/perfscale-core/src/lint.rs",
       "source_location": "L779",
       "id": "src_lint_declared_libraries",
-      "community": 156,
+      "community": 59,
       "norm_label": "declared_libraries()"
     },
     {
@@ -10677,7 +10722,7 @@
       "source_file": "crates/perfscale-core/src/lint.rs",
       "source_location": "L779",
       "id": "resolvedproviders",
-      "community": 156,
+      "community": 59,
       "norm_label": "resolvedproviders"
     },
     {
@@ -10686,7 +10731,7 @@
       "source_file": "crates/perfscale-core/src/lint.rs",
       "source_location": "L827",
       "id": "src_lint_library_token_checks",
-      "community": 156,
+      "community": 59,
       "norm_label": "library_token_checks()"
     },
     {
@@ -15510,7 +15555,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L186",
       "id": "step_db_parse_connect_params",
-      "community": 22,
+      "community": 180,
       "norm_label": "parse_connect_params()"
     },
     {
@@ -15537,7 +15582,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L277",
       "id": "step_db_timeout_ms_param",
-      "community": 44,
+      "community": 176,
       "norm_label": "timeout_ms_param()"
     },
     {
@@ -15546,7 +15591,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L291",
       "id": "step_db_dsn_password",
-      "community": 140,
+      "community": 180,
       "norm_label": "dsn_password()"
     },
     {
@@ -15555,7 +15600,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L291",
       "id": "crates_perfscale_core_src_step_db_rs_option",
-      "community": 140,
+      "community": 180,
       "norm_label": "option"
     },
     {
@@ -15564,7 +15609,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L306",
       "id": "step_db_sanitize_detail",
-      "community": 36,
+      "community": 180,
       "norm_label": "sanitize_detail()"
     },
     {
@@ -15573,7 +15618,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L320",
       "id": "step_db_replace_whole_word",
-      "community": 36,
+      "community": 180,
       "norm_label": "replace_whole_word()"
     },
     {
@@ -15744,7 +15789,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L511",
       "id": "row",
-      "community": 19,
+      "community": 32,
       "norm_label": "row"
     },
     {
@@ -15933,7 +15978,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L831",
       "id": "step_db_take_conn",
-      "community": 44,
+      "community": 176,
       "norm_label": "take_conn()"
     },
     {
@@ -15942,7 +15987,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L831",
       "id": "crates_perfscale_core_src_step_db_rs_context",
-      "community": 44,
+      "community": 176,
       "norm_label": "context"
     },
     {
@@ -15951,7 +15996,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L831",
       "id": "dbconn",
-      "community": 44,
+      "community": 176,
       "norm_label": "dbconn"
     },
     {
@@ -15969,7 +16014,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L866",
       "id": "step_db_error_metrics",
-      "community": 44,
+      "community": 176,
       "norm_label": "error_metrics()"
     },
     {
@@ -15978,7 +16023,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L866",
       "id": "crates_perfscale_core_src_step_db_rs_map",
-      "community": 44,
+      "community": 176,
       "norm_label": "map"
     },
     {
@@ -15987,7 +16032,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L900",
       "id": "step_db_db_connect_action",
-      "community": 44,
+      "community": 180,
       "norm_label": "db_connect_action()"
     },
     {
@@ -15996,7 +16041,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L900",
       "id": "crates_perfscale_core_src_step_db_rs_actionoutput",
-      "community": 44,
+      "community": 176,
       "norm_label": "actionoutput"
     },
     {
@@ -16005,7 +16050,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1000",
       "id": "step_db_dbfail",
-      "community": 36,
+      "community": 140,
       "norm_label": "dbfail"
     },
     {
@@ -16014,7 +16059,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1007",
       "id": "step_db_dbfail_config",
-      "community": 36,
+      "community": 140,
       "norm_label": ".config()"
     },
     {
@@ -16023,7 +16068,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1007",
       "id": "crates_perfscale_core_src_step_db_rs_self",
-      "community": 36,
+      "community": 140,
       "norm_label": "self"
     },
     {
@@ -16032,7 +16077,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1014",
       "id": "step_db_dbfail_from_sqlx",
-      "community": 36,
+      "community": 140,
       "norm_label": ".from_sqlx()"
     },
     {
@@ -16077,7 +16122,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1183",
       "id": "step_db_db_query_action",
-      "community": 44,
+      "community": 32,
       "norm_label": "db_query_action()"
     },
     {
@@ -16086,7 +16131,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1377",
       "id": "step_db_dbconnref",
-      "community": 140,
+      "community": 176,
       "norm_label": "dbconnref"
     },
     {
@@ -16095,7 +16140,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1383",
       "id": "step_db_db_fail_ref",
-      "community": 44,
+      "community": 176,
       "norm_label": "db_fail_ref()"
     },
     {
@@ -16104,7 +16149,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1432",
       "id": "step_db_db_tx_begin_action",
-      "community": 44,
+      "community": 176,
       "norm_label": "db_tx_begin_action()"
     },
     {
@@ -16113,7 +16158,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1518",
       "id": "step_db_db_tx_finish_action",
-      "community": 44,
+      "community": 176,
       "norm_label": "db_tx_finish_action()"
     },
     {
@@ -16122,7 +16167,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1596",
       "id": "step_db_db_tx_commit_action",
-      "community": 44,
+      "community": 176,
       "norm_label": "db_tx_commit_action()"
     },
     {
@@ -16131,7 +16176,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1604",
       "id": "step_db_db_tx_rollback_action",
-      "community": 44,
+      "community": 176,
       "norm_label": "db_tx_rollback_action()"
     },
     {
@@ -16140,7 +16185,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1626",
       "id": "step_db_db_close_action",
-      "community": 44,
+      "community": 176,
       "norm_label": "db_close_action()"
     },
     {
@@ -16149,7 +16194,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1688",
       "id": "step_db_connect_params_defaults",
-      "community": 22,
+      "community": 180,
       "norm_label": "connect_params_defaults()"
     },
     {
@@ -16158,7 +16203,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1702",
       "id": "step_db_connect_params_full_override",
-      "community": 22,
+      "community": 180,
       "norm_label": "connect_params_full_override()"
     },
     {
@@ -16167,7 +16212,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1720",
       "id": "step_db_connect_params_interpolated_string_forms",
-      "community": 22,
+      "community": 180,
       "norm_label": "connect_params_interpolated_string_forms()"
     },
     {
@@ -16176,7 +16221,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1734",
       "id": "step_db_connect_params_rejections",
-      "community": 22,
+      "community": 180,
       "norm_label": "connect_params_rejections()"
     },
     {
@@ -16275,7 +16320,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L1994",
       "id": "step_db_sanitize_detail_scrubs_dsn_and_password",
-      "community": 36,
+      "community": 180,
       "norm_label": "sanitize_detail_scrubs_dsn_and_password()"
     },
     {
@@ -16464,7 +16509,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L2892",
       "id": "step_db_connect_params_pool_size_is_clamped",
-      "community": 22,
+      "community": 180,
       "norm_label": "connect_params_pool_size_is_clamped()"
     },
     {
@@ -16509,7 +16554,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L2969",
       "id": "step_db_fakedberr_fmt",
-      "community": 32,
+      "community": 36,
       "norm_label": ".fmt()"
     },
     {
@@ -16518,7 +16563,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L2969",
       "id": "crates_perfscale_core_src_step_db_rs_formatter",
-      "community": 32,
+      "community": 36,
       "norm_label": "formatter"
     },
     {
@@ -16545,7 +16590,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L2980",
       "id": "step_db_fakedberr_code",
-      "community": 140,
+      "community": 180,
       "norm_label": ".code()"
     },
     {
@@ -16554,7 +16599,7 @@
       "source_file": "crates/perfscale-core/src/step/db.rs",
       "source_location": "L2980",
       "id": "crates_perfscale_core_src_step_db_rs_cow",
-      "community": 140,
+      "community": 180,
       "norm_label": "cow"
     },
     {
@@ -16815,7 +16860,7 @@
       "source_file": "crates/perfscale-core/src/step/graphql.rs",
       "source_location": "L106",
       "id": "crates_perfscale_core_src_step_graphql_rs_string",
-      "community": 38,
+      "community": 49,
       "norm_label": "string"
     },
     {
@@ -16878,7 +16923,7 @@
       "source_file": "crates/perfscale-core/src/step/graphql.rs",
       "source_location": "L122",
       "id": "crates_perfscale_core_src_step_graphql_rs_result",
-      "community": 38,
+      "community": 49,
       "norm_label": "result"
     },
     {
@@ -16932,7 +16977,7 @@
       "source_file": "crates/perfscale-core/src/step/graphql.rs",
       "source_location": "L256",
       "id": "step_graphql_introspect_schema",
-      "community": 38,
+      "community": 49,
       "norm_label": "introspect_schema()"
     },
     {
@@ -16950,7 +16995,7 @@
       "source_file": "crates/perfscale-core/src/step/graphql.rs",
       "source_location": "L303",
       "id": "step_graphql_schema_from_introspection",
-      "community": 38,
+      "community": 49,
       "norm_label": "schema_from_introspection()"
     },
     {
@@ -16986,7 +17031,7 @@
       "source_file": "crates/perfscale-core/src/step/graphql.rs",
       "source_location": "L427",
       "id": "step_graphql_validate_query_syntax",
-      "community": 38,
+      "community": 49,
       "norm_label": "validate_query_syntax()"
     },
     {
@@ -17076,7 +17121,7 @@
       "source_file": "crates/perfscale-core/src/step/graphql.rs",
       "source_location": "L637",
       "id": "step_graphql_fragment_target",
-      "community": 162,
+      "community": 38,
       "norm_label": "fragment_target()"
     },
     {
@@ -17085,7 +17130,7 @@
       "source_file": "crates/perfscale-core/src/step/graphql.rs",
       "source_location": "L637",
       "id": "typecondition",
-      "community": 162,
+      "community": 38,
       "norm_label": "typecondition"
     },
     {
@@ -17094,7 +17139,7 @@
       "source_file": "crates/perfscale-core/src/step/graphql.rs",
       "source_location": "L649",
       "id": "step_graphql_fragment_def_target",
-      "community": 162,
+      "community": 38,
       "norm_label": "fragment_def_target()"
     },
     {
@@ -17211,7 +17256,7 @@
       "source_file": "crates/perfscale-core/src/step/graphql.rs",
       "source_location": "L1013",
       "id": "step_graphql_introspection_json_builds_schema",
-      "community": 38,
+      "community": 49,
       "norm_label": "introspection_json_builds_schema()"
     },
     {
@@ -17220,7 +17265,7 @@
       "source_file": "crates/perfscale-core/src/step/graphql.rs",
       "source_location": "L1048",
       "id": "step_graphql_syntax_gate_accepts_and_rejects",
-      "community": 42,
+      "community": 49,
       "norm_label": "syntax_gate_accepts_and_rejects()"
     },
     {
@@ -17481,7 +17526,7 @@
       "source_file": "crates/perfscale-core/src/step/graphql.rs",
       "source_location": "L1503",
       "id": "step_graphql_testmutation",
-      "community": 38,
+      "community": 185,
       "norm_label": "testmutation"
     },
     {
@@ -17490,7 +17535,7 @@
       "source_file": "crates/perfscale-core/src/step/graphql.rs",
       "source_location": "L1507",
       "id": "step_graphql_testmutation_create_widget",
-      "community": 38,
+      "community": 185,
       "norm_label": ".create_widget()"
     },
     {
@@ -18561,7 +18606,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L1",
       "id": "step_http",
-      "community": 2,
+      "community": 75,
       "norm_label": "http.rs"
     },
     {
@@ -18570,7 +18615,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L49",
       "id": "step_http_shared_client",
-      "community": 2,
+      "community": 75,
       "norm_label": "shared_client()"
     },
     {
@@ -18579,7 +18624,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L49",
       "id": "crates_perfscale_core_src_step_http_rs_client",
-      "community": 2,
+      "community": 75,
       "norm_label": "client"
     },
     {
@@ -18588,7 +18633,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L62",
       "id": "step_http_shared_insecure_client",
-      "community": 2,
+      "community": 75,
       "norm_label": "shared_insecure_client()"
     },
     {
@@ -18597,7 +18642,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L79",
       "id": "step_http_client_shard_count",
-      "community": 2,
+      "community": 75,
       "norm_label": "client_shard_count()"
     },
     {
@@ -18606,7 +18651,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L91",
       "id": "step_http_clientpool",
-      "community": 2,
+      "community": 75,
       "norm_label": "clientpool"
     },
     {
@@ -18615,7 +18660,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L102",
       "id": "step_http_clientpool_from_params",
-      "community": 2,
+      "community": 75,
       "norm_label": ".from_params()"
     },
     {
@@ -18624,7 +18669,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L102",
       "id": "crates_perfscale_core_src_step_http_rs_value",
-      "community": 2,
+      "community": 75,
       "norm_label": "value"
     },
     {
@@ -18633,7 +18678,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L102",
       "id": "crates_perfscale_core_src_step_http_rs_result",
-      "community": 2,
+      "community": 75,
       "norm_label": "result"
     },
     {
@@ -18642,7 +18687,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L102",
       "id": "crates_perfscale_core_src_step_http_rs_self",
-      "community": 2,
+      "community": 75,
       "norm_label": "self"
     },
     {
@@ -18651,7 +18696,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L102",
       "id": "crates_perfscale_core_src_step_http_rs_string",
-      "community": 2,
+      "community": 75,
       "norm_label": "string"
     },
     {
@@ -18660,7 +18705,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L115",
       "id": "step_http_client",
-      "community": 2,
+      "community": 75,
       "norm_label": "client()"
     },
     {
@@ -18669,7 +18714,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L141",
       "id": "step_http_bodykind",
-      "community": 2,
+      "community": 75,
       "norm_label": "bodykind"
     },
     {
@@ -18678,7 +18723,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L152",
       "id": "step_http_httpoutcome",
-      "community": 2,
+      "community": 75,
       "norm_label": "httpoutcome"
     },
     {
@@ -18687,7 +18732,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L157",
       "id": "crates_perfscale_core_src_step_http_rs_map",
-      "community": 2,
+      "community": 75,
       "norm_label": "map"
     },
     {
@@ -18696,7 +18741,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L161",
       "id": "crates_perfscale_core_src_step_http_rs_option",
-      "community": 2,
+      "community": 75,
       "norm_label": "option"
     },
     {
@@ -18705,7 +18750,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L167",
       "id": "step_http_timed_exchange",
-      "community": 2,
+      "community": 75,
       "norm_label": "timed_exchange()"
     },
     {
@@ -18714,7 +18759,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L167",
       "id": "requestbuilder",
-      "community": 2,
+      "community": 75,
       "norm_label": "requestbuilder"
     },
     {
@@ -18723,7 +18768,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L167",
       "id": "crates_perfscale_core_src_step_http_rs_error",
-      "community": 2,
+      "community": 75,
       "norm_label": "error"
     },
     {
@@ -18732,7 +18777,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L228",
       "id": "step_http_request_line",
-      "community": 2,
+      "community": 75,
       "norm_label": "request_line()"
     },
     {
@@ -18741,7 +18786,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L241",
       "id": "step_http_transport_error",
-      "community": 2,
+      "community": 75,
       "norm_label": "transport_error()"
     },
     {
@@ -18750,7 +18795,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L241",
       "id": "crates_perfscale_core_src_step_http_rs_actionoutput",
-      "community": 2,
+      "community": 75,
       "norm_label": "actionoutput"
     },
     {
@@ -18759,7 +18804,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L276",
       "id": "step_http_header_map_to_json",
-      "community": 2,
+      "community": 75,
       "norm_label": "header_map_to_json()"
     },
     {
@@ -18768,7 +18813,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L276",
       "id": "headermap",
-      "community": 2,
+      "community": 75,
       "norm_label": "headermap"
     },
     {
@@ -18777,7 +18822,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L297",
       "id": "step_http_is_textual_content_type",
-      "community": 2,
+      "community": 75,
       "norm_label": "is_textual_content_type()"
     },
     {
@@ -18786,7 +18831,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L317",
       "id": "step_http_base64_encode",
-      "community": 2,
+      "community": 75,
       "norm_label": "base64_encode()"
     },
     {
@@ -18795,7 +18840,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L325",
       "id": "step_http_error_chain",
-      "community": 2,
+      "community": 140,
       "norm_label": "error_chain()"
     },
     {
@@ -18804,7 +18849,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L370",
       "id": "step_http_http_action",
-      "community": 2,
+      "community": 75,
       "norm_label": "http_action()"
     },
     {
@@ -18813,7 +18858,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L370",
       "id": "crates_perfscale_core_src_step_http_rs_context",
-      "community": 2,
+      "community": 75,
       "norm_label": "context"
     },
     {
@@ -18822,7 +18867,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L484",
       "id": "step_http_build_multipart",
-      "community": 2,
+      "community": 75,
       "norm_label": "build_multipart()"
     },
     {
@@ -18831,7 +18876,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L484",
       "id": "form",
-      "community": 2,
+      "community": 75,
       "norm_label": "form"
     },
     {
@@ -18840,7 +18885,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L570",
       "id": "step_http_client_pool_defaults_to_per_vu",
-      "community": 2,
+      "community": 75,
       "norm_label": "client_pool_defaults_to_per_vu()"
     },
     {
@@ -18849,7 +18894,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L578",
       "id": "step_http_client_pool_parses_both_modes",
-      "community": 2,
+      "community": 75,
       "norm_label": "client_pool_parses_both_modes()"
     },
     {
@@ -18858,7 +18903,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L590",
       "id": "step_http_client_pool_rejects_unknown_mode_with_actionable_error",
-      "community": 2,
+      "community": 75,
       "norm_label": "client_pool_rejects_unknown_mode_with_actionable_error()"
     },
     {
@@ -18867,7 +18912,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L602",
       "id": "step_http_client_shard_count_is_within_bounds",
-      "community": 2,
+      "community": 75,
       "norm_label": "client_shard_count_is_within_bounds()"
     },
     {
@@ -18876,7 +18921,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L615",
       "id": "step_http_request_line_renders_the_canonical_shape",
-      "community": 2,
+      "community": 75,
       "norm_label": "request_line_renders_the_canonical_shape()"
     },
     {
@@ -18885,7 +18930,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L642",
       "id": "step_http_header_map_to_json_lowercases_and_joins_repeats",
-      "community": 2,
+      "community": 75,
       "norm_label": "header_map_to_json_lowercases_and_joins_repeats()"
     },
     {
@@ -18894,7 +18939,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L654",
       "id": "step_http_header_map_to_json_skips_non_utf8_values",
-      "community": 2,
+      "community": 75,
       "norm_label": "header_map_to_json_skips_non_utf8_values()"
     },
     {
@@ -18903,7 +18948,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L670",
       "id": "step_http_textual_content_types_are_recognized",
-      "community": 2,
+      "community": 75,
       "norm_label": "textual_content_types_are_recognized()"
     },
     {
@@ -18912,7 +18957,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L690",
       "id": "step_http_binary_content_types_are_not_textual",
-      "community": 2,
+      "community": 75,
       "norm_label": "binary_content_types_are_not_textual()"
     },
     {
@@ -18921,7 +18966,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L706",
       "id": "step_http_base64_encode_round_trips_binary",
-      "community": 2,
+      "community": 75,
       "norm_label": "base64_encode_round_trips_binary()"
     },
     {
@@ -18930,7 +18975,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L722",
       "id": "step_http_error_chain_flattens_sources",
-      "community": 2,
+      "community": 75,
       "norm_label": "error_chain_flattens_sources()"
     },
     {
@@ -18939,7 +18984,7 @@
       "source_file": "crates/perfscale-core/src/step/http.rs",
       "source_location": "L762",
       "id": "step_http_transport_error_reports_failed_sample_and_error_chain",
-      "community": 2,
+      "community": 75,
       "norm_label": "transport_error_reports_failed_sample_and_error_chain()"
     },
     {
@@ -19848,7 +19893,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L54",
       "id": "step_mod_testdef",
-      "community": 37,
+      "community": 168,
       "norm_label": "testdef"
     },
     {
@@ -19857,7 +19902,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L60",
       "id": "crates_perfscale_core_src_step_mod_rs_option",
-      "community": 37,
+      "community": 168,
       "norm_label": "option"
     },
     {
@@ -19866,7 +19911,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L60",
       "id": "crates_perfscale_core_src_step_mod_rs_importspec",
-      "community": 37,
+      "community": 168,
       "norm_label": "importspec"
     },
     {
@@ -19875,7 +19920,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L66",
       "id": "crates_perfscale_core_src_step_mod_rs_vec",
-      "community": 37,
+      "community": 168,
       "norm_label": "vec"
     },
     {
@@ -19884,7 +19929,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L66",
       "id": "crates_perfscale_core_src_step_mod_rs_libraryref",
-      "community": 37,
+      "community": 168,
       "norm_label": "libraryref"
     },
     {
@@ -19893,7 +19938,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L68",
       "id": "crates_perfscale_core_src_step_mod_rs_step",
-      "community": 37,
+      "community": 168,
       "norm_label": "step"
     },
     {
@@ -19902,7 +19947,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L77",
       "id": "step_mod_step",
-      "community": 37,
+      "community": 168,
       "norm_label": "step"
     },
     {
@@ -19920,7 +19965,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L87",
       "id": "crates_perfscale_core_src_step_mod_rs_value",
-      "community": 37,
+      "community": 168,
       "norm_label": "value"
     },
     {
@@ -19929,7 +19974,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L114",
       "id": "step_mod_runconfig",
-      "community": 37,
+      "community": 168,
       "norm_label": "runconfig"
     },
     {
@@ -19947,7 +19992,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L161",
       "id": "crates_perfscale_core_src_step_mod_rs_box",
-      "community": 37,
+      "community": 168,
       "norm_label": "box"
     },
     {
@@ -19956,7 +20001,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L161",
       "id": "arrivalconfig",
-      "community": 33,
+      "community": 181,
       "norm_label": "arrivalconfig"
     },
     {
@@ -19965,7 +20010,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L169",
       "id": "gpuconfig",
-      "community": 37,
+      "community": 168,
       "norm_label": "gpuconfig"
     },
     {
@@ -19974,7 +20019,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L185",
       "id": "crates_perfscale_core_src_step_mod_rs_reportrunconfig",
-      "community": 37,
+      "community": 168,
       "norm_label": "reportrunconfig"
     },
     {
@@ -19983,7 +20028,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L194",
       "id": "crates_perfscale_core_src_step_mod_rs_pathbuf",
-      "community": 37,
+      "community": 168,
       "norm_label": "pathbuf"
     },
     {
@@ -20001,7 +20046,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L214",
       "id": "step_mod_arrivalconfig",
-      "community": 37,
+      "community": 168,
       "norm_label": "arrivalconfig"
     },
     {
@@ -20010,7 +20055,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L229",
       "id": "ratestage",
-      "community": 37,
+      "community": 168,
       "norm_label": "ratestage"
     },
     {
@@ -20046,7 +20091,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L251",
       "id": "crates_perfscale_core_src_step_mod_rs_default",
-      "community": 37,
+      "community": 168,
       "norm_label": "default"
     },
     {
@@ -20073,7 +20118,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L271",
       "id": "step_mod_runconfig_duration_secs",
-      "community": 37,
+      "community": 168,
       "norm_label": ".duration_secs()"
     },
     {
@@ -20091,7 +20136,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L309",
       "id": "step_mod_parse_duration_secs_strict",
-      "community": 37,
+      "community": 73,
       "norm_label": "parse_duration_secs_strict()"
     },
     {
@@ -20100,7 +20145,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L309",
       "id": "crates_perfscale_core_src_step_mod_rs_result",
-      "community": 37,
+      "community": 73,
       "norm_label": "result"
     },
     {
@@ -20109,7 +20154,7 @@
       "source_file": "crates/perfscale-core/src/step/mod.rs",
       "source_location": "L350",
       "id": "step_mod_preset_config",
-      "community": 37,
+      "community": 168,
       "norm_label": "preset_config()"
     },
     {
@@ -22278,7 +22323,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L124",
       "id": "crates_perfscale_core_src_step_runner_rs_thresholdssummary",
-      "community": 118,
+      "community": 182,
       "norm_label": "thresholdssummary"
     },
     {
@@ -22332,7 +22377,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L163",
       "id": "crates_perfscale_core_src_step_runner_rs_map",
-      "community": 118,
+      "community": 182,
       "norm_label": "map"
     },
     {
@@ -22341,7 +22386,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L163",
       "id": "crates_perfscale_core_src_step_runner_rs_value",
-      "community": 125,
+      "community": 101,
       "norm_label": "value"
     },
     {
@@ -22359,7 +22404,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L201",
       "id": "step_runner_metrics_record_threshold_result",
-      "community": 118,
+      "community": 182,
       "norm_label": ".record_threshold_result()"
     },
     {
@@ -22368,7 +22413,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L207",
       "id": "step_runner_metrics_thresholds_summary",
-      "community": 118,
+      "community": 182,
       "norm_label": ".thresholds_summary()"
     },
     {
@@ -22377,7 +22422,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L207",
       "id": "crates_perfscale_core_src_step_runner_rs_option",
-      "community": 118,
+      "community": 101,
       "norm_label": "option"
     },
     {
@@ -22449,7 +22494,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L402",
       "id": "step_runner_nativerunoutcome",
-      "community": 118,
+      "community": 182,
       "norm_label": "nativerunoutcome"
     },
     {
@@ -22458,7 +22503,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L415",
       "id": "step_runner_nativerunoutcome_thresholds_failed",
-      "community": 118,
+      "community": 182,
       "norm_label": ".thresholds_failed()"
     },
     {
@@ -22467,7 +22512,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L421",
       "id": "step_runner_nativerunoutcome_failed",
-      "community": 118,
+      "community": 182,
       "norm_label": ".failed()"
     },
     {
@@ -22485,7 +22530,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L439",
       "id": "crates_perfscale_core_src_step_runner_rs_step",
-      "community": 125,
+      "community": 101,
       "norm_label": "step"
     },
     {
@@ -22539,7 +22584,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L497",
       "id": "crates_perfscale_core_src_step_runner_rs_arc",
-      "community": 101,
+      "community": 0,
       "norm_label": "arc"
     },
     {
@@ -22548,7 +22593,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L574",
       "id": "step_runner_run_native",
-      "community": 118,
+      "community": 101,
       "norm_label": "run_native()"
     },
     {
@@ -22557,7 +22602,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L574",
       "id": "crates_perfscale_core_src_step_runner_rs_libraryref",
-      "community": 118,
+      "community": 101,
       "norm_label": "libraryref"
     },
     {
@@ -22566,7 +22611,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L574",
       "id": "metricsnapshot",
-      "community": 0,
+      "community": 118,
       "norm_label": "metricsnapshot"
     },
     {
@@ -22575,7 +22620,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L1044",
       "id": "step_runner_spawn_metrics_stream",
-      "community": 101,
+      "community": 118,
       "norm_label": "spawn_metrics_stream()"
     },
     {
@@ -22593,7 +22638,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L1044",
       "id": "crates_perfscale_core_src_step_runner_rs_duration",
-      "community": 101,
+      "community": 118,
       "norm_label": "duration"
     },
     {
@@ -22602,7 +22647,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L1044",
       "id": "crates_perfscale_core_src_step_runner_rs_gpusample",
-      "community": 101,
+      "community": 118,
       "norm_label": "gpusample"
     },
     {
@@ -22629,7 +22674,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L1100",
       "id": "crates_perfscale_core_src_step_runner_rs_atomicu64",
-      "community": 101,
+      "community": 0,
       "norm_label": "atomicu64"
     },
     {
@@ -22710,7 +22755,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L1163",
       "id": "step_runner_vusampler",
-      "community": 101,
+      "community": 0,
       "norm_label": "vusampler"
     },
     {
@@ -22728,7 +22773,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L1180",
       "id": "step_runner_vusampler_sample",
-      "community": 149,
+      "community": 101,
       "norm_label": ".sample()"
     },
     {
@@ -22845,7 +22890,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L1675",
       "id": "step_runner_run_after",
-      "community": 125,
+      "community": 101,
       "norm_label": "run_after()"
     },
     {
@@ -22863,7 +22908,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L1836",
       "id": "step_runner_step_params",
-      "community": 125,
+      "community": 101,
       "norm_label": "step_params()"
     },
     {
@@ -22872,7 +22917,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L1836",
       "id": "crates_perfscale_core_src_step_runner_rs_cow",
-      "community": 125,
+      "community": 101,
       "norm_label": "cow"
     },
     {
@@ -22890,7 +22935,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L1879",
       "id": "step_runner_sleep_step",
-      "community": 125,
+      "community": 101,
       "norm_label": "sleep_step()"
     },
     {
@@ -22962,7 +23007,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L2057",
       "id": "step_runner_metrics_stats_line_without_requests_omits_percentiles",
-      "community": 0,
+      "community": 118,
       "norm_label": "metrics_stats_line_without_requests_omits_percentiles()"
     },
     {
@@ -23088,7 +23133,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L2316",
       "id": "crates_perfscale_core_src_step_runner_rs_gpusamplefuture",
-      "community": 149,
+      "community": 101,
       "norm_label": "gpusamplefuture"
     },
     {
@@ -23268,7 +23313,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L2859",
       "id": "step_runner_log_step",
-      "community": 125,
+      "community": 101,
       "norm_label": "log_step()"
     },
     {
@@ -23295,7 +23340,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L2914",
       "id": "step_runner_run_native_with_shared",
-      "community": 118,
+      "community": 182,
       "norm_label": "run_native_with_shared()"
     },
     {
@@ -23304,7 +23349,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L2943",
       "id": "step_runner_shared_variable_undeclared_name_fails_before_start",
-      "community": 0,
+      "community": 182,
       "norm_label": "shared_variable_undeclared_name_fails_before_start()"
     },
     {
@@ -23313,7 +23358,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L2977",
       "id": "step_runner_shared_variable_op_type_mismatch_fails_before_start",
-      "community": 0,
+      "community": 182,
       "norm_label": "shared_variable_op_type_mismatch_fails_before_start()"
     },
     {
@@ -23322,7 +23367,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L3007",
       "id": "step_runner_shared_variable_run_increments_a_seeded_counter",
-      "community": 0,
+      "community": 182,
       "norm_label": "shared_variable_run_increments_a_seeded_counter()"
     },
     {
@@ -23475,7 +23520,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L3579",
       "id": "step_runner_thresholds_step",
-      "community": 125,
+      "community": 101,
       "norm_label": "thresholds_step()"
     },
     {
@@ -23673,7 +23718,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L43",
       "id": "step_schedule_runconfig",
-      "community": 33,
+      "community": 181,
       "norm_label": "runconfig"
     },
     {
@@ -23682,7 +23727,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L51",
       "id": "step_schedule_runconfig_resolve_schedule",
-      "community": 33,
+      "community": 181,
       "norm_label": ".resolve_schedule()"
     },
     {
@@ -23691,7 +23736,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L51",
       "id": "crates_perfscale_core_src_step_schedule_rs_result",
-      "community": 33,
+      "community": 181,
       "norm_label": "result"
     },
     {
@@ -23700,7 +23745,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L51",
       "id": "crates_perfscale_core_src_step_schedule_rs_string",
-      "community": 33,
+      "community": 181,
       "norm_label": "string"
     },
     {
@@ -23745,7 +23790,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L191",
       "id": "step_schedule_dispatchcursor",
-      "community": 73,
+      "community": 33,
       "norm_label": "dispatchcursor"
     },
     {
@@ -23772,7 +23817,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L205",
       "id": "step_schedule_dispatchcursor_next",
-      "community": 73,
+      "community": 33,
       "norm_label": ".next()"
     },
     {
@@ -23781,7 +23826,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L205",
       "id": "crates_perfscale_core_src_step_schedule_rs_option",
-      "community": 73,
+      "community": 33,
       "norm_label": "option"
     },
     {
@@ -23799,7 +23844,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L261",
       "id": "step_schedule_arrival_config",
-      "community": 33,
+      "community": 181,
       "norm_label": "arrival_config()"
     },
     {
@@ -23826,7 +23871,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L328",
       "id": "step_schedule_stages_and_arrival_together_is_an_error",
-      "community": 0,
+      "community": 33,
       "norm_label": "stages_and_arrival_together_is_an_error()"
     },
     {
@@ -23835,7 +23880,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L343",
       "id": "step_schedule_stage_with_zero_or_garbage_duration_is_an_error",
-      "community": 0,
+      "community": 33,
       "norm_label": "stage_with_zero_or_garbage_duration_is_an_error()"
     },
     {
@@ -23844,7 +23889,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L352",
       "id": "step_schedule_arrival_requires_max_vus_and_stages",
-      "community": 33,
+      "community": 181,
       "norm_label": "arrival_requires_max_vus_and_stages()"
     },
     {
@@ -23853,7 +23898,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L363",
       "id": "step_schedule_arrival_rejects_negative_and_nan_rates",
-      "community": 33,
+      "community": 181,
       "norm_label": "arrival_rejects_negative_and_nan_rates()"
     },
     {
@@ -23862,7 +23907,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L373",
       "id": "step_schedule_arrival_resolves_with_defaults",
-      "community": 33,
+      "community": 181,
       "norm_label": "arrival_resolves_with_defaults()"
     },
     {
@@ -23889,7 +23934,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L424",
       "id": "step_schedule_rate_at_interpolates_arrival_segments",
-      "community": 33,
+      "community": 181,
       "norm_label": "rate_at_interpolates_arrival_segments()"
     },
     {
@@ -23898,7 +23943,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L436",
       "id": "step_schedule_fractional_rates_interpolate",
-      "community": 33,
+      "community": 181,
       "norm_label": "fractional_rates_interpolate()"
     },
     {
@@ -23979,7 +24024,7 @@
       "source_file": "crates/perfscale-core/src/step/schedule.rs",
       "source_location": "L563",
       "id": "step_schedule_total_secs_sums_stage_durations",
-      "community": 33,
+      "community": 181,
       "norm_label": "total_secs_sums_stage_durations()"
     },
     {
@@ -27268,10 +27313,19 @@
       "norm_label": "pathbuf"
     },
     {
+      "label": "fsreader_component()",
+      "file_type": "code",
+      "source_file": "crates/perfscale-core/tests/end_to_end.rs",
+      "source_location": "L611",
+      "id": "tests_end_to_end_fsreader_component",
+      "community": 54,
+      "norm_label": "fsreader_component()"
+    },
+    {
       "label": "yaml_run_expands_wasm_library_tokens()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/tests/end_to_end.rs",
-      "source_location": "L613",
+      "source_location": "L663",
       "id": "tests_end_to_end_yaml_run_expands_wasm_library_tokens",
       "community": 54,
       "norm_label": "yaml_run_expands_wasm_library_tokens()"
@@ -27280,7 +27334,7 @@
       "label": "yaml_run_passes_frozen_settings_to_wasm_library()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/tests/end_to_end.rs",
-      "source_location": "L681",
+      "source_location": "L731",
       "id": "tests_end_to_end_yaml_run_passes_frozen_settings_to_wasm_library",
       "community": 54,
       "norm_label": "yaml_run_passes_frozen_settings_to_wasm_library()"
@@ -27289,7 +27343,7 @@
       "label": "library_entry_secret_masks_results_in_the_run_log()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/tests/end_to_end.rs",
-      "source_location": "L756",
+      "source_location": "L806",
       "id": "tests_end_to_end_library_entry_secret_masks_results_in_the_run_log",
       "community": 54,
       "norm_label": "library_entry_secret_masks_results_in_the_run_log()"
@@ -27298,7 +27352,7 @@
       "label": "library_deny_rule_fails_the_step()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/tests/end_to_end.rs",
-      "source_location": "L861",
+      "source_location": "L911",
       "id": "tests_end_to_end_library_deny_rule_fails_the_step",
       "community": 54,
       "norm_label": "library_deny_rule_fails_the_step()"
@@ -27307,10 +27361,19 @@
       "label": "run_with_burn_cache_matches_run_without()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/tests/end_to_end.rs",
-      "source_location": "L940",
+      "source_location": "L990",
       "id": "tests_end_to_end_run_with_burn_cache_matches_run_without",
       "community": 54,
       "norm_label": "run_with_burn_cache_matches_run_without()"
+    },
+    {
+      "label": "fs_capability_library_call_works_in_the_async_runner()",
+      "file_type": "code",
+      "source_file": "crates/perfscale-core/tests/end_to_end.rs",
+      "source_location": "L1108",
+      "id": "tests_end_to_end_fs_capability_library_call_works_in_the_async_runner",
+      "community": 54,
+      "norm_label": "fs_capability_library_call_works_in_the_async_runner()"
     },
     {
       "label": "lib.rs",
@@ -31814,7 +31877,7 @@
       "source_file": "scripts/bench_compare.py",
       "source_location": "L1",
       "id": "scripts_bench_compare",
-      "community": 176,
+      "community": 142,
       "norm_label": "bench_compare.py"
     },
     {
@@ -31823,7 +31886,7 @@
       "source_file": "scripts/bench_compare.py",
       "source_location": "L32",
       "id": "scripts_bench_compare_rows_by_label",
-      "community": 176,
+      "community": 142,
       "norm_label": "rows_by_label()"
     },
     {
@@ -31832,7 +31895,7 @@
       "source_file": "scripts/bench_compare.py",
       "source_location": "L39",
       "id": "scripts_bench_compare_collect",
-      "community": 176,
+      "community": 142,
       "norm_label": "collect()"
     },
     {
@@ -31841,7 +31904,7 @@
       "source_file": "scripts/bench_compare.py",
       "source_location": "L58",
       "id": "scripts_bench_compare_main",
-      "community": 176,
+      "community": 142,
       "norm_label": "main()"
     },
     {
@@ -31850,7 +31913,7 @@
       "source_file": "scripts/bench_compare.py",
       "source_location": "L40",
       "id": "scripts_bench_compare_rationale_40",
-      "community": 176,
+      "community": 142,
       "norm_label": "yield (name, old value, new value, higher_is_better)."
     },
     {
@@ -32543,7 +32606,7 @@
       "source_file": "README.md",
       "source_location": "L1",
       "id": "readme",
-      "community": 30,
+      "community": 70,
       "norm_label": "readme.md"
     },
     {
@@ -32673,12 +32736,21 @@
       "norm_label": "libraries: burn \u2014 aot precompilation and standalone binaries"
     },
     {
+      "label": "Fix: WASM libraries with the `fs` capability panicked during runs",
+      "file_type": "document",
+      "source_file": "UPCOMING.md",
+      "source_location": "L49",
+      "id": "upcoming_fix_wasm_libraries_with_the_fs_capability_panicked_during_runs",
+      "community": 58,
+      "norm_label": "fix: wasm libraries with the `fs` capability panicked during runs"
+    },
+    {
       "label": "README.md",
       "file_type": "document",
       "source_file": "bench/gpu/README.md",
       "source_location": "L1",
       "id": "gpu_readme",
-      "community": 26,
+      "community": 67,
       "norm_label": "readme.md"
     },
     {
@@ -32687,7 +32759,7 @@
       "source_file": "bench/gpu/README.md",
       "source_location": "L1",
       "id": "gpu_readme_gpu_benchmark_suite",
-      "community": 26,
+      "community": 67,
       "norm_label": "gpu benchmark suite"
     },
     {
@@ -32696,7 +32768,7 @@
       "source_file": "bench/gpu/README.md",
       "source_location": "L13",
       "id": "gpu_readme_requirements",
-      "community": 26,
+      "community": 67,
       "norm_label": "requirements"
     },
     {
@@ -32705,7 +32777,7 @@
       "source_file": "bench/gpu/README.md",
       "source_location": "L25",
       "id": "gpu_readme_model_server_ollama",
-      "community": 26,
+      "community": 67,
       "norm_label": "model server: ollama"
     },
     {
@@ -32714,7 +32786,7 @@
       "source_file": "bench/gpu/README.md",
       "source_location": "L34",
       "id": "gpu_readme_model_server_vllm",
-      "community": 26,
+      "community": 67,
       "norm_label": "model server: vllm"
     },
     {
@@ -32723,7 +32795,7 @@
       "source_file": "bench/gpu/README.md",
       "source_location": "L50",
       "id": "gpu_readme_running",
-      "community": 26,
+      "community": 67,
       "norm_label": "running"
     },
     {
@@ -32732,7 +32804,7 @@
       "source_file": "bench/gpu/README.md",
       "source_location": "L67",
       "id": "gpu_readme_scenarios",
-      "community": 26,
+      "community": 67,
       "norm_label": "scenarios"
     },
     {
@@ -32741,7 +32813,7 @@
       "source_file": "bench/gpu/README.md",
       "source_location": "L87",
       "id": "gpu_readme_quality_gates",
-      "community": 26,
+      "community": 67,
       "norm_label": "quality gates"
     },
     {
@@ -32750,7 +32822,7 @@
       "source_file": "bench/gpu/README.md",
       "source_location": "L108",
       "id": "gpu_readme_reading_the_results",
-      "community": 26,
+      "community": 67,
       "norm_label": "reading the results"
     },
     {
@@ -32759,7 +32831,7 @@
       "source_file": "bench/gpu/README.md",
       "source_location": "L142",
       "id": "gpu_readme_tuning",
-      "community": 26,
+      "community": 67,
       "norm_label": "tuning"
     },
     {
@@ -32813,7 +32885,7 @@
       "source_file": "docs/README.md",
       "source_location": "L1",
       "id": "docs_readme",
-      "community": 30,
+      "community": 70,
       "norm_label": "readme.md"
     },
     {
@@ -32822,7 +32894,7 @@
       "source_file": "docs/README.md",
       "source_location": "L1",
       "id": "docs_readme_perfscale_documentation",
-      "community": 67,
+      "community": 70,
       "norm_label": "perfscale documentation"
     },
     {
@@ -32831,7 +32903,7 @@
       "source_file": "docs/README.md",
       "source_location": "L7",
       "id": "docs_readme_start_here",
-      "community": 67,
+      "community": 70,
       "norm_label": "start here"
     },
     {
@@ -32840,7 +32912,7 @@
       "source_file": "docs/README.md",
       "source_location": "L12",
       "id": "docs_readme_cli_perfscale_binary",
-      "community": 67,
+      "community": 70,
       "norm_label": "cli (`perfscale` binary)"
     },
     {
@@ -32849,7 +32921,7 @@
       "source_file": "docs/README.md",
       "source_location": "L19",
       "id": "docs_readme_core_perfscale_core_library",
-      "community": 67,
+      "community": 70,
       "norm_label": "core (`perfscale-core` library)"
     },
     {
@@ -32858,7 +32930,7 @@
       "source_file": "docs/README.md",
       "source_location": "L54",
       "id": "docs_readme_for_contributors",
-      "community": 67,
+      "community": 70,
       "norm_label": "for contributors"
     },
     {
@@ -32930,7 +33002,7 @@
       "source_file": "docs/benchmarks.md",
       "source_location": "L137",
       "id": "docs_benchmarks_regression_tracking",
-      "community": 142,
+      "community": 70,
       "norm_label": "regression tracking"
     },
     {
@@ -33002,7 +33074,7 @@
       "source_file": "docs/cli/commands.md",
       "source_location": "L1",
       "id": "cli_commands",
-      "community": 30,
+      "community": 70,
       "norm_label": "commands.md"
     },
     {
@@ -33155,7 +33227,7 @@
       "source_file": "docs/cli/examples.md",
       "source_location": "L1",
       "id": "cli_examples",
-      "community": 30,
+      "community": 70,
       "norm_label": "examples.md"
     },
     {
@@ -33272,7 +33344,7 @@
       "source_file": "docs/core/actions.md",
       "source_location": "L17",
       "id": "core_actions_std_http_v1",
-      "community": 48,
+      "community": 18,
       "norm_label": "`std/http@v1`"
     },
     {
@@ -33281,7 +33353,7 @@
       "source_file": "docs/core/actions.md",
       "source_location": "L57",
       "id": "core_actions_multipart_uploads",
-      "community": 48,
+      "community": 18,
       "norm_label": "multipart uploads"
     },
     {
@@ -33344,7 +33416,7 @@
       "source_file": "docs/core/actions.md",
       "source_location": "L415",
       "id": "core_actions_std_llm_v1",
-      "community": 26,
+      "community": 67,
       "norm_label": "`std/llm@v1`"
     },
     {
@@ -35144,7 +35216,7 @@
       "source_file": "docs/yaml-reference.md",
       "source_location": "L198",
       "id": "docs_yaml_reference_load_profiles",
-      "community": 26,
+      "community": 67,
       "norm_label": "load profiles"
     },
     {
@@ -36277,7 +36349,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L134",
-      "community": 75,
+      "community": 24,
       "norm_label": "has_import_key()",
       "id": "commands_lint_has_import_key"
     },
@@ -36349,7 +36421,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L939",
-      "community": 101,
+      "community": 0,
       "norm_label": "atomicu64",
       "id": "atomicu64"
     },
@@ -36385,7 +36457,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-cli/src/commands/serve.rs",
       "source_location": "L17",
-      "community": 4,
+      "community": 12,
       "norm_label": "router",
       "id": "router"
     },
@@ -36439,7 +36511,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-cli/src/commands/lint.rs",
       "source_location": "L82",
-      "community": 75,
+      "community": 24,
       "norm_label": "effective_kind()",
       "id": "commands_lint_effective_kind"
     },
@@ -36610,7 +36682,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L68",
-      "community": 5,
+      "community": 162,
       "norm_label": "display",
       "id": "display"
     },
@@ -36637,7 +36709,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L936",
-      "community": 125,
+      "community": 101,
       "norm_label": "cow",
       "id": "cow"
     },
@@ -36655,7 +36727,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L25",
-      "community": 5,
+      "community": 162,
       "norm_label": "into",
       "id": "into"
     },
@@ -36817,7 +36889,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-cli/src/error.rs",
       "source_location": "L69",
-      "community": 32,
+      "community": 36,
       "norm_label": "formatter",
       "id": "formatter"
     },
@@ -36853,7 +36925,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/context.rs",
       "source_location": "L13",
-      "community": 21,
+      "community": 16,
       "norm_label": "hashmap",
       "id": "hashmap"
     },
@@ -37040,7 +37112,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 48,
+      "community": 18,
       "norm_label": "std/http@v1 action",
       "id": "action_std_http"
     },
@@ -37053,7 +37125,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 48,
+      "community": 18,
       "norm_label": "std/check@v1 action",
       "id": "action_std_check"
     },
@@ -37066,7 +37138,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 48,
+      "community": 18,
       "norm_label": "std/sleep@v1 action",
       "id": "action_std_sleep"
     },
@@ -37079,7 +37151,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 48,
+      "community": 18,
       "norm_label": "std/log@v1 action",
       "id": "action_std_log"
     },
@@ -37092,7 +37164,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 48,
+      "community": 18,
       "norm_label": "variable interpolation ${{ }}",
       "id": "interpolation"
     },
@@ -37222,7 +37294,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 48,
+      "community": 18,
       "norm_label": "hello.test.yaml example",
       "id": "examples_hello_test_yaml"
     },
@@ -37443,7 +37515,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 9,
+      "community": 24,
       "norm_label": "cli root parser",
       "id": "cli_cli"
     },
@@ -37456,7 +37528,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 163,
+      "community": 31,
       "norm_label": "runargs",
       "id": "cli_runargs"
     },
@@ -37469,7 +37541,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 183,
       "norm_label": "serveargs",
       "id": "cli_serveargs"
     },
@@ -37482,7 +37554,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 163,
+      "community": 24,
       "norm_label": "lintargs",
       "id": "cli_lintargs"
     },
@@ -37495,7 +37567,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 9,
+      "community": 24,
       "norm_label": "main entrypoint",
       "id": "main_main"
     },
@@ -37508,7 +37580,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 183,
       "norm_label": "run command handler",
       "id": "run_run"
     },
@@ -37547,7 +37619,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 163,
       "norm_label": "load_config",
       "id": "run_loadconfig"
     },
@@ -37560,7 +37632,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 163,
       "norm_label": "load_test_def",
       "id": "run_loadtestdef"
     },
@@ -37573,7 +37645,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 183,
       "norm_label": "is_summary_line",
       "id": "run_issummaryline"
     },
@@ -37586,7 +37658,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 183,
       "norm_label": "report_summary",
       "id": "run_reportsummary"
     },
@@ -37599,7 +37671,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 163,
       "norm_label": "print_line",
       "id": "run_printline"
     },
@@ -37612,7 +37684,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 183,
       "norm_label": "serve command handler",
       "id": "serve_serve"
     },
@@ -37625,7 +37697,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 183,
       "norm_label": "serve router app",
       "id": "serve_app"
     },
@@ -37638,7 +37710,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 183,
       "norm_label": "ingest metrics handler",
       "id": "serve_ingest"
     },
@@ -37664,7 +37736,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 75,
+      "community": 24,
       "norm_label": "lint command handler",
       "id": "lint_run"
     },
@@ -37677,7 +37749,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 75,
+      "community": 24,
       "norm_label": "lint_file",
       "id": "lint_lintfile"
     },
@@ -37690,7 +37762,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 75,
+      "community": 24,
       "norm_label": "print_issues",
       "id": "lint_printissues"
     },
@@ -37755,7 +37827,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 162,
       "norm_label": "clierror",
       "id": "error_clierror"
     },
@@ -37768,7 +37840,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 183,
       "norm_label": "clierror::from_engine",
       "id": "error_fromengine"
     },
@@ -37911,7 +37983,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 183,
       "norm_label": "run --report to serve reporting loop",
       "id": "cli_run_serve_report_loop"
     },
@@ -37937,7 +38009,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 183,
       "norm_label": "serveproc test harness",
       "id": "e2e_workflows_serveproc"
     },
@@ -37976,7 +38048,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 37,
+      "community": 168,
       "norm_label": "locustopts::from_run_config",
       "id": "runner_locust_from_run_config"
     },
@@ -38054,7 +38126,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 75,
+      "community": 24,
       "norm_label": "detect_kind",
       "id": "lint_detect_kind"
     },
@@ -38223,7 +38295,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 162,
       "norm_label": "self-descriptive cli error contract (what/cause/hint/docs)",
       "id": "src_error_self_descriptive_errors"
     },
@@ -38236,7 +38308,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 163,
+      "community": 24,
       "norm_label": "network imports are opt-in (document must not grant itself network access)",
       "id": "src_cli_network_imports_opt_in"
     },
@@ -38249,7 +38321,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 163,
       "norm_label": "exit-code semantics: 0 = test feedback, 1 = engine crash before any metrics",
       "id": "commands_run_exit_code_semantics"
     },
@@ -38314,7 +38386,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 54,
+      "community": 73,
       "norm_label": "runconfig::resolve_schedule",
       "id": "step_schedule_resolve_schedule"
     },
@@ -38368,7 +38440,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Runs on a fixed CI runner class so numbers are comparable between runs \u2014 local machines vary too much. Daily drift check scheduled off-:00 to dodge the top-of-hour scheduler herd.",
-      "community": 176,
+      "community": 142,
       "norm_label": "bench workflow (scheduled ci benchmark + regression tracking)",
       "id": "workflows_bench"
     },
@@ -38608,7 +38680,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 48,
+      "community": 18,
       "norm_label": "std/tcp@v1 action",
       "id": "core_actions_std_tcp"
     },
@@ -38806,7 +38878,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Import resolution happens before the allow_file_actions/allow_process_actions gates, so a network import in an untrusted config is an SSRF primitive and supply-chain vector; permission must come from the caller, never the document \u2014 there is deliberately no YAML field that enables it.",
-      "community": 51,
+      "community": 72,
       "norm_label": "--allow-remote-import fail-closed gate",
       "id": "core_imports_remote_import_gate"
     },
@@ -38820,7 +38892,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Steps whose duration says nothing about target latency (ws-recv, ws-ping, streams, db, process) deliberately do not feed http_req_duration \u2014 they would poison the shared percentiles.",
-      "community": 48,
+      "community": 18,
       "norm_label": "http_req_* request metrics",
       "id": "core_metrics_http_req_family"
     },
@@ -38874,7 +38946,7 @@
       "author": null,
       "contributor": null,
       "rationale": "The histogram is never reset, so cumulative percentiles converge instead of jittering; the lines exist for streaming consumers such as the controlplane.",
-      "community": 67,
+      "community": 70,
       "norm_label": "live [stats] lines",
       "id": "core_metrics_stats_lines"
     },
@@ -39673,7 +39745,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 48,
+      "community": 18,
       "norm_label": "draft-ietf-httpbis-safe-method-w-body (query method)",
       "id": "core_actions_safe_method_draft"
     },
@@ -39763,7 +39835,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L14",
-      "community": 5,
+      "community": 163,
       "norm_label": "clierror",
       "id": "clierror"
     },
@@ -39772,7 +39844,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L139",
-      "community": 5,
+      "community": 163,
       "norm_label": "summaryformat",
       "id": "summaryformat"
     },
@@ -39781,7 +39853,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-cli/src/commands/run.rs",
       "source_location": "L215",
-      "community": 5,
+      "community": 163,
       "norm_label": "importoptions",
       "id": "importoptions"
     },
@@ -39843,7 +39915,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 5,
+      "community": 183,
       "norm_label": "run() \u2014 cli run command",
       "id": "commands_run_run_command"
     },
@@ -39882,7 +39954,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 118,
+      "community": 101,
       "norm_label": "perfscale-core crate root",
       "id": "src_lib_perfscale_core"
     },
@@ -39934,7 +40006,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 37,
+      "community": 168,
       "norm_label": "config.schema.json \u2014 generated config json schema",
       "id": "schema_config_schema_config_schema"
     },
@@ -39947,7 +40019,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 26,
+      "community": 67,
       "norm_label": "upcoming: gpu benchmark suite (bench/gpu/)",
       "id": "upcoming_gpu_benchmark_suite"
     },
@@ -40001,7 +40073,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Closed model: each plateau is a measurement point \u2014 periodic [stats] lines share a timeline with the GPU timeseries, showing how tok/s and TTFT degrade as concurrency grows.",
-      "community": 26,
+      "community": 67,
       "norm_label": "stepped ramping-vu profile (closed model)",
       "id": "gpu_readme_stages_profile"
     },
@@ -40015,7 +40087,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Open model: new requests arrive on schedule even when the server is behind; the rate where TTFT climbs and dropped_iterations first grows past 0 is the practical capacity for this model/prompt.",
-      "community": 26,
+      "community": 67,
       "norm_label": "arrival-rate profile (open model)",
       "id": "gpu_readme_arrival_profile"
     },
@@ -40028,7 +40100,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 26,
+      "community": 67,
       "norm_label": "ollama model server",
       "id": "gpu_readme_ollama_server"
     },
@@ -40041,7 +40113,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 26,
+      "community": 67,
       "norm_label": "vllm model server",
       "id": "gpu_readme_vllm_server"
     },
@@ -40054,7 +40126,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 67,
+      "community": 70,
       "norm_label": "gpu bench results layout and summary table",
       "id": "gpu_readme_results_summary"
     },
@@ -40068,7 +40140,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Open model: completion rate steps up every minute while the engine scales a worker pool; a permit arriving while all max_vus workers are busy is dropped and counted in dropped_iterations \u2014 that rate is the server's practical capacity.",
-      "community": 26,
+      "community": 67,
       "norm_label": "arrival.yaml arrival-rate profile config",
       "id": "gpu_arrival_arrival_rate_profile"
     },
@@ -40081,7 +40153,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 26,
+      "community": 67,
       "norm_label": "ollama.yaml chat completion test definition",
       "id": "gpu_ollama_test_definition"
     },
@@ -40095,7 +40167,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Closed model: each plateau raises concurrency so the run shows where tokens/sec flattens and TTFT starts climbing as the model server saturates the GPU; [stats] lines and the gpu timeseries share a timeline so each hold level maps to its own measurement window.",
-      "community": 26,
+      "community": 67,
       "norm_label": "stages.yaml stepped ramping-vu profile config",
       "id": "gpu_stages_ramping_vu_profile"
     },
@@ -40108,7 +40180,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 26,
+      "community": 67,
       "norm_label": "vllm.yaml chat completion test definition",
       "id": "gpu_vllm_test_definition"
     },
@@ -40121,7 +40193,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 67,
+      "community": 70,
       "norm_label": "perfscale documentation index",
       "id": "docs_readme_documentation_index"
     },
@@ -40135,7 +40207,7 @@
       "author": null,
       "contributor": null,
       "rationale": "Every scenario hits the same perfscale serve instance on loopback so any gap between a perfscale row and its native counterpart is perfscale's wrapping overhead, not the underlying tool; fixed-duration wall time is misleading, so throughput numbers are where engines actually differ.",
-      "community": 142,
+      "community": 70,
       "norm_label": "scripts/bench.sh engine comparison benchmark",
       "id": "docs_benchmarks_bench_sh"
     },
@@ -40148,7 +40220,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 142,
+      "community": 70,
       "norm_label": "bench ci workflow (canonical runs)",
       "id": "docs_benchmarks_ci_workflow"
     },
@@ -40269,7 +40341,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 67,
+      "community": 70,
       "norm_label": "--quiet mode",
       "id": "core_metrics_quiet_mode"
     },
@@ -40341,7 +40413,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L122",
-      "community": 14,
+      "community": 182,
       "norm_label": "thresholdssummary",
       "id": "thresholdssummary"
     },
@@ -40359,7 +40431,7 @@
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L437",
-      "community": 125,
+      "community": 101,
       "norm_label": "step",
       "id": "step"
     },
@@ -40399,7 +40471,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 4,
+      "community": 118,
       "norm_label": "metrics::add_counters()",
       "id": "step_runner_add_counters"
     },
@@ -71847,6 +71919,16 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L704",
+      "weight": 1.0,
+      "source": "library_wasm",
+      "target": "library_wasm_call_guest",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L673",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -72077,6 +72159,16 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L738",
+      "weight": 1.0,
+      "source": "library_wasm",
+      "target": "library_wasm_off_runtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L787",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -72244,6 +72336,17 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L704",
+      "weight": 1.0,
+      "context": "return_type",
+      "source": "library_wasm_call_guest",
+      "target": "crates_perfscale_core_src_library_wasm_rs_result",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L673",
       "weight": 1.0,
       "context": "return_type",
@@ -72382,6 +72485,17 @@
       "confidence_score": 1.0,
       "source": "library_wasm_build_linker",
       "target": "crates_perfscale_core_src_library_wasm_rs_string"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L704",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "library_wasm_call_guest",
+      "target": "crates_perfscale_core_src_library_wasm_rs_string",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -72613,6 +72727,17 @@
       "confidence_score": 1.0,
       "source": "library_wasm_build_linker",
       "target": "library_wasm_hoststate"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L704",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "library_wasm_call_guest",
+      "target": "library_wasm_hoststate",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -72993,6 +73118,17 @@
       "confidence_score": 1.0,
       "source": "library_wasm_fixtures",
       "target": "crates_perfscale_core_src_library_wasm_rs_option"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L642",
+      "weight": 1.0,
+      "context": "field",
+      "source": "library_wasm_wasmlibraryinstance",
+      "target": "crates_perfscale_core_src_library_wasm_rs_option",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -73439,6 +73575,17 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L704",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "source": "library_wasm_call_guest",
+      "target": "store",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L544",
       "weight": 1.0,
       "context": "parameter_type",
@@ -73469,6 +73616,17 @@
       "target": "store"
     },
     {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L475",
+      "weight": 1.0,
+      "source": "library_wasm_wasmlibraryprovider_probe_info",
+      "target": "library_wasm_off_runtime",
+      "confidence_score": 1.0
+    },
+    {
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
@@ -73478,6 +73636,17 @@
       "confidence_score": 1.0,
       "source": "library_wasm_wasmlibraryprovider_probe_info",
       "target": "wasmlibraryinfo"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L704",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "source": "library_wasm_call_guest",
+      "target": "library_wasm_instantiated",
+      "confidence_score": 1.0
     },
     {
       "relation": "method",
@@ -73555,6 +73724,17 @@
       "target": "crates_perfscale_core_src_library_wasm_rs_error"
     },
     {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L716",
+      "weight": 1.0,
+      "source": "library_wasm_call_guest",
+      "target": "library_wasm_instantiated_call_call",
+      "confidence_score": 1.0
+    },
+    {
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
@@ -73575,6 +73755,17 @@
       "confidence_score": 1.0,
       "source": "library_wasm_wasmlibraryinstance_call",
       "target": "library_wasm_instantiated_call_call"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L704",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "source": "library_wasm_call_guest",
+      "target": "crates_perfscale_core_src_library_wasm_rs_callctx",
+      "confidence_score": 1.0
     },
     {
       "relation": "references",
@@ -73735,6 +73926,17 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L625",
+      "weight": 1.0,
+      "source": "library_wasm_wasmlibraryprovider_instantiate",
+      "target": "library_wasm_off_runtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L992",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -73843,6 +74045,17 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L654",
+      "weight": 1.0,
+      "source": "library_wasm_wasmlibraryinstance_call",
+      "target": "library_wasm_call_guest",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
       "source_location": "L993",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -73870,6 +74083,39 @@
       "confidence_score": 1.0,
       "source": "library_wasm_with_config_reaches_init_and_unknown_functions_fail",
       "target": "library_wasm_wasmlibraryinstance_call"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L738",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "source": "library_wasm_off_runtime",
+      "target": "crates_perfscale_core_src_library_wasm_rs_fnonce",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L738",
+      "weight": 1.0,
+      "context": "return_type",
+      "source": "library_wasm_off_runtime",
+      "target": "crates_perfscale_core_src_library_wasm_rs_r",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/src/library/wasm.rs",
+      "source_location": "L738",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "source": "library_wasm_off_runtime",
+      "target": "crates_perfscale_core_src_library_wasm_rs_send",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -133080,6 +133326,26 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "crates/perfscale-core/tests/end_to_end.rs",
+      "source_location": "L1108",
+      "weight": 1.0,
+      "source": "tests_end_to_end",
+      "target": "tests_end_to_end_fs_capability_library_call_works_in_the_async_runner",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/tests/end_to_end.rs",
+      "source_location": "L611",
+      "weight": 1.0,
+      "source": "tests_end_to_end",
+      "target": "tests_end_to_end_fsreader_component",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/tests/end_to_end.rs",
       "source_location": "L563",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -133291,6 +133557,17 @@
       "confidence_score": 1.0,
       "source": "tests_end_to_end_failing_backend_shows_up_in_error_rate_and_check_failures",
       "target": "tests_end_to_end_collect"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/tests/end_to_end.rs",
+      "source_location": "L1170",
+      "weight": 1.0,
+      "source": "tests_end_to_end_fs_capability_library_call_works_in_the_async_runner",
+      "target": "tests_end_to_end_collect",
+      "confidence_score": 1.0
     },
     {
       "relation": "calls",
@@ -133533,6 +133810,39 @@
       "confidence_score": 1.0,
       "source": "tests_end_to_end_yaml_run_passes_frozen_settings_to_wasm_library",
       "target": "tests_end_to_end_hello_component"
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/tests/end_to_end.rs",
+      "source_location": "L611",
+      "weight": 1.0,
+      "context": "return_type",
+      "source": "tests_end_to_end_fsreader_component",
+      "target": "crates_perfscale_core_tests_end_to_end_rs_option",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/tests/end_to_end.rs",
+      "source_location": "L611",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "source": "tests_end_to_end_fsreader_component",
+      "target": "crates_perfscale_core_tests_end_to_end_rs_pathbuf",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "crates/perfscale-core/tests/end_to_end.rs",
+      "source_location": "L1109",
+      "weight": 1.0,
+      "source": "tests_end_to_end_fs_capability_library_call_works_in_the_async_runner",
+      "target": "tests_end_to_end_fsreader_component",
+      "confidence_score": 1.0
     },
     {
       "relation": "contains",
@@ -143418,6 +143728,16 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "UPCOMING.md",
+      "source_location": "L49",
+      "weight": 1.0,
+      "source": "upcoming_upcoming_release",
+      "target": "upcoming_fix_wasm_libraries_with_the_fs_capability_panicked_during_runs",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "UPCOMING.md",
       "source_location": "L31",
       "weight": 1.0,
       "confidence_score": 1.0,
@@ -151676,5 +151996,5 @@
       "source_file": "crates/perfscale-core/src/gpu.rs"
     }
   ],
-  "built_at_commit": "c086976cad867950e53c45f948fdc91ad9ba01f5"
+  "built_at_commit": "236c3b8a0c0c9fb80158d594dac71696c618c39b"
 }

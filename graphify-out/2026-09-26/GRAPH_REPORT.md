@@ -1,11 +1,11 @@
 # Graph Report - perfscale  (2026-09-26)
 
 ## Corpus Check
-- 124 files · ~255,969 words
+- 124 files · ~256,213 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 4352 nodes · 10489 edges · 179 communities (161 shown, 18 thin omitted)
+- 4352 nodes · 10489 edges · 180 communities (162 shown, 18 thin omitted)
 - Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 340 edges (avg confidence: 0.81)
 - Token cost: 0 input · 0 output
 
@@ -190,6 +190,7 @@
 - [[_COMMUNITY_Community 176|Community 176]]
 - [[_COMMUNITY_Community 177|Community 177]]
 - [[_COMMUNITY_Community 178|Community 178]]
+- [[_COMMUNITY_Community 179|Community 179]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `execute_action()` - 237 edges
@@ -242,7 +243,7 @@
 - **Observer-contributed LLM metrics flowing into the run metrics pipeline** — step_llm_llm_action, step_llm_collect_observer_metrics, step_llm_llmmetricsobserver, step_runner_add_counters [INFERRED 0.85]
 - **Registry-based downstream (pro) extension seam pattern shared by GPU collectors and LLM observers** — src_gpu_register_gpu_collector, src_gpu_gpucollector, step_llm_register_llm_metrics_observer, step_llm_llmmetricsobserver [INFERRED 0.75]
 
-## Communities (179 total, 18 thin omitted)
+## Communities (180 total, 18 thin omitted)
 
 ### Community 0 - "Core Runtime Primitives"
 Cohesion: 0.11
@@ -505,8 +506,8 @@ Cohesion: 0.10
 Nodes (36): Capability, Component, Error, FunctionInfo, LibraryInstance, LibraryProvider, Option, Path (+28 more)
 
 ### Community 65 - "CLI Docs"
-Cohesion: 0.14
-Nodes (15): anyOf, description, definitions, Capability, ImportSpec, Step, anyOf, description (+7 more)
+Cohesion: 0.11
+Nodes (20): anyOf, description, definitions, Capability, GitImport, ImportSpec, Step, additionalProperties (+12 more)
 
 ### Community 66 - "Schema Command"
 Cohesion: 0.22
@@ -521,8 +522,8 @@ Cohesion: 0.14
 Nodes (31): Component, HashMap, Option, Result, String, Vec, artifact_matches(), burn_component() (+23 more)
 
 ### Community 69 - "GraphQL Step"
-Cohesion: 0.09
-Nodes (40): description, description, description, type, description, type, $ref, description (+32 more)
+Cohesion: 0.12
+Nodes (30): description, description, $ref, description, type, description, type, description (+22 more)
 
 ### Community 70 - "Docs How-To Guides"
 Cohesion: 0.20
@@ -741,8 +742,8 @@ Cohesion: 0.08
 Nodes (27): gen_schema example main, description, required, type, anyOf, description, definitions, ArrivalConfig (+19 more)
 
 ### Community 144 - "Community 144"
-Cohesion: 0.22
-Nodes (9): GitImport, additionalProperties, description, properties, required, type, ref, description (+1 more)
+Cohesion: 0.20
+Nodes (10): description, type, description, type, properties, file, git, ref (+2 more)
 
 ### Community 145 - "Community 145"
 Cohesion: 0.25
@@ -871,6 +872,10 @@ Nodes (4): perfscale-library-sdk, The rules that matter, Unit testing without th
 ### Community 178 - "Community 178"
 Cohesion: 0.40
 Nodes (5): seed, description, format, minimum, type
+
+### Community 179 - "Community 179"
+Cohesion: 0.50
+Nodes (4): description, items, type, libraries
 
 ## Ambiguous Edges - Review These
 - `run_native()` → `perfscale-core crate root`  [AMBIGUOUS]

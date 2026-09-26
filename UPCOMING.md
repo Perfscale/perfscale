@@ -45,3 +45,14 @@ Release notes for the next release, written as features land.
   are tied to the perfscale build (wasmtime version, target, engine
   config); re-run `install`/`burn` after upgrading. Per-call library
   overhead is unchanged — burn removes per-run compilation, not call cost.
+
+## Fix: WASM libraries with the `fs` capability panicked during runs
+
+- **Fix:** a WASM library granted the `fs` capability (or any WASI hostcall
+  that blocks, e.g. clocks) crashed the run with "Cannot start a runtime
+  from within a runtime" on the first file access — the guest call ran on a
+  tokio worker thread, where wasmtime-wasi's sync hostcalls cannot block.
+  Guest calls (`init`/`call`/`info` probing) now run on a blocking thread
+  whenever the caller is inside a tokio runtime; sync callers (lint, unit
+  tests, embedders) are unchanged. Present in v0.21/v0.22 — `fs`-capable
+  libraries loaded and linted fine but panicked at run time.

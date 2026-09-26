@@ -472,10 +472,10 @@ impl WasmLibraryProvider {
     /// Call `info()` on a throwaway instance and parse the JSON contract.
     fn probe_info(&self) -> Result<WasmLibraryInfo, String> {
         let (mut store, instance) = self.instantiate_store()?;
-        let json = match &instance {
+        let json = off_runtime(|| match &instance {
             Instantiated::V1(i) => i.perfscale_library_library().call_info(&mut store),
             Instantiated::V2(i) => i.perfscale_library_library().call_info(&mut store),
-        }
+        })
         .map_err(|e| {
             format!(
                 "library '{}': info() trapped or exhausted fuel: {e}",
@@ -618,16 +618,16 @@ impl LibraryProvider for WasmLibraryProvider {
     ) -> Result<Box<dyn LibraryInstance>, String> {
         let (mut store, instance) = self.instantiate_store()?;
         // init(config-json) once per instance; failure is fatal to the run
-        // (RFC 005 open question — decided).
+        // (RFC 005 open question — decided). Off the runtime worker thread —
+        // the guest may touch granted WASI interfaces (see `off_runtime`).
         let config_json = serde_json::to_string(&config.unwrap_or(Value::Null))
             .map_err(|e| format!("library '{}': {e}", self.id))?; // Value → JSON cannot fail
-        instance
-            .call_init(&mut store, &config_json)
+        off_runtime(|| instance.call_init(&mut store, &config_json))
             .map_err(|e| format!("library '{}': init trapped or exhausted fuel: {e}", self.id))?
             .map_err(|e| format!("library '{}': init failed: {e}", self.id))?;
         Ok(Box::new(WasmLibraryInstance {
-            store,
-            instance,
+            store: Some(store),
+            instance: Some(instance),
             id: self.id.clone(),
         }))
     }
@@ -635,8 +635,11 @@ impl LibraryProvider for WasmLibraryProvider {
 
 /// One live WASM library instance (per generator owner).
 struct WasmLibraryInstance {
-    store: Store<HostState>,
-    instance: Instantiated,
+    /// `None` only while a call is in flight on the blocking thread.
+    store: Option<Store<HostState>>,
+    /// The bindgen handles are not `Clone`, so the call path moves the whole
+    /// handle to the blocking thread and back (see `call`).
+    instance: Option<Instantiated>,
     id: String,
 }
 
@@ -644,24 +647,102 @@ impl LibraryInstance for WasmLibraryInstance {
     fn call(&mut self, ctx: &CallCtx<'_>, func: &str, args: &[Value]) -> Result<String, String> {
         let args_json = serde_json::to_string(args)
             .map_err(|e| format!("{}.{func}: failed to encode arguments: {e}", self.id))?;
-        // Fresh fuel budget per call (the store's fuel is cumulative).
-        self.store
-            .set_fuel(PER_CALL_FUEL)
-            .map_err(|e| format!("{}.{func}: {e}", self.id))?;
-        match self
-            .instance
-            .call_call(&mut self.store, ctx, func, &args_json)
-        {
-            Ok(Ok(value)) => Ok(value),
-            // Guest-level error (bad function/args): the step fails with it.
-            Ok(Err(e)) => Err(format!("{}.{func}: {e}", self.id)),
-            // Trap or fuel exhaustion.
-            Err(e) => Err(format!(
-                "{}.{func}: the WASM guest trapped or exhausted its fuel budget: {e}",
+        if tokio::runtime::Handle::try_current().is_err() {
+            // No runtime (lint, unit tests, sync embedders): run inline.
+            let store = self.store.as_mut().expect("store present between calls");
+            let instance = self.instance.as_ref().expect("instance present");
+            return call_guest(store, instance, &self.id, ctx, func, &args_json);
+        }
+        // On a runtime worker thread the guest call must happen on a
+        // blocking thread (see `off_runtime`): the store and the instance
+        // handle move over and back. One hop per call — microseconds against
+        // even a trivial WASM call.
+        let mut store = self.store.take().expect("store present between calls");
+        let instance = self.instance.take().expect("instance present");
+        let id = self.id.clone();
+        let settings_json = ctx.settings_json.to_string();
+        let func_string = func.to_string();
+        let (message_seq, iteration_seq, vu_id, seed, time_ms) = (
+            ctx.message_seq,
+            ctx.iteration_seq,
+            ctx.vu_id,
+            ctx.seed,
+            ctx.time_ms,
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        tokio::task::spawn_blocking(move || {
+            let ctx = CallCtx {
+                message_seq,
+                iteration_seq,
+                vu_id,
+                seed,
+                time_ms,
+                settings_json: &settings_json,
+            };
+            let result = call_guest(&mut store, &instance, &id, &ctx, &func_string, &args_json);
+            let _ = tx.send((store, instance, result));
+        });
+        match rx.recv() {
+            Ok((store, instance, result)) => {
+                self.store = Some(store);
+                self.instance = Some(instance);
+                result
+            }
+            // The blocking task panicked or was cancelled before sending;
+            // the store is lost with it, so this instance is dead.
+            Err(_) => Err(format!(
+                "{}.{func}: the library call worker died — this instance is unusable",
                 self.id
             )),
         }
     }
+}
+
+/// One guest `call` with a fresh fuel budget, mapping the outcome to the
+/// engine's error contract: guest error → step failure, trap/fuel → step
+/// failure naming the trap.
+fn call_guest(
+    store: &mut Store<HostState>,
+    instance: &Instantiated,
+    id: &str,
+    ctx: &CallCtx<'_>,
+    func: &str,
+    args_json: &str,
+) -> Result<String, String> {
+    // Fresh fuel budget per call (the store's fuel is cumulative).
+    store
+        .set_fuel(PER_CALL_FUEL)
+        .map_err(|e| format!("{id}.{func}: {e}"))?;
+    match instance.call_call(store, ctx, func, args_json) {
+        Ok(Ok(value)) => Ok(value),
+        // Guest-level error (bad function/args): the step fails with it.
+        Ok(Err(e)) => Err(format!("{id}.{func}: {e}")),
+        // Trap or fuel exhaustion.
+        Err(e) => Err(format!(
+            "{id}.{func}: the WASM guest trapped or exhausted its fuel budget: {e}"
+        )),
+    }
+}
+
+/// Run one guest call off the async runtime's worker threads.
+///
+/// wasmtime-wasi's *sync* hostcalls (`in_tokio`, `runtime.rs`) block on a
+/// tokio `Handle` internally, which panics on a runtime worker thread
+/// ("Cannot start a runtime from within a runtime") — so any library call
+/// touching a granted WASI interface (fs reads, clocks) from the async
+/// runner died at the first hostcall. On a thread with no runtime (sync
+/// callers: lint, unit tests, embedders) the call runs inline. The hot path
+/// ([`WasmLibraryInstance::call`]) hops through the blocking pool instead;
+/// this scoped thread serves the cold paths (per-run info probe,
+/// per-instance init), where a thread spawn is noise.
+fn off_runtime<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return f();
+    }
+    std::thread::scope(|s| match s.spawn(f).join() {
+        Ok(r) => r,
+        Err(payload) => std::panic::resume_unwind(payload),
+    })
 }
 
 fn link_err(file: &str, e: wasmtime::Error) -> String {
