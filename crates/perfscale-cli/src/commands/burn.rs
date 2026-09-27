@@ -88,7 +88,10 @@ pub async fn run(args: BurnArgs) -> Result<(), CliError> {
         )));
     }
     std::fs::copy(&me, out).map_err(|e| {
-        CliError::new(format!("failed to copy the executable to '{}': {e}", out.display()))
+        CliError::new(format!(
+            "failed to copy the executable to '{}': {e}",
+            out.display()
+        ))
     })?;
     // Stat the copy, not the original: metadata + copy would be two opens of
     // the same path, and a concurrent rebuild swapping the binary in between
@@ -123,7 +126,10 @@ pub async fn run(args: BurnArgs) -> Result<(), CliError> {
     }
     println!(
         "sha256: {}",
-        digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     );
     Ok(())
 }
@@ -155,8 +161,7 @@ pub(crate) fn ensure_burned(
             return Ok(());
         }
     }
-    let artifact = burn::burn_component(bytes)
-        .map_err(|e| format!("library '{use_}': {e}"))?;
+    let artifact = burn::burn_component(bytes).map_err(|e| format!("library '{use_}': {e}"))?;
     import::write_library_burn(cache_root, sha256, &artifact)?;
     println!("burned {use_} ({short}…)");
     Ok(())

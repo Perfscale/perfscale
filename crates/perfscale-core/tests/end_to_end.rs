@@ -639,9 +639,7 @@ fn fsreader_component() -> Option<std::path::PathBuf> {
             )
             .args(["build", "--release", "--target", "wasm32-wasip2"])
             .arg("--manifest-path")
-            .arg(ws.join(
-                "crates/perfscale-library-sdk/examples/fsreader/Cargo.toml",
-            ))
+            .arg(ws.join("crates/perfscale-library-sdk/examples/fsreader/Cargo.toml"))
             .arg("--target-dir")
             .arg(&target)
             .status()
@@ -883,7 +881,10 @@ steps:
     let (log_secret, wire_secret) = run_once(&component, Some(true)).await;
     let (log_plain, _) = run_once(&component, None).await;
 
-    assert!(!wire_secret.is_empty(), "the run must have called the backend");
+    assert!(
+        !wire_secret.is_empty(),
+        "the run must have called the backend"
+    );
 
     // Without the rule the value reaches the request line in the log…
     assert!(
@@ -1146,7 +1147,9 @@ steps:
         use_: component.to_string_lossy().into_owned(),
         sha256: None,
         r#as: Some("corpus".into()),
-        capabilities: Some(vec![perfscale_core::library::Capability::Simple("fs".into())]),
+        capabilities: Some(vec![perfscale_core::library::Capability::Simple(
+            "fs".into(),
+        )]),
         with: None,
         secret: None,
         allow: None,

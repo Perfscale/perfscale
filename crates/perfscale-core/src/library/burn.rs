@@ -379,7 +379,10 @@ mod tests {
 
         // Truncations and garbage.
         for cut in [8, 20, artifact.len() - 1] {
-            assert!(load_burned(&artifact[..cut], &sha).is_none(), "cut at {cut}");
+            assert!(
+                load_burned(&artifact[..cut], &sha).is_none(),
+                "cut at {cut}"
+            );
         }
         assert!(load_burned(b"PFSBURN1", &sha).is_none());
         assert!(load_burned(&[], &sha).is_none());
@@ -424,7 +427,10 @@ mod tests {
         let payload = encode_embedded_payload(&libs);
         let set = parse_payload(&payload).unwrap();
         assert_eq!(set.len(), 2);
-        assert_eq!(set.get("/abs/dir/hello.wasm").unwrap().source_sha256, [7; 32]);
+        assert_eq!(
+            set.get("/abs/dir/hello.wasm").unwrap().source_sha256,
+            [7; 32]
+        );
         assert_eq!(
             set.get("/cache/libraries/deadbeef.wasm").unwrap().artifact,
             b"cwasm-two"

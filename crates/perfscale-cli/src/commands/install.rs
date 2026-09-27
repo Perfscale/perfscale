@@ -74,7 +74,10 @@ pub async fn run(args: InstallArgs) -> Result<(), CliError> {
                 .docs("yaml-reference.md#libraries")
         })?;
         let sha = sha256_hex(&bytes);
-        warn_on_burn_failure(&lib.use_, ensure_burned(&lib.use_, &sha, &bytes, &cache_root));
+        warn_on_burn_failure(
+            &lib.use_,
+            ensure_burned(&lib.use_, &sha, &bytes, &cache_root),
+        );
     }
 
     // Dedup (same library imported through several files), then group by
@@ -100,7 +103,10 @@ pub async fn run(args: InstallArgs) -> Result<(), CliError> {
             // skip Cranelift compilation.
             let bytes = std::fs::read(import::library_artifact_path(&cache_root, &sha))
                 .map_err(|e| CliError::new(format!("library '{}': {e}", lib.use_)))?;
-            warn_on_burn_failure(&lib.use_, ensure_burned(&lib.use_, &sha, &bytes, &cache_root));
+            warn_on_burn_failure(
+                &lib.use_,
+                ensure_burned(&lib.use_, &sha, &bytes, &cache_root),
+            );
         }
         let path = lock.save(&dir).map_err(CliError::new)?;
         println!(

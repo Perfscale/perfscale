@@ -366,12 +366,7 @@ fn burn_after_help() -> String {
 #[command(after_help = burn_after_help())]
 pub struct BurnArgs {
     /// Test YAML document(s) whose WASM libraries should be embedded.
-    #[arg(
-        short = 'f',
-        long = "file",
-        value_name = "TEST.yaml",
-        required = true
-    )]
+    #[arg(short = 'f', long = "file", value_name = "TEST.yaml", required = true)]
     pub files: Vec<PathBuf>,
 
     /// Optional config YAML whose WASM libraries should also be embedded.

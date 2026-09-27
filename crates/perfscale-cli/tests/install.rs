@@ -255,7 +255,10 @@ async fn install_burns_local_wasm_libraries_without_a_lockfile() {
         .success()
         .stdout(predicates::str::contains("burned"));
     assert!(
-        cache.path().join(format!("libraries/{sha}.cwasm")).is_file(),
+        cache
+            .path()
+            .join(format!("libraries/{sha}.cwasm"))
+            .is_file(),
         "burn artifact written"
     );
     assert!(
@@ -311,7 +314,10 @@ async fn install_https_also_writes_the_burn_artifact() {
         .stdout(predicates::str::contains("burned"));
     assert!(cache.path().join(format!("libraries/{sha}.wasm")).is_file());
     assert!(
-        cache.path().join(format!("libraries/{sha}.cwasm")).is_file(),
+        cache
+            .path()
+            .join(format!("libraries/{sha}.cwasm"))
+            .is_file(),
         "burn artifact written next to the .wasm"
     );
 

@@ -44,10 +44,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// package entry). `None` when the lock is missing or unparseable — burn
 /// artifacts then carry "unknown" and only match other "unknown" builds.
 fn wasmtime_version(lock: &str) -> Option<&str> {
-    let entry = lock.split("[[package]]").find(|p| {
-        p.lines()
-            .any(|l| l.trim() == "name = \"wasmtime\"")
-    })?;
+    let entry = lock
+        .split("[[package]]")
+        .find(|p| p.lines().any(|l| l.trim() == "name = \"wasmtime\""))?;
     entry.lines().find_map(|l| {
         l.trim()
             .strip_prefix("version = \"")

@@ -48,11 +48,11 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "wasm-libs")]
+pub mod burn;
 pub mod lockfile;
 pub mod metrics;
 pub mod std_random;
-#[cfg(feature = "wasm-libs")]
-pub mod burn;
 #[cfg(feature = "wasm-libs")]
 pub mod wasm;
 
@@ -392,8 +392,12 @@ fn resolve_wasm(
                     lib.use_
                 )
             })?;
-        let provider =
-            wasm::WasmLibraryProvider::load_embedded(&lib.use_, component, lib.capabilities.as_deref(), fs_root)?;
+        let provider = wasm::WasmLibraryProvider::load_embedded(
+            &lib.use_,
+            component,
+            lib.capabilities.as_deref(),
+            fs_root,
+        )?;
         let name = provider.library_name().to_string();
         return Ok((Arc::new(provider), name));
     }
