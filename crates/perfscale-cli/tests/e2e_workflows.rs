@@ -615,7 +615,7 @@ fn locust_headless_run_produces_unified_summary() {
         ".py",
         "from locust import HttpUser, task\nclass U(HttpUser):\n    @task\n    def t(self):\n        self.client.get('/')\n",
     );
-    let config_file = write_temp(".yaml", "vus: 1\nduration: 2s\n");
+    let config_file = write_temp(".yaml", "vus: 1\nduration: 1s\n");
 
     // Host is unreachable on purpose — requests fail, but the run itself must
     // complete and emit the k6-compatible summary parsed from locust's CSV.

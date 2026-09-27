@@ -457,12 +457,18 @@ async fn serve_binds_and_answers_health_check() {
         .spawn()
         .expect("spawn perfscale serve");
 
-    // Give the server a moment to bind before polling it.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let resp = reqwest::get("http://127.0.0.1:18453/health")
-        .await
-        .expect("GET /health");
+    // Poll until the server accepts connections instead of a fixed sleep.
+    let mut resp = None;
+    for _ in 0..50 {
+        match reqwest::get("http://127.0.0.1:18453/health").await {
+            Ok(r) => {
+                resp = Some(r);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    let resp = resp.expect("GET /health");
     assert!(resp.status().is_success());
 
     let _ = child.kill();

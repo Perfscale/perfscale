@@ -32,7 +32,13 @@ fn platform_artifact() -> &'static str {
     }
 }
 
-/// Copy the built binary into a temp dir so self-update replaces the copy.
+/// Link the built binary into a temp dir so self-update replaces the link.
+///
+/// A hard link, not a copy: the replace step writes a staged sibling file and
+/// atomically renames it over the target, so the link's inode (the real build
+/// artefact) is never written. Besides skipping a ~200MB copy per test, the
+/// link also avoids most of macOS's first-exec signature evaluation that a
+/// fresh copy of the unsigned debug binary pays (~4s → ~2s per test).
 fn binary_copy(dir: &tempfile::TempDir) -> PathBuf {
     let name = if cfg!(windows) {
         "perfscale.exe"
@@ -40,8 +46,29 @@ fn binary_copy(dir: &tempfile::TempDir) -> PathBuf {
         "perfscale"
     };
     let copy = dir.path().join(name);
-    std::fs::copy(cargo_bin("perfscale"), &copy).unwrap();
+    // Cross-filesystem temp dirs can't hard-link — fall back to a real copy.
+    std::fs::hard_link(cargo_bin("perfscale"), &copy)
+        .or_else(|_| std::fs::copy(cargo_bin("perfscale"), &copy).map(|_| ()))
+        .unwrap();
     copy
+}
+
+/// One shared binary for the tests that never replace it (`--check`, no-op,
+/// failed checksum, unreachable feed all leave the file untouched — and assert
+/// so). macOS pays a first-exec signature evaluation per *path* (~2s for the
+/// unsigned debug binary), so routing those tests through a single path pays
+/// it once per suite instead of once per test. The two tests that actually
+/// swap the binary get private copies via [`binary_copy`].
+fn shared_binary() -> PathBuf {
+    use std::sync::OnceLock;
+    static SHARED: OnceLock<PathBuf> = OnceLock::new();
+    SHARED
+        .get_or_init(|| {
+            // Leaked: must outlive every test in the binary.
+            let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+            binary_copy(dir)
+        })
+        .clone()
 }
 
 /// Mock a release feed: `latest` returns `tag`, the platform asset download
@@ -128,8 +155,7 @@ async fn self_update_check_exits_10_when_update_available() {
     let server = MockServer::start().await;
     mock_release(&server, "v99.0.0", b"irrelevant").await;
 
-    let dir = tempfile::tempdir().unwrap();
-    let bin = binary_copy(&dir);
+    let bin = shared_binary();
     let cache = tempfile::tempdir().unwrap();
 
     update_cmd(&bin, &server, &cache)
@@ -153,8 +179,7 @@ async fn self_update_check_exits_0_when_up_to_date() {
     let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
     mock_release(&server, &current_tag, b"irrelevant").await;
 
-    let dir = tempfile::tempdir().unwrap();
-    let bin = binary_copy(&dir);
+    let bin = shared_binary();
     let cache = tempfile::tempdir().unwrap();
 
     update_cmd(&bin, &server, &cache)
@@ -171,8 +196,7 @@ async fn self_update_noop_when_already_latest_without_force() {
     let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
     mock_release(&server, &current_tag, b"must never be installed").await;
 
-    let dir = tempfile::tempdir().unwrap();
-    let bin = binary_copy(&dir);
+    let bin = shared_binary();
     let original = std::fs::read(&bin).unwrap();
     let cache = tempfile::tempdir().unwrap();
 
@@ -241,8 +265,7 @@ async fn self_update_rejects_corrupted_download() {
         .mount(&server)
         .await;
 
-    let dir = tempfile::tempdir().unwrap();
-    let bin = binary_copy(&dir);
+    let bin = shared_binary();
     let original = std::fs::read(&bin).unwrap();
     let cache = tempfile::tempdir().unwrap();
 
@@ -262,8 +285,7 @@ async fn self_update_rejects_corrupted_download() {
 #[tokio::test]
 #[file_serial(heavy_io)]
 async fn self_update_unreachable_feed_is_a_clean_error() {
-    let dir = tempfile::tempdir().unwrap();
-    let bin = binary_copy(&dir);
+    let bin = shared_binary();
     let cache = tempfile::tempdir().unwrap();
 
     let mut cmd = assert_cmd::Command::new(&bin);
