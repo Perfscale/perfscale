@@ -152,6 +152,13 @@ secrets.
   one file to ship to load generators.
 - **Capabilities**: libraries run in a fail-closed wasmtime sandbox — see
   the [libraries guide](core/libraries.md) for the capability model.
+- **Docker**: the sdk-libraries repo carries a hermetic authoring image
+  (`ts/docker/Dockerfile` — Node 24 + the published SDK; `docker build -t
+  perfscale-library-build ts/docker`, then `docker run --rm -v "$PWD:/src"
+  -w /src perfscale-library-build mylib.ts -o mylib.wasm`). Running
+  libraries in the engine's Docker images — mount layout, the install
+  cache, burned standalone binaries — is covered in
+  [Running perfscale in Docker](core/docker.md#wasm-libraries).
 
 ## Links
 

@@ -63,6 +63,44 @@ Secrets and configuration go through the same mechanisms as a local install
 — pass environment variables with `-e` (`-e API_TOKEN=...`) and reference
 them as `${{ env.API_TOKEN }}` in the scenario.
 
+## WASM libraries
+
+`${alias.fn(...)}` libraries (RFC 005) work in the container — WASM support
+is always compiled into the engine. What to mount depends on the source:
+
+**Local components** (`use: ./libs/fixer-ids.wasm`) need nothing extra:
+paths resolve relative to the declaring file, so the usual `$PWD:/work`
+mount covers them as long as the relative layout is preserved. A library
+granted `capabilities: [fs]` gets a read-only preopen of the run's
+`fs_root` — by default the config file's directory, i.e. inside `/work`.
+
+**Remote components** (`https://…`, `git+…`) are fetched only by
+`perfscale install`, which writes `perfscale.lock` next to the config (in
+the mount) but the artifact cache to the host's `~/.cache/perfscale`. Keep
+the cache inside the mounted directory so host and container agree:
+
+```sh
+# host: install into a project-local cache (perfscale.lock lands next to the config)
+PERFSCALE_CACHE_DIR="$PWD/.perfscale-cache" perfscale install test.yaml config.yaml
+
+# container: same cache dir, fully offline run
+docker run --rm -v "$PWD:/work" -w /work \
+  -e PERFSCALE_CACHE_DIR=/work/.perfscale-cache \
+  ghcr.io/perfscale/perfscale:latest run -f test.yaml -c config.yaml
+```
+
+`install` also *burns* (AOT-precompiles) each library into the cache, so
+containerized runs skip per-run compilation too — the cache directory must
+be shared between the install and the run, as above.
+
+**Standalone binaries** — `perfscale burn` embeds a scenario's libraries
+into a copy of the binary, so nothing has to be mounted besides the YAML:
+
+```sh
+# on the host (match the target architecture), then ship one file:
+perfscale burn -f test.yaml -c config.yaml -o perfscale+libs
+```
+
 ## External runners (k6 / JMeter / locust)
 
 The runner flavors ship the matching engine, so existing scripts and plans
