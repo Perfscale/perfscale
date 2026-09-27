@@ -24,6 +24,25 @@ set -euo pipefail
 #                 load where the cumulative error rate first reaches
 #                 BOUNDARY_ERR_PCT percent (default 1%).
 #   tls         – engines against `perfscale serve --tls` (self-signed HTTPS).
+#   library     – native engine with a WASM value-generator library
+#                 (`${hello.greet(...)}` from the SDK hello component):
+#                 hyperfine at 1s shows per-run compile (cold cache) vs the
+#                 burn cache (perfscale install), plus instrumented runs for
+#                 per-call cost against a no-library and a `@std/random`
+#                 builtin baseline.
+#   grpc        – native `std/grpc@v1` unary calls against the repo's
+#                 grpc_echo_server example (reflection on, plaintext).
+#   graphql     – native `std/graphql@v1` query against the repo's
+#                 graphql_server example (introspection on).
+#   db          – native `std/db-connect@v1` + `std/db-query@v1` against a
+#                 PostgreSQL at BENCH_PG_DSN (CI: service container; locally:
+#                 skipped unless the DSN's host:port answers).
+#
+# No llm/pubsub suites: the engine's LLM and pubsub (nats) drivers need
+# backing services that don't fit a bench CI job cleanly (an LLM endpoint
+# with meaningful semantics, a NATS/Redis broker); the pubsub `memory`
+# driver measures no real transport. Add them when a self-contained target
+# exists.
 #
 # JMeter joins only the hyperfine suites (overhead/startup): its non-GUI
 # console summary has no percentiles, so it is not part of the throughput
@@ -43,7 +62,7 @@ PORT="${PORT:-18999}"
 TLS_PORT="${TLS_PORT:-18998}"
 OUTPUT="${OUTPUT:-bench-report.md}"
 RESULTS="${RESULTS:-bench-results.json}"
-SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws boundary tls}"
+SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db}"
 
 STARTUP_DURATION="${STARTUP_DURATION:-1s}"
 STARTUP_RUNS="${STARTUP_RUNS:-5}"
@@ -56,8 +75,15 @@ TLS_DURATION="${TLS_DURATION:-10s}"
 WS_DURATION="${WS_DURATION:-10s}"
 WS_ROUNDS="${WS_ROUNDS:-10}"
 BOUNDARY_DURATION="${BOUNDARY_DURATION:-30s}"
-BOUNDARY_MAX_VUS="${BOUNDARY_MAX_VUS:-2000}"
+BOUNDARY_MAX_VUS="${BOUNDARY_MAX_VUS:-5000}"
 BOUNDARY_ERR_PCT="${BOUNDARY_ERR_PCT:-1}"
+LIB_DURATION="${LIB_DURATION:-10s}"
+LIB_STARTUP_DURATION="${LIB_STARTUP_DURATION:-1s}"
+LIB_RUNS="${LIB_RUNS:-5}"
+GRPC_DURATION="${GRPC_DURATION:-10s}"
+GQL_DURATION="${GQL_DURATION:-10s}"
+DB_DURATION="${DB_DURATION:-10s}"
+BENCH_PG_DSN="${BENCH_PG_DSN:-postgres://postgres:perfscale@127.0.0.1:5432/postgres}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${PERFSCALE_BIN:-$ROOT/target/release/perfscale}"
@@ -73,9 +99,13 @@ RESULTS_D="$WORKDIR/results"
 mkdir -p "$RESULTS_D"
 SERVE_PID=""
 TLS_SERVE_PID=""
+GRPC_SERVE_PID=""
+GQL_SERVE_PID=""
 cleanup() {
   [[ -n "$SERVE_PID" ]] && kill "$SERVE_PID" 2>/dev/null || true
   [[ -n "$TLS_SERVE_PID" ]] && kill "$TLS_SERVE_PID" 2>/dev/null || true
+  [[ -n "$GRPC_SERVE_PID" ]] && kill "$GRPC_SERVE_PID" 2>/dev/null || true
+  [[ -n "$GQL_SERVE_PID" ]] && kill "$GQL_SERVE_PID" 2>/dev/null || true
   rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
@@ -137,6 +167,93 @@ if has_suite ws; then
     HAS_WS=1
   else
     echo "skipping ws suite: this perfscale binary's serve has no /ws endpoint" >&2
+  fi
+fi
+
+# TCP port probe for the non-HTTP fixture servers (gRPC/GraphQL examples,
+# PostgreSQL).
+wait_for_port() { # $1 host, $2 port
+  for _ in $(seq 1 50); do
+    (echo >/dev/tcp/"$1"/"$2") >/dev/null 2>&1 && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# library suite fixture: the SDK hello example compiled to a wasm32-wasip2
+# component. Built on demand into the shared fixtures target dir (cached in
+# CI by the rust cache); skipped when the target toolchain is unavailable.
+LIB_WASM="$ROOT/target/wasm-libs-fixtures/wasm32-wasip2/release/perfscale_hello_library.wasm"
+HAS_LIB=0
+if has_suite library; then
+  if [[ -f "$LIB_WASM" ]]; then
+    HAS_LIB=1
+  elif command -v rustup >/dev/null 2>&1 \
+    && rustup target list --installed 2>/dev/null | grep -qx wasm32-wasip2; then
+    echo "building the hello library fixture (wasm32-wasip2)..." >&2
+    if cargo build --release --target wasm32-wasip2 \
+      --manifest-path "$ROOT/crates/perfscale-library-sdk/examples/hello/Cargo.toml" \
+      --target-dir "$ROOT/target/wasm-libs-fixtures" >&2; then
+      HAS_LIB=1
+    fi
+  fi
+  [[ "$HAS_LIB" == 1 ]] || echo "skipping library suite: hello fixture unavailable (rustup target add wasm32-wasip2)" >&2
+fi
+
+# grpc/graphql suite targets: the repo's example servers, built on demand.
+# Both are dev tools under crates/perfscale-core/examples.
+example_bin() { # $1 example name → path (building if missing)
+  local path="$ROOT/target/release/examples/$1"
+  if [[ ! -x "$path" ]]; then
+    echo "building the $1 example (release)..." >&2
+    cargo build --release -p perfscale-core --example "$1" \
+      --manifest-path "$ROOT/Cargo.toml" >&2 || return 1
+  fi
+  echo "$path"
+}
+
+GRPC_ADDR="127.0.0.1:50051"
+HAS_GRPC=0
+if has_suite grpc; then
+  if grpc_bin=$(example_bin grpc_echo_server); then
+    "$grpc_bin" "$GRPC_ADDR" >"$WORKDIR/grpc-serve.log" 2>&1 &
+    GRPC_SERVE_PID=$!
+    if wait_for_port 127.0.0.1 "${GRPC_ADDR##*:}"; then
+      HAS_GRPC=1
+    else
+      echo "skipping grpc suite: grpc_echo_server never came up" >&2
+    fi
+  else
+    echo "skipping grpc suite: failed to build grpc_echo_server" >&2
+  fi
+fi
+
+GQL_ADDR="127.0.0.1:4000"
+HAS_GQL=0
+if has_suite graphql; then
+  if gql_bin=$(example_bin graphql_server); then
+    "$gql_bin" >"$WORKDIR/gql-serve.log" 2>&1 &
+    GQL_SERVE_PID=$!
+    if wait_for_port 127.0.0.1 "${GQL_ADDR##*:}"; then
+      HAS_GQL=1
+    else
+      echo "skipping graphql suite: graphql_server never came up" >&2
+    fi
+  else
+    echo "skipping graphql suite: failed to build graphql_server" >&2
+  fi
+fi
+
+# db suite target: a PostgreSQL the caller provides (CI service container;
+# BENCH_PG_DSN). Probed by host:port from the DSN — no engine changes.
+DB_HOSTPORT="${BENCH_PG_DSN##*@}"   # strip userinfo
+DB_HOSTPORT="${DB_HOSTPORT%%/*}"    # strip /database
+HAS_DB=0
+if has_suite db; then
+  if wait_for_port "${DB_HOSTPORT%%:*}" "${DB_HOSTPORT##*:}"; then
+    HAS_DB=1
+  else
+    echo "skipping db suite: no PostgreSQL at $DB_HOSTPORT (BENCH_PG_DSN)" >&2
   fi
 fi
 
@@ -395,7 +512,7 @@ export const options = {
     ramp: {
       executor: 'ramping-vus',
       startVUs: 0,
-      stages: [{ duration: __ENV.BENCH_DURATION || '30s', target: Number(__ENV.BENCH_MAX_VUS || 2000) }],
+      stages: [{ duration: __ENV.BENCH_DURATION || '30s', target: Number(__ENV.BENCH_MAX_VUS || 5000) }],
       gracefulRampDown: '0s',
     },
   },
@@ -429,7 +546,7 @@ import os
 
 from locust import HttpUser, LoadTestShape, task
 
-MAX_VUS = int(os.environ.get("BENCH_MAX_VUS", "2000"))
+MAX_VUS = int(os.environ.get("BENCH_MAX_VUS", "5000"))
 DURATION_S = int(os.environ.get("BENCH_DURATION_S", "30"))
 
 
@@ -488,10 +605,123 @@ cat >"$WORKDIR/plan-boundary-template.jmx" <<'EOF'
 </jmeterTestPlan>
 EOF
 
+# library suite: the yaml-get scenario with one header value generated by a
+# library call per request — WASM component (`${hello.greet(world)}`) vs the
+# native builtin (`${random.ulid()}`), so the WASM-runtime overhead and the
+# library-call overhead separate. The `libraries:` block lives in the config
+# (lib_cfg); cold/burned differ only by PERFSCALE_CACHE_DIR.
+if [[ "$HAS_LIB" == 1 ]]; then
+  cat >"$WORKDIR/yaml-lib.yaml" <<EOF
+steps:
+  - name: health check with a library greeting
+    use: std/http@v1
+    with:
+      method: GET
+      url: "${TARGET}/health"
+      headers:
+        x-greeting: "\${hello.greet(world)}"
+EOF
+  cat >"$WORKDIR/yaml-lib-builtin.yaml" <<EOF
+steps:
+  - name: health check with a builtin id
+    use: std/http@v1
+    with:
+      method: GET
+      url: "${TARGET}/health"
+      headers:
+        x-id: "\${random.ulid()}"
+EOF
+  cat >"$WORKDIR/lib-hello.yaml" <<EOF
+libraries:
+  - use: $LIB_WASM
+    as: hello
+EOF
+  cat >"$WORKDIR/lib-builtin.yaml" <<'EOF'
+libraries:
+  - use: '@std/random@v1'
+EOF
+fi
+
+# Load config with a libraries: block: vus/duration from the arguments plus
+# the contents of the fragment file. Prints the path.
+lib_cfg() { # $1 vus, $2 duration, $3 libraries fragment
+  local path="$WORKDIR/libcfg-$1-$2-$(basename "$3" .yaml).yaml"
+  if [[ ! -f "$path" ]]; then
+    { printf 'vus: %s\nduration: %s\n' "$1" "$2"; cat "$3"; } >"$path"
+  fi
+  echo "$path"
+}
+
+# grpc suite: one-shot unary call per iteration (connect → reflect → call →
+# close) against the example echo server. Reflection is cached per URL, so
+# the per-iteration cost is connect + call.
+if [[ "$HAS_GRPC" == 1 ]]; then
+  cat >"$WORKDIR/yaml-grpc.yaml" <<EOF
+steps:
+  - name: echo unary
+    use: std/grpc@v1
+    with:
+      url: "grpc://${GRPC_ADDR}"
+      reflection: true
+      method: perfscale.test.v1.Echo/Unary
+      payload:
+        message: "bench-\${seq}"
+EOF
+fi
+
+# graphql suite: one schema-validated query per iteration; introspection is
+# cached per URL, so per-iteration cost is parse + validate + HTTP POST.
+if [[ "$HAS_GQL" == 1 ]]; then
+  cat >"$WORKDIR/yaml-gql.yaml" <<EOF
+steps:
+  - name: viewer query
+    use: std/graphql@v1
+    with:
+      url: "http://${GQL_ADDR}/graphql"
+      query: |
+        query { viewer { id name } }
+EOF
+fi
+
+# db suite: connect + query per iteration (the connection drops at iteration
+# end), SELECT 1 vs a query with a \${}-expanded bind parameter.
+if [[ "$HAS_DB" == 1 ]]; then
+  cat >"$WORKDIR/yaml-db.yaml" <<EOF
+steps:
+  - name: connect
+    use: std/db-connect@v1
+    with:
+      driver: postgres
+      dsn: "$BENCH_PG_DSN"
+      tls: false
+    outputs: conn
+  - name: select one
+    use: std/db-query@v1
+    with:
+      id: "\${{ conn.id }}"
+      query: "SELECT 1"
+EOF
+  cat >"$WORKDIR/yaml-db-params.yaml" <<EOF
+steps:
+  - name: connect
+    use: std/db-connect@v1
+    with:
+      driver: postgres
+      dsn: "$BENCH_PG_DSN"
+      tls: false
+    outputs: conn
+  - name: select with a bind param
+    use: std/db-query@v1
+    with:
+      id: "\${{ conn.id }}"
+      query: "SELECT \$1::int AS n"
+      params: [ "\${rand(1,1000)}" ]
+EOF
+fi
+
 # ---------------------------------------------------------------------------
 # /usr/bin/time instrumentation
 # ---------------------------------------------------------------------------
-
 if /usr/bin/time -v true >/dev/null 2>&1; then
   TIME_STYLE="gnu"
 elif /usr/bin/time -l true >/dev/null 2>&1; then
@@ -961,6 +1191,162 @@ if has_suite tls && [[ "$HAS_TLS" == 1 ]]; then
     echo "_Self-signed certificate; all clients skip verification (k6"
     echo "\`insecureSkipTLSVerify\`, locust \`verify=False\`, native \`insecure: true\`)."
     echo "Compare against the plain-HTTP throughput table for the TLS tax._"
+  } >>"$OUTPUT"
+fi
+
+# --- library ---------------------------------------------------------------
+
+if has_suite library && [[ "$HAS_LIB" == 1 ]]; then
+  echo "suite: library" >&2
+
+  # Cache dirs: lib-cold stays empty (run never burns — only install does),
+  # so every cold run pays full component compilation; lib-warm is burned by
+  # `perfscale install` once and hit by every burned run.
+  mkdir -p "$WORKDIR/lib-cold" "$WORKDIR/lib-warm"
+  lib_cfg_cold="$WORKDIR/lib-cold"
+  lib_cfg_warm="$WORKDIR/lib-warm"
+  echo "  perfscale install (burn)" >&2
+  if ! PERFSCALE_CACHE_DIR="$lib_cfg_warm" "$BIN" install \
+    "$(lib_cfg "$VUS" "$LIB_DURATION" "$WORKDIR/lib-hello.yaml")" \
+    >"$WORKDIR/lib-install.log" 2>&1; then
+    echo "perfscale install failed (the burned rows need the burn cache):" >&2
+    cat "$WORKDIR/lib-install.log" >&2
+    exit 1
+  fi
+
+  lib_run() { # $1 test file, $2 config file, $3 cache env assignment
+    echo "${3:+$3 }$BIN run -f $1 -c $2"
+  }
+  lib_base_cmd() { # $1 duration
+    lib_run "$WORKDIR/yaml-get.yaml" "$(cfg "$VUS" "$1")" ""
+  }
+  lib_cold_cmd() {
+    lib_run "$WORKDIR/yaml-lib.yaml" \
+      "$(lib_cfg "$VUS" "$1" "$WORKDIR/lib-hello.yaml")" \
+      "PERFSCALE_CACHE_DIR=$lib_cfg_cold"
+  }
+  lib_burned_cmd() {
+    lib_run "$WORKDIR/yaml-lib.yaml" \
+      "$(lib_cfg "$VUS" "$1" "$WORKDIR/lib-hello.yaml")" \
+      "PERFSCALE_CACHE_DIR=$lib_cfg_warm"
+  }
+  lib_builtin_cmd() {
+    lib_run "$WORKDIR/yaml-lib-builtin.yaml" \
+      "$(lib_cfg "$VUS" "$1" "$WORKDIR/lib-builtin.yaml")" ""
+  }
+
+  # Per-run cost: hyperfine at a 1s duration, where compiling the component
+  # once per run (cold) vs deserializing the burn artifact (burned) is a
+  # visible fraction of wall time. Raw hyperfine JSON, same as `overhead`.
+  if [[ "$HAS_HYPERFINE" == 1 ]]; then
+    echo "  hyperfine (${LIB_STARTUP_DURATION} runs)" >&2
+    hyperfine --warmup "$WARMUP" --runs "$LIB_RUNS" \
+      --export-markdown "$WORKDIR/library-startup.md" \
+      --export-json "$RESULTS_D/library-startup.json" \
+      --command-name "yaml (no library)" "$(lib_base_cmd "$LIB_STARTUP_DURATION")" \
+      --command-name "yaml+lib (cold cache)" "$(lib_cold_cmd "$LIB_STARTUP_DURATION")" \
+      --command-name "yaml+lib (burned)" "$(lib_burned_cmd "$LIB_STARTUP_DURATION")" \
+      --command-name "yaml+builtin (@std/random)" "$(lib_builtin_cmd "$LIB_STARTUP_DURATION")"
+    section "WASM library: per-run cost (hyperfine, ${LIB_STARTUP_DURATION})"
+    cat "$WORKDIR/library-startup.md" >>"$OUTPUT"
+  else
+    echo "skipping library hyperfine rows: hyperfine not on PATH" >&2
+  fi
+
+  # Per-call cost: one instrumented run per variant at the standard shape.
+  section "WASM library: per-call cost (${VUS} VUs, ${LIB_DURATION})"
+  {
+    echo "| Scenario | Requests | RPS | p95 ms | Err | CPU per req | Peak RSS |"
+    echo "|---|---:|---:|---:|---:|---:|---|"
+  } >>"$OUTPUT"
+  for variant in base cold burned builtin; do
+    echo "  $variant" >&2
+    measure "lib-$variant" "$(lib_${variant}_cmd "$LIB_DURATION")"
+    json_row library.json "$variant"
+    echo "| $variant | $requests | $rps | $p95_ms | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
+  done
+  {
+    echo
+    echo "_Every row is the same GET /health shape; the only difference is one"
+    echo "generated header value per request. \`base\` has no library at all,"
+    echo "\`cold\` compiles the WASM component on every run (empty cache),"
+    echo "\`burned\` deserializes the \`.cwasm\` artifact \`perfscale install\`"
+    echo "wrote, \`builtin\` uses the native \`@std/random@v1\`. The hyperfine"
+    echo "table above prices per-run compile/deserialize; this table prices the"
+    echo "per-call WASM cost (JSON marshaling, per-VU instance) — burn removes"
+    echo "per-run compilation, not per-call cost._"
+  } >>"$OUTPUT"
+fi
+
+# --- grpc -------------------------------------------------------------------
+
+if has_suite grpc && [[ "$HAS_GRPC" == 1 ]]; then
+  echo "suite: grpc" >&2
+  section "gRPC unary echo (${VUS} VUs, ${GRPC_DURATION})"
+  {
+    echo "| Scenario | Messages | Msgs/s | p95 ms | Err | CPU per msg | Peak RSS |"
+    echo "|---|---:|---:|---:|---:|---:|---|"
+  } >>"$OUTPUT"
+  echo "  perfscale (yaml)" >&2
+  measure "grpc-unary" "$(cmd_yaml "$VUS" "$GRPC_DURATION" "$WORKDIR/yaml-grpc.yaml")" grpc-text
+  json_row grpc.json "perfscale (yaml)"
+  echo "| perfscale (yaml) | $requests | $rps | $p95_ms | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
+  {
+    echo
+    echo "_One-shot \`std/grpc@v1\` unary call per iteration (connect → call →"
+    echo "close) against the repo's \`grpc_echo_server\` example (plaintext,"
+    echo "server reflection — fetched once per run, cached per URL). Compare"
+    echo "against the throughput table for the HTTP/2 + protobuf tax over plain"
+    echo "HTTP. No k6 row: k6's gRPC module would measure k6, not this engine._"
+  } >>"$OUTPUT"
+fi
+
+# --- graphql -----------------------------------------------------------------
+
+if has_suite graphql && [[ "$HAS_GQL" == 1 ]]; then
+  echo "suite: graphql" >&2
+  section "GraphQL query (${VUS} VUs, ${GQL_DURATION})"
+  {
+    echo "| Scenario | Requests | RPS | p95 ms | Err | CPU per req | Peak RSS |"
+    echo "|---|---:|---:|---:|---:|---:|---|"
+  } >>"$OUTPUT"
+  echo "  perfscale (yaml)" >&2
+  measure "gql-query" "$(cmd_yaml "$VUS" "$GQL_DURATION" "$WORKDIR/yaml-gql.yaml")"
+  json_row graphql.json "perfscale (yaml)"
+  echo "| perfscale (yaml) | $requests | $rps | $p95_ms | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
+  {
+    echo
+    echo "_One \`std/graphql@v1\` query per iteration against the repo's"
+    echo "\`graphql_server\` example: document parse + schema validation"
+    echo "(introspection is fetched once per run, cached per URL) + HTTP POST."
+    echo "Compare against the throughput table for the GraphQL tax over plain"
+    echo "HTTP._"
+  } >>"$OUTPUT"
+fi
+
+# --- db ----------------------------------------------------------------------
+
+if has_suite db && [[ "$HAS_DB" == 1 ]]; then
+  echo "suite: db" >&2
+  section "PostgreSQL query (${VUS} VUs, ${DB_DURATION} per scenario)"
+  {
+    echo "| Scenario | Queries | QPS | p95 ms | Err | CPU per query | Peak RSS |"
+    echo "|---|---:|---:|---:|---:|---:|---|"
+  } >>"$OUTPUT"
+  for sc in db db-params; do
+    echo "  $sc" >&2
+    measure "$sc" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-$sc.yaml")" db-text
+    json_row db.json "$sc"
+    echo "| $sc | $requests | $rps | $p95_ms | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
+  done
+  {
+    echo
+    echo "_Target: PostgreSQL at \`BENCH_PG_DSN\` (CI service container). Every"
+    echo "iteration is \`std/db-connect@v1\` + one \`std/db-query@v1\`, so the"
+    echo "numbers include connect + pool setup — the shape of serverless/short-"
+    echo "lived workloads, not of a warm long-lived pool. db = \`SELECT 1\`;"
+    echo "db-params = \`SELECT \$1::int\` with a \`\${rand(1,1000)}\` bind"
+    echo "parameter expanded per execution._"
   } >>"$OUTPUT"
 fi
 

@@ -25,6 +25,10 @@ ROW_METRICS = [
     ("saturation", "rps", True),
     ("yaml", "rps", True),
     ("tls", "rps", True),
+    ("library", "rps", True),
+    ("grpc", "rps", True),
+    ("graphql", "rps", True),
+    ("db", "rps", True),
     ("startup", "overhead_vs_ideal_ms", False),
 ]
 

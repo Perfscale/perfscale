@@ -2,7 +2,8 @@
 """Parsing and JSON plumbing for scripts/bench.sh.
 
 Subcommands:
-  parse <kind> <file>            kind: text | locust-csv | ws-text
+  parse <kind> <file>            kind: text | locust-csv | ws-text |
+                                 grpc-text | db-text
                                  prints shell-evalable `key=value` lines
   append <json> <label> [k=v..]  append a row object to a JSON array file
   boundary <kind> <file> <max-vus> <duration-s> <err-pct>
@@ -60,22 +61,28 @@ def parse_text(content):
 
     m = re.search(r"http_req_duration[.\s]*:(.*)", content)
     if m:
-        stats = {}
-        for key, value, unit in re.findall(
-            r"(avg|min|med|max|p\(50\)|p\(90\)|p\(95\)|p\(99\))=" + VALUE_UNIT,
-            m.group(1),
-        ):
-            stats[key] = float(value) * UNIT_MS[unit]
-        out["avg_ms"] = stats.get("avg", 0)
-        out["p50_ms"] = stats.get("p(50)", stats.get("med", 0))
-        out["p90_ms"] = stats.get("p(90)", 0)
-        out["p95_ms"] = stats.get("p(95)", 0)
-        out["p99_ms"] = stats.get("p(99)", 0)
-        out["min_ms"] = stats.get("min", 0)
-        out["max_ms"] = stats.get("max", 0)
+        _trend_stats(out, m.group(1))
 
     out["parse_ok"] = 1 if out["requests"] else 0
     return out
+
+
+def _trend_stats(out, stats_text):
+    """Fill the latency fields of `out` from a `avg=..ms p(50)=..ms ...`
+    stats blob (units normalised to ms)."""
+    stats = {}
+    for key, value, unit in re.findall(
+        r"(avg|min|med|max|p\(50\)|p\(90\)|p\(95\)|p\(99\))=" + VALUE_UNIT,
+        stats_text,
+    ):
+        stats[key] = float(value) * UNIT_MS[unit]
+    out["avg_ms"] = stats.get("avg", 0)
+    out["p50_ms"] = stats.get("p(50)", stats.get("med", 0))
+    out["p90_ms"] = stats.get("p(90)", 0)
+    out["p95_ms"] = stats.get("p(95)", 0)
+    out["p99_ms"] = stats.get("p(99)", 0)
+    out["min_ms"] = stats.get("min", 0)
+    out["max_ms"] = stats.get("max", 0)
 
 
 def parse_ws_text(content):
@@ -94,19 +101,56 @@ def parse_ws_text(content):
 
     m = re.search(r"ws_msg_rtt[.\s]*:(.*)", content)
     if m:
-        stats = {}
-        for key, value, unit in re.findall(
-            r"(avg|min|med|max|p\(50\)|p\(90\)|p\(95\)|p\(99\))=" + VALUE_UNIT,
-            m.group(1),
-        ):
-            stats[key] = float(value) * UNIT_MS[unit]
-        out["avg_ms"] = stats.get("avg", 0)
-        out["p50_ms"] = stats.get("p(50)", stats.get("med", 0))
-        out["p90_ms"] = stats.get("p(90)", 0)
-        out["p95_ms"] = stats.get("p(95)", 0)
-        out["p99_ms"] = stats.get("p(99)", 0)
-        out["min_ms"] = stats.get("min", 0)
-        out["max_ms"] = stats.get("max", 0)
+        _trend_stats(out, m.group(1))
+
+    out["parse_ok"] = 1 if out["requests"] else 0
+    return out
+
+
+def parse_grpc_text(content):
+    """Parse a pure-gRPC native run: `grpc_msgs_sent...: N R/s` (counter) and
+    `grpc_req_duration...: avg=..ms p(50)=..` (trend), plus `grpc_req_failed`
+    (counter) folded into err_pct. `requests`/`rps` count messages, matching
+    the ws suite's convention.
+    """
+    out = zeroed()
+
+    m = re.search(r"grpc_msgs_sent[.\s]*:\s*(\d+)\s+([\d.]+)/s", content)
+    if m:
+        out["requests"] = int(m.group(1))
+        out["rps"] = float(m.group(2))
+
+    m = re.search(r"grpc_req_duration[.\s]*:(.*)", content)
+    if m:
+        _trend_stats(out, m.group(1))
+
+    m = re.search(r"grpc_req_failed[.\s]*:\s*(\d+)\s+[\d.]+/s", content)
+    if m and out["requests"]:
+        out["err_pct"] = int(m.group(1)) / out["requests"] * 100
+
+    out["parse_ok"] = 1 if out["requests"] else 0
+    return out
+
+
+def parse_db_text(content):
+    """Parse a pure-DB native run: one query per iteration, so the rate comes
+    from `iterations...: N R/s`; latency from the `db_query_duration...`
+    trend; errors from the `db_errors` counter.
+    """
+    out = zeroed()
+
+    m = re.search(r"iterations[.\s]*:\s*(\d+)\s+([\d.]+)/s", content)
+    if m:
+        out["requests"] = int(m.group(1))
+        out["rps"] = float(m.group(2))
+
+    m = re.search(r"db_query_duration[.\s]*:(.*)", content)
+    if m:
+        _trend_stats(out, m.group(1))
+
+    m = re.search(r"^db_errors:\s*(\d+)\s+[\d.]+/s", content, re.M)
+    if m and out["requests"]:
+        out["err_pct"] = int(m.group(1)) / out["requests"] * 100
 
     out["parse_ok"] = 1 if out["requests"] else 0
     return out
@@ -153,6 +197,12 @@ def cmd_parse(kind, path):
         elif kind == "ws-text":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_ws_text(f.read())
+        elif kind == "grpc-text":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics = parse_grpc_text(f.read())
+        elif kind == "db-text":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics = parse_db_text(f.read())
         else:
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_text(f.read())
