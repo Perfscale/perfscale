@@ -196,6 +196,38 @@ docker run --rm ghcr.io/perfscale/perfscale:0.17.0 --version
 docker run --rm --entrypoint k6 ghcr.io/perfscale/perfscale:0.17.0-k6 version
 ```
 
+## Kubernetes
+
+The platform agent (perfscaled) ships as a Helm chart in
+[Perfscale/charts](https://github.com/Perfscale/charts): a DaemonSet that
+runs one agent per node (`ghcr.io` image, non-root, read-only root
+filesystem, secret via `existingSecret`). The agent self-registers with the
+controlplane and picks up tasks.
+
+```sh
+helm install perfscaled oci://ghcr.io/perfscale/charts/perfscaled \
+  --set-file secret...  # or --set existingSecret=perfscaled-env
+```
+
+Chart notes:
+
+- `readOnlyRootFilesystem: true` — writable paths come from volumes. The
+  library cache (RFC 005) lives on a dedicated `library-cache` volume
+  (default `emptyDir`, switch to `hostPath` in `values.yaml` to survive pod
+  reschedules) mounted at `/var/lib/perfscale/cache`, wired as
+  `PERFSCALE_CACHE_DIR` — so libraries installed via
+  `perfscaled library install` / `POST /api/v1/libraries/install` persist
+  across container restarts.
+- Fleet library policy is set on the agent's env: `PERFSCALE_LIBRARY_CAPABILITIES`
+  (fleet ceiling, default: none) and `PERFSCALE_LIBRARY_ALLOW_DIGESTS`
+  (optional sha256 allowlist) — the agent intersects them with every task's
+  grants and rejects exceeding tasks with a validation error.
+
+For one-shot load runs in a cluster (no agent), the engine images above run
+fine as a [Job](https://kubernetes.io/docs/concepts/workloads/controllers/job/):
+mount the scenario via a ConfigMap/PVC and use the image entrypoint as in the
+examples here.
+
 ## Limits
 
 - **Runner versions are pinned** — to run a different k6/JMeter/locust
