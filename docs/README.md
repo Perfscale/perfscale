@@ -51,7 +51,9 @@ tiny local dev server for collecting results.
 - [JMeter guide](core/jmeter.md) — run existing `.jmx` plans headless,
   translated k6-compatible summary, parameterization, limits
 - [Docker](core/docker.md) — ready-to-run ghcr.io images (slim and
-  k6-bundled flavors), mounting scenarios, CI and Kubernetes recipes
+  k6-bundled flavors), mounting scenarios, CI recipes
+- [Kubernetes](core/kubernetes.md) — the perfscaled agent Helm chart
+  (DaemonSet, fleet library policy, cache volume) and one-shot CLI Jobs
 
 ## For contributors
 
