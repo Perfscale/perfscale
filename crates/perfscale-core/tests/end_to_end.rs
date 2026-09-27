@@ -1173,3 +1173,94 @@ steps:
     let _lines = collect(rx).await;
     server.verify().await;
 }
+
+/// RFC 005 phase 3.5 leak check: env-sourced variables flow into
+/// `settings_json` that every library call receives — so they must be in the
+/// run's secret registry BEFORE any guest code runs (settings are built
+/// before libraries are validated). The guest demonstrably receives the
+/// value (the backend matches on it) while the run log masks every
+/// occurrence — including a direct `${{ env.* }}` interpolation of the same
+/// value in a std/log message (masked to `***`).
+#[cfg(feature = "wasm-libs")]
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn settings_json_env_secrets_are_masked_before_guests_read_them() {
+    const VAR: &str = "PERFSCALE_TEST_E2E_SETTINGS_SECRET";
+    const SECRET: &str = "settings-s3cr3t-9d2f";
+    std::env::set_var(VAR, SECRET);
+    let Some(component) = hello_component() else {
+        return;
+    };
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/settings"))
+        // The guest saw the secret inside settings_json — on the wire.
+        .and(body_string_contains(SECRET))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1..)
+        .mount(&server)
+        .await;
+
+    let test_yaml = format!(
+        r#"
+steps:
+  - name: settings echo
+    use: std/http@v1
+    with:
+      method: POST
+      url: {0}/settings
+      body: "${{hello.settings()}}"
+  - name: log the var
+    use: std/log@v1
+    with:
+      message: "key=${{{{ env.{VAR} }}}} end"
+"#,
+        server.uri()
+    );
+    let config_yaml =
+        format!("vus: 1\nduration: 1s\nvariables:\n  api_key: ${{{{ env.{VAR} }}}}\n");
+
+    let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
+    let config = yaml::parse_config_file(&config_yaml).expect("config yaml parses");
+    let libraries = vec![perfscale_core::library::LibraryRef {
+        use_: component.to_string_lossy().into_owned(),
+        sha256: None,
+        r#as: Some("hello".into()),
+        capabilities: None,
+        with: None,
+        secret: None,
+        allow: None,
+        deny: None,
+        log: None,
+    }];
+
+    let rx = runner::execute(ExecutionPlan::NativeSteps {
+        test,
+        before: config.before,
+        after: config.after,
+        variables: config.variables,
+        shared_variables: config.shared_variables,
+        libraries,
+        config: Box::new(config.run),
+        quiet: false,
+        metrics_tx: None,
+    })
+    .await
+    .unwrap();
+    let lines = collect(rx).await;
+    let all: String = lines
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        !all.contains(SECRET),
+        "the env-sourced settings value leaked into the run log:\n{all}"
+    );
+    assert!(all.contains("key=*** end"), "run log was:\n{all}");
+    // The guest did receive the value (the mock matched on it).
+    server.verify().await;
+    std::env::remove_var(VAR);
+}

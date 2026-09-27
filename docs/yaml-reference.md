@@ -457,6 +457,16 @@ WASM library rules:
 - A trapping or runaway call fails the step: every call runs under a
   per-call fuel budget (~50M) and each instance is capped at 64 MiB of
   memory.
+- A component file may be at most 64 MiB at load (the same cap
+  `perfscale install` enforces on remote fetches) — compilation memory
+  scales with module size, and the cap applies before fuel/memory limits
+  can.
+- The artifact cache is verified at run time, not just at install: a cached
+  `.wasm` whose bytes no longer hash to the pinned digest (corruption or
+  tampering) is a hard error saying to re-run `perfscale install`. Burn
+  artifacts (`.cwasm`, embedded payloads) carry a header pinning the source
+  digest, wasmtime version, target triple, and engine configuration, and
+  are only ever deserialized after a full header match.
 - Author libraries in Rust with
   [`perfscale-library-sdk`](../crates/perfscale-library-sdk/README.md).
 

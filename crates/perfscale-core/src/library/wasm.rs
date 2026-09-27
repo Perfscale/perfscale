@@ -76,6 +76,14 @@ const PER_CALL_FUEL: u64 = 50_000_000;
 /// owner), so this multiplies — keep it tight (RFC 005 pitfall 5).
 const MEMORY_CAP: usize = 64 << 20; // 64 MiB
 
+/// Load-time size cap for a component file. Compilation memory scales with
+/// module size and happens before fuel/memory limits can apply, so an
+/// unbounded local `.wasm` is a host-side OOM vector; the cap matches the
+/// fetch cap `perfscale install` enforces for remote artifacts (64 MiB is
+/// ~5× a StarlingMonkey-class TS component). `pub(crate)` so
+/// `super::burn::burn_component` enforces the same bound.
+pub(crate) const MAX_COMPONENT_BYTES: usize = 64 << 20;
+
 /// Shared engine: compilation settings are identical for every provider, and
 /// one engine lets `Component` compilation cache across libraries of a run.
 /// Also the engine burn artifacts are produced for and deserialized against
@@ -240,6 +248,14 @@ impl WasmLibraryProvider {
 
         let bytes = std::fs::read(path)
             .map_err(|e| format!("library '{}': failed to read: {e}", display()))?;
+        if bytes.len() > MAX_COMPONENT_BYTES {
+            return Err(format!(
+                "library '{}': component is {} MiB — the limit is {} MiB (the same cap `perfscale install` enforces on remote artifacts)",
+                display(),
+                bytes.len() >> 20,
+                MAX_COMPONENT_BYTES >> 20,
+            ));
+        }
         let engine = engine()?;
 
         // Burn-cache fast path. A missing or mismatched artifact is silent
@@ -363,6 +379,27 @@ impl WasmLibraryProvider {
                 grants.describe(),
                 missing.join(", ")
             ));
+        }
+
+        // The other direction (RFC 005): a grant wider than the imports is
+        // harmless — the linker below connects only what the component
+        // declares — but almost always a stale/mistaken grant, so say so.
+        // (The RFC calls this a lint warning; the load-time trace is the
+        // implemented surface.)
+        let mut unused = Vec::new();
+        if grants.fs && !needed.fs {
+            unused.push("fs");
+        }
+        if grants.clock && !needed.clock && !(needed.fs) {
+            // `fs` already covers the wall clock.
+            unused.push("clock");
+        }
+        if !unused.is_empty() {
+            tracing::warn!(
+                "library '{}': capabilities granted but not imported by the component: {} — the grant is inert; drop it",
+                path.display(),
+                unused.join(", ")
+            );
         }
 
         // Connect exactly what the component may use (fail-closed):
@@ -863,6 +900,7 @@ mod tests {
         hello01: PathBuf,
         spin: PathBuf,
         fsreader: PathBuf,
+        memhog: PathBuf,
     }
 
     fn wasip2_installed() -> bool {
@@ -919,6 +957,7 @@ mod tests {
                     hello01: build("hello01", "perfscale_hello01_library")?,
                     spin: build("spin", "perfscale_spin_library")?,
                     fsreader: build("fsreader", "perfscale_fsreader_library")?,
+                    memhog: build("memhog", "perfscale_memhog_library")?,
                 })
             })
             .as_ref()
@@ -1125,6 +1164,82 @@ mod tests {
             .is_err());
     }
 
+    /// A different grant does not satisfy an fs import: fail-closed compares
+    /// per capability, not "any grant present".
+    #[test]
+    fn fs_import_with_only_a_clock_grant_is_a_hard_error() {
+        let Some(f) = fixtures() else { return };
+        let mut r = lib_ref(&f.fsreader);
+        r.capabilities = Some(vec![Capability::Simple("clock".into())]);
+        let err = validate_libraries(&[r], true, None).unwrap_err();
+        assert!(err.contains("needed: fs"), "{err}");
+        assert!(err.contains("granted: clock"), "{err}");
+    }
+
+    /// A symlink inside fs_root pointing outside it must not be followed:
+    /// the preopen confines by capability (cap-std), not by path string.
+    #[test]
+    fn fs_preopen_refuses_symlink_escape() {
+        let Some(f) = fixtures() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "outside-data").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            dir.path().join("link.txt"),
+        )
+        .unwrap();
+        #[cfg(not(unix))]
+        {
+            eprintln!("skipping symlink check on this platform");
+            return;
+        }
+        let mut r = lib_ref(&f.fsreader);
+        r.r#as = Some("corpus".into());
+        r.capabilities = Some(vec![Capability::Simple("fs".into())]);
+        let resolved = validate_libraries(&[r], true, Some(dir.path())).unwrap();
+        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+        let err = inst
+            .call(&ctx(), "read", &[Value::from("/link.txt")])
+            .unwrap_err();
+        assert!(!err.contains("outside-data"), "symlink escape read: {err}");
+    }
+
+    /// The per-instance memory cap: a guest allocating past 64 MiB traps
+    /// (store limiter refuses the growth); the failed instance is dead but
+    /// the provider still mints working instances.
+    #[test]
+    fn memory_cap_traps_growth_past_the_limit() {
+        let Some(f) = fixtures() else { return };
+        let mut r = lib_ref(&f.memhog);
+        r.r#as = Some("mem".into());
+        let resolved = validate_libraries(&[r], false, None).unwrap();
+        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+        // Well under the cap: fine.
+        let v = inst.call(&ctx(), "grow", &[Value::from(1)]).unwrap();
+        assert!(v.contains("grew 1 MiB"), "{v}");
+        // Past the 64 MiB cap: trap, not silent success and not a host OOM.
+        let err = inst.call(&ctx(), "grow", &[Value::from(128)]).unwrap_err();
+        assert!(err.contains("trapped") || err.contains("memory"), "{err}");
+        // A fresh instance of the same provider still works.
+        let mut fresh = resolved[0].provider.instantiate(None, 1).unwrap();
+        let v = fresh.call(&ctx(), "grow", &[Value::from(1)]).unwrap();
+        assert!(v.contains("grew 1 MiB"), "{v}");
+    }
+
+    /// Load-time size cap: an oversized local component is rejected before
+    /// compilation (compile memory scales with module size; the cap matches
+    /// the 64 MiB fetch cap `perfscale install` enforces).
+    #[test]
+    fn oversized_component_is_rejected_before_compilation() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("big.wasm");
+        std::fs::write(&big, vec![0u8; MAX_COMPONENT_BYTES + 1]).unwrap();
+        let err = validate_libraries(&[lib_ref(&big)], true, None).unwrap_err();
+        assert!(err.contains("64 MiB"), "{err}");
+    }
+
     #[test]
     fn net_grant_is_rejected_in_this_build() {
         let Some(f) = fixtures() else { return };
@@ -1222,5 +1337,56 @@ mod tests {
         }
         let resolved = result.unwrap();
         assert_eq!(resolved[0].provider.id(), "perfscale_hello_library@v0.1.0");
+    }
+
+    /// Forgery attempt: a `.cwasm` whose *filename* is the victim's digest
+    /// but whose header carries another component's source hash. The loader
+    /// hashes the bytes it actually read, so the header's source_sha256
+    /// mismatches and the artifact is ignored (silent fallback to compile).
+    #[test]
+    #[serial_test::file_serial(burn_cache_env)]
+    fn forged_burn_artifact_is_ignored() {
+        let Some(f) = fixtures() else { return };
+        let hello_bytes = std::fs::read(&f.hello).unwrap();
+        let hello_sha = super::super::burn::sha256_hex(&hello_bytes);
+        let spin_bytes = std::fs::read(&f.spin).unwrap();
+        // Burn *spin* but store it under *hello*'s digest — cache poisoning.
+        let forged = super::super::burn::burn_component(&spin_bytes).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("libraries");
+        crate::import::write_library_burn(&root, &hello_sha, &forged).unwrap();
+
+        let prev = std::env::var_os("PERFSCALE_CACHE_DIR");
+        std::env::set_var("PERFSCALE_CACHE_DIR", dir.path());
+        let result = validate_libraries(&[lib_ref(&f.hello)], false, None);
+        match prev {
+            Some(v) => std::env::set_var("PERFSCALE_CACHE_DIR", v),
+            None => std::env::remove_var("PERFSCALE_CACHE_DIR"),
+        }
+        let resolved = result.unwrap();
+        // The forged artifact was ignored: the provider is hello, not spin.
+        assert_eq!(resolved[0].provider.id(), "perfscale_hello_library@v0.1.0");
+        let mut inst = resolved[0].provider.instantiate(None, 7).unwrap();
+        assert_eq!(
+            inst.call(&ctx(), "greet", &[Value::from("world")]).unwrap(),
+            "hello, world!"
+        );
+    }
+
+    /// A grant wider than the component's imports is inert and must not fail
+    /// the load (RFC 005: lint-warning territory — the load-time trace is the
+    /// implemented surface; fail-closed concerns imports, not spare grants).
+    #[test]
+    fn grant_wider_than_imports_loads() {
+        let Some(f) = fixtures() else { return };
+        let mut r = lib_ref(&f.hello);
+        r.capabilities = Some(vec![Capability::Simple("clock".into())]);
+        let resolved = validate_libraries(&[r], true, None).unwrap();
+        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+        assert_eq!(
+            inst.call(&ctx(), "greet", &[Value::from("world")]).unwrap(),
+            "hello, world!"
+        );
     }
 }

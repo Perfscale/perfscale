@@ -92,6 +92,15 @@ fn engine_tag() -> u64 {
 /// Precompile a component to a burn artifact (header + serialized native
 /// image). Compile errors surface exactly like a plain load would.
 pub fn burn_component(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    // Same bound as the loader (`wasm::MAX_COMPONENT_BYTES`): burning a huge
+    // component pays the compile memory the cap exists to exclude.
+    if bytes.len() > super::wasm::MAX_COMPONENT_BYTES {
+        return Err(format!(
+            "component is {} MiB — the limit is {} MiB",
+            bytes.len() >> 20,
+            super::wasm::MAX_COMPONENT_BYTES >> 20,
+        ));
+    }
     let engine = super::wasm::engine()?;
     let payload = engine
         .precompile_component(bytes)
@@ -386,6 +395,29 @@ mod tests {
         }
         assert!(load_burned(b"PFSBURN1", &sha).is_none());
         assert!(load_burned(&[], &sha).is_none());
+    }
+
+    #[test]
+    fn wasmtime_version_and_target_triple_mismatches_are_rejected() {
+        let (artifact, sha) = tiny_burn();
+        // Layout: magic(8) | version(4) | len+str(wasmtime) | len+str(triple) | …
+        let wt_len = u32::from_le_bytes(artifact[12..16].try_into().unwrap()) as usize;
+        let triple_len_off = 16 + wt_len;
+        // Flip a byte inside the wasmtime version string.
+        let mut bad = artifact.clone();
+        bad[16] ^= 0xFF;
+        assert!(load_burned(&bad, &sha).is_none(), "wasmtime version flip");
+        // Flip a byte inside the target triple string.
+        let mut bad = artifact.clone();
+        bad[triple_len_off + 4] ^= 0xFF;
+        assert!(load_burned(&bad, &sha).is_none(), "target triple flip");
+    }
+
+    #[test]
+    fn burn_component_enforces_the_size_cap() {
+        let oversized = vec![0u8; crate::library::wasm::MAX_COMPONENT_BYTES + 1];
+        let err = burn_component(&oversized).unwrap_err();
+        assert!(err.contains("64 MiB"), "{err}");
     }
 
     #[test]

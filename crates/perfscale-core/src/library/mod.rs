@@ -383,23 +383,7 @@ fn resolve_wasm(
     fs_root: Option<&std::path::Path>,
 ) -> Result<(Arc<dyn LibraryProvider>, String), String> {
     if let Some(embedded) = burn::embedded().as_ref().and_then(|s| s.get(&lib.use_)) {
-        // Embedded libraries have no fallback: a header mismatch means the
-        // binary was burned by another perfscale build.
-        let component = burn::load_burned(&embedded.artifact, &embedded.source_sha256)
-            .ok_or_else(|| {
-                format!(
-                    "library '{}': the embedded burn artifact does not match this perfscale build — re-create the binary with `perfscale burn` using this perfscale version",
-                    lib.use_
-                )
-            })?;
-        let provider = wasm::WasmLibraryProvider::load_embedded(
-            &lib.use_,
-            component,
-            lib.capabilities.as_deref(),
-            fs_root,
-        )?;
-        let name = provider.library_name().to_string();
-        return Ok((Arc::new(provider), name));
+        return resolve_embedded(lib, embedded, fs_root);
     }
     let path = std::path::Path::new(&lib.use_);
     if !path.exists() {
@@ -415,6 +399,32 @@ fn resolve_wasm(
         ));
     }
     let provider = wasm::WasmLibraryProvider::load(path, lib.capabilities.as_deref(), fs_root)?;
+    let name = provider.library_name().to_string();
+    Ok((Arc::new(provider), name))
+}
+
+/// Resolve a library from the binary's embedded burn payload. Embedded
+/// libraries have no fallback: a header mismatch means the binary was burned
+/// by another perfscale build — a hard error, since a shipped binary cannot
+/// recompile.
+#[cfg(feature = "wasm-libs")]
+fn resolve_embedded(
+    lib: &LibraryRef,
+    embedded: &burn::EmbeddedLibrary,
+    fs_root: Option<&std::path::Path>,
+) -> Result<(Arc<dyn LibraryProvider>, String), String> {
+    let component = burn::load_burned(&embedded.artifact, &embedded.source_sha256).ok_or_else(|| {
+        format!(
+            "library '{}': the embedded burn artifact does not match this perfscale build — re-create the binary with `perfscale burn` using this perfscale version",
+            lib.use_
+        )
+    })?;
+    let provider = wasm::WasmLibraryProvider::load_embedded(
+        &lib.use_,
+        component,
+        lib.capabilities.as_deref(),
+        fs_root,
+    )?;
     let name = provider.library_name().to_string();
     Ok((Arc::new(provider), name))
 }
@@ -919,6 +929,38 @@ mod tests {
                 err.contains(&format!("unknown function 'nope' in `{field}:`")),
                 "{field} → {err}"
             );
+        }
+    }
+
+    /// Rule names are exact, case-sensitive matches against the library's
+    /// exports — casing/whitespace variants are *unknown functions* (a hard
+    /// error), never silently widened or ignored rules.
+    #[test]
+    fn policy_rule_names_are_exact_and_case_sensitive() {
+        for name in ["UUID4", " uuid4", "uuid4 ", "uuid4()"] {
+            let mut r = std_random_ref();
+            r.deny = Some(vec![name.into()]);
+            let err = validate_libraries(&[r], false, None).unwrap_err();
+            assert!(err.contains("unknown function"), "{name} → {err}");
+        }
+    }
+
+    /// A forged embedded entry: the artifact is a valid burn of *something*,
+    /// but its header's source sha256 doesn't match the entry's claimed
+    /// digest — embedded resolution is a hard "re-burn" error, never a
+    /// fallback to running the bytes.
+    #[cfg(feature = "wasm-libs")]
+    #[test]
+    fn forged_embedded_entry_is_a_hard_reburn_error() {
+        let artifact = burn::burn_component(b"(component)").unwrap();
+        let forged = burn::EmbeddedLibrary {
+            source_sha256: [0xAA; 32], // not the digest of `(component)`
+            artifact,
+        };
+        let r = std_random_ref();
+        match resolve_embedded(&r, &forged, None) {
+            Ok(_) => panic!("forged embedded entry must not resolve"),
+            Err(err) => assert!(err.contains("perfscale burn"), "{err}"),
         }
     }
 }

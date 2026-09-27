@@ -486,6 +486,20 @@ fn process_remote_libraries(
                 cache_path.display()
             ));
         }
+        // The cache is content-addressed but the filename is not proof of
+        // content: an attacker (or corruption) with write access to the cache
+        // dir could replace the bytes under `<sha256>.wasm`. Re-hash at
+        // resolution — cheap against compile time — so a swapped artifact is
+        // a hard error, never silently run.
+        let bytes = std::fs::read(&cache_path)
+            .map_err(|e| format!("library '{use_}': failed to read the cached artifact: {e}"))?;
+        let actual = sha_hex(&bytes);
+        if actual != pin_sha {
+            return Err(format!(
+                "library '{use_}': the cached artifact {} hashes to {actual}, not the pinned {pin_sha} — the cache is corrupted or tampered with; delete it and re-run `perfscale install`",
+                cache_path.display()
+            ));
+        }
         if let Some(obj) = entry.as_object_mut() {
             obj.insert(
                 "use".to_string(),
@@ -759,6 +773,14 @@ fn fingerprint_local(path: &Path) -> String {
         .unwrap_or_else(|_| path.to_path_buf())
         .display()
         .to_string()
+}
+
+/// Lowercase hex sha256 — the artifact cache key form.
+fn sha_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Read a raw artifact (bytes, not YAML) out of a git checkout — the
@@ -1765,6 +1787,35 @@ mod tests {
         let libs = value["libraries"].as_array().unwrap();
         assert_eq!(libs[0]["use"], cache_path.to_string_lossy().as_ref());
         assert_eq!(libs[0]["sha256"], sha.as_str(), "normalized to lowercase");
+    }
+
+    /// Cache tampering: the bytes under `<sha256>.wasm` no longer hash to
+    /// the pin — a hard error at resolution, never a silent run of swapped
+    /// content.
+    #[tokio::test]
+    async fn remote_library_cache_tamper_is_a_hard_error() {
+        let dir = tmpdir("lib-tamper");
+        let sha = sha_hex(b"wasm-bytes");
+        let doc = lib_doc(&dir, &format!("    sha256: \"{sha}\"\n"));
+        fs::write(
+            dir.join("perfscale.lock"),
+            format!(
+                "version = 1\n\n[[libraries]]\nuse = \"https://example.com/l.wasm\"\nsha256 = \"{sha}\"\n"
+            ),
+        )
+        .unwrap();
+        let opts = ImportOptions {
+            cache_dir: Some(tmpdir("lib-tamper-cache")),
+            ..Default::default()
+        };
+        let cache_path =
+            write_library_artifact(&library_cache_root(&opts), &sha, b"wasm-bytes").unwrap();
+        // Attacker/corruption: same filename, different bytes.
+        fs::write(&cache_path, b"swapped-bytes").unwrap();
+
+        let err = load_document(&doc, &opts).await.unwrap_err();
+        assert!(err.contains("corrupted or tampered"), "{err}");
+        assert!(err.contains("perfscale install"), "{err}");
     }
 
     #[tokio::test]

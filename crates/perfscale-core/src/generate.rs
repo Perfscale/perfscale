@@ -831,6 +831,7 @@ mod tests {
         ) -> Result<String, String> {
             match func {
                 "secret_fn" => Ok("s3cr3t-value".into()),
+                "shout_fn" => Ok("S3CR3T-VALUE".into()), // the same value, transformed
                 "plain_fn" => Ok("plain-value".into()),
                 other => Err(format!("unknown function '{other}'")),
             }
@@ -878,6 +879,27 @@ mod tests {
         let (mut g, secrets) = policy_gen(rules, vec![finfo("plain_fn", false)]);
         g.expand("${lib.plain_fn()}").unwrap();
         assert_eq!(secrets.mask("got plain-value"), "got ***");
+    }
+
+    /// RFC 005 pitfall 4 (pinned known limitation): masking is value-based —
+    /// the registry holds the exact strings a secret-marked call returned.
+    /// A *transformed* derivative (here: the same token uppercased by a
+    /// non-secret function) is a new, unregistered string and is NOT masked.
+    /// The documented guidance stands: mark the outermost producing function
+    /// secret; never derive-and-return partial secrets.
+    #[test]
+    fn transformed_secret_is_not_masked_pitfall_4() {
+        let (mut g, secrets) = policy_gen(
+            LibraryRules::default(),
+            vec![finfo("secret_fn", true), finfo("shout_fn", false)],
+        );
+        g.expand("${lib.secret_fn()}").unwrap();
+        g.expand("${lib.shout_fn()}").unwrap();
+        // The exact secret value is masked…
+        assert_eq!(secrets.mask("got s3cr3t-value"), "got ***");
+        // …its transformed derivative is not. If this ever changes, update
+        // the pitfall-4 docs — this test pins the current semantics.
+        assert_eq!(secrets.mask("got S3CR3T-VALUE"), "got S3CR3T-VALUE");
     }
 
     #[test]
