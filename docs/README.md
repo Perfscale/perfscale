@@ -8,6 +8,8 @@ tiny local dev server for collecting results.
 
 - [Getting started](getting-started.md) — install, first run, first results
 - [YAML reference](yaml-reference.md) — the `test.yaml` / `config.yaml` formats
+- [Library SDKs](library-sdk.md) — author WASM value-generator libraries in
+  Rust, TypeScript, or Go
 
 ## CLI (`perfscale` binary)
 
