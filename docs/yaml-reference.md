@@ -142,7 +142,7 @@ Rules and edge cases:
 
 ```yaml
 vus: 10          # virtual users, default 1
-duration: 5m     # "30s", "1m", "5m30s", "1h" — default "1m"
+duration: 5m     # "30s", "500ms", "1.5s", "1m", "5m30s", "1h" — default "1m"
 
 report:          # optional — forward metrics to a perfscale serve instance
   url: http://localhost:7999
@@ -157,7 +157,7 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | Field | Default | Description |
 |---|---|---|
 | `vus` | `1` | Concurrent virtual users (fixed profile) |
-| `duration` | `1m` | Wall-clock run length; bare numbers are seconds |
+| `duration` | `1m` | Wall-clock run length; bare numbers are seconds; sub-second values (`"500ms"`, `"1.5s"`) are honored by the native engine |
 | `stages` | — | Ramping-VU profile (k6-style): list of `{ duration, target }` stages. Overrides `vus`/`duration`; mutually exclusive with `arrival`. Native engine only |
 | `arrival` | — | Arrival-rate profile (open model): `{ max_vus, pre_allocated_vus?, stages: [{ duration, rate }] }` — hold an iterations/sec rate. Mutually exclusive with `stages`. Native engine only |
 | `report.url` | — | A `perfscale serve` base URL; the CLI `--report` flag overrides it |
@@ -245,7 +245,7 @@ periodic `[stats]` line gains a trailing `vus=N` field, and summary exports
 (`--summary-export`) report `vus: null` with `duration` set to the summed
 stage length.
 
-Stage durations use the same `"30s"`/`"1m30s"`/`"1h"` grammar as `duration`
+Stage durations use the same `"500ms"`/`"30s"`/`"1m30s"`/`"1h"` grammar as `duration`
 but are validated strictly: an unparseable or zero stage duration fails the
 run (and `perfscale lint`) with a clear error. `stages` and `arrival` are
 native-engine only — with `--locust` they're rejected (use `vus`/`duration`),

@@ -233,7 +233,7 @@ to the same `<url>/api/v1/metrics` endpoint:
 report:
   url: http://localhost:7999
   during_run: true        # default false — only the end-of-run summary
-  interval_ms: 5000       # snapshot/flush interval, min 1000
+  interval_ms: 5000       # snapshot/flush interval, min 100
   batch_size: 500         # flush a batch once it holds this many samples
   max_cpu_percent: 90     # CPU gate; 0 disables it
   max_pending: 24         # soft warn cap — batches are never dropped mid-run

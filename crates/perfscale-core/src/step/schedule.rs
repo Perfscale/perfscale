@@ -6,7 +6,7 @@
 //! runtime. The async supervisors that *drive* these schedules live in
 //! [`crate::step::runner`].
 
-use super::{parse_duration_secs_strict, RunConfig};
+use super::{parse_duration_ms_strict, RunConfig};
 
 /// One piecewise-linear segment: the value ramps linearly from `from` to `to`
 /// between the previous segment's `end_secs` (0 for the first) and this
@@ -25,8 +25,8 @@ pub struct Segment<T> {
 /// `stages:`/`arrival:` (or their absence) is accounted for and validated.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Schedule {
-    /// `vus` workers looping until `duration_secs` elapse — the classic mode.
-    Fixed { vus: u32, duration_secs: u64 },
+    /// `vus` workers looping until `duration_ms` elapse — the classic mode.
+    Fixed { vus: u32, duration_ms: u64 },
     /// Ramping VUs: a piecewise-linear target-VU curve; the runner's
     /// supervisor spawns/stops VU tasks to track it.
     RampingVus { segments: Vec<Segment<u32>> },
@@ -61,9 +61,9 @@ impl RunConfig {
             // at 0 and the first stage ramps up to its target.
             let mut from = 0u32;
             for (i, stage) in self.stages.iter().enumerate() {
-                let secs = parse_duration_secs_strict(&stage.duration)
+                let ms = parse_duration_ms_strict(&stage.duration)
                     .map_err(|e| format!("stages[{i}]: {e}"))?;
-                end_secs += secs as f64;
+                end_secs += ms as f64 / 1000.0;
                 segments.push(Segment {
                     end_secs,
                     from,
@@ -87,7 +87,7 @@ impl RunConfig {
             let mut end_secs = 0.0;
             let mut from = 0.0f64;
             for (i, stage) in arrival.stages.iter().enumerate() {
-                let secs = parse_duration_secs_strict(&stage.duration)
+                let ms = parse_duration_ms_strict(&stage.duration)
                     .map_err(|e| format!("arrival.stages[{i}]: {e}"))?;
                 if !stage.rate.is_finite() || stage.rate < 0.0 {
                     return Err(format!(
@@ -95,7 +95,7 @@ impl RunConfig {
                         stage.rate
                     ));
                 }
-                end_secs += secs as f64;
+                end_secs += ms as f64 / 1000.0;
                 segments.push(Segment {
                     end_secs,
                     from,
@@ -114,7 +114,7 @@ impl RunConfig {
         }
         Ok(Schedule::Fixed {
             vus: self.vus.max(1),
-            duration_secs: self.duration_secs(),
+            duration_ms: self.duration_ms(),
         })
     }
 }
@@ -124,7 +124,7 @@ impl Schedule {
     /// durations.
     pub fn total_secs(&self) -> f64 {
         match self {
-            Schedule::Fixed { duration_secs, .. } => *duration_secs as f64,
+            Schedule::Fixed { duration_ms, .. } => *duration_ms as f64 / 1000.0,
             Schedule::RampingVus { segments } => segments.last().map(|s| s.end_secs).unwrap_or(0.0),
             Schedule::ArrivalRate { segments, .. } => {
                 segments.last().map(|s| s.end_secs).unwrap_or(0.0)
@@ -290,7 +290,7 @@ mod tests {
             cfg.resolve_schedule().unwrap(),
             Schedule::Fixed {
                 vus: 3,
-                duration_secs: 30
+                duration_ms: 30_000
             }
         );
     }
@@ -565,5 +565,43 @@ mod tests {
         assert_eq!(cfg.resolve_schedule().unwrap().total_secs(), 120.0);
         let cfg = arrival_config(10, &[("30s", 5.0), ("1m30s", 20.0)]);
         assert_eq!(cfg.resolve_schedule().unwrap().total_secs(), 120.0);
+    }
+
+    // -----------------------------------------------------------------
+    // Sub-second durations (issue #2)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn fixed_profile_honors_subsecond_durations() {
+        let cfg = RunConfig {
+            vus: 1,
+            duration: "250ms".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolve_schedule().unwrap(),
+            Schedule::Fixed {
+                vus: 1,
+                duration_ms: 250
+            }
+        );
+        assert_eq!(cfg.resolve_schedule().unwrap().total_secs(), 0.25);
+    }
+
+    #[test]
+    fn staged_profiles_honor_subsecond_stage_durations() {
+        let cfg = staged_config(&[("500ms", 5), ("1.5s", 0)]);
+        let schedule = cfg.resolve_schedule().unwrap();
+        assert_eq!(schedule.total_secs(), 2.0);
+        match schedule {
+            Schedule::RampingVus { segments } => {
+                assert_eq!(segments[0].end_secs, 0.5);
+                assert_eq!(segments[1].end_secs, 2.0);
+            }
+            other => panic!("expected ramping schedule, got {other:?}"),
+        }
+
+        let cfg = arrival_config(4, &[("250ms", 8.0)]);
+        assert_eq!(cfg.resolve_schedule().unwrap().total_secs(), 0.25);
     }
 }

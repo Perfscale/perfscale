@@ -506,7 +506,7 @@ fn build_library_settings(config: &RunConfig, vars: &Value, secrets: &SecretRegi
                     .iter()
                     .map(|s| {
                         serde_json::json!({
-                            "duration_ms": super::parse_duration_secs(&s.duration) * 1000,
+                            "duration_ms": super::parse_duration_ms(&s.duration),
                             "target": s.target,
                         })
                     })
@@ -519,7 +519,7 @@ fn build_library_settings(config: &RunConfig, vars: &Value, secrets: &SecretRegi
                 "max_vus": a.max_vus,
                 "pre_allocated_vus": a.pre_allocated_vus,
                 "stages": a.stages.iter().map(|s| serde_json::json!({
-                    "duration_ms": super::parse_duration_secs(&s.duration) * 1000,
+                    "duration_ms": super::parse_duration_ms(&s.duration),
                     "rate": s.rate,
                 })).collect::<Vec<_>>(),
             }),
@@ -528,7 +528,7 @@ fn build_library_settings(config: &RunConfig, vars: &Value, secrets: &SecretRegi
     } else {
         (
             Value::from(config.vus),
-            Value::from(super::parse_duration_secs(&config.duration) * 1000),
+            Value::from(super::parse_duration_ms(&config.duration)),
             Value::Null,
             Value::Null,
         )
@@ -885,14 +885,21 @@ pub async fn run_native(
     };
 
     let summary_shape = match &schedule {
-        Schedule::Fixed { vus, duration_secs } => {
-            let (vus, duration_secs) = (*vus, *duration_secs);
-            let deadline = started + Duration::from_secs(duration_secs);
+        Schedule::Fixed { vus, duration_ms } => {
+            let (vus, duration_ms) = (*vus, *duration_ms);
+            let deadline = started + Duration::from_millis(duration_ms);
+            // Keep the historical "(30s)" shape for whole-second runs; show
+            // milliseconds when the duration is sub-second.
+            let dur = if duration_ms % 1000 == 0 {
+                format!("{}s", duration_ms / 1000)
+            } else {
+                format!("{duration_ms}ms")
+            };
             emit(
                 &tx,
                 LogSource::System,
                 &format!(
-                    "Starting {vus} VU{} for {} ({duration_secs}s)",
+                    "Starting {vus} VU{} for {} ({dur})",
                     if vus == 1 { "" } else { "s" },
                     config.duration
                 ),
@@ -2081,7 +2088,7 @@ mod tests {
     async fn run_steps_sleep_only_emits_start_and_done_markers() {
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let lines = run_and_collect(vec![sleep_step(10)], config, false).await;
@@ -2111,13 +2118,13 @@ mod tests {
                 severity: None,
                 message: None,
             },
-            // Throttle the loop so a 1s run makes a handful of requests, not
+            // Throttle the loop so a 250ms run makes a handful of requests, not
             // thousands — the suite runs many tests in parallel.
             sleep_step(50),
         ];
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let lines = run_and_collect(steps, config, false).await;
@@ -2152,7 +2159,7 @@ mod tests {
         }];
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let lines = run_and_collect(steps, config, false).await;
@@ -2188,7 +2195,7 @@ mod tests {
         ];
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let lines = run_and_collect(steps, config, true).await;
@@ -2227,7 +2234,7 @@ mod tests {
         }];
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let lines = run_and_collect(steps, config, true).await;
@@ -2244,7 +2251,7 @@ mod tests {
     async fn run_steps_multiple_vus_reports_correct_count() {
         let config = RunConfig {
             vus: 3,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
@@ -2284,7 +2291,7 @@ mod tests {
         ];
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let lines = run_and_collect(steps, config, false).await;
@@ -2295,11 +2302,34 @@ mod tests {
     async fn run_steps_zero_vus_is_clamped_to_one() {
         let config = RunConfig {
             vus: 0,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
         assert!(lines.iter().any(|l| l.text.starts_with("Starting 1 VU")));
+    }
+
+    /// Issue #2: a sub-second `duration` must be honored end-to-end — the run
+    /// finishes in well under the old 1s floor and the log shows ms.
+    #[tokio::test]
+    async fn run_steps_honors_subsecond_duration() {
+        let config = RunConfig {
+            vus: 1,
+            duration: "100ms".into(),
+            ..Default::default()
+        };
+        let start = Instant::now();
+        let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
+
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "a 100ms run must not hit the old 1s floor"
+        );
+        assert!(
+            lines.iter().any(|l| l.text.contains("(100ms)")),
+            "sub-second runs print the duration in ms"
+        );
+        assert!(lines.last().unwrap().text.starts_with("Done"));
     }
 
     // -----------------------------------------------------------------
@@ -2344,7 +2374,7 @@ mod tests {
     fn gpu_config(source: &str) -> RunConfig {
         RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "800ms".into(),
             gpu: Some(Box::new(crate::gpu::GpuConfig {
                 enabled: true,
                 interval_ms: 100,
@@ -2374,7 +2404,7 @@ mod tests {
         assert_eq!(g.interval_ms, 100);
         assert_eq!(g.devices.len(), 1);
         let d = &g.devices[0];
-        assert!(d.samples.len() >= 5, "1s run at 100ms: {:?}", d.samples);
+        assert!(d.samples.len() >= 5, "800ms run at 100ms: {:?}", d.samples);
         assert!(d.samples.iter().all(|s| s.ts_ms > 0), "timestamps stamped");
         assert_eq!(d.avg_utilization_pct, Some(73.0));
         assert_eq!(d.max_memory_used_mib, Some(8192.0));
@@ -2494,19 +2524,20 @@ mod tests {
             .unwrap_or_else(|| panic!("iterations summary line missing: {lines:?}"))
     }
 
-    /// Ramp 0→2 over 1s, hold 2 for 1s, ramp down to 0 over 1s: the run takes
-    /// the summed ~3s, produces iterations, and the summary reports the
-    /// *observed* concurrency (min 0 at the ramp start, max 2 at the top).
+    /// Ramp 0→2 over 300ms, hold 2 for 300ms, ramp down to 0 over 300ms: the
+    /// run takes the summed ~0.9s, produces iterations, and the summary
+    /// reports the *observed* concurrency (min 0 at the ramp start, max 2 at
+    /// the top).
     #[tokio::test]
     async fn ramping_stages_scale_vus_up_and_down() {
-        let config = staged(&[("1s", 2), ("1s", 2), ("1s", 0)]);
+        let config = staged(&[("300ms", 2), ("300ms", 2), ("300ms", 0)]);
         let t0 = Instant::now();
         let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
         let elapsed = t0.elapsed();
 
         assert!(
-            elapsed >= Duration::from_secs(3) && elapsed < Duration::from_secs(5),
-            "three 1s stages ≈ 3s wall clock, took {elapsed:?}"
+            elapsed >= Duration::from_millis(800) && elapsed < Duration::from_secs(3),
+            "three 300ms stages ≈ 0.9s wall clock, took {elapsed:?}"
         );
         assert!(
             lines
@@ -2526,11 +2557,12 @@ mod tests {
         );
     }
 
-    /// Open model: the dispatcher holds the arrival rate — 5 it/s ramping up
-    /// over 1s (∫ = 2.5 → 2 iterations) then holding for 2s (10 iterations).
+    /// Open model: the dispatcher holds the arrival rate — 25 it/s ramping up
+    /// over 200ms (∫ = 2.5 → 2 iterations) then holding for 400ms (10
+    /// iterations). Same integral as 5 it/s over 1s+2s, five times faster.
     #[tokio::test]
     async fn arrival_rate_holds_the_target_rate() {
-        let config = arrival(5, &[("1s", 5.0), ("2s", 5.0)]);
+        let config = arrival(5, &[("200ms", 25.0), ("400ms", 25.0)]);
         let lines = run_and_collect(vec![sleep_step(1)], config, false).await;
         assert!(
             lines
@@ -2564,7 +2596,7 @@ mod tests {
     /// run: the counter must exist even when nothing was dropped.
     #[tokio::test]
     async fn arrival_dropped_iterations_gate_passes_when_nothing_dropped() {
-        let config = arrival(4, &[("1s", 2.0)]);
+        let config = arrival(4, &[("300ms", 4.0)]);
         let after = vec![thresholds_step(
             json!({ "dropped_iterations": ["count==0"] }),
             None,
@@ -2584,7 +2616,7 @@ mod tests {
     /// served and land in `dropped_iterations` (plus a throttled warning).
     #[tokio::test]
     async fn arrival_beyond_max_vus_drops_and_counts_iterations() {
-        let config = arrival(1, &[("1s", 10.0), ("1s", 10.0)]);
+        let config = arrival(1, &[("400ms", 10.0), ("400ms", 10.0)]);
         let lines = run_and_collect(vec![sleep_step(500)], config, false).await;
         let line = lines
             .iter()
@@ -2714,7 +2746,7 @@ mod tests {
         ];
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let lines = run_and_collect(steps, config, false).await;
@@ -2822,7 +2854,7 @@ mod tests {
         ];
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let lines = run_and_collect(steps, config, false).await;
@@ -2952,7 +2984,7 @@ mod tests {
         }];
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let (lines, outcome) = run_native_with_shared(steps, Map::new(), config).await;
@@ -2986,7 +3018,7 @@ mod tests {
         }];
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let decls: Map<String, Value> = json!({ "queue": [] }).as_object().unwrap().clone();
@@ -3018,7 +3050,7 @@ mod tests {
         }];
         let config = RunConfig {
             vus: 2,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let decls: Map<String, Value> =
@@ -3065,7 +3097,7 @@ mod tests {
             Map::new(),
             RunConfig {
                 vus: 1,
-                duration: "1s".into(),
+                duration: "250ms".into(),
                 // The `before` step reads a file — opt in explicitly (file
                 // actions are fail-closed by default).
                 allow_file_actions: true,
@@ -3094,7 +3126,7 @@ mod tests {
             vars,
             RunConfig {
                 vus: 1,
-                duration: "1s".into(),
+                duration: "250ms".into(),
                 ..Default::default()
             },
         )
@@ -3119,7 +3151,7 @@ mod tests {
             vars,
             RunConfig {
                 vus: 1,
-                duration: "1s".into(),
+                duration: "250ms".into(),
                 ..Default::default()
             },
         )
@@ -3150,7 +3182,7 @@ mod tests {
             Map::new(),
             RunConfig {
                 vus: 5,
-                duration: "1s".into(),
+                duration: "250ms".into(),
                 ..Default::default()
             },
         )
@@ -3177,7 +3209,7 @@ mod tests {
             vec![sleep_step(1)],
             RunConfig {
                 vus: 1,
-                duration: "1s".into(),
+                duration: "250ms".into(),
                 ..Default::default()
             },
             false,
@@ -3238,7 +3270,7 @@ mod tests {
             vars,
             RunConfig {
                 vus: 1,
-                duration: "1s".into(),
+                duration: "250ms".into(),
                 // The `before` step reads a file — opt in explicitly.
                 allow_file_actions: true,
                 ..Default::default()
@@ -3292,7 +3324,7 @@ mod tests {
             Map::new(),
             RunConfig {
                 vus: 1,
-                duration: "1s".into(),
+                duration: "250ms".into(),
                 ..Default::default()
             },
         )
@@ -3358,7 +3390,7 @@ mod tests {
             Map::new(),
             RunConfig {
                 vus: 1,
-                duration: "1s".into(),
+                duration: "250ms".into(),
                 allow_process_actions: true,
                 ..Default::default()
             },
@@ -3405,7 +3437,7 @@ mod tests {
             Map::new(),
             RunConfig {
                 vus: 1,
-                duration: "1s".into(),
+                duration: "250ms".into(),
                 allow_process_actions: true,
                 ..Default::default()
             },
@@ -3448,7 +3480,7 @@ mod tests {
             Map::new(),
             RunConfig {
                 vus: 1,
-                duration: "1s".into(),
+                duration: "250ms".into(),
                 ..Default::default()
             },
         )
@@ -3570,7 +3602,7 @@ mod tests {
                 json!({ "id": "${{ conn.id }}", "query": query }),
                 None,
             ),
-            // Throttle the loop so a 1s run makes dozens, not thousands, of
+            // Throttle the loop so a 250ms run makes dozens, not thousands, of
             // queries — the suite runs many tests in parallel.
             sleep_step(20),
         ]
@@ -3588,10 +3620,12 @@ mod tests {
         }
     }
 
-    fn one_second() -> RunConfig {
+    /// Short fixed run for gate tests: enough iterations for rate/sample
+    /// metrics, well under the old 1s floor.
+    fn quick_run() -> RunConfig {
         RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         }
     }
@@ -3625,7 +3659,7 @@ mod tests {
             steps,
             Vec::new(),
             Vec::new(),
-            one_second(),
+            quick_run(),
             Map::new(),
             Map::new(),
             libraries,
@@ -3658,7 +3692,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Map::new(),
-            one_second(),
+            quick_run(),
         )
         .await;
         assert!(
@@ -3685,7 +3719,7 @@ mod tests {
             Vec::new(),
             after,
             Map::new(),
-            one_second(),
+            quick_run(),
         )
         .await;
 
@@ -3727,7 +3761,7 @@ mod tests {
             Vec::new(),
             after,
             Map::new(),
-            one_second(),
+            quick_run(),
         )
         .await;
 
@@ -3782,7 +3816,7 @@ mod tests {
             Vec::new(),
             after,
             Map::new(),
-            one_second(),
+            quick_run(),
         )
         .await;
 
@@ -3805,7 +3839,7 @@ mod tests {
             Vec::new(),
             after,
             Map::new(),
-            one_second(),
+            quick_run(),
         )
         .await;
 
@@ -3841,7 +3875,7 @@ mod tests {
             Vec::new(),
             after,
             vars,
-            one_second(),
+            quick_run(),
         )
         .await;
 
@@ -3911,10 +3945,10 @@ mod tests {
         ];
         let config = RunConfig {
             vus: 1,
-            duration: "3s".into(),
+            duration: "800ms".into(),
             report: Some(crate::report::ReportRunConfig {
                 during_run: true,
-                interval_ms: 1000,
+                interval_ms: 200,
                 ..Default::default()
             }),
             ..Default::default()
@@ -3923,7 +3957,7 @@ mod tests {
 
         assert!(
             snaps.len() >= 2,
-            "expected ≥2 snapshots over a 3s run, got {}",
+            "expected ≥2 snapshots over an 800ms run, got {}",
             snaps.len()
         );
         // Timestamps strictly increase; counts are cumulative.
@@ -3957,7 +3991,7 @@ mod tests {
         for report in [None, Some(crate::report::ReportRunConfig::default())] {
             let config = RunConfig {
                 vus: 1,
-                duration: "1s".into(),
+                duration: "250ms".into(),
                 report,
                 ..Default::default()
             };
@@ -3980,20 +4014,24 @@ mod tests {
         let config = RunConfig {
             report: Some(crate::report::ReportRunConfig {
                 during_run: true,
-                interval_ms: 1000,
+                interval_ms: 500,
                 ..Default::default()
             }),
-            duration: "3s".into(),
+            duration: "1.5s".into(),
             ..gpu_config("runner-fake") // 100ms GPU sampling
         };
         let (_lines, snaps) = run_native_streaming(vec![sleep_step(50)], config).await;
 
-        assert!(snaps.len() >= 2, "snapshots over a 3s run: {}", snaps.len());
+        assert!(
+            snaps.len() >= 2,
+            "snapshots over a 1.5s run: {}",
+            snaps.len()
+        );
         let streamed: Vec<&crate::gpu::GpuSample> =
             snaps.iter().flat_map(|s| s.gpu.iter()).collect();
         assert!(
             streamed.len() >= 10,
-            "3s at 100ms sampling ≈ 30 (last partial window is lost at run end): {}",
+            "1.5s at 100ms sampling ≈ 15 (last partial window is lost at run end): {}",
             streamed.len()
         );
         assert!(
@@ -4022,10 +4060,10 @@ mod tests {
     async fn run_native_without_gpu_streams_empty_gpu_deltas() {
         let config = RunConfig {
             vus: 1,
-            duration: "2s".into(),
+            duration: "500ms".into(),
             report: Some(crate::report::ReportRunConfig {
                 during_run: true,
-                interval_ms: 1000,
+                interval_ms: 200,
                 ..Default::default()
             }),
             ..Default::default()

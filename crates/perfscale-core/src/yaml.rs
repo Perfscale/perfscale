@@ -20,7 +20,7 @@ pub struct ReportConfig {
     #[serde(default)]
     pub during_run: bool,
 
-    /// Snapshot/flush interval in milliseconds (default 5000, min 1000).
+    /// Snapshot/flush interval in milliseconds (default 5000, min 100).
     #[serde(default = "crate::report::default_interval_ms")]
     pub interval_ms: u64,
 

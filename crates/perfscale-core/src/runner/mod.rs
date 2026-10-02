@@ -200,7 +200,7 @@ mod tests {
         };
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
 
@@ -326,7 +326,7 @@ mod tests {
             },
             config: Box::new(RunConfig {
                 vus: 1,
-                duration: "1s".into(),
+                duration: "250ms".into(),
                 ..Default::default()
             }),
             before: Vec::new(),

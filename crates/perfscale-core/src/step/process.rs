@@ -34,7 +34,7 @@ use tokio::sync::mpsc;
 
 use crate::log_mask::SecretRegistry;
 use crate::runner::{LogLine, LogSource};
-use crate::step::parse_duration_secs;
+use crate::step::parse_duration_ms;
 
 /// Default captured-output tail size per stream (`buffer_kb` overrides).
 pub(crate) const DEFAULT_BUFFER_CAP: usize = 64 * 1024;
@@ -232,7 +232,7 @@ impl WaitUntil {
                     return Err("waitUntil names no matcher — use stdout_contains, stderr_contains, stdout_matches, stderr_matches or port_open".into());
                 }
                 let timeout = match o.get("timeout").and_then(Value::as_str) {
-                    Some(s) => Duration::from_secs(parse_duration_secs(s)),
+                    Some(s) => Duration::from_millis(parse_duration_ms(s)),
                     None => Duration::from_secs(30),
                 };
                 let on_timeout_continue = match o.get("on_timeout").and_then(Value::as_str) {

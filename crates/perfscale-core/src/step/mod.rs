@@ -116,7 +116,8 @@ pub struct RunConfig {
     #[serde(default = "default_vus")]
     pub vus: u32,
 
-    /// Duration string: `"30s"`, `"1m"`, `"5m30s"`, `"1h"`.
+    /// Duration string: `"30s"`, `"500ms"`, `"1.5s"`, `"1m"`, `"5m30s"`,
+    /// `"1h"`. Sub-second values are honored by the native engine.
     #[serde(default = "default_duration")]
     pub duration: String,
 
@@ -199,7 +200,8 @@ pub struct RunConfig {
 /// previous stage's `target` (like k6's `ramping-vus` with `startVUs: 0`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct VuStage {
-    /// Stage length: `"30s"`, `"1m"`, `"5m30s"`, `"1h"` — minimum 1s.
+    /// Stage length: `"30s"`, `"500ms"`, `"1.5s"`, `"1m"`, `"5m30s"`, `"1h"`
+    /// — minimum 1ms.
     pub duration: String,
 
     /// Virtual users to reach by the end of the stage. `0` is a full
@@ -233,7 +235,8 @@ pub struct ArrivalConfig {
 /// over `duration`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RateStage {
-    /// Stage length: `"30s"`, `"1m"`, `"5m30s"`, `"1h"` — minimum 1s.
+    /// Stage length: `"30s"`, `"500ms"`, `"1.5s"`, `"1m"`, `"5m30s"`, `"1h"`
+    /// — minimum 1ms.
     pub duration: String,
 
     /// Iterations per second to reach by the end of the stage. Fractions are
@@ -267,83 +270,120 @@ impl Default for RunConfig {
 }
 
 impl RunConfig {
-    /// Parse `duration` string into whole seconds.
+    /// Parse `duration` string into whole seconds (truncated, minimum 1).
     pub fn duration_secs(&self) -> u64 {
         parse_duration_secs(&self.duration)
+    }
+
+    /// Parse `duration` string into milliseconds — `"500ms"`, `"1.5s"`,
+    /// `"30s"` all work; the legacy lenient fallbacks apply (garbage → 1s).
+    pub fn duration_ms(&self) -> u64 {
+        parse_duration_ms(&self.duration)
+    }
+}
+
+/// Scan a human duration string into milliseconds, or `None` when the input
+/// is malformed. Grammar: a sequence of `<number><unit>` where the unit is
+/// `h`, `m`, `s` or `ms` and the number may be fractional (`"1.5s"`); a
+/// trailing bare number counts as seconds. In `strict` mode every byte must
+/// fit the grammar; in lenient mode unknown characters are skipped and a unit
+/// without a number counts as zero (the historical `parse_duration_secs`
+/// behaviour).
+fn scan_duration_ms(s: &str, strict: bool) -> Option<u64> {
+    let chars: Vec<char> = s.trim().chars().collect();
+    let mut i = 0;
+    let mut total = 0.0f64;
+    let mut any_number = false;
+    while i < chars.len() {
+        let start = i;
+        let mut dot = false;
+        while i < chars.len() && (chars[i].is_ascii_digit() || (chars[i] == '.' && !dot)) {
+            dot |= chars[i] == '.';
+            i += 1;
+        }
+        let num: f64 = if start == i {
+            if strict {
+                // A unit (or the end) with no number before it.
+                return None;
+            }
+            // Lenient: not a number — skip one byte of garbage and move on.
+            i += 1;
+            continue;
+        } else {
+            any_number = true;
+            chars[start..i].iter().collect::<String>().parse().ok()?
+        };
+        // Unit: `ms` (two chars) wins over `m`; no unit = bare seconds.
+        let unit_ms = if i + 1 < chars.len() && chars[i] == 'm' && chars[i + 1] == 's' {
+            i += 2;
+            1.0
+        } else if i < chars.len() && matches!(chars[i], 'h' | 'm' | 's') {
+            let u = match chars[i] {
+                'h' => 3_600_000.0,
+                'm' => 60_000.0,
+                _ => 1_000.0,
+            };
+            i += 1;
+            u
+        } else {
+            // Bare number = seconds, but only as the final token — a stray
+            // letter after it ("1h30x") is a typo, not a unit.
+            if strict && i < chars.len() {
+                return None;
+            }
+            1_000.0
+        };
+        total += num * unit_ms;
+    }
+    if !any_number {
+        return None;
+    }
+    Some(total.round() as u64)
+}
+
+/// Parse a human duration string into milliseconds.
+/// Handles: `"500ms"`, `"30s"`, `"1.5s"`, `"1m"`, `"5m30s"`, `"1h"`, bare
+/// numbers (treated as seconds). Lenient: unparseable or zero input falls
+/// back to 1000ms (the historical 1s floor).
+pub fn parse_duration_ms(s: &str) -> u64 {
+    match scan_duration_ms(s, false) {
+        Some(ms) if ms > 0 => ms,
+        _ => 1000,
     }
 }
 
 /// Parse a human duration string into seconds.
-/// Handles: `"30s"`, `"1m"`, `"5m30s"`, `"1h"`, bare numbers (treated as seconds).
+/// Handles: `"30s"`, `"1m"`, `"5m30s"`, `"1h"`, bare numbers (treated as
+/// seconds). Sub-second input truncates to 0 and clamps to the 1s minimum —
+/// use [`parse_duration_ms`] when sub-second precision matters.
 pub fn parse_duration_secs(s: &str) -> u64 {
-    let mut total = 0u64;
-    let mut num = String::new();
-    for ch in s.chars() {
-        match ch {
-            '0'..='9' => num.push(ch),
-            'h' => {
-                total += num.parse::<u64>().unwrap_or(0) * 3600;
-                num.clear();
-            }
-            'm' => {
-                total += num.parse::<u64>().unwrap_or(0) * 60;
-                num.clear();
-            }
-            's' => {
-                total += num.parse::<u64>().unwrap_or(0);
-                num.clear();
-            }
-            _ => {}
-        }
+    (parse_duration_ms(s) / 1000).max(1)
+}
+
+/// Strict variant of [`parse_duration_ms`] for load-profile stages: instead
+/// of clamping garbage to the floor it returns an error, and zero-length
+/// durations are rejected — a stage with no (or unparseable) length is a
+/// config bug the user should fix, not silently run.
+pub fn parse_duration_ms_strict(s: &str) -> Result<u64, String> {
+    if s.trim().is_empty() {
+        return Err("empty duration — use e.g. \"30s\", \"500ms\", \"1m30s\", \"1h\"".into());
     }
-    if !num.is_empty() {
-        total += num.parse::<u64>().unwrap_or(0);
+    let ms = scan_duration_ms(s, true).ok_or_else(|| {
+        format!("invalid duration '{s}' — use e.g. \"30s\", \"500ms\", \"1m30s\", \"1h\"")
+    })?;
+    if ms == 0 {
+        return Err(format!("invalid duration '{s}': must be at least 1ms"));
     }
-    total.max(1)
+    Ok(ms)
 }
 
 /// Strict variant of [`parse_duration_secs`] for load-profile stages: instead
 /// of clamping garbage to 1s it returns an error, and zero-length durations
 /// are rejected — a stage with no (or unparseable) length is a config bug the
-/// user should fix, not silently run.
+/// user should fix, not silently run. Sub-second durations round up to 1s;
+/// use [`parse_duration_ms_strict`] when sub-second precision matters.
 pub fn parse_duration_secs_strict(s: &str) -> Result<u64, String> {
-    let s = s.trim();
-    if s.is_empty() {
-        return Err("empty duration — use e.g. \"30s\", \"1m30s\", \"1h\"".into());
-    }
-    let mut total = 0u64;
-    let mut num = String::new();
-    for ch in s.chars() {
-        match ch {
-            '0'..='9' => num.push(ch),
-            'h' | 'm' | 's' => {
-                let n: u64 = num.parse().map_err(|_| {
-                    format!("invalid duration '{s}': '{ch}' needs a number before it")
-                })?;
-                num.clear();
-                total += n * match ch {
-                    'h' => 3600,
-                    'm' => 60,
-                    _ => 1,
-                };
-            }
-            _ => {
-                return Err(format!(
-                "invalid duration '{s}': unexpected '{ch}' — use e.g. \"30s\", \"1m30s\", \"1h\""
-            ))
-            }
-        }
-    }
-    if !num.is_empty() {
-        // Trailing bare number = seconds, same as `parse_duration_secs`.
-        total += num
-            .parse::<u64>()
-            .map_err(|_| format!("invalid duration '{s}'"))?;
-    }
-    if total == 0 {
-        return Err(format!("invalid duration '{s}': must be at least 1s"));
-    }
-    Ok(total)
+    Ok(parse_duration_ms_strict(s)?.div_ceil(1000))
 }
 
 /// Resolve a well-known preset ID to a [`RunConfig`].
@@ -387,6 +427,58 @@ mod tests {
     fn parse_duration_garbage_is_minimum() {
         assert_eq!(parse_duration_secs("not-a-duration"), 1);
         assert_eq!(parse_duration_secs(""), 1);
+    }
+
+    #[test]
+    fn parse_duration_ms_subsecond_and_fractional() {
+        assert_eq!(parse_duration_ms("500ms"), 500);
+        assert_eq!(parse_duration_ms("250ms"), 250);
+        assert_eq!(parse_duration_ms("1.5s"), 1500);
+        assert_eq!(parse_duration_ms("0.5s"), 500);
+        assert_eq!(parse_duration_ms("1m500ms"), 60_500);
+        assert_eq!(parse_duration_ms("30s"), 30_000);
+        assert_eq!(parse_duration_ms("1m30s"), 90_000);
+        assert_eq!(parse_duration_ms("45"), 45_000);
+    }
+
+    #[test]
+    fn parse_duration_ms_keeps_the_lenient_1s_floor() {
+        assert_eq!(parse_duration_ms(""), 1000);
+        assert_eq!(parse_duration_ms("not-a-duration"), 1000);
+        assert_eq!(parse_duration_ms("0s"), 1000);
+        assert_eq!(parse_duration_ms("0ms"), 1000);
+    }
+
+    #[test]
+    fn parse_duration_secs_truncates_subsecond_to_the_1s_minimum() {
+        assert_eq!(parse_duration_secs("500ms"), 1);
+        assert_eq!(parse_duration_secs("1.5s"), 1);
+        assert_eq!(parse_duration_secs("2500ms"), 2);
+    }
+
+    #[test]
+    fn strict_ms_parser_accepts_subsecond_forms() {
+        assert_eq!(parse_duration_ms_strict("500ms").unwrap(), 500);
+        assert_eq!(parse_duration_ms_strict("1.5s").unwrap(), 1500);
+        assert_eq!(parse_duration_ms_strict("30s").unwrap(), 30_000);
+        assert_eq!(parse_duration_ms_strict("1m30s").unwrap(), 90_000);
+        assert_eq!(parse_duration_ms_strict("45").unwrap(), 45_000);
+    }
+
+    #[test]
+    fn strict_ms_parser_rejects_garbage_and_zero() {
+        for bad in ["", "0s", "0ms", "0", "s", "not-a-duration", "1h30x", "10 s"] {
+            assert!(
+                parse_duration_ms_strict(bad).is_err(),
+                "'{bad}' must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_secs_parser_rounds_subsecond_up() {
+        assert_eq!(parse_duration_secs_strict("500ms").unwrap(), 1);
+        assert_eq!(parse_duration_secs_strict("1500ms").unwrap(), 2);
     }
 
     #[test]

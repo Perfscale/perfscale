@@ -25,9 +25,9 @@ use serde::{Deserialize, Serialize};
 
 pub use stream::{snapshot_to_samples, DuringRunShipper, MetricSnapshot, Sample};
 
-/// Minimum snapshot/flush interval — below 1s the sampler and shipper would
-/// spend the run servicing timers instead of letting the VUs work.
-pub const MIN_INTERVAL_MS: u64 = 1000;
+/// Minimum snapshot/flush interval — below ~100ms the sampler and shipper
+/// would spend the run servicing timers instead of letting the VUs work.
+pub const MIN_INTERVAL_MS: u64 = 100;
 
 /// Metrics reporting for a run (`report:` block).
 ///
@@ -47,7 +47,7 @@ pub struct ReportRunConfig {
     pub during_run: bool,
 
     /// Snapshot/flush interval in milliseconds (default 5000, clamped to
-    /// ≥ 1000 at use).
+    /// ≥ [`MIN_INTERVAL_MS`](crate::report::MIN_INTERVAL_MS) at use).
     #[serde(default = "default_interval_ms")]
     pub interval_ms: u64,
 
@@ -128,7 +128,7 @@ mod tests {
             interval_ms: 5,
             ..ReportRunConfig::default()
         };
-        assert_eq!(cfg.interval(), Duration::from_millis(1000));
+        assert_eq!(cfg.interval(), Duration::from_millis(100));
         let cfg = ReportRunConfig::default();
         assert_eq!(cfg.interval(), Duration::from_millis(5000));
     }

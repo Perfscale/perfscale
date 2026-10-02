@@ -68,7 +68,7 @@ steps:
 "#,
         server.uri()
     );
-    let config_yaml = "vus: 2\nduration: 1s\n";
+    let config_yaml = "vus: 2\nduration: 250ms\n";
 
     let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
     let config = yaml::parse_config_file(config_yaml).expect("config yaml parses");
@@ -150,7 +150,7 @@ steps:
     let test = yaml::parse_test_file(&test_yaml).unwrap();
     let config = RunConfig {
         vus: 1,
-        duration: "1s".into(),
+        duration: "250ms".into(),
         ..Default::default()
     };
 
@@ -207,7 +207,7 @@ steps:
     let test = yaml::parse_test_file(&test_yaml).unwrap();
     let config = RunConfig {
         vus: 1,
-        duration: "1s".into(),
+        duration: "250ms".into(),
         ..Default::default()
     };
 
@@ -297,7 +297,7 @@ steps:
     let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
     let config = RunConfig {
         vus: 1,
-        duration: "1s".into(),
+        duration: "250ms".into(),
         ..Default::default()
     };
 
@@ -686,7 +686,7 @@ steps:
 "#,
         server.uri()
     );
-    let config_yaml = "vus: 1\nduration: 1s\n";
+    let config_yaml = "vus: 1\nduration: 250ms\n";
 
     let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
     let config = yaml::parse_config_file(config_yaml).expect("config yaml parses");
@@ -753,7 +753,7 @@ steps:
 "#,
         server.uri()
     );
-    let config_yaml = "vus: 1\nduration: 1s\nseed: 7\nvariables:\n  region: eu-west\n";
+    let config_yaml = "vus: 1\nduration: 250ms\nseed: 7\nvariables:\n  region: eu-west\n";
 
     let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
     let config = yaml::parse_config_file(config_yaml).expect("config yaml parses");
@@ -833,7 +833,7 @@ steps:
         let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             ..Default::default()
         };
         let libraries = vec![perfscale_core::library::LibraryRef {
@@ -937,7 +937,7 @@ steps:
     let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
     let config = RunConfig {
         vus: 1,
-        duration: "1s".into(),
+        duration: "250ms".into(),
         ..Default::default()
     };
     let libraries = vec![perfscale_core::library::LibraryRef {
@@ -1017,7 +1017,7 @@ steps:
         let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
         let config = RunConfig {
             vus: 1,
-            duration: "1s".into(),
+            duration: "250ms".into(),
             seed: Some(7),
             ..Default::default()
         };
@@ -1138,7 +1138,7 @@ steps:
     let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
     let config = RunConfig {
         vus: 1,
-        duration: "1s".into(),
+        duration: "250ms".into(),
         allow_library_capabilities: true,
         fs_root: Some(corpus.path().to_path_buf()),
         ..Default::default()
@@ -1219,7 +1219,7 @@ steps:
         server.uri()
     );
     let config_yaml =
-        format!("vus: 1\nduration: 1s\nvariables:\n  api_key: ${{{{ env.{VAR} }}}}\n");
+        format!("vus: 1\nduration: 250ms\nvariables:\n  api_key: ${{{{ env.{VAR} }}}}\n");
 
     let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
     let config = yaml::parse_config_file(&config_yaml).expect("config yaml parses");
