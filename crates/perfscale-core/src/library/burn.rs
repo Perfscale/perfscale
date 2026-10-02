@@ -78,8 +78,12 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Tag of the engine configuration a precompiled artifact depends on. The
 /// shared engine (`wasm::engine`) is built with `consume_fuel(true)` and
-/// nothing else; **any change to that `Config` must be reflected here**, or
-/// stale artifacts would load against different compilation settings.
+/// nothing else (unit-test builds additionally disable signal-based traps —
+/// see `wasm::engine` — which changes no production artifact: a test-built
+/// artifact loaded by a release binary fails wasmtime's own deserialize
+/// config check and silently falls back to compilation); **any change to that
+/// `Config` must be reflected here**, or stale artifacts would load against
+/// different compilation settings.
 fn engine_tag() -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for b in b"consume_fuel=1" {

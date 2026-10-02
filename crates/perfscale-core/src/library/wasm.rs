@@ -94,6 +94,15 @@ pub(crate) fn engine() -> Result<&'static Engine, String> {
         .get_or_init(|| {
             let mut cfg = Config::new();
             cfg.consume_fuel(true);
+            // Unit tests only: run without signal-based traps. With them,
+            // wasmtime installs a Mach exception-handler thread (machports) on
+            // macOS that aborts the whole process when a *non*-wasmtime thread
+            // faults — under the default parallel test harness (~1 in 3 runs
+            // ended in SIGABRT; serial runs were stable). Explicit checks are
+            // marginally slower, which is why production keeps the signal
+            // fast path; test builds pay it for determinism.
+            #[cfg(test)]
+            cfg.signals_based_traps(false);
             Engine::new(&cfg).map_err(|e| format!("failed to create the WASM engine: {e}"))
         })
         .as_ref()
