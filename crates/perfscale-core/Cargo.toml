@@ -148,3 +148,7 @@ axum = "0.7"
 [[bench]]
 name = "engine"
 harness = false
+
+[[bench]]
+name = "library"
+harness = false

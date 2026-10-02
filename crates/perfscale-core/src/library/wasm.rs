@@ -34,7 +34,7 @@
 //! - **Memory**: [`StoreLimits`] caps linear memory at [`MEMORY_CAP`].
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 use wasmtime::component::{Component, Linker, ResourceTable};
@@ -582,6 +582,7 @@ impl Instantiated {
         &self,
         store: &mut Store<HostState>,
         ctx: &CallCtx<'_>,
+        settings_json: String,
         func: &str,
         args_json: &str,
     ) -> Result<Result<String, String>, wasmtime::Error> {
@@ -589,6 +590,7 @@ impl Instantiated {
             Instantiated::V1(i) => {
                 // The 0.1 ABI has no settings field — the guest simply
                 // never sees them.
+                let _ = settings_json;
                 let wctx = bindings_v1::exports::perfscale::library::library::Context {
                     message_seq: ctx.message_seq,
                     iteration_seq: ctx.iteration_seq,
@@ -606,7 +608,7 @@ impl Instantiated {
                     vu_id: ctx.vu_id,
                     seed: ctx.seed,
                     time_ms: ctx.time_ms,
-                    settings_json: ctx.settings_json.to_string(),
+                    settings_json,
                 };
                 i.perfscale_library_library()
                     .call_call(store, &wctx, func, args_json)
@@ -665,7 +667,8 @@ impl LibraryProvider for WasmLibraryProvider {
         Ok(Box::new(WasmLibraryInstance {
             store: Some(store),
             instance: Some(instance),
-            id: self.id.clone(),
+            args_buf: Vec::new(),
+            id: Arc::from(self.id.as_str()),
         }))
     }
 }
@@ -677,26 +680,77 @@ struct WasmLibraryInstance {
     /// The bindgen handles are not `Clone`, so the call path moves the whole
     /// handle to the blocking thread and back (see `call`).
     instance: Option<Instantiated>,
-    id: String,
+    /// Scratch for the per-call args JSON: the marshal writes into this
+    /// reused buffer instead of allocating a fresh `String` per call. On the
+    /// blocking-pool path it travels with the store and comes back in the
+    /// reply. Empty between calls.
+    args_buf: Vec<u8>,
+    /// `Arc` so the blocking-pool handoff clones a pointer, not the string.
+    id: Arc<str>,
 }
 
 impl LibraryInstance for WasmLibraryInstance {
     fn call(&mut self, ctx: &CallCtx<'_>, func: &str, args: &[Value]) -> Result<String, String> {
-        let args_json = serde_json::to_string(args)
+        let mut args_buf = std::mem::take(&mut self.args_buf);
+        args_buf.clear();
+        serde_json::to_writer(&mut args_buf, args)
             .map_err(|e| format!("{}.{func}: failed to encode arguments: {e}", self.id))?;
-        if tokio::runtime::Handle::try_current().is_err() {
-            // No runtime (lint, unit tests, sync embedders): run inline.
+        let handle = match tokio::runtime::Handle::try_current() {
+            Err(_) => {
+                // No runtime (lint, unit tests, sync embedders): run inline.
+                let args_json = std::str::from_utf8(&args_buf).expect("JSON is UTF-8");
+                let store = self.store.as_mut().expect("store present between calls");
+                let instance = self.instance.as_ref().expect("instance present");
+                let result = call_guest(
+                    store,
+                    instance,
+                    &self.id,
+                    ctx,
+                    ctx.settings_json.to_string(),
+                    func,
+                    args_json,
+                );
+                self.args_buf = args_buf;
+                return result;
+            }
+            Ok(h) => h,
+        };
+        if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+            // The runner's hot path (the CLI builds a multi-thread runtime).
+            // `block_in_place` runs the guest call on this worker thread
+            // while the scheduler hands the thread's other tasks to a
+            // stand-in — no store/instance handoff, no spawn, no channel.
+            // Crucially, wasmtime-wasi's sync hostcalls (`Handle::block_on`
+            // internally, see `off_runtime`) are legal inside
+            // `block_in_place`, so fs/clock guests work too.
+            let args_json = std::str::from_utf8(&args_buf).expect("JSON is UTF-8");
             let store = self.store.as_mut().expect("store present between calls");
             let instance = self.instance.as_ref().expect("instance present");
-            return call_guest(store, instance, &self.id, ctx, func, &args_json);
+            let id = Arc::clone(&self.id);
+            let result = tokio::task::block_in_place(|| {
+                call_guest(
+                    store,
+                    instance,
+                    &id,
+                    ctx,
+                    ctx.settings_json.to_string(),
+                    func,
+                    args_json,
+                )
+            });
+            self.args_buf = args_buf;
+            return result;
         }
-        // On a runtime worker thread the guest call must happen on a
-        // blocking thread (see `off_runtime`): the store and the instance
-        // handle move over and back. One hop per call — microseconds against
-        // even a trivial WASM call.
+        // Single-threaded runtime: `block_in_place` is unavailable, so the
+        // guest call hops to the blocking pool (see `off_runtime`): the
+        // store, the instance handle and the args buffer move over and back.
+        // One hop per call — microseconds against even a trivial WASM call.
+        // `settings_json` is copied exactly once here; the blocking thread
+        // hands the owned String straight to the guest context (no second
+        // copy).
         let mut store = self.store.take().expect("store present between calls");
         let instance = self.instance.take().expect("instance present");
-        let id = self.id.clone();
+        let id = Arc::clone(&self.id);
         let settings_json = ctx.settings_json.to_string();
         let func_string = func.to_string();
         let (message_seq, iteration_seq, vu_id, seed, time_ms) = (
@@ -714,15 +768,25 @@ impl LibraryInstance for WasmLibraryInstance {
                 vu_id,
                 seed,
                 time_ms,
-                settings_json: &settings_json,
+                settings_json: "",
             };
-            let result = call_guest(&mut store, &instance, &id, &ctx, &func_string, &args_json);
-            let _ = tx.send((store, instance, result));
+            let args_json = std::str::from_utf8(&args_buf).expect("JSON is UTF-8");
+            let result = call_guest(
+                &mut store,
+                &instance,
+                &id,
+                &ctx,
+                settings_json,
+                &func_string,
+                args_json,
+            );
+            let _ = tx.send((store, instance, args_buf, result));
         });
         match rx.recv() {
-            Ok((store, instance, result)) => {
+            Ok((store, instance, args_buf, result)) => {
                 self.store = Some(store);
                 self.instance = Some(instance);
+                self.args_buf = args_buf;
                 result
             }
             // The blocking task panicked or was cancelled before sending;
@@ -738,19 +802,23 @@ impl LibraryInstance for WasmLibraryInstance {
 /// One guest `call` with a fresh fuel budget, mapping the outcome to the
 /// engine's error contract: guest error → step failure, trap/fuel → step
 /// failure naming the trap.
+#[allow(clippy::too_many_arguments)]
 fn call_guest(
     store: &mut Store<HostState>,
     instance: &Instantiated,
     id: &str,
     ctx: &CallCtx<'_>,
+    settings_json: String,
     func: &str,
     args_json: &str,
 ) -> Result<String, String> {
-    // Fresh fuel budget per call (the store's fuel is cumulative).
+    // Fresh fuel budget per call (the store's fuel is cumulative). This is a
+    // single store-field write — already the cheapest reset mechanism; the
+    // store is deliberately NOT recreated per call.
     store
         .set_fuel(PER_CALL_FUEL)
         .map_err(|e| format!("{id}.{func}: {e}"))?;
-    match instance.call_call(store, ctx, func, args_json) {
+    match instance.call_call(store, ctx, settings_json, func, args_json) {
         Ok(Ok(value)) => Ok(value),
         // Guest-level error (bad function/args): the step fails with it.
         Ok(Err(e)) => Err(format!("{id}.{func}: {e}")),
@@ -769,9 +837,10 @@ fn call_guest(
 /// touching a granted WASI interface (fs reads, clocks) from the async
 /// runner died at the first hostcall. On a thread with no runtime (sync
 /// callers: lint, unit tests, embedders) the call runs inline. The hot path
-/// ([`WasmLibraryInstance::call`]) hops through the blocking pool instead;
-/// this scoped thread serves the cold paths (per-run info probe,
-/// per-instance init), where a thread spawn is noise.
+/// ([`WasmLibraryInstance::call`]) avoids this thread on multi-thread
+/// runtimes (`block_in_place`, where `Handle::block_on` is legal) and uses
+/// the blocking pool otherwise; this scoped thread serves the cold paths
+/// (per-run info probe, per-instance init), where a thread spawn is noise.
 fn off_runtime<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     if tokio::runtime::Handle::try_current().is_err() {
         return f();
@@ -1131,6 +1200,53 @@ mod tests {
         c.settings_json = r#"{"vus":10,"seed":42}"#;
         let v = inst.call(&c, "settings", &[]).unwrap();
         assert_eq!(v, r#"{"vus":10,"seed":42}"#);
+    }
+
+    /// The runner's hot path: calls from a multi-thread runtime worker run
+    /// via `block_in_place`. wasmtime-wasi's sync hostcalls block on a tokio
+    /// `Handle` internally, which is only legal there — an fs-granted guest
+    /// proves the whole chain works (issue #4).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn multi_thread_runtime_calls_work_in_place() {
+        let Some(f) = fixtures() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("corpus.txt"), "corpus-data\n").unwrap();
+        let mut r = lib_ref(&f.fsreader);
+        r.r#as = Some("corpus".into());
+        r.capabilities = Some(vec![Capability::Simple("fs".into())]);
+        let resolved = validate_libraries(&[r], true, Some(dir.path())).unwrap();
+        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+        // A WASI-touching call (fs preopen read) and a fuel trip, both from
+        // runtime worker threads.
+        let v = tokio::task::spawn(async move {
+            inst.call(&ctx(), "read", &[Value::from("/corpus.txt")])
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        assert_eq!(v, "corpus-data");
+
+        let resolved = validate_libraries(&[lib_ref(&f.spin)], false, None).unwrap();
+        let mut spin = resolved[0].provider.instantiate(None, 1).unwrap();
+        let err = tokio::task::spawn(async move { spin.call(&ctx(), "spin", &[]).unwrap_err() })
+            .await
+            .unwrap();
+        assert!(err.contains("fuel"), "{err}");
+    }
+
+    /// Single-threaded runtimes keep the blocking-pool hop (block_in_place
+    /// is unavailable there).
+    #[tokio::test(flavor = "current_thread")]
+    async fn current_thread_runtime_calls_hop_through_the_blocking_pool() {
+        let Some(f) = fixtures() else { return };
+        let resolved = validate_libraries(&[lib_ref(&f.hello)], false, None).unwrap();
+        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+        let v = tokio::task::spawn(async move {
+            inst.call(&ctx(), "greet", &[Value::from("world")]).unwrap()
+        })
+        .await
+        .unwrap();
+        assert_eq!(v, "hello, world!");
     }
 
     #[test]

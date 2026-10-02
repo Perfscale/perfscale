@@ -144,6 +144,7 @@ jobs:
         # end-to-end suites.
         run: |
           cargo bench -p perfscale-core --bench engine -- --warm-up-time 1 --measurement-time 3
+          cargo bench -p perfscale-core --features wasm-libs --bench library -- --warm-up-time 1 --measurement-time 3
           python3 scripts/bench_metrics.py criterion target/criterion bench-results.json bench-report.md
 
       - name: Publish report to job summary
