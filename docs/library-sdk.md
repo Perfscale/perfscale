@@ -141,10 +141,12 @@ secrets.
 
 - **Local iteration**: declare `use: ./mylib.wasm` (path relative to the
   declaring YAML) and run — nothing else needed.
-- **Distribution**: HTTPS (`sha256:` pin required) or
+- **Distribution**: HTTPS or
   `git+<repo>@<ref>#<path>` sources, fetched once by `perfscale install`
   into the content-addressed cache and pinned in `perfscale.lock`; `run`
-  and `lint` then work fully offline.
+  and `lint` then work fully offline. A `sha256:` pin is recommended
+  (verified on install) — without it the computed digest is pinned with a
+  warning.
 - **Performance**: `perfscale install` also *burns* each library — AOT
   precompiles it to a native artifact, so runs deserialize instead of
   recompiling per run. `perfscale burn -f test.yaml -o ./perfscale+libs`

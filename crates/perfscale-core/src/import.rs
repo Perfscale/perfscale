@@ -138,8 +138,8 @@ pub struct CollectedLibrary {
     /// The `use:` string — the lockfile key for remote refs; an absolute
     /// path (anchored to the declaring document) for local `.wasm` refs.
     pub use_: String,
-    /// The declared `sha256:` field, if any (required for HTTPS sources,
-    /// optional for git).
+    /// The declared `sha256:` field, if any (optional — for HTTPS the
+    /// lockfile pin fills in when it is absent, see `perfscale install`).
     pub sha256: Option<String>,
 }
 
@@ -417,22 +417,9 @@ fn process_remote_libraries(
         return Ok(());
     }
 
-    // Authoring errors first (they should fail even before the lockfile is
-    // consulted): HTTPS sources must declare their digest.
-    for entry in libs.iter() {
-        let Some(use_) = entry.get("use").and_then(Value::as_str) else {
-            continue;
-        };
-        if (use_.starts_with("http://") || use_.starts_with("https://"))
-            && entry.get("sha256").and_then(Value::as_str).is_none()
-        {
-            return Err(format!(
-                "library '{use_}': https sources require a `sha256:` field \
-                 (64 hex) in the libraries: entry"
-            ));
-        }
-    }
-
+    // HTTPS sources may declare their digest; when they do not, the
+    // lockfile pin (written by `perfscale install` from the computed
+    // digest) is the truth.
     let mut lock: Option<lockfile::Lockfile> = None;
     for entry in libs.iter_mut() {
         let use_ = match entry.get("use").and_then(Value::as_str) {
@@ -457,26 +444,31 @@ fn process_remote_libraries(
         };
         let pin_sha = pin.sha256.clone();
         if use_.starts_with("http://") || use_.starts_with("https://") {
-            let declared = entry.get("sha256").and_then(Value::as_str).ok_or_else(|| {
-                format!(
-                    "library '{use_}': https sources require a `sha256:` field \
-                         (64 hex) in the libraries: entry"
-                )
-            })?;
-            let declared = normalize_sha256(&use_, declared)?;
-            if declared != pin_sha {
-                return Err(format!(
-                    "library '{use_}': sha256 mismatch — the YAML declares {declared} but \
-                     {} pins {}. A re-published artifact is never swapped in silently; \
-                     verify the publisher, then update the YAML and re-run `perfscale install`",
-                    lockfile::LOCKFILE_NAME,
-                    pin_sha
-                ));
-            }
-            // Normalize the declared digest in place so validation and the
-            // lock always compare lowercase.
-            if let Some(obj) = entry.as_object_mut() {
-                obj.insert("sha256".to_string(), Value::String(declared));
+            match entry.get("sha256").and_then(Value::as_str) {
+                Some(declared) => {
+                    let declared = normalize_sha256(&use_, declared)?;
+                    if declared != pin_sha {
+                        return Err(format!(
+                            "library '{use_}': sha256 mismatch — the YAML declares {declared} but \
+                             {} pins {}. A re-published artifact is never swapped in silently; \
+                             verify the publisher, then update the YAML and re-run `perfscale install`",
+                            lockfile::LOCKFILE_NAME,
+                            pin_sha
+                        ));
+                    }
+                    // Normalize the declared digest in place so validation and the
+                    // lock always compare lowercase.
+                    if let Some(obj) = entry.as_object_mut() {
+                        obj.insert("sha256".to_string(), Value::String(declared));
+                    }
+                }
+                // Unpinned https: the lock pin is the digest (install computed
+                // it) — surface it in the resolved document.
+                None => {
+                    if let Some(obj) = entry.as_object_mut() {
+                        obj.insert("sha256".to_string(), Value::String(pin_sha.clone()));
+                    }
+                }
             }
         }
         let cache_path = library_artifact_path(&library_cache_root(opts), &pin_sha);
@@ -1712,14 +1704,31 @@ mod tests {
         assert!(err.contains("perfscale install"), "{err}");
     }
 
+    /// Unpinned https: the lockfile pin (computed by `perfscale install`) is
+    /// the digest — resolution succeeds offline and surfaces the pin.
     #[tokio::test]
-    async fn https_library_requires_declared_sha256() {
+    async fn https_library_without_declared_sha256_resolves_via_lock_pin() {
         let dir = tmpdir("lib-nosha");
+        let sha = sha_hex(b"wasm-bytes");
         let doc = lib_doc(&dir, "");
-        let err = load_document(&doc, &ImportOptions::default())
-            .await
-            .unwrap_err();
-        assert!(err.contains("require a `sha256:` field"), "{err}");
+        fs::write(
+            dir.join("perfscale.lock"),
+            format!(
+                "version = 1\n\n[[libraries]]\nuse = \"https://example.com/l.wasm\"\nsha256 = \"{sha}\"\n"
+            ),
+        )
+        .unwrap();
+        let opts = ImportOptions {
+            cache_dir: Some(tmpdir("lib-nosha-cache")),
+            ..Default::default()
+        };
+        let cache_path = write_library_artifact(&library_cache_root(&opts), &sha, b"wasm-bytes")
+            .expect("cache write");
+
+        let (value, _) = load_document(&doc, &opts).await.unwrap();
+        let libs = value["libraries"].as_array().unwrap();
+        assert_eq!(libs[0]["use"], cache_path.to_string_lossy().as_ref());
+        assert_eq!(libs[0]["sha256"], sha.as_str(), "lock pin surfaced");
     }
 
     #[tokio::test]

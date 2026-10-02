@@ -87,15 +87,18 @@ entry whose
 .B use:
 is an
 .I https://
-URL (with a required
-.BR sha256: )
-or a
+URL or a
 .I git+<repo>@<ref>#<path>
-ref is fetched once, digest-verified, stored in the content-addressed cache
+ref is fetched once, digest-verified against its
+.B sha256:
+pin when one is declared, stored in the content-addressed cache
 .RI ( <cache>/libraries/<sha256>.wasm ),
 and recorded in a TOML
 .I perfscale.lock
 next to the declaring file (git refs are pinned to the resolved commit).
+.B sha256:
+is optional for https sources: without it the computed digest is pinned
+and printed with a warning advising to add the pin to the YAML.
 Afterwards
 .B run
 and

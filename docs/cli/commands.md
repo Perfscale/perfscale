@@ -199,14 +199,20 @@ perfscale install test.yaml config.yaml
 perfscale install test.yaml --refresh   # re-resolve git refs
 ```
 
-Every `use:` that is an `https://…` URL (requires a `sha256:` field) or a
+Every `use:` that is an `https://…` URL or a
 `git+<repo>@<ref>#<path>` ref is fetched once — including declarations
-found through `import:` chains — digest-verified, stored in the
+found through `import:` chains — digest-verified against its `sha256:` pin
+(declared pins only; see below), stored in the
 content-addressed cache (`<cache>/libraries/<sha256>.wasm`), and recorded
 in a TOML `perfscale.lock` next to the declaring file (git refs pinned to
 the resolved commit). Commit the lockfile: `run` and `lint` resolve remote
 libraries through lock + cache **fully offline**, and a missing pin or
 cache artifact is a hard error that says to run `perfscale install`.
+
+`sha256:` is optional for `https://…` sources (mirroring the perfscaled
+agent): without it, the fetched artifact's digest is computed, pinned in
+the lockfile, and printed with a warning advising you to add the pin to
+the YAML. With a pin, a mismatch is a hard error that names both digests.
 
 Exit code: `0` when every remote library is installed (or already pinned),
 `1` on fetch/verification errors (a sha256 mismatch names both digests).

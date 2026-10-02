@@ -372,8 +372,10 @@ content-addressed cache (`<cache>/libraries/<sha256>.wasm`), and writes
 artifact is a hard error that says to run `perfscale install`.
 
 ```yaml
-# HTTPS: sha256 is required and pinned — a re-published artifact with a
-# different digest is a hard error, never a silent swap.
+# HTTPS: sha256 pins the artifact — a re-published artifact with a
+# different digest is a hard error, never a silent swap. The pin is
+# optional: without it, `perfscale install` pins the computed digest in
+# the lockfile and prints a warning advising to add it here.
 - use: 'https://vendor.example.com/fixer-ids.wasm'
   sha256: '9f2c…(64 hex)…'
 

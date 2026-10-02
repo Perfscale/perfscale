@@ -4,7 +4,8 @@
 //! For every `libraries[].use` that names a remote source (`https://…` or
 //! `git+<repo>@<ref>#<path>`) in the given documents — including documents
 //! pulled in through `import:` — this fetches the artifact once, verifies
-//! its digest, stores it in the content-addressed cache
+//! its digest when a `sha256:` pin is declared (or computes it and warns
+//! when the pin is absent), stores it in the content-addressed cache
 //! (`<cache>/libraries/<sha256>.wasm`), and writes/updates `perfscale.lock`
 //! next to the declaring document. `run`/`lint` afterwards work fully
 //! offline against lock + cache.
@@ -172,32 +173,48 @@ async fn install_https(
     lock: &mut Lockfile,
     cache_root: &Path,
 ) -> Result<String, CliError> {
-    let declared = lib.sha256.as_deref().ok_or_else(|| {
-        CliError::new(format!(
-            "library '{}': https sources require a `sha256:` field (64 hex) in the libraries: entry",
-            lib.use_
-        ))
-        .hint("pin the artifact you reviewed: sha256 of the .wasm, e.g. `shasum -a 256 lib.wasm`")
-        .docs("yaml-reference.md#libraries")
-    })?;
-    let declared = normalize_sha256(&lib.use_, declared).map_err(CliError::new)?;
+    let declared = lib
+        .sha256
+        .as_deref()
+        .map(|d| normalize_sha256(&lib.use_, d).map_err(CliError::new))
+        .transpose()?;
 
-    let already_pinned = lock.find(&lib.use_).is_some_and(|e| e.sha256 == declared)
-        && import::library_artifact_path(cache_root, &declared).is_file();
-    if already_pinned {
-        println!("installed {} ({}…, up to date)", lib.use_, short(&declared));
-        return Ok(declared);
+    // Up to date = the effective pin (the declared digest, or — for
+    // unpinned https — the lockfile pin from the first install) already has
+    // a lock entry and its artifact in the cache: no network needed.
+    let effective = declared
+        .clone()
+        .or_else(|| lock.find(&lib.use_).map(|e| e.sha256.clone()));
+    if let Some(pinned) = effective {
+        let already_pinned = lock.find(&lib.use_).is_some_and(|e| e.sha256 == pinned)
+            && import::library_artifact_path(cache_root, &pinned).is_file();
+        if already_pinned {
+            println!("installed {} ({}…, up to date)", lib.use_, short(&pinned));
+            return Ok(pinned);
+        }
     }
 
     let bytes = fetch_bytes(&lib.use_).await?;
     let actual = sha256_hex(&bytes);
-    if actual != declared {
-        return Err(CliError::new(format!(
-            "library '{}': sha256 mismatch — the YAML declares {declared} but the fetched artifact hashes to {actual}",
-            lib.use_
-        ))
-        .hint("the publisher re-released under the same URL, or the pin is stale — verify which, then update the YAML")
-        .docs("yaml-reference.md#libraries"));
+    match &declared {
+        Some(declared) if actual != *declared => {
+            return Err(CliError::new(format!(
+                "library '{}': sha256 mismatch — the YAML declares {declared} but the fetched artifact hashes to {actual}",
+                lib.use_
+            ))
+            .hint("the publisher re-released under the same URL, or the pin is stale — verify which, then update the YAML")
+            .docs("yaml-reference.md#libraries"));
+        }
+        None => {
+            println!(
+                "warning: {} installed without a sha256 pin — digest computed from the fetched artifact: {actual}",
+                lib.use_
+            );
+            println!(
+                "  (add `sha256: \"{actual}\"` to the libraries: entry to pin what you reviewed)"
+            );
+        }
+        _ => {}
     }
     import::write_library_artifact(cache_root, &actual, &bytes).map_err(CliError::new)?;
     lock.upsert(LockEntry {

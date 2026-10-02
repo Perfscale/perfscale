@@ -169,10 +169,23 @@ async fn install_https_sha_mismatch_is_a_hard_error() {
     );
 }
 
+/// https sources may omit `sha256:` — the artifact is fetched and pinned
+/// under the computed digest, with a warning advising to pin it.
 #[tokio::test]
-async fn install_https_without_declared_sha256_fails() {
+async fn install_https_without_declared_sha256_pins_computed_digest() {
+    let bytes = b"unpinned artifact bytes";
+    let sha = sha256_hex(bytes);
+
     let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/lib.wasm"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes.to_vec()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
     let dir = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
     let url = format!("{}/lib.wasm", server.uri());
     let yaml = write_yaml(
         dir.path(),
@@ -182,10 +195,27 @@ async fn install_https_without_declared_sha256_fails() {
     cmd()
         .arg("install")
         .arg(&yaml)
-        .env("PERFSCALE_CACHE_DIR", tempfile::tempdir().unwrap().path())
+        .env("PERFSCALE_CACHE_DIR", cache.path())
         .assert()
-        .failure()
-        .stderr(predicates::str::contains("require a `sha256:` field"));
+        .success()
+        .stdout(predicates::str::contains("without a sha256 pin"))
+        .stdout(predicates::str::contains(&sha))
+        .stdout(predicates::str::contains(format!("installed {url}")));
+
+    // The computed digest is pinned like a declared one would be.
+    let lock = std::fs::read_to_string(dir.path().join("perfscale.lock")).unwrap();
+    assert!(lock.contains(&format!("use = \"{url}\"")), "{lock}");
+    assert!(lock.contains(&format!("sha256 = \"{sha}\"")), "{lock}");
+    assert!(cache.path().join(format!("libraries/{sha}.wasm")).is_file());
+
+    // Second install: pinned + cached, no re-download (mock's expect(1)).
+    cmd()
+        .arg("install")
+        .arg(&yaml)
+        .env("PERFSCALE_CACHE_DIR", cache.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("up to date"));
 }
 
 #[tokio::test]
