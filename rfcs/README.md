@@ -10,6 +10,7 @@ and the pitfalls — before code, so the hard decisions are argued on paper.
 | [003](003-composite-step.md) | Composite step | Draft | — |
 | [004](004-setup-teardown.md) | Setup and teardown | Implemented | — |
 | [005](005-libraries.md) | Libraries — WASM value generators | Draft | — |
+| [006](006-library-revocation.md) | Library revocation — signed revocation list for offline agents | Draft | 005 |
 
 ## Status values
 

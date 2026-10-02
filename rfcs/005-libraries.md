@@ -621,9 +621,11 @@ without stranding phases 1–2.
   Leaning: JSON + fatal-to-run, decide with SDK dogfooding.
 - Lockfile format and location (project root vs alongside the config
   file), and how `import:` chains interact with a single lock.
-- Yank/revocation propagation to agent caches: inherit RFC 002's
-  "warn loudly, never silently swap", but the *channel* for revocation
-  notices on an offline-capable agent is undesigned.
+- ~~Yank/revocation propagation to agent caches~~ — **resolved by
+  [RFC 006](006-library-revocation.md)**: a signed, append-only,
+  digest-keyed revocation list delivered via a canonical static URL,
+  controlplane heartbeat piggyback, and opportunistic install-time fetch;
+  fail-open with loud warnings on stale lists, hard-fail on fresh ones.
 - Should `${...}` gain an escaping mechanism (`\${literal}`) now that
   expansion is uniform? Cheap to add in phase 1, expensive to retrofit.
 - Do generated values participate in `outputs:` capture ergonomics, or is
