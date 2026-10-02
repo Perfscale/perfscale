@@ -5,6 +5,7 @@
 //! its own minimal copy of this service.
 
 #[allow(dead_code)] // the generated client stub is unused — tests dispatch actions
+#[allow(clippy::double_must_use)] // generated tonic/async_trait code trips newer clippies
 pub(crate) mod echo {
     include!(concat!(env!("OUT_DIR"), "/perfscale.test.v1.rs"));
 }

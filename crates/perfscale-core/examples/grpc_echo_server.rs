@@ -12,6 +12,7 @@
 
 use tonic::{Request, Response, Status, Streaming};
 
+#[allow(clippy::double_must_use)] // generated tonic/async_trait code trips newer clippies
 pub mod echo {
     include!(concat!(env!("OUT_DIR"), "/perfscale.test.v1.rs"));
 }
