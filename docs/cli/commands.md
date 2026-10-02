@@ -4,6 +4,9 @@
 perfscale run          Run a load test with k6, locust, JMeter, or the native step engine
 perfscale serve        Start a local dev server that receives metrics from `run --report`
 perfscale lint         Validate test/config YAML files without running them
+perfscale install      Fetch remote libraries and pin them in perfscale.lock
+perfscale burn         Build a standalone binary with WASM libraries embedded
+perfscale schema       Print the JSON Schema for test or config YAML files
 perfscale man          Print the bundled man page (or install it for `man perfscale`)
 perfscale self-update  Update perfscale to the latest release for this platform
 ```
@@ -207,6 +210,44 @@ cache artifact is a hard error that says to run `perfscale install`.
 
 Exit code: `0` when every remote library is installed (or already pinned),
 `1` on fetch/verification errors (a sha256 mismatch names both digests).
+
+`install` also *burns* every WASM library — remote and local — into the AOT
+cache (`<cache>/libraries/<sha256>.cwasm`), so `run`/`lint` deserialize a
+precompiled artifact instead of compiling per run. The burn is advisory: a
+library that fails to precompile downgrades to a warning and compiles at
+run time instead.
+
+## `perfscale burn`
+
+Build a standalone binary with the documents' WASM libraries embedded:
+
+```sh
+perfscale burn -f test.yaml -c config.yaml -o ./perfscale+libs
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-f, --file <FILE>` | required, repeatable | Test YAML document(s) whose `libraries:` should be embedded |
+| `-c, --config <FILE>` | — | Optional config YAML whose `libraries:` should also be embedded |
+| `-o, --output <FILE>` | required | Output path of the derived binary |
+
+The output is a byte-copy of the running perfscale binary plus the
+AOT-precompiled (`.cwasm`) artifacts of every declared WASM library,
+appended behind a `PFSEMBED` trailer. The derived binary resolves those
+libraries from itself — no `.wasm` files, cache, or `perfscale.lock` needed
+on the machine it runs on — which makes it the one-file distribution for
+load generators and containers (see
+[Running perfscale in Docker](../core/docker.md#wasm-libraries)).
+
+Remote refs must be installed first (`perfscale install`) — `burn` resolves
+them through lock + cache offline, like `run`. `@std` built-ins are native
+code and are skipped automatically. Burn artifacts are tied to the build
+that produced them (wasmtime version, target triple, engine configuration):
+re-run `perfscale burn` after upgrading perfscale. Burn removes per-run
+compilation, not per-call overhead — library call cost is unchanged.
+
+Exit code: `0` on success, `1` when a document fails to load, no WASM
+libraries are declared, or a library does not compile as a component.
 
 ## `perfscale schema`
 

@@ -89,17 +89,30 @@ docker run --rm -v "$PWD:/work" -w /work \
   ghcr.io/perfscale/perfscale:latest run -f test.yaml -c config.yaml
 ```
 
-`install` also *burns* (AOT-precompiles) each library into the cache, so
-containerized runs skip per-run compilation too — the cache directory must
-be shared between the install and the run, as above.
+`install` also *burns* (AOT-precompiles) every library — remote or local —
+into the cache as `<sha256>.cwasm` next to the `.wasm` artifact, so
+containerized runs skip per-run Cranelift compilation too: the engine
+deserializes the precompiled artifact in milliseconds instead of compiling
+the component at load. The install-time burn is advisory — a precompile
+failure downgrades to a warning, never a failed install — and a run without
+a valid `.cwasm` falls back to compiling from the `.wasm` source at load
+(the JIT path: slower cold start, identical behavior and metrics once
+running). A stale artifact (burned by an older perfscale build — the header
+carries the wasmtime version and target triple) is ignored the same way, so
+re-run `install` after upgrading the image. For all of this the cache
+directory must be shared between the install and the run, as above.
 
-**Standalone binaries** — `perfscale burn` embeds a scenario's libraries
-into a copy of the binary, so nothing has to be mounted besides the YAML:
+**Standalone binaries** — `perfscale burn` goes further and embeds a
+scenario's libraries into a copy of the binary itself (AOT artifacts behind
+a `PFSEMBED` trailer), so nothing has to be mounted besides the YAML:
 
 ```sh
 # on the host (match the target architecture), then ship one file:
 perfscale burn -f test.yaml -c config.yaml -o perfscale+libs
 ```
+
+The derived binary needs no `.wasm` files, cache, or `perfscale.lock` on the
+machine it runs on — see [`perfscale burn`](../cli/commands.md#perfscale-burn).
 
 ## External runners (k6 / JMeter / locust)
 

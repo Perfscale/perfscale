@@ -1,5 +1,5 @@
 .\" perfscale(1) manual page
-.TH PERFSCALE 1 "2026-08-19" "perfscale 0.10" "User Commands"
+.TH PERFSCALE 1 "2026-10-02" "perfscale 0.10" "User Commands"
 .SH NAME
 perfscale \- run k6, locust, JMeter, or native load tests from one CLI
 .SH SYNOPSIS
@@ -105,6 +105,36 @@ resolve remote libraries through lock + cache, fully offline. Options:
 re-resolves git refs (branches/tags) instead of trusting the lock. The
 cache honors
 .BR PERFSCALE_CACHE_DIR .
+.B install
+also burns (AOT-precompiles) every WASM library, remote or local, into
+.RI ( <cache>/libraries/<sha256>.cwasm )
+on a best-effort basis, so
+.B run
+deserializes instead of compiling per run.
+.TP
+.B burn
+Build a standalone binary with the WASM libraries of the given documents
+embedded: a copy of the running executable plus the AOT-precompiled
+.RI ( .cwasm )
+artifacts appended behind a
+.B PFSEMBED
+trailer. The derived binary resolves those libraries from itself — no
+.B .wasm
+files, cache, or
+.I perfscale.lock
+needed on the machine it runs on. Arguments:
+.BI \-f " TEST.yaml"
+(required, repeatable),
+.BI \-c " CONFIG.yaml"
+(optional),
+.BI \-o " FILE"
+(output path). Remote refs must be installed first
+.RB ( "perfscale install" );
+.B @std
+built-ins are native code and are skipped. Burn artifacts are tied to this
+build (wasmtime version, target triple, engine configuration) — re-run
+.B burn
+after upgrading perfscale.
 .TP
 .B man
 Print this manual as plain text (the Windows path, where no
