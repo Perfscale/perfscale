@@ -88,7 +88,7 @@
           ]
         },
         "capabilities": {
-          "description": "Explicit capability grants, fail-closed: any non-empty grant requires `allow_library_capabilities: true` in the config. `fs` / `clock` are bare strings; network egress is an object with a host allowlist (`net: [\"api.example.com\"]`) — raw sockets are never granted.",
+          "description": "Explicit capability grants, fail-closed: any non-empty grant requires `allow_library_capabilities: true` in the config. `fs` / `clock` are bare strings; network egress is an object with a host allowlist (`net: [\"api.example.com\"]`) — raw sockets are never granted.\n\n**Required key.** Serde keeps the field optional only so a missing key yields a targeted validation error (see [`require_explicit_capabilities`]) instead of a generic schema complaint: declare `capabilities: []` explicitly when the library needs no grants — omitting the key is an error.",
           "items": {
             "$ref": "#/definitions/Capability"
           },
@@ -219,7 +219,7 @@
       "description": "Base document to inherit from — a relative path, an `http(s)://` URL, or `{ git, ref, file }`. The base loads first (recursively), then this document deep-merges on top; a local `steps:` list replaces the base's. Remote sources require the caller's `--allow-remote-import`."
     },
     "libraries": {
-      "description": "Value-generator libraries for `${alias.fn(...)}` tokens (RFC 005). Concatenates with the config file's and with imported documents' declarations; a duplicate alias is a validation error.",
+      "description": "Value-generator libraries for `${alias.fn(...)}` tokens (RFC 005). Concatenates with the config file's and with imported documents' declarations; a duplicate alias is a validation error. Every entry must declare `capabilities:` (`[]` for no grants).",
       "items": {
         "$ref": "#/definitions/LibraryRef"
       },

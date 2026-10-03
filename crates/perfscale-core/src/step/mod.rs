@@ -61,7 +61,8 @@ pub struct TestDef {
 
     /// Value-generator libraries for `${alias.fn(...)}` tokens (RFC 005).
     /// Concatenates with the config file's and with imported documents'
-    /// declarations; a duplicate alias is a validation error.
+    /// declarations; a duplicate alias is a validation error. Every entry
+    /// must declare `capabilities:` (`[]` for no grants).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub libraries: Option<Vec<crate::library::LibraryRef>>,
 

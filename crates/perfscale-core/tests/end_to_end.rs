@@ -714,7 +714,7 @@ steps:
         use_: component.to_string_lossy().into_owned(),
         sha256: None,
         r#as: Some("hello".into()),
-        capabilities: None,
+        capabilities: Some(vec![]),
         with: None,
         secret: None,
         allow: None,
@@ -781,7 +781,7 @@ steps:
         use_: component.to_string_lossy().into_owned(),
         sha256: None,
         r#as: Some("hello".into()),
-        capabilities: None,
+        capabilities: Some(vec![]),
         with: None,
         secret: None,
         allow: None,
@@ -859,7 +859,7 @@ steps:
             use_: component.to_string_lossy().into_owned(),
             sha256: None,
             r#as: Some("hello".into()),
-            capabilities: None,
+            capabilities: Some(vec![]),
             with: None,
             secret,
             allow: None,
@@ -963,7 +963,7 @@ steps:
         use_: component.to_string_lossy().into_owned(),
         sha256: None,
         r#as: Some("hello".into()),
-        capabilities: None,
+        capabilities: Some(vec![]),
         with: None,
         secret: None,
         allow: None,
@@ -1044,7 +1044,7 @@ steps:
             use_: component.to_string_lossy().into_owned(),
             sha256: None,
             r#as: Some("hello".into()),
-            capabilities: None,
+            capabilities: Some(vec![]),
             with: None,
             secret: None,
             allow: None,
@@ -1193,9 +1193,56 @@ steps:
     server.verify().await;
 }
 
+/// Breaking change: a `libraries:` entry without the `capabilities:` key is
+/// a hard error at run time — the same message config load and lint emit.
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn run_rejects_library_entry_missing_capabilities_key() {
+    let test =
+        yaml::parse_test_file("steps:\n  - use: std/log@v1\n    with: { message: hi }\n").unwrap();
+    let config = yaml::parse_config_file("vus: 1\nduration: 100ms\n").unwrap();
+    let libraries = vec![perfscale_core::library::LibraryRef {
+        use_: "@std/random@v1".into(),
+        sha256: None,
+        r#as: None,
+        capabilities: None,
+        with: None,
+        secret: None,
+        allow: None,
+        deny: None,
+        log: None,
+    }];
+
+    let rx = runner::execute(ExecutionPlan::NativeSteps {
+        test,
+        before: config.before,
+        after: config.after,
+        variables: config.variables,
+        shared_variables: config.shared_variables,
+        libraries,
+        config: Box::new(config.run),
+        quiet: false,
+        metrics_tx: None,
+    })
+    .await
+    .unwrap();
+    let lines = collect(rx).await;
+    let all = lines
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        all.contains(
+            "missing `capabilities:` — declare `capabilities: []` explicitly if the library needs no grants (omitting the key is no longer allowed)"
+        ),
+        "{all}"
+    );
+}
+
 /// The pure marker end to end: a component that imports wasi:filesystem
 /// (jco-like toolchain noise) but whose info() declares `"pure": true` runs
-/// in the async runner with NO `capabilities:` in YAML and WITHOUT
+/// in the async runner with an explicit EMPTY `capabilities: []` and WITHOUT
 /// allow_library_capabilities.
 #[cfg(feature = "wasm-libs")]
 #[tokio::test]
@@ -1236,7 +1283,7 @@ steps:
         use_: component.to_string_lossy().into_owned(),
         sha256: None,
         r#as: Some("pure".into()),
-        capabilities: None,
+        capabilities: Some(vec![]),
         with: None,
         secret: None,
         allow: None,
@@ -1314,7 +1361,7 @@ steps:
         use_: component.to_string_lossy().into_owned(),
         sha256: None,
         r#as: Some("hello".into()),
-        capabilities: None,
+        capabilities: Some(vec![]),
         with: None,
         secret: None,
         allow: None,

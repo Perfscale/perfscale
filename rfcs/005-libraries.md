@@ -82,6 +82,7 @@ validation error):
 ```yaml
 libraries:
   - use: "@std/random@v1"                  # built-in (quotes required: `@` is a reserved YAML indicator)
+    capabilities: []                       # required key — [] means "no grants"
   - use: ./libs/fixer-ids.wasm             # local path (relative to the declaring file)
     as: fix                                # alias → token prefix (default: library name)
     capabilities: [clock]                  # explicit grant, fail-closed
@@ -89,6 +90,7 @@ libraries:
       comp_id_seed: "TRADER"
   - use: https://artifacts.acme.com/faker-1.2.0.wasm
     sha256: "9f2c…"                        # mandatory for HTTPS
+    capabilities: []
   - use: git+https://github.com/acme/perfscale-isin@v1.2.0
     capabilities:
       - fs
@@ -97,6 +99,13 @@ libraries:
 
 Library references use `@ns/name@vN` — the leading `@` distinguishes a
 library reference from an action ID (`std/http@v1`) at resolution time.
+
+**Decision (amended):** `capabilities:` is a *required* key on every entry —
+an explicit `[]` means "no grants", and omitting the key is a validation
+error with a targeted message (config load, lint, and run all emit the same
+text). Rationale: explicitness beats silent defaults now that the `pure`
+marker exists for grant-less libraries, so a missing key is far more likely
+to be a stale document than an intentional "no grants" — say so explicitly.
 
 The global gate follows the existing `allow_file_actions` /
 `allow_process_actions` pattern: without `allow_library_capabilities: true`

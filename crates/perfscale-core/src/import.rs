@@ -1675,7 +1675,7 @@ mod tests {
         let path = dir.join("config.yaml");
         fs::write(
             &path,
-            format!("libraries:\n  - use: \"https://example.com/l.wasm\"\n{sha_line}"),
+            format!("libraries:\n  - use: \"https://example.com/l.wasm\"\n    capabilities: []\n{sha_line}"),
         )
         .unwrap();
         path
@@ -1860,7 +1860,7 @@ mod tests {
         let sha = sha_hex(b"git-wasm");
         fs::write(
             dir.join("config.yaml"),
-            format!("libraries:\n  - use: \"{use_}\"\n"),
+            format!("libraries:\n  - use: \"{use_}\"\n    capabilities: []\n"),
         )
         .unwrap();
         fs::write(

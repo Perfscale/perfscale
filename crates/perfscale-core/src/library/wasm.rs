@@ -1083,7 +1083,7 @@ mod tests {
             use_: path.to_string_lossy().into_owned(),
             sha256: None,
             r#as: Some("hello".into()),
-            capabilities: None,
+            capabilities: Some(vec![]),
             with: None,
             secret: None,
             allow: None,

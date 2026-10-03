@@ -84,8 +84,9 @@ pub struct ConfigFile {
 
     /// Value-generator libraries for `${alias.fn(...)}` tokens (RFC 005).
     /// Concatenates with the test file's and with imported documents'
-    /// declarations; a duplicate alias is a validation error. Non-empty
-    /// `capabilities:` grants require `allow_library_capabilities: true`.
+    /// declarations; a duplicate alias is a validation error. Every entry
+    /// must declare `capabilities:` (`[]` for no grants); non-empty grants
+    /// require `allow_library_capabilities: true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub libraries: Option<Vec<crate::library::LibraryRef>>,
 
@@ -122,22 +123,30 @@ pub struct ConfigFile {
 
 /// Parse a test-definition YAML document (`-f test.yaml`).
 pub fn parse_test_file(yaml: &str) -> Result<TestDef, String> {
-    parse_with_schema(yaml, crate::schema::compiled_test_schema())
+    let test: TestDef = parse_with_schema(yaml, crate::schema::compiled_test_schema())?;
+    crate::library::require_explicit_capabilities(test.libraries.as_deref().unwrap_or(&[]))?;
+    Ok(test)
 }
 
 /// Parse a config YAML document (`-c config.yaml`).
 pub fn parse_config_file(yaml: &str) -> Result<ConfigFile, String> {
-    parse_with_schema(yaml, crate::schema::compiled_config_schema())
+    let cfg: ConfigFile = parse_with_schema(yaml, crate::schema::compiled_config_schema())?;
+    crate::library::require_explicit_capabilities(cfg.libraries.as_deref().unwrap_or(&[]))?;
+    Ok(cfg)
 }
 
 /// Validate an already-parsed (import-merged) JSON value as a test definition.
 pub fn test_from_value(value: serde_json::Value) -> Result<TestDef, String> {
-    validate_with_schema(value, crate::schema::compiled_test_schema())
+    let test: TestDef = validate_with_schema(value, crate::schema::compiled_test_schema())?;
+    crate::library::require_explicit_capabilities(test.libraries.as_deref().unwrap_or(&[]))?;
+    Ok(test)
 }
 
 /// Validate an already-parsed (import-merged) JSON value as a config document.
 pub fn config_from_value(value: serde_json::Value) -> Result<ConfigFile, String> {
-    validate_with_schema(value, crate::schema::compiled_config_schema())
+    let cfg: ConfigFile = validate_with_schema(value, crate::schema::compiled_config_schema())?;
+    crate::library::require_explicit_capabilities(cfg.libraries.as_deref().unwrap_or(&[]))?;
+    Ok(cfg)
 }
 
 fn parse_with_schema<T: serde::de::DeserializeOwned>(
@@ -494,7 +503,7 @@ after:
     #[test]
     fn parses_libraries_in_config_and_test() {
         let cfg = parse_config_file(
-            "allow_library_capabilities: true\nseed: 42\nlibraries:\n  - use: '@std/random@v1'\n  - use: '@std/random@v1'\n    as: ids\n",
+            "allow_library_capabilities: true\nseed: 42\nlibraries:\n  - use: '@std/random@v1'\n    capabilities: []\n  - use: '@std/random@v1'\n    as: ids\n    capabilities: []\n",
         )
         .unwrap();
         assert!(cfg.run.allow_library_capabilities);
@@ -506,7 +515,7 @@ after:
         assert_eq!(libs[1].r#as.as_deref(), Some("ids"));
 
         let test = parse_test_file(
-            "libraries:\n  - use: '@std/random@v1'\n    with: { locale: en }\nsteps:\n  - use: std/log@v1\n    with: { message: hi }\n",
+            "libraries:\n  - use: '@std/random@v1'\n    capabilities: []\n    with: { locale: en }\nsteps:\n  - use: std/log@v1\n    with: { message: hi }\n",
         )
         .unwrap();
         let libs = test.libraries.unwrap();
@@ -517,6 +526,30 @@ after:
         assert!(!cfg.run.allow_library_capabilities);
         assert!(cfg.run.seed.is_none());
         assert!(cfg.libraries.is_none());
+    }
+
+    #[test]
+    fn library_entry_without_capabilities_key_is_rejected_at_load() {
+        // Config and test documents share the check and the message.
+        for yaml in [
+            "libraries:\n  - use: '@std/random@v1'\n",
+            "libraries:\n  - use: '@std/random@v1'\n    capabilities: []\n  - use: './x.wasm'\n",
+        ] {
+            let err = parse_config_file(yaml).unwrap_err();
+            assert!(
+                err.contains("missing `capabilities:` — declare `capabilities: []` explicitly if the library needs no grants (omitting the key is no longer allowed)"),
+                "config → {err}"
+            );
+            let err = parse_test_file(&format!(
+                "{yaml}steps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
+            ))
+            .unwrap_err();
+            assert!(err.contains("missing `capabilities:`"), "test → {err}");
+        }
+        // Import-merged documents go through the same check.
+        let value = serde_json::json!({"libraries": [{"use": "@std/random@v1"}]});
+        let err = config_from_value(value).unwrap_err();
+        assert!(err.contains("missing `capabilities:`"), "{err}");
     }
 
     #[test]

@@ -1920,7 +1920,7 @@ mod tests {
                 use_: "@std/random@v1".into(),
                 sha256: None,
                 r#as: None,
-                capabilities: None,
+                capabilities: Some(vec![]),
                 with: None,
                 secret: None,
                 allow: None,

@@ -107,7 +107,10 @@ clock declares `"pure": true` in its `info()` JSON (the TS SDK does this for
 you when the library opts in) and then needs **no** `capabilities:` grant and
 no `allow_library_capabilities: true`: the engine links those interfaces so
 the component instantiates, but attaches no preopens — any actual file
-access fails at runtime. A TS library that really reads files still declares
+access fails at runtime. (The `capabilities:` **key** is still required on
+every `libraries:` entry — write `capabilities: []` for a grant-less
+library; omitting the key is a validation error.) A TS library that really
+reads files still declares
 `capabilities: [fs]` (a read-only preopen of the run's `fs_root`) plus
 `allow_library_capabilities: true`. The build already strips `wasi:random`,
 `wasi:http` and timers.

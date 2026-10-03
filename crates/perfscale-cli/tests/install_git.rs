@@ -78,7 +78,7 @@ fn write_yaml(dir: &Path, body: &str) -> PathBuf {
 
 fn git_lib_yaml(url: &str, git_ref: &str, extra: &str) -> String {
     format!(
-        "libraries:\n  - use: \"git+{url}@{git_ref}#lib.wasm\"\n{extra}steps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
+        "libraries:\n  - use: \"git+{url}@{git_ref}#lib.wasm\"\n    capabilities: []\n{extra}steps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
     )
 }
 
@@ -332,7 +332,7 @@ fn install_git_escape_path_fails_before_writing_lock() {
     let yaml = write_yaml(
         dir.path(),
         &format!(
-            "libraries:\n  - use: \"git+{url}@v1#../out.wasm\"\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
+            "libraries:\n  - use: \"git+{url}@v1#../out.wasm\"\n    capabilities: []\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
         ),
     );
 

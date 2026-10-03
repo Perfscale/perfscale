@@ -265,12 +265,17 @@ duplicate alias is a validation error):
 ```yaml
 libraries:
   - use: '@std/random@v1'          # built-in; default alias: random
+    capabilities: []               # required key — [] means "no grants"
   - use: '@std/random@v1'
     as: ids                        # alias → token prefix ${ids.fn(...)}
+    capabilities: []
   - use: ./libs/fixer-ids.wasm     # local WASM component (path relative to this file)
+    capabilities: []
   - use: 'https://vendor.example.com/fixer-ids.wasm'   # remote: perfscale install
     sha256: '9f2c…64 hex…'
+    capabilities: []
   - use: 'git+https://github.com/org/repo.git@v1.2.3#libs/fixer-ids.wasm'  # git: perfscale install
+    capabilities: []
 ```
 
 Payloads in actions that expand `${...}` (http, ws, gRPC, GraphQL, tcp, udp,
@@ -298,7 +303,10 @@ Rules:
   message yields one id; the next message generates a fresh one.
 - `seed: 42` in the config makes a run reproducible: per-instance seeds
   derive as `hash(seed, vu_id, conn_seq)`.
-- `capabilities:` grants (`fs`, `clock`, or `{ net: [hosts] }`) require
+- `capabilities:` is **required on every entry** — an explicit empty list
+  (`capabilities: []`) means "no grants"; omitting the key is a validation
+  error at load, `lint`, and run. Non-empty grants (`fs`, `clock`, or
+  `{ net: [hosts] }`) require
   `allow_library_capabilities: true` (fail-closed, same pattern as
   `allow_file_actions`). `@std/random@v1` declares no capabilities —
   granting it any is a validation error. A library whose `info()` reports
@@ -339,6 +347,7 @@ masking (all optional):
 ```yaml
 libraries:
   - use: '@std/random@v1'
+    capabilities: []      # required on every entry; [] = no grants
     secret: true          # mask every result of this library in the run log
     allow: [uuid4, ulid]  # whitelist: other calls fail the step
     deny: [email]         # blacklist: wins over allow

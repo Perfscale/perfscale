@@ -96,7 +96,7 @@ async fn install_https_pins_lock_and_cache_then_lint_is_offline() {
         dir.path(),
         "test.yaml",
         &format!(
-            "libraries:\n  - use: \"{url}\"\n    sha256: \"{sha}\"\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
+            "libraries:\n  - use: \"{url}\"\n    capabilities: []\n    sha256: \"{sha}\"\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
         ),
     );
 
@@ -151,7 +151,7 @@ async fn install_https_sha_mismatch_is_a_hard_error() {
         dir.path(),
         "test.yaml",
         &format!(
-            "libraries:\n  - use: \"{url}\"\n    sha256: \"{wrong}\"\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
+            "libraries:\n  - use: \"{url}\"\n    capabilities: []\n    sha256: \"{wrong}\"\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
         ),
     );
 
@@ -190,7 +190,7 @@ async fn install_https_without_declared_sha256_pins_computed_digest() {
     let yaml = write_yaml(
         dir.path(),
         "test.yaml",
-        &format!("libraries:\n  - use: \"{url}\"\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"),
+        &format!("libraries:\n  - use: \"{url}\"\n    capabilities: []\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"),
     );
     cmd()
         .arg("install")
@@ -225,7 +225,7 @@ async fn lint_remote_library_without_lock_points_at_install() {
         dir.path(),
         "test.yaml",
         &format!(
-            "libraries:\n  - use: \"https://example.com/l.wasm\"\n    sha256: \"{}\"\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n",
+            "libraries:\n  - use: \"https://example.com/l.wasm\"\n    capabilities: []\n    sha256: \"{}\"\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n",
             "a".repeat(64)
         ),
     );
@@ -274,7 +274,7 @@ async fn install_burns_local_wasm_libraries_without_a_lockfile() {
     let yaml = write_yaml(
         dir.path(),
         "test.yaml",
-        "libraries:\n  - use: ./lib.wasm\n    as: hello\nsteps:\n  - use: std/log@v1\n    with: { message: hi }\n",
+        "libraries:\n  - use: ./lib.wasm\n    capabilities: []\n    as: hello\nsteps:\n  - use: std/log@v1\n    with: { message: hi }\n",
     );
 
     cmd()
@@ -331,7 +331,7 @@ async fn install_https_also_writes_the_burn_artifact() {
         dir.path(),
         "test.yaml",
         &format!(
-            "libraries:\n  - use: \"{url}\"\n    sha256: \"{sha}\"\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
+            "libraries:\n  - use: \"{url}\"\n    capabilities: []\n    sha256: \"{sha}\"\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
         ),
     );
 

@@ -101,7 +101,7 @@ async fn burn_builds_a_binary_that_runs_its_libraries_standalone() {
     let config = write_yaml(
         dir.path(),
         "config.yaml",
-        "vus: 1\nduration: 1s\nlibraries:\n  - use: ./hello.wasm\n    as: hello\n",
+        "vus: 1\nduration: 1s\nlibraries:\n  - use: ./hello.wasm\n    capabilities: []\n    as: hello\n",
     );
     let out = dir.path().join("perfscale-burned");
 

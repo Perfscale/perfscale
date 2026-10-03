@@ -2052,6 +2052,7 @@ steps:
     const LIB_TEST: &str = r#"
 libraries:
   - use: '@std/random@v1'
+    capabilities: []
 steps:
   - use: std/http@v1
     with:
@@ -2066,10 +2067,40 @@ steps:
     }
 
     #[test]
+    fn library_entry_without_capabilities_key_is_a_declaration_issue() {
+        // Same message as config load and run, surfaced at /libraries.
+        let yaml = r#"
+libraries:
+  - use: '@std/random@v1'
+steps:
+  - use: std/log@v1
+    with: { message: hi }
+"#;
+        let issues = lint(yaml, DocKind::Test);
+        let bad = issues
+            .iter()
+            .find(|i| i.location == "/libraries")
+            .unwrap_or_else(|| panic!("no /libraries issue: {issues:?}"));
+        assert!(
+            bad.problem.contains(
+                "missing `capabilities:` — declare `capabilities: []` explicitly if the library needs no grants (omitting the key is no longer allowed)"
+            ),
+            "{bad:?}"
+        );
+        // An explicit empty list lints clean.
+        let ok = yaml.replace(
+            "  - use: '@std/random@v1'\n",
+            "  - use: '@std/random@v1'\n    capabilities: []\n",
+        );
+        assert_eq!(lint(&ok, DocKind::Test), vec![]);
+    }
+
+    #[test]
     fn unknown_alias_is_a_warning_not_an_issue() {
         let yaml = r#"
 libraries:
   - use: '@std/random@v1'
+    capabilities: []
 steps:
   - use: std/http@v1
     with:
@@ -2097,6 +2128,7 @@ steps:
         let yaml = r#"
 libraries:
   - use: '@std/random@v1'
+    capabilities: []
 steps:
   - use: std/http@v1
     with:
@@ -2132,6 +2164,7 @@ steps:
         let yaml = r#"
 libraries:
   - use: '@std/random@v1'
+    capabilities: []
 steps:
   - use: std/http@v1
     with:
@@ -2154,6 +2187,7 @@ steps:
         let yaml = r#"
 libraries:
   - use: '@std/random@v1'
+    capabilities: []
     deny: [email]
 steps:
   - use: std/http@v1
@@ -2180,6 +2214,7 @@ steps:
         let yaml = r#"
 libraries:
   - use: '@std/random@v1'
+    capabilities: []
     allow: [uuid4]
 steps:
   - use: std/http@v1
@@ -2205,7 +2240,7 @@ steps:
         // rejects it, and lint surfaces that same error at /libraries.
         for field in ["allow", "deny", "log"] {
             let yaml = format!(
-                "libraries:\n  - use: '@std/random@v1'\n    {field}: [nope]\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
+                "libraries:\n  - use: '@std/random@v1'\n    capabilities: []\n    {field}: [nope]\nsteps:\n  - use: std/log@v1\n    with: {{ message: hi }}\n"
             );
             let issues = lint(&yaml, DocKind::Test);
             let bad = issues
@@ -2228,6 +2263,7 @@ steps:
         let yaml = r#"
 libraries:
   - use: 'https://x.test/fixer-ids.wasm'
+    capabilities: []
     sha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 steps:
   - use: std/log@v1
@@ -2241,7 +2277,7 @@ steps:
         assert!(bad.problem.contains("perfscale.lock"), "{bad:?}");
 
         // Same for a config document.
-        let yaml = "libraries:\n  - use: '@std/faker@v1'\n";
+        let yaml = "libraries:\n  - use: '@std/faker@v1'\n    capabilities: []\n";
         let issues = lint(yaml, DocKind::Config);
         assert!(
             issues
@@ -2258,6 +2294,7 @@ vus: 1
 duration: 5s
 libraries:
   - use: '@std/random@v1'
+    capabilities: []
     as: ids
 before:
   - use: std/log@v1
@@ -2291,6 +2328,7 @@ before:
         let yaml = r#"
 libraries:
   - use: '@std/random@v1'
+    capabilities: []
 steps:
   - use: std/log@v1
     with:

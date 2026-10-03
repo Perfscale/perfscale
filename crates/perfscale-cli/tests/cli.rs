@@ -586,7 +586,7 @@ fn lint_anchors_relative_library_paths_to_the_declaring_file() {
     let config = sub.join("config.yaml");
     std::fs::write(
         &config,
-        "libraries:\n  - use: ./lib.wasm\nvus: 1\nduration: 1s\n",
+        "libraries:\n  - use: ./lib.wasm\n    capabilities: []\nvus: 1\nduration: 1s\n",
     )
     .unwrap();
 

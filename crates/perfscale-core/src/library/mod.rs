@@ -110,6 +110,12 @@ pub struct LibraryRef {
     /// `allow_library_capabilities: true` in the config. `fs` / `clock` are
     /// bare strings; network egress is an object with a host allowlist
     /// (`net: ["api.example.com"]`) — raw sockets are never granted.
+    ///
+    /// **Required key.** Serde keeps the field optional only so a missing
+    /// key yields a targeted validation error (see
+    /// [`require_explicit_capabilities`]) instead of a generic schema
+    /// complaint: declare `capabilities: []` explicitly when the library
+    /// needs no grants — omitting the key is an error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<Capability>>,
 
@@ -442,8 +448,28 @@ fn resolve_wasm(
     ))
 }
 
+/// `capabilities:` is a required key on every `libraries:` entry — an
+/// explicit `[]` means "no grants". Serde keeps the field optional so a
+/// missing key can be reported with a targeted message instead of a generic
+/// schema error; this is that check. Both YAML document loading
+/// ([`crate::yaml`]) and [`validate_libraries`] (run/lint) call it, so the
+/// message is identical on every surface.
+pub fn require_explicit_capabilities(refs: &[LibraryRef]) -> Result<(), String> {
+    for lib in refs {
+        if lib.capabilities.is_none() {
+            return Err(format!(
+                "library '{}': missing `capabilities:` — declare `capabilities: []` explicitly if the library needs no grants (omitting the key is no longer allowed)",
+                lib.use_
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Validate declared `libraries:` and resolve them to providers. Catches —
-/// before anything runs — unknown libraries, capability grants without
+/// before anything runs — a missing `capabilities:` key (declare
+/// `capabilities: []` explicitly for grant-less libraries), unknown
+/// libraries, capability grants without
 /// `allow_library_capabilities: true`, grants to libraries that declare no
 /// capabilities, bad aliases, alias collisions (between libraries or with the
 /// built-in token names), and (for WASM libraries) missing files, unsupported
@@ -456,6 +482,7 @@ pub fn validate_libraries(
     allow_capabilities: bool,
     fs_root: Option<&std::path::Path>,
 ) -> Result<Vec<ResolvedLibrary>, String> {
+    require_explicit_capabilities(refs)?;
     let mut resolved = Vec::with_capacity(refs.len());
     let mut aliases: HashSet<String> = HashSet::new();
     for lib in refs {
@@ -687,13 +714,34 @@ mod tests {
             use_: "@std/random@v1".into(),
             sha256: None,
             r#as: None,
-            capabilities: None,
+            capabilities: Some(vec![]),
             with: None,
             secret: None,
             allow: None,
             deny: None,
             log: None,
         }
+    }
+
+    #[test]
+    fn missing_capabilities_key_is_a_targeted_error() {
+        let mut r = std_random_ref();
+        r.capabilities = None;
+        let err = validate_libraries(&[r], false, None).unwrap_err();
+        assert_eq!(
+            err,
+            "library '@std/random@v1': missing `capabilities:` — declare `capabilities: []` explicitly if the library needs no grants (omitting the key is no longer allowed)"
+        );
+    }
+
+    #[test]
+    fn explicit_empty_capabilities_means_no_grants() {
+        // `capabilities: []` is the valid "no grants" spelling and never
+        // trips the allow_library_capabilities gate.
+        let mut r = std_random_ref();
+        r.capabilities = Some(vec![]);
+        let resolved = validate_libraries(&[r], false, None).unwrap();
+        assert_eq!(resolved[0].alias, "random");
     }
 
     #[test]

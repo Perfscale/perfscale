@@ -11,3 +11,10 @@ Release notes for the next release, written as features land.
 - If this file has no entries at tag time, the release falls back to
   auto-generated notes and the workflow prints a warning.
 -->
+
+## Breaking: `capabilities:` is required on every library entry
+
+- Every `libraries:` entry must now declare `capabilities:` explicitly —
+  `capabilities: []` means "no grants". Documents that omitted the key now
+  fail at load, `lint`, and run with a targeted error. Migration: add
+  `capabilities: []` to every grant-less entry.

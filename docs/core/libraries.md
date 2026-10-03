@@ -18,6 +18,7 @@ rationale is [RFC 005](../rfcs/005-libraries.md).
 ```yaml
 libraries:
   - use: '@std/random@v1'        # built-in, no files needed
+    capabilities: []             # required key — [] means "no grants"
 
 steps:
   - use: std/db-query@v1
@@ -33,7 +34,10 @@ steps:
   `.wasm` path (relative to the declaring file), an HTTPS URL (requires
   `sha256:`), or a `git+<repo>@<ref>#<path>` reference.
 - `as:` — the token prefix. Default is the library's own name.
-- `capabilities:` — explicit sandbox grants, see below.
+- `capabilities:` — explicit sandbox grants, see below. **Required on every
+  entry** — an empty list (`capabilities: []`) means "no grants". Omitting
+  the key is a validation error. Migration from older documents: add
+  `capabilities: []` to every entry that has no grants.
 - `with:` — JSON config passed to the library's `init()`; may use
   `${{ env.X }}` so secrets stay masked in logs.
 
@@ -98,8 +102,11 @@ any actual file access fails at runtime.
 | `clock` | `wasi:clocks` | wall time also arrives via the call context |
 
 Any non-empty grant requires `allow_library_capabilities: true` in the
-config — the same fail-closed pattern as `allow_file_actions`. Raw sockets
-are never provided. `wasi:random` is not provided either: libraries draw
+config — the same fail-closed pattern as `allow_file_actions`. The
+`capabilities:` key itself is required on every `libraries:` entry
+(built-ins included): write `capabilities: []` when the library needs no
+grants — omitting the key is a validation error at load, lint, and run.
+Raw sockets are never provided. `wasi:random` is not provided either: libraries draw
 all randomness from the seeded PRNG their SDK exposes, which is what makes
 `seed:` runs reproducible. Per-call fuel and a wall-time timeout bound what
 a runaway component can do on the hot path, and time inside a library call
@@ -111,6 +118,7 @@ A library entry can also restrict and mask its surface:
 ```yaml
 libraries:
   - use: ./libs/fixer-ids.wasm
+    capabilities: []       # no sandbox grants
     allow: [uuid4, ulid]   # only these functions callable
     log:
       secret: true         # mask every result of this library in the run log
