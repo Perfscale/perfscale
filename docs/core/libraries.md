@@ -84,8 +84,13 @@ function accepts the optional trailing memo `key`:
 
 Custom libraries run in a wasmtime sandbox under a **fail-closed**
 capability model: the component's WASI imports are checked against the
-`capabilities:` grant in YAML, and the host connects exactly the
-intersection. A component importing more than granted is a hard load error.
+`capabilities:` grant in YAML, and a component importing more than granted
+is a hard load error. The one exception is a **self-declared pure library**:
+when the component's `info()` reports `"pure": true`, its `wasi:filesystem`
+and `wasi:clocks/wall-clock` imports are treated as toolchain noise
+(jco-built TS/JS components always carry them) and no grant is needed. The
+sandbox still holds — without an `fs` grant the guest gets zero preopens, so
+any actual file access fails at runtime.
 
 | Capability | Host provides | Boundaries |
 |---|---|---|
@@ -159,8 +164,11 @@ payloads. The SDK's `Ctx` carries `messageSeq`, `iterationSeq`, `vuId`,
 tests under `node:test` with no WASM involved.
 
 Sandboxing note: jco components always import `wasi:filesystem` and
-`wasi:clocks/wall-clock`, so TS libraries need `capabilities: [fs]` even
-when pure — one `fs` grant satisfies both.
+`wasi:clocks/wall-clock`. A TS library that declares `"pure": true` in its
+`info()` metadata needs no `capabilities:` grant for those imports — the
+engine links the interfaces but provides no preopens, so real file access
+would still fail. Libraries that do read files keep declaring
+`capabilities: [fs]` (one `fs` grant satisfies both interfaces).
 
 ### Rust — `perfscale-library-sdk`
 

@@ -101,11 +101,16 @@ const ctx = new Ctx(42);
 assert.equal(testCall(lib, ctx, "token", []), testCall(lib, ctx, "token", []));
 ```
 
-Caveat: jco components always import `wasi:filesystem/*` and
-`wasi:clocks/wall-clock`, so a TS library needs `capabilities: [fs]` on its
-`libraries:` entry (a read-only preopen of the run's `fs_root`) and
-`allow_library_capabilities: true` in the config — even when logically
-pure. The build already strips `wasi:random`, `wasi:http` and timers.
+Note: jco components always import `wasi:filesystem/*` and
+`wasi:clocks/wall-clock`. A TS library that never touches files or the wall
+clock declares `"pure": true` in its `info()` JSON (the TS SDK does this for
+you when the library opts in) and then needs **no** `capabilities:` grant and
+no `allow_library_capabilities: true`: the engine links those interfaces so
+the component instantiates, but attaches no preopens — any actual file
+access fails at runtime. A TS library that really reads files still declares
+`capabilities: [fs]` (a read-only preopen of the run's `fs_root`) plus
+`allow_library_capabilities: true`. The build already strips `wasi:random`,
+`wasi:http` and timers.
 
 ## Go
 

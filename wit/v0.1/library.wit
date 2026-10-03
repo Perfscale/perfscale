@@ -24,7 +24,13 @@ interface library {
 
     /// Library metadata as JSON:
     /// `{ "name": "...", "version": "...",
+    ///    "pure": false,
     ///    "functions": [{ "name", "description", "secret" }] }`.
+    /// `pure` (optional, default false) declares the library never touches
+    /// the filesystem or the wall clock: the host may then waive the
+    /// fs/clock capability requirement even if the component imports those
+    /// interfaces (jco/StarlingMonkey toolchains always do) — and provides
+    /// no preopens, so actual file access still fails at runtime.
     info: func() -> string;
 
     /// Initialize the instance with the `with:` block from YAML (JSON).

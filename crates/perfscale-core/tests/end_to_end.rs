@@ -609,48 +609,67 @@ fn hello_component() -> Option<std::path::PathBuf> {
 /// wasm32-wasip2 target is not installed.
 #[cfg(feature = "wasm-libs")]
 fn fsreader_component() -> Option<std::path::PathBuf> {
-    use std::sync::OnceLock;
-    static FSREADER: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
-    FSREADER
-        .get_or_init(|| {
-            let installed = std::process::Command::new("rustup")
-                .args(["target", "list", "--installed"])
-                .output()
-                .map(|o| {
-                    String::from_utf8_lossy(&o.stdout)
-                        .lines()
-                        .any(|l| l.trim() == "wasm32-wasip2")
-                })
-                .unwrap_or(false);
-            if !installed {
-                eprintln!(
-                    "skipping fsreader e2e test: wasm32-wasip2 target not installed \
-                     (rustup target add wasm32-wasip2)"
-                );
-                return None;
-            }
-            let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .canonicalize()
-                .unwrap();
-            let target = ws.join("target/wasm-libs-fixtures");
-            let status = std::process::Command::new(
-                std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()),
-            )
+    sdk_example_component("fsreader", "perfscale_fsreader_library")
+}
+
+fn purefs_component() -> Option<std::path::PathBuf> {
+    sdk_example_component("purefs", "perfscale_purefs_library")
+}
+
+fn sdk_example_component(example: &str, artifact: &str) -> Option<std::path::PathBuf> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<std::path::PathBuf>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().unwrap().get(example) {
+        return hit.clone();
+    }
+    let built = build_sdk_example(example, artifact);
+    cache
+        .lock()
+        .unwrap()
+        .insert(example.to_string(), built.clone());
+    built
+}
+
+fn build_sdk_example(example: &str, artifact: &str) -> Option<std::path::PathBuf> {
+    let installed = std::process::Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l.trim() == "wasm32-wasip2")
+        })
+        .unwrap_or(false);
+    if !installed {
+        eprintln!(
+            "skipping {example} e2e test: wasm32-wasip2 target not installed \
+             (rustup target add wasm32-wasip2)"
+        );
+        return None;
+    }
+    let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let target = ws.join("target/wasm-libs-fixtures");
+    let status =
+        std::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
             .args(["build", "--release", "--target", "wasm32-wasip2"])
             .arg("--manifest-path")
-            .arg(ws.join("crates/perfscale-library-sdk/examples/fsreader/Cargo.toml"))
+            .arg(ws.join(format!(
+                "crates/perfscale-library-sdk/examples/{example}/Cargo.toml"
+            )))
             .arg("--target-dir")
             .arg(&target)
             .status()
             .ok()?;
-            if !status.success() {
-                eprintln!("failed to build the fsreader fixture component");
-                return None;
-            }
-            Some(target.join("wasm32-wasip2/release/perfscale_fsreader_library.wasm"))
-        })
-        .clone()
+    if !status.success() {
+        eprintln!("failed to build the {example} fixture component");
+        return None;
+    }
+    Some(target.join(format!("wasm32-wasip2/release/{artifact}.wasm")))
 }
 
 /// A YAML config declaring a local `.wasm` library expands `${hello.*}`
@@ -1150,6 +1169,74 @@ steps:
         capabilities: Some(vec![perfscale_core::library::Capability::Simple(
             "fs".into(),
         )]),
+        with: None,
+        secret: None,
+        allow: None,
+        deny: None,
+        log: None,
+    }];
+
+    let rx = runner::execute(ExecutionPlan::NativeSteps {
+        test,
+        before: Vec::new(),
+        after: Vec::new(),
+        variables: serde_json::Map::new(),
+        shared_variables: serde_json::Map::new(),
+        libraries,
+        config: Box::new(config),
+        quiet: false,
+        metrics_tx: None,
+    })
+    .await
+    .unwrap();
+    let _lines = collect(rx).await;
+    server.verify().await;
+}
+
+/// The pure marker end to end: a component that imports wasi:filesystem
+/// (jco-like toolchain noise) but whose info() declares `"pure": true` runs
+/// in the async runner with NO `capabilities:` in YAML and WITHOUT
+/// allow_library_capabilities.
+#[cfg(feature = "wasm-libs")]
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn pure_library_runs_without_capabilities_or_the_global_gate() {
+    let Some(component) = purefs_component() else {
+        return;
+    };
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/echo"))
+        .and(body_string_contains("pure-data"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1..)
+        .mount(&server)
+        .await;
+
+    let test_yaml = format!(
+        r#"
+steps:
+  - name: echo
+    use: std/http@v1
+    with:
+      method: POST
+      url: {0}/echo
+      body: "${{pure.echo(pure-data)}}"
+"#,
+        server.uri()
+    );
+    let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
+    let config = RunConfig {
+        vus: 1,
+        duration: "250ms".into(),
+        allow_library_capabilities: false,
+        ..Default::default()
+    };
+    let libraries = vec![perfscale_core::library::LibraryRef {
+        use_: component.to_string_lossy().into_owned(),
+        sha256: None,
+        r#as: Some("pure".into()),
+        capabilities: None,
         with: None,
         secret: None,
         allow: None,

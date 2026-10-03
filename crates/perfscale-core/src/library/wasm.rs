@@ -143,7 +143,7 @@ struct Needed {
 }
 
 /// Parsed YAML grant (`capabilities: [...]` of a `libraries:` entry).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Grants {
     fs: bool,
     clock: bool,
@@ -190,6 +190,13 @@ impl Grants {
 
 /// Map one WIT import name (`wasi:filesystem/types@0.2.9`) to the capability
 /// it requires. `wasi:io/*` is shared plumbing satisfied by `fs` or `clock`.
+///
+/// Note: `wasi:filesystem/*` and `wasi:clocks/wall-clock` are unconditionally
+/// imported by jco/StarlingMonkey-built (TS/JS) components too — for a
+/// library whose `info()` declares `"pure": true` they are toolchain noise
+/// just like the Rust-std sinks below, and [`WasmLibraryProvider::assemble`]
+/// sinks them the same way after probing `info()`. For non-pure libraries
+/// they keep requiring the matching grant.
 fn import_capability(name: &str) -> Result<Option<&'static str>, String> {
     let base = name.split('@').next().unwrap_or(name);
     if let Some(rest) = base.strip_prefix("wasi:") {
@@ -311,7 +318,7 @@ impl WasmLibraryProvider {
     }
 
     /// Shared tail of [`Self::load`]/[`Self::load_embedded`]: WIT version
-    /// check, capability enforcement, linker construction, `info()` probe.
+    /// check, linker construction, `info()` probe, capability enforcement.
     fn assemble(
         path: PathBuf,
         component: Component,
@@ -344,8 +351,11 @@ impl WasmLibraryProvider {
             }
         };
 
-        // Capability enforcement: map every import to its capability and
-        // refuse imports beyond the grant.
+        // Capability scan: map every import to its capability. Enforcement
+        // against the grant happens AFTER the `info()` probe below — a
+        // self-declared pure library may waive fs/clock — but imports the
+        // host never provides fail right here (the linker could not satisfy
+        // them anyway).
         let mut needed = Needed::default();
         let mut unsupported = Vec::new();
         for (name, _) in ty.imports(engine) {
@@ -364,6 +374,57 @@ impl WasmLibraryProvider {
                 unsupported.join("\n  ")
             ));
         }
+        if needed.net {
+            // No grant can satisfy it in this build — say so explicitly.
+            return Err(format!(
+                "library '{}' imports wasi:http (net): net capability is not yet supported in this build",
+                display()
+            ));
+        }
+
+        // The linker connects wasi:io + wasi:cli (sink form), wasi:clocks
+        // and wasi:filesystem unconditionally — jco/StarlingMonkey-built
+        // components import fs/wall-clock even when pure, and their `info()`
+        // can only be probed once those imports link. The security boundary
+        // is unchanged: the fs *preopen* is attached in `instantiate_store`
+        // only when the YAML grants `fs`, so an ungranted guest that touches
+        // the filesystem fails at runtime.
+        let linker = build_linker(engine, &display())?;
+
+        // The fs preopen: confined to the run's fs_root; without one, the
+        // directory containing the .wasm (the smallest sensible root).
+        let fs_root = fs_root
+            .map(Path::to_path_buf)
+            .or_else(|| path.parent().map(Path::to_path_buf));
+
+        let mut provider = Self {
+            id: String::new(),
+            name: String::new(),
+            path: path.to_path_buf(),
+            component,
+            linker,
+            functions: Vec::new(),
+            fs_root,
+            grants: grants.clone(),
+            wit_major,
+        };
+
+        // `info()` once at load, BEFORE grant enforcement: populates
+        // id/name/functions for lint/validation and carries the `pure`
+        // marker. The probe is sandboxed — no preopens unless granted,
+        // fuel-limited like any other call. A malformed or trapping `info()`
+        // is a load error.
+        let info = provider.probe_info()?;
+
+        // A library whose info() declares `"pure": true` never touches the
+        // filesystem or the wall clock: its fs/wall-clock imports are
+        // toolchain noise (jco/StarlingMonkey links them unconditionally),
+        // sunk like the wasi:io/cli/monotonic-clock noise in
+        // `import_capability`. Non-pure libraries keep the hard check.
+        if info.pure {
+            needed.fs = false;
+            needed.clock = false;
+        }
         let mut missing = Vec::new();
         if needed.fs && !grants.fs {
             missing.push("fs");
@@ -372,13 +433,6 @@ impl WasmLibraryProvider {
         // `fs` grant satisfies it; `clock` alone also satisfies it.
         if needed.clock && !grants.clock && !grants.fs {
             missing.push("clock");
-        }
-        if needed.net {
-            // No grant can satisfy it in this build — say so explicitly.
-            return Err(format!(
-                "library '{}' imports wasi:http (net): net capability is not yet supported in this build",
-                display()
-            ));
         }
         if !missing.is_empty() {
             return Err(format!(
@@ -391,8 +445,8 @@ impl WasmLibraryProvider {
         }
 
         // The other direction (RFC 005): a grant wider than the imports is
-        // harmless — the linker below connects only what the component
-        // declares — but almost always a stale/mistaken grant, so say so.
+        // harmless — the runtime sandbox keys on the grant, not the import
+        // set — but almost always a stale/mistaken grant, so say so.
         // (The RFC calls this a lint warning; the load-time trace is the
         // implemented surface.)
         let mut unused = Vec::new();
@@ -411,34 +465,6 @@ impl WasmLibraryProvider {
             );
         }
 
-        // Connect exactly what the component may use (fail-closed):
-        //   - wasi:io plumbing + wasi:cli in sink form: unconditionally
-        //     (rustc-built wasip2 components import them no matter what; the
-        //     sinks expose nothing of the host);
-        //   - wasi:clocks / wasi:filesystem: only when granted.
-        let linker = build_linker(engine, &grants, &display())?;
-
-        // The fs preopen: confined to the run's fs_root; without one, the
-        // directory containing the .wasm (the smallest sensible root).
-        let fs_root = fs_root
-            .map(Path::to_path_buf)
-            .or_else(|| path.parent().map(Path::to_path_buf));
-
-        let mut provider = Self {
-            id: String::new(),
-            name: String::new(),
-            path: path.to_path_buf(),
-            component,
-            linker,
-            functions: Vec::new(),
-            fs_root,
-            grants,
-            wit_major,
-        };
-
-        // `info()` once at load: populates id/name/functions for
-        // lint/validation. A malformed or trapping `info()` is a load error.
-        let info = provider.probe_info()?;
         provider.id = format!("{}@v{}", info.name, info.version);
         provider.name = info.name;
         provider.functions = info.functions;
@@ -454,6 +480,11 @@ impl WasmLibraryProvider {
     /// plus component instantiation through the bindings of the component's
     /// WIT major. Shared by `load`'s info probe and
     /// [`LibraryProvider::instantiate`].
+    ///
+    /// The fs capability's security boundary lives here: the fs interfaces
+    /// are always linked (see [`build_linker`]), but the confined preopen is
+    /// attached ONLY when the YAML grants `fs` — an ungranted guest sees the
+    /// interfaces with zero preopens, so any file access fails at runtime.
     fn instantiate_store(&self) -> Result<(Store<HostState>, Instantiated), String> {
         let mut ctx = WasiCtx::builder();
         if self.grants.fs {
@@ -562,6 +593,7 @@ impl WasmLibraryProvider {
         Ok(WasmLibraryInfo {
             name: parsed.name,
             version: parsed.version,
+            pure: parsed.pure,
             functions,
         })
     }
@@ -627,11 +659,18 @@ impl Instantiated {
 }
 
 /// Parsed `info()` JSON contract (RFC 005: `info` returns JSON — decided).
+/// No `deny_unknown_fields`: fields an older engine does not know (like
+/// `pure`) are ignored, so new libraries on old engines stay fail-closed
+/// (their fs imports then require the grant as before).
 #[derive(serde::Deserialize)]
 struct WasmLibraryInfoJson {
     name: String,
     #[serde(default)]
     version: String,
+    /// The library never touches the filesystem or the wall clock: the host
+    /// waives the fs/clock capability requirement (and provides no preopens).
+    #[serde(default)]
+    pure: bool,
     functions: Vec<WasmFunctionInfoJson>,
 }
 
@@ -647,6 +686,7 @@ struct WasmFunctionInfoJson {
 struct WasmLibraryInfo {
     name: String,
     version: String,
+    pure: bool,
     functions: Vec<FunctionInfo>,
 }
 
@@ -882,13 +922,15 @@ fn check_grants(display: &str, capabilities: Option<&[Capability]>) -> Result<Gr
 }
 
 /// Build the per-provider linker: wasi:io plumbing and wasi:cli in sink form
-/// always (Rust-std noise; the sinks expose nothing of the host), wasi:clocks
-/// and wasi:filesystem only per grant.
-fn build_linker(
-    engine: &Engine,
-    grants: &Grants,
-    display: &str,
-) -> Result<Linker<HostState>, String> {
+/// (Rust-std noise; the sinks expose nothing of the host), plus wasi:clocks
+/// and wasi:filesystem unconditionally — jco/StarlingMonkey-built components
+/// import fs/wall-clock even when pure, and linking them lets the engine
+/// instantiate such components and probe `info()`. The interfaces alone grant
+/// nothing: without an `fs` grant the WASI context carries zero preopens, so
+/// any actual file access fails at runtime; the wall clock is data, not
+/// authority. The fail-closed boundary is the grant-gated preopen in
+/// [`WasmLibraryProvider::instantiate_store`], not the link set.
+fn build_linker(engine: &Engine, display: &str) -> Result<Linker<HostState>, String> {
     use wasmtime_wasi::cli::{WasiCli, WasiCliView};
 
     let mut linker = Linker::<HostState>::new(engine);
@@ -929,39 +971,32 @@ fn build_linker(
     wasi_bindings::cli::terminal_stderr::add_to_linker::<HostState, WasiCli>(l, HostState::cli)
         .map_err(|e| link_err(display, e))?;
 
-    if grants.clock || grants.fs {
-        // std's fs-metadata code imports the wall clock alongside filesystem.
-        use wasmtime_wasi::clocks::{WasiClocks, WasiClocksView};
-        wasi_bindings::clocks::wall_clock::add_to_linker::<HostState, WasiClocks>(
-            l,
-            HostState::clocks,
-        )
+    // The wall clock is unconditional: std's fs-metadata code imports it
+    // alongside the filesystem, and jco-built components import it outright.
+    use wasmtime_wasi::clocks::{WasiClocks, WasiClocksView};
+    wasi_bindings::clocks::wall_clock::add_to_linker::<HostState, WasiClocks>(l, HostState::clocks)
         .map_err(|e| link_err(display, e))?;
-    }
-    // The monotonic clock is unconditional: every rustc-built wasip2
+    // The monotonic clock is unconditional too: every rustc-built wasip2
     // component imports it (std's Instant/parker), so it cannot be a
     // meaningful grant for Rust guests.
-    {
-        use wasmtime_wasi::clocks::{WasiClocks, WasiClocksView};
-        wasi_bindings::clocks::monotonic_clock::add_to_linker::<HostState, WasiClocks>(
-            l,
-            HostState::clocks,
-        )
-        .map_err(|e| link_err(display, e))?;
-    }
-    if grants.fs {
-        use wasmtime_wasi::filesystem::{WasiFilesystem, WasiFilesystemView};
-        wasi_bindings::filesystem::preopens::add_to_linker::<HostState, WasiFilesystem>(
-            l,
-            HostState::filesystem,
-        )
-        .map_err(|e| link_err(display, e))?;
-        wasi_bindings::sync::filesystem::types::add_to_linker::<HostState, WasiFilesystem>(
-            l,
-            HostState::filesystem,
-        )
-        .map_err(|e| link_err(display, e))?;
-    }
+    wasi_bindings::clocks::monotonic_clock::add_to_linker::<HostState, WasiClocks>(
+        l,
+        HostState::clocks,
+    )
+    .map_err(|e| link_err(display, e))?;
+    // The filesystem interfaces are linked for every component (see the
+    // doc comment): with no preopens in the WASI context they are inert.
+    use wasmtime_wasi::filesystem::{WasiFilesystem, WasiFilesystemView};
+    wasi_bindings::filesystem::preopens::add_to_linker::<HostState, WasiFilesystem>(
+        l,
+        HostState::filesystem,
+    )
+    .map_err(|e| link_err(display, e))?;
+    wasi_bindings::sync::filesystem::types::add_to_linker::<HostState, WasiFilesystem>(
+        l,
+        HostState::filesystem,
+    )
+    .map_err(|e| link_err(display, e))?;
     Ok(linker)
 }
 
@@ -978,6 +1013,7 @@ mod tests {
         hello01: PathBuf,
         spin: PathBuf,
         fsreader: PathBuf,
+        purefs: PathBuf,
         memhog: PathBuf,
     }
 
@@ -1035,6 +1071,7 @@ mod tests {
                     hello01: build("hello01", "perfscale_hello01_library")?,
                     spin: build("spin", "perfscale_spin_library")?,
                     fsreader: build("fsreader", "perfscale_fsreader_library")?,
+                    purefs: build("purefs", "perfscale_purefs_library")?,
                     memhog: build("memhog", "perfscale_memhog_library")?,
                 })
             })
@@ -1299,6 +1336,77 @@ mod tests {
         let err = validate_libraries(&[r], true, None).unwrap_err();
         assert!(err.contains("needed: fs"), "{err}");
         assert!(err.contains("granted: clock"), "{err}");
+    }
+
+    /// The pure marker (RFC 005): a component that imports wasi:filesystem
+    /// (jco/StarlingMonkey toolchain noise) but whose info() declares
+    /// `"pure": true` loads WITHOUT an fs grant — and without
+    /// allow_library_capabilities, since no capabilities are declared. The
+    /// sandbox holds at runtime: with no grant there are no preopens, so an
+    /// actual file read fails.
+    #[test]
+    fn pure_library_with_fs_imports_loads_without_a_grant() {
+        let Some(f) = fixtures() else { return };
+        // Guard the premise: the fixture really does import the fs interfaces
+        // (if the toolchain ever stops, this test must not silently vacate).
+        let bytes = std::fs::read(&f.purefs).unwrap();
+        let component = Component::new(engine().unwrap(), &bytes).unwrap();
+        let imports: Vec<String> = component
+            .component_type()
+            .imports(engine().unwrap())
+            .map(|(n, _)| n.to_string())
+            .collect();
+        assert!(
+            imports.iter().any(|n| n.starts_with("wasi:filesystem/")),
+            "the purefs fixture must import wasi:filesystem/*: {imports:?}"
+        );
+
+        // No capabilities, gate off — the pure marker waives the fs import.
+        let resolved = validate_libraries(&[lib_ref(&f.purefs)], false, None).unwrap();
+        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+        // Non-fs calls work fine.
+        assert_eq!(
+            inst.call(&ctx(), "echo", &[Value::from("hi")]).unwrap(),
+            "hi"
+        );
+        // An actual file access fails at runtime: interfaces linked, zero
+        // preopens.
+        let err = inst
+            .call(&ctx(), "read", &[Value::from("/etc/hostname")])
+            .unwrap_err();
+        assert!(!err.is_empty(), "read without a preopen must fail");
+    }
+
+    /// A pure library that IS granted fs keeps the confined preopen — the
+    /// marker waives the requirement, it does not disable the grant.
+    #[test]
+    fn pure_library_with_an_fs_grant_reads_through_the_preopen() {
+        let Some(f) = fixtures() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("corpus.txt"), "  corpus-data\n").unwrap();
+        let mut r = lib_ref(&f.purefs);
+        r.r#as = Some("corpus".into());
+        r.capabilities = Some(vec![Capability::Simple("fs".into())]);
+        let resolved = validate_libraries(&[r], true, Some(dir.path())).unwrap();
+        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+        let v = inst
+            .call(&ctx(), "read", &[Value::from("/corpus.txt")])
+            .unwrap();
+        assert_eq!(v, "corpus-data");
+    }
+
+    /// Fail-closed stays the default: a component importing fs whose info()
+    /// does NOT declare pure still hits the hard load error without a grant
+    /// (the pre-existing fsreader tests assert the same for the SDK-built
+    /// non-pure fixture).
+    #[test]
+    fn non_pure_library_without_a_grant_still_fails_closed() {
+        let Some(f) = fixtures() else { return };
+        let err = validate_libraries(&[lib_ref(&f.fsreader)], true, None).unwrap_err();
+        assert!(
+            err.contains("fs") && err.contains("does not grant"),
+            "{err}"
+        );
     }
 
     /// A symlink inside fs_root pointing outside it must not be followed:

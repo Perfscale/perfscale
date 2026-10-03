@@ -205,6 +205,17 @@ pub trait Library {
     /// Exported functions, surfaced by `info()` for lint/validation.
     fn functions(&self) -> Vec<FunctionInfo>;
 
+    /// Declares the library never touches the filesystem or the wall clock,
+    /// reported by `info()` as `"pure": true`. Component toolchains that
+    /// import `wasi:filesystem/*` + `wasi:clocks/wall-clock` unconditionally
+    /// (jco/StarlingMonkey for TS/JS) can then load without a `capabilities:
+    /// [fs]` grant: the engine links those interfaces but attaches no
+    /// preopens, so any actual file access fails at runtime. Only set this
+    /// when the library genuinely performs no file or wall-clock I/O.
+    fn pure(&self) -> bool {
+        false
+    }
+
     /// Initialize with the YAML `with:` block. The default accepts (and
     /// ignores) any config — override to validate. Failure is fatal to the
     /// run.
@@ -476,6 +487,7 @@ pub mod __rt {
             // lowercase identifier ([a-z][a-z0-9_]*) — dashes are not valid.
             "name": name.replace('-', "_"),
             "version": version,
+            "pure": lib.pure(),
             "functions": functions,
         })
         .to_string()

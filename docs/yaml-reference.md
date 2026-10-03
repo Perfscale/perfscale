@@ -301,7 +301,10 @@ Rules:
 - `capabilities:` grants (`fs`, `clock`, or `{ net: [hosts] }`) require
   `allow_library_capabilities: true` (fail-closed, same pattern as
   `allow_file_actions`). `@std/random@v1` declares no capabilities —
-  granting it any is a validation error.
+  granting it any is a validation error. A library whose `info()` reports
+  `"pure": true` needs no grant for its `wasi:filesystem` /
+  `wasi:clocks/wall-clock` imports (jco toolchain noise) — and gets no
+  preopens, so real file access fails at runtime.
 
 #### Run settings (`CallCtx.settings_json`)
 
@@ -448,10 +451,13 @@ WASM library rules:
 
 - The sandbox is fail-closed: the component's WIT imports are inspected at
   load, and anything beyond the YAML `capabilities:` grant is a hard load
-  error naming the needed vs granted capabilities. `fs` is a read-only
-  preopen confined to `fs_root` (default: the directory containing the
-  `.wasm`); `clock` is `wasi:clocks`; `net: [hosts]` is **not yet
-  supported** (a `net` grant fails the load with a clear error);
+  error naming the needed vs granted capabilities — unless the component's
+  `info()` declares `"pure": true`, in which case `wasi:filesystem` /
+  `wasi:clocks/wall-clock` imports are waived as toolchain noise (the guest
+  still gets no preopens, so actual file access fails at runtime). `fs` is
+  a read-only preopen confined to `fs_root` (default: the directory
+  containing the `.wasm`); `clock` is `wasi:clocks`; `net: [hosts]` is
+  **not yet supported** (a `net` grant fails the load with a clear error);
   `wasi:random` and raw sockets are never provided — libraries draw
   randomness from the seeded PRNG (`ctx.seed`) in their SDK.
 - `with:` is passed to the component's `init()` as JSON; an init failure is
