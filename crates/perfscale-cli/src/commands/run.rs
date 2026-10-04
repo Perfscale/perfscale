@@ -470,6 +470,7 @@ mod tests {
             after: Vec::new(),
             variables: serde_json::Map::new(),
             shared_variables: serde_json::Map::new(),
+            webrtc: None,
         }
     }
 

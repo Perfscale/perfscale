@@ -68,6 +68,39 @@ impl ReportConfig {
     }
 }
 
+/// One STUN/TURN server entry of the `webrtc:` config block (RFC 007).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WebRtcIceServer {
+    /// Server URIs, e.g. `["stun:stun.l.google.com:19302"]` or
+    /// `["turn:turn.example.com:3478"]`.
+    pub urls: Vec<String>,
+
+    /// TURN username (omit for STUN-only servers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+
+    /// TURN credential (omit for STUN-only servers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+}
+
+/// WebRTC media-plane configuration (`webrtc:`, RFC 007) — consumed by the
+/// pro `pro/webrtc-*` action module. Declaring the block on a build without
+/// the pro module is a configuration error.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WebRtcConfig {
+    /// STUN/TURN servers for ICE. Default (when absent):
+    /// `[stun:stun.l.google.com:19302]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ice_servers: Option<Vec<WebRtcIceServer>>,
+
+    /// Optional guardrail on concurrent peer connections per engine
+    /// instance: new connects fail fast with a clear error once reached.
+    /// Absent = unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_peer_connections: Option<u32>,
+}
+
 /// Top-level `-c config.yaml` document.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ConfigFile {
@@ -119,6 +152,12 @@ pub struct ConfigFile {
     /// starts.
     #[serde(default)]
     pub shared_variables: serde_json::Map<String, serde_json::Value>,
+
+    /// WebRTC media-plane configuration (RFC 007). Requires the pro
+    /// `pro/webrtc-*` action module; on builds without it, declaring this
+    /// block fails validation with a "pro module required" error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webrtc: Option<WebRtcConfig>,
 }
 
 /// Parse a test-definition YAML document (`-f test.yaml`).
@@ -132,6 +171,7 @@ pub fn parse_test_file(yaml: &str) -> Result<TestDef, String> {
 pub fn parse_config_file(yaml: &str) -> Result<ConfigFile, String> {
     let cfg: ConfigFile = parse_with_schema(yaml, crate::schema::compiled_config_schema())?;
     crate::library::require_explicit_capabilities(cfg.libraries.as_deref().unwrap_or(&[]))?;
+    require_webrtc_module(&cfg)?;
     Ok(cfg)
 }
 
@@ -146,7 +186,19 @@ pub fn test_from_value(value: serde_json::Value) -> Result<TestDef, String> {
 pub fn config_from_value(value: serde_json::Value) -> Result<ConfigFile, String> {
     let cfg: ConfigFile = validate_with_schema(value, crate::schema::compiled_config_schema())?;
     crate::library::require_explicit_capabilities(cfg.libraries.as_deref().unwrap_or(&[]))?;
+    require_webrtc_module(&cfg)?;
     Ok(cfg)
+}
+
+/// The `webrtc:` block is pro-only: fail loudly on builds without the
+/// pro/webrtc module, the same posture as other pro capability gates.
+/// "Registered" means a handler for the family's connect action was
+/// registered at process start ([`crate::step::actions::action_registered`]).
+fn require_webrtc_module(cfg: &ConfigFile) -> Result<(), String> {
+    if cfg.webrtc.is_some() && !crate::step::actions::action_registered("pro/webrtc-connect@v1") {
+        return Err("the 'webrtc:' config block requires the pro webrtc module (pro/webrtc-* actions) — this build does not include it".into());
+    }
+    Ok(())
 }
 
 fn parse_with_schema<T: serde::de::DeserializeOwned>(
@@ -403,6 +455,7 @@ steps:
             after: Vec::new(),
             variables: serde_json::Map::new(),
             shared_variables: serde_json::Map::new(),
+            webrtc: None,
         };
         let json = serde_json::to_value(&cfg).unwrap();
         let back: ConfigFile = serde_json::from_value(json).unwrap();
@@ -670,5 +723,65 @@ gpu:
                 "'{bad}' → unexpected error: {err}"
             );
         }
+    }
+
+    #[test]
+    fn config_without_webrtc_has_none_and_stays_off_the_wire() {
+        let cfg = parse_config_file("vus: 2\n").unwrap();
+        assert!(cfg.webrtc.is_none());
+        // Wire-compatible: absent key deserializes, None never serializes —
+        // same guarantee as the `gpu:` block (perfscaled embeds run config
+        // shapes and older consumers must not see a new key).
+        let json = serde_json::to_value(ConfigFile::default()).unwrap();
+        assert!(json.get("webrtc").is_none());
+    }
+
+    #[test]
+    fn webrtc_block_round_trips_through_serde() {
+        // Shape test via serde only — the pro-module gate lives in the parse
+        // entry points, not in Deserialize.
+        let cfg: ConfigFile = serde_json::from_value(serde_json::json!({
+            "vus": 1,
+            "webrtc": {
+                "ice_servers": [
+                    { "urls": ["turn:turn.example.com:3478"],
+                      "username": "u", "credential": "p" },
+                    { "urls": ["stun:stun.l.google.com:19302"] }
+                ],
+                "max_peer_connections": 500
+            }
+        }))
+        .unwrap();
+        let json = serde_json::to_value(&cfg).unwrap();
+        let back: ConfigFile = serde_json::from_value(json).unwrap();
+        assert_eq!(back.webrtc.unwrap().max_peer_connections, Some(500));
+
+        let webrtc = cfg.webrtc.expect("webrtc section parsed");
+        let servers = webrtc.ice_servers.unwrap();
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0].urls, ["turn:turn.example.com:3478"]);
+        assert_eq!(servers[0].username.as_deref(), Some("u"));
+        assert_eq!(servers[0].credential.as_deref(), Some("p"));
+        assert!(servers[1].username.is_none());
+        assert!(servers[1].credential.is_none());
+        assert_eq!(webrtc.max_peer_connections, Some(500));
+    }
+
+    #[test]
+    fn webrtc_block_without_the_pro_module_is_a_clear_error() {
+        // OSS build: nothing registers a `pro/webrtc-connect@v1` handler, so
+        // declaring the block must fail at load with the exact gate message.
+        // (The registered-handler case is covered by an integration test —
+        // the action registry is process-global, so one binary cannot test
+        // both states.)
+        let yaml = "webrtc:\n  max_peer_connections: 10\n";
+        let err = parse_config_file(yaml).unwrap_err();
+        assert_eq!(
+            err,
+            "the 'webrtc:' config block requires the pro webrtc module (pro/webrtc-* actions) — this build does not include it"
+        );
+        // Import-merged documents go through the same gate.
+        let err = config_from_value(serde_json::json!({"webrtc": {}})).unwrap_err();
+        assert!(err.contains("requires the pro webrtc module"), "{err}");
     }
 }

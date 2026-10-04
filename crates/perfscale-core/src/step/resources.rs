@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use perfscale_connection::{Connection, ConnectionRegistry};
+use perfscale_connection::{Connection, ConnectionRegistry, ExtensionRegistries};
 use prost_reflect::{DescriptorPool, DynamicMessage, MethodDescriptor};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -219,6 +219,11 @@ pub(crate) struct Resources {
     grpc: ConnectionRegistry<GrpcConn>,
     grpc_streams: ConnectionRegistry<GrpcStream>,
     db: ConnectionRegistry<DbConn>,
+    /// Live connections of downstream pro action families (`pro/webrtc-*`,
+    /// future `pro/*`), keyed by handle type — see
+    /// [`ExtensionRegistries`]. Drained with the built-in families at
+    /// iteration end.
+    extras: ExtensionRegistries,
     /// Reflection-fetched schema, per URL — repeated `grpc-connect` steps to
     /// the same server reuse it. Not connection state: deliberately survives
     /// `drain`, so the next iteration skips the round trip.
@@ -234,6 +239,7 @@ impl Default for Resources {
             grpc: ConnectionRegistry::new("grpc"),
             grpc_streams: ConnectionRegistry::new("grpcs"),
             db: ConnectionRegistry::new("db"),
+            extras: ExtensionRegistries::new(),
             reflection_pools: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -315,15 +321,29 @@ impl Resources {
         self.db.put_back(id, conn);
     }
 
+    /// Extension registries for downstream pro connection families
+    /// (`pro/webrtc-*`, …): a pro action parks its live connections here via
+    /// `extras.registry::<MyConn>("rtc")` and gets the same
+    /// insert/take/put_back/iteration-drain semantics as the built-in
+    /// families. This is THE way pro modules park per-iteration state.
+    pub(crate) fn extras(&self) -> &ExtensionRegistries {
+        &self.extras
+    }
+
     /// Drop every parked connection (iteration-end auto-close). Returns how
     /// many were dropped so the caller can decide whether to log. gRPC
     /// channels close with their last handle; open streams are cancelled by
     /// dropping their request sender and receiver. DB pools close with their
-    /// last handle; a parked transaction rolls back as it drops.
+    /// last handle; a parked transaction rolls back as it drops. Extension
+    /// families (pro/*) are drained with the same abrupt-drop semantics.
     pub(crate) fn drain(&self) -> usize {
         // The reflection pool cache intentionally survives: it is not
         // connection state.
-        self.ws.drain() + self.grpc.drain() + self.grpc_streams.drain() + self.db.drain()
+        self.ws.drain()
+            + self.grpc.drain()
+            + self.grpc_streams.drain()
+            + self.db.drain()
+            + self.extras.drain()
     }
 }
 
@@ -331,11 +351,12 @@ impl std::fmt::Debug for Resources {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Resources({} ws + {} grpc + {} streams + {} db live)",
+            "Resources({} ws + {} grpc + {} streams + {} db + {} ext live)",
             self.ws.len(),
             self.grpc.len(),
             self.grpc_streams.len(),
-            self.db.len()
+            self.db.len(),
+            self.extras.len()
         )
     }
 }
@@ -525,5 +546,44 @@ mod tests {
         assert_eq!(res.drain(), 2);
         assert_eq!(res.drain(), 0, "second drain finds nothing");
         assert!(res.take_db("db-1").is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // Extension registries (pro families)
+    // -----------------------------------------------------------------
+
+    struct ProConn;
+
+    impl Connection for ProConn {
+        fn label(&self) -> &str {
+            "pro"
+        }
+    }
+
+    #[test]
+    fn extras_drain_runs_with_the_builtin_families() {
+        let res = Resources::default();
+        let registry = res.extras().registry::<ProConn>("rtc");
+        assert_eq!(registry.insert(ProConn), "rtc-1");
+        res.insert_db(sqlite_profile_conn());
+
+        assert_eq!(res.drain(), 2, "built-in + extension handles dropped");
+        assert_eq!(res.drain(), 0);
+        assert!(registry.take("rtc-1").is_none());
+    }
+
+    #[test]
+    fn extras_clones_share_one_pool() {
+        let res = Resources::default();
+        let alias = res.clone();
+        let id = res.extras().registry::<ProConn>("rtc").insert(ProConn);
+        assert!(
+            alias
+                .extras()
+                .registry::<ProConn>("rtc")
+                .take(&id)
+                .is_some(),
+            "clone sees the same extension pool"
+        );
     }
 }

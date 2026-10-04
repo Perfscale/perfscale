@@ -23,6 +23,11 @@ pub mod step;
 pub mod summary;
 pub mod yaml;
 
+// Re-exported so downstream pro action crates can name the extension
+// registry types reached via `Context::extensions` without a direct
+// dependency on perfscale-connection.
+pub use perfscale_connection as connection;
+
 /// Test-support gRPC echo server (proto/echo.proto via build.rs).
 #[cfg(test)]
 pub(crate) mod testsupport;

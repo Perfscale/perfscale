@@ -296,6 +296,18 @@ pub fn register_action(handler: Arc<dyn ActionHandler>) {
     action_registry().write().unwrap().push(handler);
 }
 
+/// Whether any registered [`ActionHandler`] serves `action_id`
+/// (e.g. `"pro/webrtc-connect@v1"`). Used by capability gates: a config
+/// feature backed by a pro module fails validation with a clear "module
+/// required" error on builds that do not include it.
+pub fn action_registered(action_id: &str) -> bool {
+    action_registry()
+        .read()
+        .unwrap()
+        .iter()
+        .any(|h| h.matches(action_id))
+}
+
 // ---------------------------------------------------------------------------
 // HTTP plumbing — `std/http@v1` and the transport shared by HTTP-based
 // protocol families live in `step::http`. The re-exports below keep the

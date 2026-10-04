@@ -263,12 +263,13 @@ const TEST_TOP_FIELDS: [&str; 2] = ["steps", "libraries"];
 const STEP_FIELDS: [&str; 8] = [
     "name", "use", "uses", "with", "check", "outputs", "severity", "message",
 ];
-const CONFIG_TOP_FIELDS: [&str; 15] = [
+const CONFIG_TOP_FIELDS: [&str; 16] = [
     "vus",
     "duration",
     "stages",
     "arrival",
     "gpu",
+    "webrtc",
     "report",
     "before",
     "after",
@@ -677,6 +678,19 @@ fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
                 suggestion: None,
             });
         }
+    }
+
+    // Pro capability gate: the `webrtc:` block is dead weight without the
+    // pro/webrtc module — fail at lint time, not mid-run (same check the
+    // config loader applies, same message).
+    if map.contains_key("webrtc")
+        && !crate::step::actions::action_registered("pro/webrtc-connect@v1")
+    {
+        issues.push(LintIssue {
+            location: "/webrtc".into(),
+            problem: "the 'webrtc:' config block requires the pro webrtc module (pro/webrtc-* actions) — this build does not include it".into(),
+            suggestion: None,
+        });
     }
 
     // `before:`/`after:` steps get the same per-step linting as test steps.
@@ -1531,6 +1545,32 @@ steps:
             .unwrap();
         assert_eq!(typo.location, "/steps/0/with");
         assert_eq!(typo.suggestion.as_deref(), Some("did you mean 'payload'?"));
+    }
+
+    // -----------------------------------------------------------------
+    // pro capability gates
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn webrtc_block_without_the_pro_module_is_a_lint_issue() {
+        // OSS lint: nothing registered for `pro/webrtc-connect@v1` (the
+        // registry is process-global; the registered case lives in the
+        // `webrtc_gate` integration test).
+        let yaml = "vus: 1\nwebrtc:\n  max_peer_connections: 10\n";
+        let issues = lint(yaml, DocKind::Config);
+        let issue = issues
+            .iter()
+            .find(|i| i.location == "/webrtc")
+            .expect("gate issue present");
+        assert_eq!(
+            issue.problem,
+            "the 'webrtc:' config block requires the pro webrtc module (pro/webrtc-* actions) — this build does not include it"
+        );
+    }
+
+    #[test]
+    fn config_without_webrtc_lints_clean() {
+        assert_eq!(lint("vus: 1\nduration: 10s\n", DocKind::Config), vec![]);
     }
 
     // -----------------------------------------------------------------

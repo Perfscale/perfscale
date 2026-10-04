@@ -361,6 +361,61 @@
         "target"
       ],
       "type": "object"
+    },
+    "WebRtcConfig": {
+      "description": "WebRTC media-plane configuration (`webrtc:`, RFC 007) — consumed by the pro `pro/webrtc-*` action module. Declaring the block on a build without the pro module is a configuration error.",
+      "properties": {
+        "ice_servers": {
+          "description": "STUN/TURN servers for ICE. Default (when absent): `[stun:stun.l.google.com:19302]`.",
+          "items": {
+            "$ref": "#/definitions/WebRtcIceServer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "max_peer_connections": {
+          "description": "Optional guardrail on concurrent peer connections per engine instance: new connects fail fast with a clear error once reached. Absent = unlimited.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "WebRtcIceServer": {
+      "description": "One STUN/TURN server entry of the `webrtc:` config block (RFC 007).",
+      "properties": {
+        "credential": {
+          "description": "TURN credential (omit for STUN-only servers).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "urls": {
+          "description": "Server URIs, e.g. `[\"stun:stun.l.google.com:19302\"]` or `[\"turn:turn.example.com:3478\"]`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "username": {
+          "description": "TURN username (omit for STUN-only servers).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "urls"
+      ],
+      "type": "object"
     }
   },
   "description": "Top-level `-c config.yaml` document.",
@@ -488,6 +543,17 @@
       "format": "uint32",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "webrtc": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WebRtcConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "WebRTC media-plane configuration (RFC 007). Requires the pro `pro/webrtc-*` action module; on builds without it, declaring this block fails validation with a \"pro module required\" error."
     }
   },
   "title": "ConfigFile",

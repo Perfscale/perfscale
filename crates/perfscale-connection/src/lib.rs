@@ -22,6 +22,15 @@
 //! (and downstream `pro/*` actions) shares one implementation — and one set
 //! of semantics — instead of re-rolling it per protocol.
 //!
+//! # Downstream extension families
+//!
+//! [`ExtensionRegistries`] is the parking lot for connection families this
+//! crate does not know about: downstream pro action crates (`pro/webrtc-*`,
+//! future `pro/*`) get-or-insert their own typed [`ConnectionRegistry`] —
+//! with their own id prefix (`"rtc"` → `"rtc-1"`) — keyed by the handle
+//! type, and the engine's iteration-end drain reaches them through one
+//! type-erased [`ExtensionRegistries::drain`].
+//!
 //! # Design decisions
 //!
 //! **Generics, not boxed trait objects.** A [`ConnectionRegistry<C>`] is
@@ -78,7 +87,9 @@
 //! ```
 
 mod connection;
+mod extensions;
 mod registry;
 
 pub use connection::Connection;
+pub use extensions::ExtensionRegistries;
 pub use registry::ConnectionRegistry;

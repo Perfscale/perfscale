@@ -119,6 +119,17 @@ impl Context {
         self.http_client_shard
     }
 
+    /// Extension connection registries for downstream pro action families
+    /// (`pro/webrtc-*`, future `pro/*`). This is THE way a pro module parks
+    /// live connections for the duration of a VU iteration:
+    /// `ctx.extensions().registry::<MyConn>("rtc")` returns the family's
+    /// [`perfscale_connection::ConnectionRegistry`] (same
+    /// insert/take/put_back semantics as the built-in ws/grpc/db families),
+    /// and the runner's iteration-end drain drops whatever is left parked.
+    pub fn extensions(&self) -> &perfscale_connection::ExtensionRegistries {
+        self.resources.extras()
+    }
+
     /// A fresh `${…}` generator for a new connection or one-shot action.
     /// Seeded deterministically as `hash(run_seed, vu_id, conn_seq)` when the
     /// config sets `seed:`, randomly otherwise; every declared library is
