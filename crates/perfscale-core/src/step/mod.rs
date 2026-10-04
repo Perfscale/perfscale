@@ -194,6 +194,18 @@ pub struct RunConfig {
     #[serde(skip)]
     #[schemars(skip)]
     pub fs_root: Option<std::path::PathBuf>,
+
+    /// WebRTC media-plane configuration (RFC 007) handed to the pro
+    /// `pro/webrtc-*` actions through [`context::Context::webrtc_config`]. A
+    /// `-c config.yaml` document carries its own typed `webrtc:` block
+    /// ([`crate::yaml::WebRtcConfig`] next to the flattened `RunConfig`);
+    /// the embedding process (CLI, agent) maps that block into this field,
+    /// exactly like `report` — serde stays live so a standalone `RunConfig`
+    /// on the wire (perfscaled) can carry it. Requires a build with the pro
+    /// webrtc module registered (see `yaml::require_webrtc_module`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub webrtc: Option<crate::yaml::WebRtcConfig>,
 }
 
 /// One `stages:` entry — ramp the VU count linearly to `target` over
@@ -266,6 +278,7 @@ impl Default for RunConfig {
             gpu: None,
             report: None,
             fs_root: None,
+            webrtc: None,
         }
     }
 }

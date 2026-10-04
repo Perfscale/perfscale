@@ -39,10 +39,16 @@ pub struct Context {
     /// Live log stream of the run, for managed processes to mirror their
     /// output into (prefixed `{step}: ` lines, like the k6 runner).
     pub(crate) log_tx: Option<tokio::sync::mpsc::Sender<LogLine>>,
-    /// Shared run metrics, seeded by the runner for `after:` steps so
-    /// `std/thresholds@v1` can evaluate gates over everything the run
-    /// collected. `None` in per-iteration and `before` contexts.
+    /// Shared run metrics, seeded by the runner for every context of the run
+    /// (per-VU iteration, `before`, `after`) so actions — built-in and pro —
+    /// can record background-sampled metrics, and `std/thresholds@v1` can
+    /// evaluate gates over everything the run collected. `None` in contexts
+    /// built by hand (unit tests).
     pub(crate) run_metrics: Option<std::sync::Arc<std::sync::Mutex<crate::step::runner::Metrics>>>,
+    /// WebRTC media-plane configuration (RFC 007) mapped from the run's
+    /// `webrtc:` block, consumed by the pro `pro/webrtc-*` actions. `None`
+    /// when the run does not declare it.
+    pub(crate) webrtc: Option<crate::yaml::WebRtcConfig>,
     /// Which HTTP client shard this VU uses (see the sharded clients in
     /// `step::actions`). Seeded by the runner from the VU id so every VU
     /// keeps exactly one warm connection pool; 0 in hand-built contexts.
@@ -88,6 +94,7 @@ impl Default for Context {
             processes: None,
             log_tx: None,
             run_metrics: None,
+            webrtc: None,
             http_client_shard: 0,
             secrets: SecretRegistry::new(),
             libraries: None,
@@ -128,6 +135,44 @@ impl Context {
     /// and the runner's iteration-end drain drops whatever is left parked.
     pub fn extensions(&self) -> &perfscale_connection::ExtensionRegistries {
         self.resources.extras()
+    }
+
+    /// Shared run-metrics accumulator of the run this context belongs to
+    /// (`None` in hand-built contexts). Pro action families use it for
+    /// background-sampled metrics that outlive a single step (e.g. periodic
+    /// WebRTC getStats sampling) — the same `Metrics` the runner folds
+    /// step-emitted `value["metrics"]` counters/histograms into.
+    pub fn run_metrics(
+        &self,
+    ) -> Option<&std::sync::Arc<std::sync::Mutex<crate::step::runner::Metrics>>> {
+        self.run_metrics.as_ref()
+    }
+
+    /// The run's `webrtc:` config block (RFC 007), mapped into the run config
+    /// by the embedding process; consumed by the pro `pro/webrtc-*` actions
+    /// (ICE servers, `max_peer_connections`). `None` when the run does not
+    /// declare it.
+    pub fn webrtc_config(&self) -> Option<&crate::yaml::WebRtcConfig> {
+        self.webrtc.as_ref()
+    }
+
+    /// Seed the run-metrics handle (the runner does this for every context of
+    /// a real run). Public but hidden: a test seam for downstream crates that
+    /// need to observe background-sampled metrics without a full run.
+    #[doc(hidden)]
+    pub fn set_run_metrics(
+        &mut self,
+        metrics: std::sync::Arc<std::sync::Mutex<crate::step::runner::Metrics>>,
+    ) {
+        self.run_metrics = Some(metrics);
+    }
+
+    /// Seed the `webrtc:` config block (the embedding process does this via
+    /// `RunConfig.webrtc`). Public but hidden: a test seam for downstream
+    /// crates.
+    #[doc(hidden)]
+    pub fn set_webrtc_config(&mut self, config: crate::yaml::WebRtcConfig) {
+        self.webrtc = Some(config);
     }
 
     /// A fresh `${…}` generator for a new connection or one-shot action.

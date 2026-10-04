@@ -800,6 +800,7 @@ pub async fn run_native(
         library_metrics: library_metrics.clone(),
         run_seed: config.seed,
         settings_json: settings_json.clone(),
+        webrtc: config.webrtc.clone(),
         processes: Arc::clone(&registry),
         secrets: secrets.clone(),
         stop: Arc::clone(&stop),
@@ -1118,6 +1119,8 @@ struct VuShared {
     run_seed: Option<u64>,
     /// Frozen run settings JSON for library call contexts (RFC 005).
     settings_json: Arc<str>,
+    /// WebRTC media-plane config (RFC 007), from the run's `webrtc:` block.
+    webrtc: Option<crate::yaml::WebRtcConfig>,
     processes: Arc<ProcessRegistry>,
     /// The run's secret registry — every VU context records its resolved
     /// `${{ env.NAME }}` values here, and `execute_step` masks them out of
@@ -1144,10 +1147,15 @@ impl VuShared {
         ctx.library_metrics = self.library_metrics.clone();
         ctx.run_seed = self.run_seed;
         ctx.settings_json = self.settings_json.clone();
+        ctx.webrtc = self.webrtc.clone();
         ctx.vu_id = vu_id as u64;
         ctx.processes = Some(Arc::clone(&self.processes));
         ctx.log_tx = Some(self.tx.clone());
         ctx.secrets = self.secrets.clone();
+        // Per-VU contexts share the run's metrics accumulator so actions can
+        // record background-sampled metrics (e.g. periodic WebRTC getStats)
+        // that outlive a single step.
+        ctx.run_metrics = Some(Arc::clone(&self.metrics));
         if !self.config_seed.is_null() {
             ctx.set("config", (*self.config_seed).clone());
         }
@@ -1613,6 +1621,7 @@ async fn run_before(
     ctx.library_metrics = library_metrics.clone();
     ctx.run_seed = config.seed;
     ctx.settings_json = settings_json.clone();
+    ctx.webrtc = config.webrtc.clone();
     ctx.processes = Some(Arc::clone(registry));
     ctx.log_tx = Some(tx.clone());
     ctx.secrets = secrets.clone();
@@ -1712,6 +1721,7 @@ async fn run_after(
     ctx.library_metrics = shared.library_metrics.clone();
     ctx.run_seed = config.seed;
     ctx.settings_json = shared.settings_json.clone();
+    ctx.webrtc = config.webrtc.clone();
     ctx.processes = Some(Arc::clone(&shared.registry));
     ctx.log_tx = Some(tx.clone());
     ctx.run_metrics = Some(Arc::clone(&shared.metrics));

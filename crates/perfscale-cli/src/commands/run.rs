@@ -314,6 +314,9 @@ fn resolve_plan(
         if let Some(report) = &cfg.report {
             run.report = Some(report.to_run_config());
         }
+        // Fold the `webrtc:` block in too (RFC 007) — pro/webrtc-* actions
+        // read ICE servers and the peer-connection guardrail off the context.
+        run.webrtc = cfg.webrtc.clone();
         // `libraries:` from the config and the test file concatenate (RFC
         // 005); a duplicate alias across them is a validation error at run
         // start (engine-side, so the agent path gets the same check).
