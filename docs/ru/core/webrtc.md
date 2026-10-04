@@ -51,12 +51,14 @@ webrtc:
 | Параметр | Тип | По умолчанию | Описание |
 |----------|-----|--------------|----------|
 | `id` | string | — | Хендл из connect (`rtc-N`) |
-| `tracks` | list | — | `kind: audio\|video`, `codec: opus\|vp8\|h264`, `source: synthetic`, `bitrate`, `resolution` (видео), интервал ключевых кадров |
+| `tracks` | list | — | `kind: audio\|video`, `codec: opus\|vp8\|h264`, `source: synthetic\|file`, `bitrate`, `resolution` (видео), интервал ключевых кадров |
 
 Синтетическое аудио — тон Opus с дизерингом амплитуды (кодер не уходит в
 DTX); синтетическое видео — движущийся тестовый паттерн с меткой времени
-в кадре. Файловые источники (`source: file`) — фаза 2, AV1 и SVC/simulcast —
-фаза 3.
+в кадре. С `source: file` трек зацикливает файл-образец (`path:`, относительно
+рабочей директории): **IVF** (VP8) и **Annex-B H.264** (`.h264`, темп по
+`fps:`, по умолчанию 30) для видео, **Opus-in-Ogg** (`.ogg`) для аудио;
+кодек должен соответствовать контейнеру. AV1 и SVC/simulcast — фаза 3.
 
 ### `pro/webrtc-subscribe@v1`
 
@@ -65,7 +67,8 @@ DTX); синтетическое видео — движущийся тесто�
 | Параметр | Тип | По умолчанию | Описание |
 |----------|-----|--------------|----------|
 | `id` | string | — | Хендл из connect |
-| `sink` | string | `measure` | `measure` считает кадры/пакеты; `record` — фаза 2 |
+| `sink` | string | `measure` | `measure` считает кадры/пакеты; `record` дополнительно пишет каждый принятый трек на диск |
+| `record.dir` | string | — | Каталог для `sink: record` (файлы: `<шаг>-vu<vu>-track<idx>-<тип>.<ext>`; Opus → `.ogg`, VP8 → `.ivf`, H.264 → `.h264`) |
 | `jitter_buffer_ms` | ms | дефолт стека | Переопределение размера jitter-буфера |
 
 ### `pro/webrtc-stats@v1`
@@ -118,5 +121,6 @@ steps:
 
 Фаза 2: `pro/webrtc-call@v1` (композитные P2P-звонки между парами VU,
 SDP-рандеву через [общие переменные](core/shared-variables.md) с
-настраиваемым правилом парности), файловые источники, `sink: record`,
-`signal: library`. Фаза 3: AV1, SVC/simulcast-слои при публикации.
+настраиваемым правилом парности), `signal: library`. Файловые источники
+(`source: file`) и `sink: record` вышли в фазе 2a. Фаза 3: AV1,
+SVC/simulcast-слои при публикации.

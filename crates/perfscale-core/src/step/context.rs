@@ -126,6 +126,13 @@ impl Context {
         self.http_client_shard
     }
 
+    /// This VU's id (1-based). Downstream pro modules use it for per-VU
+    /// artifact naming (e.g. `pro/webrtc-*` `sink: record` file names); 0 in
+    /// hand-built contexts.
+    pub fn vu_id(&self) -> u64 {
+        self.vu_id
+    }
+
     /// Extension connection registries for downstream pro action families
     /// (`pro/webrtc-*`, future `pro/*`). This is THE way a pro module parks
     /// live connections for the duration of a VU iteration:

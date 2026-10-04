@@ -51,12 +51,15 @@ Attaches tracks to a connection and starts sending.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `id` | string | — | Handle from connect (`rtc-N`) |
-| `tracks` | list | — | `kind: audio\|video`, `codec: opus\|vp8\|h264`, `source: synthetic`, `bitrate`, `resolution` (video), keyframe interval |
+| `tracks` | list | — | `kind: audio\|video`, `codec: opus\|vp8\|h264`, `source: synthetic\|file`, `bitrate`, `resolution` (video), keyframe interval |
 
 Synthetic audio is an Opus tone with amplitude dithering (so the encoder
 never collapses into DTX); synthetic video is a moving test pattern with a
-burned-in timestamp box. File sources (`source: file`) land in phase 2, AV1
-and SVC/simulcast layers — in phase 3.
+burned-in timestamp box. With `source: file` a track loops a sample file
+(`path:`, relative to the working directory): **IVF** (VP8) and **Annex-B
+H.264** (`.h264`, paced at `fps:`, default 30) for video, **Opus-in-Ogg**
+(`.ogg`) for audio; the codec must match the container. AV1 and
+SVC/simulcast layers — in phase 3.
 
 ### `pro/webrtc-subscribe@v1`
 
@@ -65,7 +68,8 @@ Receives remote tracks and measures them.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `id` | string | — | Handle from connect |
-| `sink` | string | `measure` | `measure` counts frames/packets; `record` lands in phase 2 |
+| `sink` | string | `measure` | `measure` counts frames/packets; `record` additionally persists each received track to disk |
+| `record.dir` | string | — | Output directory for `sink: record` (files: `<step>-vu<vu>-track<idx>-<kind>.<ext>`; Opus → `.ogg`, VP8 → `.ivf`, H.264 → `.h264`) |
 | `jitter_buffer_ms` | ms | stack default | Jitter buffer sizing override |
 
 ### `pro/webrtc-stats@v1`
@@ -118,5 +122,6 @@ steps:
 
 Phase 2: `pro/webrtc-call@v1` (composite P2P calls between VU pairs, SDP
 rendezvous over [shared variables](core/shared-variables.md) with a
-configurable pairing rule), file sources, `sink: record`, `signal: library`.
+configurable pairing rule), `signal: library`. File sources
+(`source: file`) and `sink: record` shipped in phase 2a.
 Phase 3: AV1, SVC/simulcast layers at publish.
