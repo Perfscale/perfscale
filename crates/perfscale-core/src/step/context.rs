@@ -182,6 +182,34 @@ impl Context {
         self.webrtc = Some(config);
     }
 
+    /// Seed validated `libraries:` bindings (the runner does this for every
+    /// context of a real run). Public but hidden: a test seam for downstream
+    /// crates that exercise library-backed steps (e.g. `pro/webrtc-*`
+    /// `signal: library`) without a full run.
+    #[doc(hidden)]
+    pub fn set_libraries(&mut self, libraries: Arc<crate::library::LibrarySet>) {
+        self.libraries = Some(libraries);
+    }
+
+    /// Invoke a declared library function directly — the RFC 007
+    /// `signal: library` seam for pro actions that must hand a computed value
+    /// (an SDP offer) to a library mid-step and consume its return value.
+    /// `token` is one `${alias.fn(args)}` token; `${…}` tokens inside the
+    /// argument text expand first, `extra_args` are prepended to the parsed
+    /// arguments. The call runs on a fresh generator (one message context)
+    /// with this context's libraries, seed, VU identity, settings, metrics
+    /// and secrets — call policy (`allow:`/`deny:`) and result masking apply
+    /// exactly as for payload tokens. Errors name the token.
+    pub fn call_library(
+        &self,
+        token: &str,
+        extra_args: &[serde_json::Value],
+    ) -> Result<String, String> {
+        let mut gen = self.new_generator()?;
+        gen.begin_message();
+        gen.call_library(token, extra_args)
+    }
+
     /// A fresh `${…}` generator for a new connection or one-shot action.
     /// Seeded deterministically as `hash(run_seed, vu_id, conn_seq)` when the
     /// config sets `seed:`, randomly otherwise; every declared library is
@@ -689,5 +717,43 @@ mod tests {
             first.expand("${rand(1,1000000)}").unwrap(),
             second.expand("${rand(1,1000000)}").unwrap(),
         );
+    }
+
+    #[test]
+    fn call_library_invokes_a_declared_library_with_prepended_args() {
+        let mut ctx = Context::new();
+        ctx.vu_id = 3;
+        ctx.libraries = Some(Arc::new(crate::library::LibrarySet {
+            libraries: crate::library::validate_libraries(
+                &[crate::library::LibraryRef {
+                    use_: "@std/random@v1".into(),
+                    sha256: None,
+                    r#as: None,
+                    capabilities: Some(vec![]),
+                    with: None,
+                    secret: None,
+                    allow: None,
+                    deny: None,
+                    log: None,
+                }],
+                false,
+                None,
+            )
+            .unwrap(),
+        }));
+        // Extra args come first, token args follow the RFC 005 mapping.
+        let n: i64 = ctx
+            .call_library("${random.int(10,20)}", &[])
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((10..=20).contains(&n), "{n}");
+        // Unknown alias is a hard error here (not verbatim as in payloads).
+        let err = ctx.call_library("${faker.email()}", &[]).unwrap_err();
+        assert!(err.contains("unknown library alias 'faker'"), "{err}");
+        // No libraries at all: clear error.
+        let bare = Context::new();
+        let err = bare.call_library("${random.int(1,2)}", &[]).unwrap_err();
+        assert!(err.contains("no libraries are declared"), "{err}");
     }
 }

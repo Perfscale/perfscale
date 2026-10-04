@@ -37,12 +37,42 @@ webrtc:
 
 | Параметр | Тип | По умолчанию | Описание |
 |----------|-----|--------------|----------|
-| `signal` | string | — | `whip` \| `whep` (`library` — фаза 2) |
-| `url` | string | — | WHIP/WHEP-эндпоинт |
-| `bearer` | string | — | Bearer-токен эндпоинта |
-| `trickle` | bool | `false` | Дотекание ICE-кандидатов через WHIP PATCH; по умолчанию non-trickle (детерминированные метрики сетапа) |
+| `signal` | string | — | `whip` \| `whep` \| `library` |
+| `url` | string | — | WHIP/WHEP-эндпоинт (только `signal: whip\|whep`; токены `${…}` раскрываются, напр. `cam-${vu}`) |
+| `bearer` | string | — | Bearer-токен эндпоинта (только `signal: whip\|whep`) |
+| `library_call` | string | — | Только `signal: library`: один токен `${alias.fn(args)}`, указывающий функцию библиотеки, которая отвечает на SDP-оффер |
+| `trickle` | bool | `false` | Дотекание ICE-кандидатов через WHIP PATCH (только WHIP/WHEP — library-сигналинг всегда non-trickle, кандидаты встроены в оффер); по умолчанию non-trickle (детерминированные метрики сетапа) |
 | `on_disconnect` | string | `fail_fast` | `fail_fast` завершает шаг при ICE disconnect; `restart` пытается перезапустить ICE |
-| `timeout` | ms | `10000` | Таймаут сигналинга и подключения |
+| `timeout` | ms | `10000` | Таймаут сигналинга и подключения (включая вызов библиотеки) |
+
+#### `signal: library`
+
+Кастомный сигналинг (LiveKit, mediasoup, Janus, …) делегируется
+[библиотеке RFC 005](library-sdk.md): шаг сам строит SDP-оффер (трансиверы
+объявляются как send+receive, так что library-соединение умеет и публиковать,
+и подписываться), встраивает собранные ICE-кандидаты в него и вызывает
+функцию из `library_call`, передавая **SDP-оффер первым аргументом**, дальше —
+объявленные в токене аргументы (действует контракт отображения текст→JSON из
+RFC 005; токены `${…}` внутри аргументов раскрываются первыми — работает
+`identity=vu-${vu}`). Библиотека возвращает SDP-ответ JSON-строкой
+`{"sdp": "…", "type": "answer"}`; кривой ответ завершает шаг ошибкой с именем
+вызова. `library_call` требует `signal: library` и наоборот; `url`/`bearer`/
+`trickle` с `library` отклоняются (всё необходимое библиотеке передавайте
+через аргументы вызова).
+
+```yaml
+libraries:
+  - use: ./livekit-signaling.wasm
+    capabilities: []
+
+steps:
+  - name: join room
+    use: pro/webrtc-connect@v1
+    with:
+      signal: library
+      library_call: ${livekit.offer(room=loadtest, identity=vu-${vu})}
+    outputs: room
+```
 
 ### `pro/webrtc-publish@v1`
 
@@ -121,6 +151,6 @@ steps:
 
 Фаза 2: `pro/webrtc-call@v1` (композитные P2P-звонки между парами VU,
 SDP-рандеву через [общие переменные](core/shared-variables.md) с
-настраиваемым правилом парности), `signal: library`. Файловые источники
-(`source: file`) и `sink: record` вышли в фазе 2a. Фаза 3: AV1,
-SVC/simulcast-слои при публикации.
+настраиваемым правилом парности). Файловые источники
+(`source: file`) и `sink: record` вышли в фазе 2a, `signal: library` — в
+фазе 2b. Фаза 3: AV1, SVC/simulcast-слои при публикации.

@@ -65,7 +65,7 @@ pub const AVAILABLE_LIBRARIES: &[&str] = &["@std/random@v1"];
 /// Token names owned by the generator itself; a library alias may not shadow
 /// them (built-ins match first, so the alias would silently never resolve).
 pub const RESERVED_TOKEN_NAMES: &[&str] = &[
-    "seq", "uuid", "now", "now_ms", "now_iso", "rand", "randf", "choice",
+    "seq", "vu", "uuid", "now", "now_ms", "now_iso", "rand", "randf", "choice",
 ];
 
 // ---------------------------------------------------------------------------

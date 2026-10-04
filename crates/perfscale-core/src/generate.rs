@@ -16,6 +16,7 @@
 //! | Token | Expands to |
 //! |-------|------------|
 //! | `${seq}` | Monotonic counter, unique per message send (shared by all expansions in that message) |
+//! | `${vu}` | Virtual-user id (1-based; 0 outside a VU context) |
 //! | `${uuid}` | A random 32-hex-char id |
 //! | `${now}` | Current UTC time in FIX format `YYYYMMDD-HH:MM:SS.sss` |
 //! | `${now_ms}` | Current unix time in milliseconds |
@@ -227,6 +228,7 @@ impl Gen {
     fn eval(&mut self, token: &str) -> Result<Option<String>, String> {
         Ok(match token {
             "seq" => Some(self.seq.to_string()),
+            "vu" => Some(self.vu_id.to_string()),
             "uuid" => Some(format!("{:016x}{:016x}", self.next_u64(), self.next_u64())),
             "now" => Some(now_fix()),
             "now_ms" => Some(now_unix_millis().to_string()),
@@ -277,9 +279,7 @@ impl Gen {
     /// Library token resolution after every built-in missed: `alias.fn(args)`
     /// splits at the first `.`. Unknown alias → `Ok(None)` (verbatim, like
     /// any unknown token). Known alias → the call runs; unknown functions and
-    /// call failures are `Err` (step failure). The entry's policy rules gate
-    /// the call (`deny:` / `allow:`) and mark results for log masking
-    /// (`secret:` / `log:` / `FunctionInfo.secret`).
+    /// call failures are `Err` (step failure).
     fn eval_library(&mut self, token: &str) -> Result<Option<String>, String> {
         let Some(dot) = token.find('.') else {
             return Ok(None);
@@ -291,7 +291,89 @@ impl Gen {
         let (func, args) = parse_library_call(&token[dot + 1..]).ok_or_else(|| {
             format!("invalid library call '${{{token}}}' — expected ${{alias.fn(args)}}")
         })?;
+        self.invoke_library(&format!("${{{token}}}"), alias, func, args)
+            .map(Some)
+    }
 
+    /// Invoke a library function directly — the `signal: library` seam
+    /// (RFC 007) and any future action that must hand a computed value to a
+    /// library mid-step, which a value-producing `${…}` expansion cannot do
+    /// (the call's *result* is the expansion; here the caller supplies input).
+    ///
+    /// `token` must be exactly one `${alias.fn(args)}` token (the whole
+    /// string — surrounding text is an error). Unlike [`Gen::expand`], an
+    /// **unknown alias is an error**, not a verbatim pass-through: the caller
+    /// asked for this call explicitly. `${…}` tokens inside the argument text
+    /// expand first (e.g. `identity=vu-${vu}`), then the RFC 005 text→JSON
+    /// argument mapping applies; `extra_args` are **prepended** to the parsed
+    /// arguments (the engine-computed input comes first — for WebRTC that is
+    /// the SDP offer string). The entry's call policy (`allow:`/`deny:`),
+    /// masking rules, and metrics all apply exactly as for token calls.
+    pub fn call_library(
+        &mut self,
+        token: &str,
+        extra_args: &[serde_json::Value],
+    ) -> Result<String, String> {
+        let trimmed = token.trim();
+        let inner = trimmed
+            .strip_prefix("${")
+            .and_then(|s| s.strip_suffix("}"))
+            .ok_or_else(|| {
+                format!(
+                    "invalid library call '{trimmed}' — expected a single ${{alias.fn(args)}} token"
+                )
+            })?;
+        let Some(dot) = inner.find('.') else {
+            return Err(format!(
+                "invalid library call '{trimmed}' — expected a single ${{alias.fn(args)}} token"
+            ));
+        };
+        let alias = &inner[..dot];
+        if !self.libraries.iter().any(|l| l.alias == alias) {
+            let known: Vec<&str> = self.libraries.iter().map(|l| l.alias.as_str()).collect();
+            return Err(if known.is_empty() {
+                format!(
+                    "unknown library alias '{alias}' in '{trimmed}' — no libraries are declared"
+                )
+            } else {
+                format!(
+                    "unknown library alias '{alias}' in '{trimmed}' — declared aliases: {}",
+                    known.join(", ")
+                )
+            });
+        }
+        let call = &inner[dot + 1..];
+        let open = call.find('(');
+        let func = match open {
+            Some(open) if call.ends_with(')') && is_fn_name(&call[..open]) => &call[..open],
+            _ => {
+                return Err(format!(
+                    "invalid library call '{trimmed}' — expected ${{alias.fn(args)}}"
+                ));
+            }
+        };
+        let args_text = &call[open.expect("checked above") + 1..call.len() - 1];
+        let mut args = Vec::with_capacity(extra_args.len() + 4);
+        args.extend_from_slice(extra_args);
+        if !args_text.trim().is_empty() {
+            for raw in split_args(args_text) {
+                args.push(arg_to_json(&self.expand(&raw)?));
+            }
+        }
+        self.invoke_library(trimmed, alias, func, args)
+    }
+
+    /// The call proper, shared by token expansion and [`Gen::call_library`]:
+    /// the entry's policy rules gate the call (`deny:` / `allow:`) and mark
+    /// results for log masking (`secret:` / `log:` / `FunctionInfo.secret`).
+    /// `display` is the token text used in error messages.
+    fn invoke_library(
+        &mut self,
+        display: &str,
+        alias: &str,
+        func: &str,
+        args: Vec<serde_json::Value>,
+    ) -> Result<String, String> {
         let call_ctx = crate::library::CallCtx {
             message_seq: self.seq,
             iteration_seq: self.iteration_seq,
@@ -304,11 +386,11 @@ impl Gen {
             .libraries
             .iter_mut()
             .find(|l| l.alias == alias)
-            .expect("alias checked above");
+            .expect("alias checked by the caller");
 
         // Call policy: deny wins over allow; a blocked call fails the step.
         if let Some(blocked) = entry.rules.blocked(alias, func) {
-            return Err(format!("${{{token}}}: {blocked}"));
+            return Err(format!("{display}: {blocked}"));
         }
 
         let result = match &self.library_metrics {
@@ -320,7 +402,7 @@ impl Gen {
             }
             None => entry.instance.call(&call_ctx, func, &args),
         }
-        .map_err(|e| format!("${{{token}}}: {e}"))?;
+        .map_err(|e| format!("{display}: {e}"))?;
 
         // Result masking is additive: the function's own `secret` flag, the
         // entry-wide `secret: true`, and the entry's `log:` list all mark
@@ -332,7 +414,7 @@ impl Gen {
                 secrets.record(&result);
             }
         }
-        Ok(Some(result))
+        Ok(result)
     }
 }
 
@@ -435,6 +517,17 @@ pub(crate) fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let doy = (153 * mp + 2) / 5 + d as i64 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+/// A function name in a direct library call: `[a-zA-Z_][a-zA-Z0-9_]*` —
+/// braces/dots here mean the token was not a single `alias.fn(args)` call.
+fn is_fn_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Parse `name(a,b,c)` → `("name", ["a","b","c"])`. `choice` splits on `|`,
@@ -978,5 +1071,104 @@ mod tests {
         g.begin_message();
         g.expand("${probe.f()}").unwrap();
         assert_eq!(*seen.lock().unwrap(), r#"{"vus":7,"seed":3}"#);
+    }
+
+    // --- direct library calls (the RFC 007 signal: library seam) -----------
+
+    /// A recording stub: echoes its function name and JSON args back so tests
+    /// can assert exactly what the engine passed.
+    struct EchoStub;
+    impl LibraryInstance for EchoStub {
+        fn call(
+            &mut self,
+            _ctx: &CallCtx<'_>,
+            func: &str,
+            args: &[serde_json::Value],
+        ) -> Result<String, String> {
+            match func {
+                "offer" => Ok(format!("{func}({})", serde_json::to_string(args).unwrap())),
+                other => Err(format!("unknown function '{other}'")),
+            }
+        }
+    }
+
+    fn echo_gen(vu_id: u64) -> Gen {
+        let mut g = Gen::new(5).with_vu(vu_id, 0);
+        g.attach_library(
+            "sig",
+            Box::new(EchoStub),
+            LibraryRules::default(),
+            Vec::new(),
+        );
+        g.begin_message();
+        g
+    }
+
+    #[test]
+    fn call_library_prepends_extra_args_and_maps_token_args() {
+        let mut g = echo_gen(7);
+        let out = g
+            .call_library(
+                "${sig.offer(room=loadtest, n=3, \"quoted,x\")}",
+                &[serde_json::json!("v=0 sdp-offer")],
+            )
+            .unwrap();
+        assert_eq!(
+            out,
+            r#"offer(["v=0 sdp-offer","room=loadtest","n=3","quoted,x"])"#
+        );
+    }
+
+    #[test]
+    fn call_library_expands_tokens_inside_args() {
+        let mut g = echo_gen(7);
+        let out = g
+            .call_library("${sig.offer(identity=vu-${vu})}", &[])
+            .unwrap();
+        assert_eq!(out, r#"offer(["identity=vu-7"])"#);
+    }
+
+    #[test]
+    fn call_library_rejects_malformed_tokens_and_unknown_aliases() {
+        let mut g = echo_gen(1);
+        for bad in ["sig.offer()", "x ${sig.offer()}", "${sig}", "${sig.offer(}"] {
+            let err = g.call_library(bad, &[]).unwrap_err();
+            assert!(err.contains("invalid library call"), "{bad} → {err}");
+        }
+        let err = g.call_library("${nope.offer()}", &[]).unwrap_err();
+        assert!(
+            err.contains("unknown library alias 'nope'") && err.contains("declared aliases: sig"),
+            "{err}"
+        );
+        // No libraries attached at all: the error says so.
+        let mut bare = Gen::new(1);
+        let err = bare.call_library("${sig.offer()}", &[]).unwrap_err();
+        assert!(err.contains("no libraries are declared"), "{err}");
+        // Known alias, unknown function: the library's error names it.
+        let err = g.call_library("${sig.answer()}", &[]).unwrap_err();
+        assert!(err.contains("unknown function 'answer'"), "{err}");
+    }
+
+    #[test]
+    fn call_library_enforces_the_entry_call_policy() {
+        let rules = LibraryRules {
+            deny: vec!["offer".into()],
+            ..Default::default()
+        };
+        let mut g = Gen::new(1);
+        g.attach_library("sig", Box::new(EchoStub), rules, Vec::new());
+        g.begin_message();
+        let err = g.call_library("${sig.offer()}", &[]).unwrap_err();
+        assert!(err.contains("deny"), "{err}");
+    }
+
+    #[test]
+    fn vu_token_expands_to_the_vu_id() {
+        let mut g = Gen::new(1).with_vu(42, 0);
+        g.begin_message();
+        assert_eq!(g.expand("vu-${vu}").unwrap(), "vu-42");
+        // Hand-built generators (no VU context) read 0.
+        let mut g = Gen::new(1);
+        assert_eq!(g.expand("${vu}").unwrap(), "0");
     }
 }

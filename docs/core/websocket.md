@@ -101,7 +101,8 @@ context and its sockets are gone before VUs start.
 
 ## Dynamic messages
 
-Text payloads may embed single-brace `${…}` tokens (`${seq}`, `${uuid}`,
+Text payloads may embed single-brace `${…}` tokens (`${seq}`, `${vu}`,
+`${uuid}`,
 `${now}`/`${now_ms}`/`${now_iso}`, `${rand(a,b)}`, `${randf(a,b[,dp])}`,
 `${choice(x|y|z)}`), expanded anew per send — distinct from `${{ … }}`, which
 resolves once before the action runs:
