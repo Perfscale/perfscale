@@ -190,6 +190,25 @@ pub fn config_from_value(value: serde_json::Value) -> Result<ConfigFile, String>
     Ok(cfg)
 }
 
+/// Off-agent variant of [`test_from_value`] / [`config_from_value`] for
+/// validation-only surfaces (the controlplane BFF validating a stored test
+/// at save time): identical checks — schema, `capabilities:` presence — but
+/// pro-module gates ([`require_webrtc_module`]) do not fire, because the
+/// validating process deliberately registers no pro actions. The agent that
+/// later runs the document carries them (and re-validates with the gates on).
+pub fn test_from_value_off_agent(value: serde_json::Value) -> Result<TestDef, String> {
+    let test: TestDef = validate_with_schema(value, crate::schema::compiled_test_schema())?;
+    crate::library::require_explicit_capabilities(test.libraries.as_deref().unwrap_or(&[]))?;
+    Ok(test)
+}
+
+/// See [`test_from_value_off_agent`].
+pub fn config_from_value_off_agent(value: serde_json::Value) -> Result<ConfigFile, String> {
+    let cfg: ConfigFile = validate_with_schema(value, crate::schema::compiled_config_schema())?;
+    crate::library::require_explicit_capabilities(cfg.libraries.as_deref().unwrap_or(&[]))?;
+    Ok(cfg)
+}
+
 /// The `webrtc:` block is pro-only: fail loudly on builds without the
 /// pro/webrtc module, the same posture as other pro capability gates.
 /// "Registered" means a handler for the family's connect action was
