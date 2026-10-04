@@ -133,6 +133,15 @@ impl Context {
         self.vu_id
     }
 
+    /// Seed the VU id (the runner does this for every context of a real run).
+    /// Public but hidden: a test seam for downstream crates whose actions key
+    /// behavior off the VU id (e.g. `pro/webrtc-call@v1` pairing math) without
+    /// a full run.
+    #[doc(hidden)]
+    pub fn set_vu_id(&mut self, vu_id: u64) {
+        self.vu_id = vu_id;
+    }
+
     /// Extension connection registries for downstream pro action families
     /// (`pro/webrtc-*`, future `pro/*`). This is THE way a pro module parks
     /// live connections for the duration of a VU iteration:

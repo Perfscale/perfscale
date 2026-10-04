@@ -376,6 +376,44 @@ pub trait SharedVariableDriver: Send + Sync {
         let _ = decls;
         Box::pin(async { Ok(()) })
     }
+
+    /// Apply one ephemeral (undeclared) key op — engine-internal coordination
+    /// traffic (e.g. the `pro/webrtc-call@v1` P2P SDP rendezvous), NOT a
+    /// user-declared shared variable: the "no dynamic creation" rule does not
+    /// apply, and keys are deleted explicitly by their writer instead of
+    /// being re-seeded at run start.
+    ///
+    /// The default refuses: a driver opts in explicitly because skipping the
+    /// declaration check is a deliberate relaxation, not a fallback.
+    fn apply_ephemeral<'a>(&'a self, key: &'a str, op: EphemeralOp) -> SharedVarFuture<'a> {
+        let _ = (key, op);
+        let name = self.name();
+        Box::pin(async move {
+            Err(format!(
+                "shared variable driver '{name}' does not support ephemeral keys \
+                 (needed by e.g. pro/webrtc-call@v1 pairing)"
+            ))
+        })
+    }
+}
+
+/// One ephemeral (undeclared) key operation, for
+/// [`SharedVariableDriver::apply_ephemeral`].
+#[derive(Debug, Clone)]
+pub enum EphemeralOp {
+    /// Overwrite the key with the given value, creating it on first write.
+    /// Result: the stored value.
+    Set(Value),
+    /// Read the key; `null` when absent.
+    Get,
+    /// Remove the key; an absent key is a no-op. Result: `null`.
+    Delete,
+}
+
+/// Resolve a driver by name and apply one ephemeral op — the entry point for
+/// pro modules rendezvousing through shared variables (RFC 007 P2P pairing).
+pub async fn apply_ephemeral(driver: &str, key: &str, op: EphemeralOp) -> Result<Value, String> {
+    lookup_driver(driver)?.apply_ephemeral(key, op).await
 }
 
 fn driver_registry() -> &'static RwLock<Vec<Arc<dyn SharedVariableDriver>>> {
@@ -555,6 +593,12 @@ pub fn validate_shared_variable_usage(
 static STORE: LazyLock<Mutex<HashMap<String, Value>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Ephemeral (undeclared) keys — a separate map so engine-internal
+/// rendezvous traffic never becomes visible through the declared-variable
+/// ops (the "no dynamic creation" contract holds).
+static EPHEMERAL: LazyLock<Mutex<HashMap<String, Value>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 struct MemoryDriver;
 
 impl MemoryDriver {
@@ -639,6 +683,24 @@ impl SharedVariableDriver for MemoryDriver {
                 store.insert(name.clone(), initial.clone());
             }
             Ok(())
+        })
+    }
+
+    fn apply_ephemeral<'a>(&'a self, key: &'a str, op: EphemeralOp) -> SharedVarFuture<'a> {
+        let key = key.to_owned();
+        Box::pin(async move {
+            let mut store = EPHEMERAL.lock().unwrap();
+            Ok(match op {
+                EphemeralOp::Set(v) => {
+                    store.insert(key, v.clone());
+                    v
+                }
+                EphemeralOp::Get => store.get(&key).cloned().unwrap_or(Value::Null),
+                EphemeralOp::Delete => {
+                    store.remove(&key);
+                    Value::Null
+                }
+            })
         })
     }
 }
@@ -1373,6 +1435,100 @@ mod tests {
         // Same failure contract as pubsub subscribe: [err] line + last value.
         assert!(out.logs.iter().any(|(tag, _)| *tag == LogTag::Err));
         assert_eq!(out.value["value"], 7);
+    }
+
+    // -----------------------------------------------------------------
+    // Ephemeral ops (engine-internal rendezvous, e.g. pro/webrtc-call)
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn ephemeral_set_get_delete_without_declaration() {
+        let key = unique_name("ephemeral");
+        // No declaration, no seeding: Set creates the key.
+        apply_ephemeral("memory", &key, EphemeralOp::Set(json!({ "sdp": "v=0" })))
+            .await
+            .unwrap();
+        let v = apply_ephemeral("memory", &key, EphemeralOp::Get)
+            .await
+            .unwrap();
+        assert_eq!(v, json!({ "sdp": "v=0" }));
+        apply_ephemeral("memory", &key, EphemeralOp::Delete)
+            .await
+            .unwrap();
+        assert_eq!(
+            apply_ephemeral("memory", &key, EphemeralOp::Get)
+                .await
+                .unwrap(),
+            Value::Null
+        );
+        // Deleting an absent key is a no-op.
+        apply_ephemeral("memory", &key, EphemeralOp::Delete)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ephemeral_ops_do_not_touch_declared_variables() {
+        let declared = unique_name("declared");
+        seed(&[(&declared, json!(7))]).await;
+        let key = unique_name("ephemeral");
+        apply_ephemeral("memory", &key, EphemeralOp::Set(json!(1)))
+            .await
+            .unwrap();
+        let out = execute_action(
+            "std/get_shared_variable@v1",
+            &json!({ "name": declared }),
+            &Context::new(),
+            "get",
+        )
+        .await;
+        assert_eq!(out.value["value"], 7);
+        // Ephemeral keys are not visible through the declared-variable ops.
+        let key2 = unique_name("ephemeral-undeclared");
+        apply_ephemeral("memory", &key2, EphemeralOp::Set(json!(1)))
+            .await
+            .unwrap();
+        let out = execute_action(
+            "std/get_shared_variable@v1",
+            &json!({ "name": key2 }),
+            &Context::new(),
+            "get",
+        )
+        .await;
+        assert!(!out.success);
+    }
+
+    #[tokio::test]
+    async fn ephemeral_default_impl_refuses() {
+        struct NoEphemeral;
+        impl SharedVariableDriver for NoEphemeral {
+            fn name(&self) -> &'static str {
+                "no-ephemeral"
+            }
+            fn apply<'a>(&'a self, _name: &'a str, _op: SharedVarOp) -> SharedVarFuture<'a> {
+                Box::pin(async { Ok(Value::Null) })
+            }
+        }
+        let driver = NoEphemeral;
+        let err = driver
+            .apply_ephemeral("k", EphemeralOp::Get)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("does not support ephemeral keys") && err.contains("no-ephemeral"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_ephemeral_unknown_driver_lists_registered() {
+        let err = apply_ephemeral("nope", "k", EphemeralOp::Get)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("unknown shared variable driver 'nope'"),
+            "{err}"
+        );
     }
 
     // -----------------------------------------------------------------
