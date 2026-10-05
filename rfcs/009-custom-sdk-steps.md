@@ -241,6 +241,37 @@ question answered on paper first. (Library-side `net:` for value
 generators, if it ships per RFC 005, stays library-side; the grant is
 declared per entry and the step world does not expand it.)
 
+**Would a future `net` grant move the pro families into wasm? No — net was
+never the binding constraint.** Even with a full `wasi:sockets` grant:
+
+1. *Guests have no liveness.* A component runs only while the host is
+   calling it — no guest threads, no host-driven ticks. A FIX session must
+   heartbeat between orders, a Kafka consumer must fetch, RTP must pace at
+   20–66 ms per track; between step calls the guest is frozen. Protocols
+   with their own timers cannot live there without a host-polled lifecycle
+   — the second, stateful ABI this RFC deliberately does not build.
+2. *The engine must see the connection.* Metrics, connection registries,
+   iteration-end drain, and stats steps all operate on host-side handles.
+   A socket parked in guest state is invisible; exposing it means a host
+   call per operation, at which point the host re-implements the protocol
+   engine and the guest becomes a thin config shim — the wasm layer buys
+   nothing over a native crate and pays the boundary cost per packet.
+3. *The load point.* The families worth productizing are the expensive
+   ones (media plane, high-rate sessions) — exactly the paths that cannot
+   afford a boundary crossing per packet.
+
+What a `net` grant *would* unlock — and the shape it should take when a
+concrete case survives composition: host-mediated request/response only
+(`wasi:http`-class, no listeners, no raw sockets), host-attributed timing
+(the exchange folds like `http_sample`, the guest's own compute time
+reported separately), a YAML-declared egress allow-list
+(`net: [hosts]`), and per-component call budgets. That class covers
+**custom signaling with real HTTP** (e.g. a LiveKit token/room exchange
+inside `signal: library`), SOAP-like bounded protocols, and webhook-style
+integrations — bounded calls that need no liveness between invocations.
+Session and media families it does not cover, and never will cover well:
+those stay native pro crates (RFC 008).
+
 ### Discovery, lint, and save-time validation
 
 - **Discovery is the `info()` probe, not a new manifest format.** The
