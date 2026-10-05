@@ -44,6 +44,7 @@ handle (`rtc-1`, …) via `outputs:` — the live-connection model shared with
 | `trickle` | bool | `false` | Send ICE candidates via WHIP PATCH as they gather (WHIP/WHEP only — library signaling is always non-trickle, candidates bundled into the offer); default is non-trickle (deterministic setup metrics) |
 | `on_disconnect` | string | `fail_fast` | `fail_fast` fails later steps on ICE disconnect; `restart` performs a real ICE restart (see below) |
 | `timeout` | ms | `10000` | Signaling + connect timeout (covers the library call too) |
+| `tracks` | list | 1 audio + 1 video | Send-side m-line layout (WHIP/`library` only): `[{kind, layers?}]` — one entry per track the publish step will attach, with simulcast rids pre-declared per layered track. See "Multi-track and simulcast" below |
 
 #### `signal: library`
 
@@ -119,7 +120,69 @@ With `source: file` a track loops a sample file
 (`path:`, relative to the working directory): **IVF** (VP8 or AV1 — the
 `AV01` FourCC is accepted) and **Annex-B H.264** (`.h264`, paced at `fps:`,
 default 30) for video, **Opus-in-Ogg** (`.ogg`) for audio; the codec must
-match the container. SVC/simulcast layers — in phase 3.
+match the container.
+
+#### Multi-track publish and simulcast `layers:`
+
+A publish step may attach **multiple tracks of the same kind** (two cameras
+plus a screen share, several mics). WHIP/library connections pre-declare
+their send m-lines in the offer (RFC 9727 has no renegotiation), so the
+connect step takes an optional `tracks:` **send-layout** parameter — one
+`{kind, layers?}` entry per track the publish step will attach:
+
+```yaml
+  - name: publish connect
+    use: pro/webrtc-connect@v1
+    with:
+      signal: whip
+      url: https://stream.example.com/whip/studio-${vu}
+      tracks:                       # send layout; default is 1 audio + 1 video
+        - { kind: audio }
+        - { kind: video }           # camera
+        - kind: video               # screen share, simulcast
+          layers: [ { rid: f }, { rid: h }, { rid: q } ]
+    outputs: studio
+```
+
+Each publish track claims one declared transceiver (matched by kind and rid
+set); publishing beyond the declared layout fails with an error naming the
+missing declaration. The publish step output lists every attached track in
+`tracks` — `{index, kind, codec, source, layers?}` — next to the human
+`published` strings. On the subscriber side each track arrives as its own
+remote track, and `sink: record` writes one file per track as usual.
+
+A video track may declare **`layers:`** — simulcast: independent encodings
+of the same source on one m-line, distinguished by RID, the same shape a
+browser's `sendEncodings` produces (the offer carries `a=rid:<rid> send` +
+`a=simulcast:send …` lines, the SDES mid/rtp-stream-id extmaps, and
+per-layer `a=ssrc` lines; packets on the wire stamp the rid header
+extension):
+
+| Layer key | Type | Description |
+|-----------|------|-------------|
+| `rid` | string | RFC 8851 rid-id (1–16 alphanumeric), unique within the track, ≥2 layers per track |
+| `bitrate` | bps/`kbps` | Per-layer bitrate target |
+| `resolution` | `WxH` | Per-layer resolution |
+
+What a layer's `bitrate`/`resolution` do follows the same pure-Rust truth as
+track-level: **synthetic AV1 layers really encode per layer** (one rav1e
+encoder each, at the layer's resolution/bitrate — one core per layer);
+**asset and file layers cannot be re-encoded**, so their content is the
+fixed asset and `bitrate` scales the **pacing** (same frames, scaled frame
+rate), while `resolution` is ignored with a warning. This applies to VP8,
+H.264, and AV1 `source: file` alike.
+
+**True AV1 SVC** (spatial layers inside ONE stream, LxTy scalability modes)
+is **not supported**: rav1e, the only pure-Rust encoder in the stack, has no
+spatial-layer API. `scalability_mode:`/`svc:` requests are rejected with a
+targeted error pointing at simulcast layers — never silently faked.
+
+Receive-side note (webrtc-rs 0.20.5): all layers of a simulcast m-line
+arrive on **one remote track** — the stack delivers every layer's packets on
+the m-line's track and exposes no per-rid receive demux, so subscribe-side
+layer selection is not available, and recording a simulcast m-line
+interleaves its layers in one file. Per-layer streams remain distinguishable
+by SSRC in `getStats`, and per-layer **send** metrics are exact (below).
 
 ### `pro/webrtc-subscribe@v1`
 
@@ -180,6 +243,16 @@ ICE restarts: `webrtc_ice_restarts_total`.
 Composite calls: `webrtc_calls_total`, `webrtc_call_duration_ms`,
 `webrtc_call_errors_{ice,dtls,signaling,publish,subscribe,hold}`.
 
+Per-track send series (multi-track): a published track is
+`webrtc_<kind><ordinal>_…` with the per-kind publish ordinal —
+`webrtc_video0_bitrate_bps`, `webrtc_video1_bitrate_bps`,
+`webrtc_audio0_bitrate_bps`, plus `…_packets_sent_total`. A simulcast
+track's per-layer series appends the rid: `webrtc_video1_f_bitrate_bps`,
+`webrtc_video1_h_packets_sent_total`. The aggregate per-kind series above
+are unchanged and blend all tracks of the kind. The stats/close step output
+carries the same breakdown under `send_tracks` (`{name, layers: [{rid,
+packets_sent, bytes_sent}]}`).
+
 ## Example
 
 ```yaml
@@ -213,8 +286,10 @@ Phase 2 shipped: `pro/webrtc-call@v1` (composite P2P calls between VU pairs,
 SDP rendezvous over [shared variables](core/shared-variables.md) with a
 configurable pairing rule), file sources (`source: file`), `sink: record`,
 `signal: library`.
-Phase 3 so far: real ICE restart (`on_disconnect: restart` +
+Phase 3 shipped: real ICE restart (`on_disconnect: restart` +
 `webrtc_ice_restarts_total`), receive-side jitter buffering
-(`jitter_buffer_ms`), and AV1 publish (`codec: av1` — synthetic tracks
-encoded by rav1e, `.ivf` `AV01` file sources, AV1 → `.ivf` recordings).
-Remaining: SVC/simulcast layers at publish.
+(`jitter_buffer_ms`), AV1 publish (`codec: av1` — synthetic tracks encoded
+by rav1e, `.ivf` `AV01` file sources, AV1 → `.ivf` recordings), multi-track
+publish (connect-time send layout, per-track metrics), and simulcast
+`layers:` at publish (rid/bitrate/resolution per layer; true AV1 SVC
+rejected — no spatial-layer support in rav1e). Phase 3 is complete.
