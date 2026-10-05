@@ -12,6 +12,7 @@ and the pitfalls — before code, so the hard decisions are argued on paper.
 | [005](005-libraries.md) | Libraries — WASM value generators | Draft | — |
 | [006](006-library-revocation.md) | Library revocation — signed revocation list for offline agents | Draft | 005 |
 | [007](007-webrtc.md) | pro/webrtc — WebRTC load testing (full media path) | Draft | 005 |
+| [008](008-pro-steps.md) | Pro step families — architecture, catalog, registration contract | Draft | 004, 005 |
 
 ## Status values
 
