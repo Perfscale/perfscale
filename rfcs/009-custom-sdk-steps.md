@@ -494,6 +494,36 @@ as `FunctionInfo.secret`.
   artifact model cannot honor (the lockfile pins the component, not a step),
   and an un-prefixed id makes the std/pro/lib collision rules harder to
   state. Rejected: `lib/` is uglier and honest.
+- **Port the pro families themselves to wasm steps** (perfscaled ships
+  baked-in components instead of linked crates). Attractive uniformity —
+  one authoring model, hard dogfooding, artifact updates without an agent
+  release, better IP obfuscation than a linked binary — but it collides
+  with the two hardest constraints of the step model:
+  - *No net in the sandbox.* Every pro family today IS a network protocol
+    (FIX sessions, SOAP over HTTP, Kafka/MQTT/Redis drivers, the entire
+    WebRTC media plane). Porting them requires exactly the raw-socket
+    capability v1 rejects — for webrtc not just sockets but DTLS-SRTP
+    crypto and the ICE state machine inside the guest.
+  - *A step call is bounded; a pro connection is not.* Pro connect steps
+    park live connections (peer connections, Kafka producers, FIX sessions)
+    in Rust registries, and background tokio tasks drive media pacing and
+    sampling across the whole VU iteration and beyond. A wasm step is a
+    bounded call with JSON in/out: it cannot hold engine-side resources,
+    spawn host tasks, or pace RTP on the monotonic clock from inside the
+    guest. Supporting that means a second, stateful component lifecycle —
+    a far larger ABI than this RFC's — for negative gain: the hot paths
+    would pay the wasm-boundary cost per packet.
+  The distribution upside (module updates without an agent release) is real
+  but does not require wasm: pro crates are git-pinned deps baked at agent
+  build, the agent release cadence already ships module updates, and a
+  baked-in wasm artifact would trade a compile-time check for a runtime one
+  with no change in trust (a proprietary blob either way). Rejected: pro
+  protocol families stay native crates linked into perfscaled (RFC 008;
+  with `perfscale-fix` wired, the agent ships the full catalog). SDK steps
+  target user-side custom logic — signaling glue, transformations,
+  assertions, business metrics — that composes `std/*`/`pro/*` network
+  primitives. The supported pipeline runs the other way: a `lib/` step that
+  proves broadly useful gets promoted into a native pro family.
 - **`net:` for steps in v1.** Covered in the guide section — rejected as
   premature; the metrics-attribution and YAML-tunability questions must be
   answered before the sandbox learns HTTP, not after.
