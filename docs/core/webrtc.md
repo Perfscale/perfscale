@@ -112,6 +112,32 @@ assertions) and kicks background sampling of media-quality metrics.
 Graceful close with a final stats flush. Parked connections are also closed
 when the VU iteration ends.
 
+### `pro/webrtc-call@v1`
+
+The composite P2P call — pairing → connect → media both ways → hold →
+stats → close, as one step. VU pairs find each other through ephemeral
+[shared variables](core/shared-variables.md) keys (no `shared_variables:`
+declaration needed); with `driver: redis` the same test scales across engine
+instances.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `pairing.driver` | string | `memory` | Shared-variables driver for the rendezvous (`memory` covers one engine, `redis` spans instances) |
+| `pairing.key` | string | — | Rendezvous namespace; offers/answers live under `<key>:offer\|answer:<pair_id>` with a TTL |
+| `pairing.strategy` | string | `adjacent` | `adjacent`: vu 2k-1 offers to vu 2k; `custom`: you compute both |
+| `pairing.pair_id` | string | — | `custom` only — pair id; `${vu}` expands |
+| `pairing.role` | string | — | `custom` only — `offer` or `answer` |
+| `media` | string | `bidirectional` | Only `bidirectional` for now — compose connect/publish/subscribe for one-way calls |
+| `hold` | duration | — | Call duration before stats + close (e.g. `30s`) |
+| `timeout` | ms | `10000` | Rendezvous wait deadline (same semantics as `std/pubsub@v1` subscribe) |
+| `tracks` | list | synthetic Opus audio + VP8 video | Per-track overrides, same shape as `pro/webrtc-publish@v1` |
+
+Failures carry a stage tag (`ice`, `dtls`, `signaling`, `publish`,
+`subscribe`, `hold`) in the step output and as per-stage counters
+`webrtc_call_errors_<stage>`. An odd VU count leaves the highest odd VU
+unpaired: it offers and times out — a counted `signaling` failure, never
+silently skipped.
+
 ## Metrics
 
 Setup: `webrtc_ice_duration_ms`, `webrtc_dtls_duration_ms`,
@@ -120,6 +146,8 @@ TTFF: `webrtc_ttff_ms`. Media quality (per kind):
 `webrtc_{audio,video}_rtt_ms`, `webrtc_{audio,video}_jitter_ms`,
 `webrtc_{audio,video}_packets_lost_total`,
 `webrtc_{audio,video}_bitrate_bps`, `webrtc_frames_decoded_total`.
+Composite calls: `webrtc_calls_total`, `webrtc_call_duration_ms`,
+`webrtc_call_errors_{ice,dtls,signaling,publish,subscribe,hold}`.
 
 ## Example
 
@@ -150,8 +178,8 @@ steps:
 
 ## Roadmap
 
-Phase 2: `pro/webrtc-call@v1` (composite P2P calls between VU pairs, SDP
-rendezvous over [shared variables](core/shared-variables.md) with a
-configurable pairing rule). File sources (`source: file`) and `sink: record`
-shipped in phase 2a, `signal: library` in phase 2b.
+Phase 2 shipped: `pro/webrtc-call@v1` (composite P2P calls between VU pairs,
+SDP rendezvous over [shared variables](core/shared-variables.md) with a
+configurable pairing rule), file sources (`source: file`), `sink: record`,
+`signal: library`.
 Phase 3: AV1, SVC/simulcast layers at publish.

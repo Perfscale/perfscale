@@ -111,6 +111,32 @@ DTX); синтетическое видео — движущийся тесто�
 Корректное закрытие с финальным сбросом статистики. Припаркованные
 соединения также закрываются в конце итерации VU.
 
+### `pro/webrtc-call@v1`
+
+Композитный P2P-звонок — парность → connect → медиа в обе стороны → hold →
+stats → close, одним шагом. Пары VU находят друг друга через эфемерные ключи
+[общих переменных](core/shared-variables.md) (объявление
+`shared_variables:` не нужно); с `driver: redis` тот же тест масштабируется
+на несколько инстансов движка.
+
+| Параметр | Тип | По умолчанию | Описание |
+|----------|-----|--------------|----------|
+| `pairing.driver` | string | `memory` | Драйвер общих переменных для рандеву (`memory` — в пределах одного движка, `redis` — между инстансами) |
+| `pairing.key` | string | — | Пространство имён рандеву; офферы/ансверы живут под `<key>:offer\|answer:<pair_id>` с TTL |
+| `pairing.strategy` | string | `adjacent` | `adjacent`: vu 2k-1 звонит vu 2k; `custom`: вы вычисляете оба параметра сами |
+| `pairing.pair_id` | string | — | только `custom` — id пары; `${vu}` раскрывается |
+| `pairing.role` | string | — | только `custom` — `offer` или `answer` |
+| `media` | string | `bidirectional` | Пока только `bidirectional` — для односторонних звонков комбинируйте connect/publish/subscribe |
+| `hold` | duration | — | Длительность звонка перед stats + close (например, `30s`) |
+| `timeout` | ms | `10000` | Дедлайн ожидания на рандеву (та же семантика, что у subscribe в `std/pubsub@v1`) |
+| `tracks` | list | синтетика: Opus-аудио + VP8-видео | Переопределение треков, тот же формат, что у `pro/webrtc-publish@v1` |
+
+Ошибки несут тег стадии (`ice`, `dtls`, `signaling`, `publish`,
+`subscribe`, `hold`) в outputs шага и в счётчиках
+`webrtc_call_errors_<stage>`. При нечётном числе VU старший нечётный VU
+остаётся без пары: он отправляет оффер и отваливается по таймауту —
+учитываемая ошибка стадии `signaling`, никаких молчаливых пропусков.
+
 ## Метрики
 
 Сетап: `webrtc_ice_duration_ms`, `webrtc_dtls_duration_ms`,
@@ -119,6 +145,8 @@ DTX); синтетическое видео — движущийся тесто�
 `webrtc_{audio,video}_rtt_ms`, `webrtc_{audio,video}_jitter_ms`,
 `webrtc_{audio,video}_packets_lost_total`,
 `webrtc_{audio,video}_bitrate_bps`, `webrtc_frames_decoded_total`.
+Композитные звонки: `webrtc_calls_total`, `webrtc_call_duration_ms`,
+`webrtc_call_errors_{ice,dtls,signaling,publish,subscribe,hold}`.
 
 ## Пример
 
@@ -149,8 +177,8 @@ steps:
 
 ## Дорожная карта
 
-Фаза 2: `pro/webrtc-call@v1` (композитные P2P-звонки между парами VU,
+Фаза 2 вышла: `pro/webrtc-call@v1` (композитные P2P-звонки между парами VU,
 SDP-рандеву через [общие переменные](core/shared-variables.md) с
-настраиваемым правилом парности). Файловые источники
-(`source: file`) и `sink: record` вышли в фазе 2a, `signal: library` — в
-фазе 2b. Фаза 3: AV1, SVC/simulcast-слои при публикации.
+настраиваемым правилом парности), файловые источники (`source: file`),
+`sink: record`, `signal: library`.
+Фаза 3: AV1, SVC/simulcast-слои при публикации.

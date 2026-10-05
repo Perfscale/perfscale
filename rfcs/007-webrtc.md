@@ -1,6 +1,6 @@
 # RFC 007: pro/webrtc — WebRTC load testing
 
-- **Status**: Draft
+- **Status**: Implemented (phases 1–2); phase 3 (AV1, SVC/simulcast `layers:`) pending
 - **Author**: Perfscale Team
 - **Created**: 2026-10-04
 - **Requires**: RFC 005 (libraries — custom signaling plugins), the pro action

@@ -31,3 +31,16 @@ Release notes for the next release, written as features land.
   `capabilities: []` means "no grants". Documents that omitted the key now
   fail at load, `lint`, and run with a targeted error. Migration: add
   `capabilities: []` to every grant-less entry.
+
+## `${vu}` token + new pro extension seams
+
+- New built-in generator token `${vu}` — the current VU id (1-based) —
+  usable anywhere generator tokens expand.
+- `Context::call_library` lets pro action families invoke an RFC 005 library
+  mid-step with computed arguments (policy, masking, and metrics go through
+  the same path as `${alias.fn(...)}` tokens); `Context::vu_id()` exposes the
+  VU id for per-VU artifact naming.
+- Shared-variable drivers gain ephemeral ops (`apply_ephemeral`) —
+  undeclared, TTL-bounded keys for engine-internal coordination (used by the
+  pro `pro/webrtc-call@v1` rendezvous; the redis driver namespaces them under
+  `perfscale:ephemeral:`).
