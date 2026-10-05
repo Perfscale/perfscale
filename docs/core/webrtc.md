@@ -97,15 +97,29 @@ Attaches tracks to a connection and starts sending.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `id` | string | — | Handle from connect (`rtc-N`) |
-| `tracks` | list | — | `kind: audio\|video`, `codec: opus\|vp8\|h264`, `source: synthetic\|file`, `bitrate`, `resolution` (video), keyframe interval |
+| `tracks` | list | — | `kind: audio\|video`, `codec: opus\|vp8\|h264\|av1`, `source: synthetic\|file`, `bitrate`, `resolution` (video), keyframe interval |
 
 Synthetic audio is an Opus tone with amplitude dithering (so the encoder
 never collapses into DTX); synthetic video is a moving test pattern with a
-burned-in timestamp box. With `source: file` a track loops a sample file
-(`path:`, relative to the working directory): **IVF** (VP8) and **Annex-B
-H.264** (`.h264`, paced at `fps:`, default 30) for video, **Opus-in-Ogg**
-(`.ogg`) for audio; the codec must match the container. AV1 and
-SVC/simulcast layers — in phase 3.
+burned-in timestamp box. What `resolution:`/`bitrate:` do depends on the
+codec — the crate is pure Rust, and only AV1 has a pure-Rust encoder:
+
+| Codec | `source: synthetic` | `resolution:` honored? |
+|-------|--------------------|------------------------|
+| Opus | embedded tone asset | n/a |
+| VP8, H.264 | embedded test-pattern asset, fixed **320x240** @ 15 fps | no — validated and reported, but the asset is replayed as-is; a mismatched value logs a warning (`asset-bound 320x240 — resolution ignored`) |
+| AV1 | really encoded by [rav1e](https://github.com/xiph/rav1e) (pure Rust) at the requested resolution/bitrate, default 320x240 @ 15 fps | yes |
+
+Encoding is the honest price of AV1: each encoded synthetic track costs
+roughly one CPU core while media flows (speed preset 10, low-latency; on a
+modern laptop core that holds 15 fps up to ~640x480 and sags to ~6 fps at
+720p — the send pacing then degrades gracefully instead of bursting).
+
+With `source: file` a track loops a sample file
+(`path:`, relative to the working directory): **IVF** (VP8 or AV1 — the
+`AV01` FourCC is accepted) and **Annex-B H.264** (`.h264`, paced at `fps:`,
+default 30) for video, **Opus-in-Ogg** (`.ogg`) for audio; the codec must
+match the container. SVC/simulcast layers — in phase 3.
 
 ### `pro/webrtc-subscribe@v1`
 
@@ -115,7 +129,7 @@ Receives remote tracks and measures them.
 |-----------|------|---------|-------------|
 | `id` | string | — | Handle from connect |
 | `sink` | string | `measure` | `measure` counts frames/packets; `record` additionally persists each received track to disk |
-| `record.dir` | string | — | Output directory for `sink: record` (files: `<step>-vu<vu>-track<idx>-<kind>.<ext>`; Opus → `.ogg`, VP8 → `.ivf`, H.264 → `.h264`) |
+| `record.dir` | string | — | Output directory for `sink: record` (files: `<step>-vu<vu>-track<idx>-<kind>.<ext>`; Opus → `.ogg`, VP8/AV1 → `.ivf`, H.264 → `.h264`) |
 | `jitter_buffer_ms` | ms | off (packets dispatch as they arrive) | Receive-side jitter buffer: packets are held to an RTP-timestamp playout schedule offset by this delay and released in sequence order. Absorbing jitter costs TTFF/latency of the same size — TTFF includes the delay. Applies from the next packet, per connection |
 
 ### `pro/webrtc-stats@v1`
@@ -183,7 +197,7 @@ steps:
       id: ${cam.id}
       tracks:
         - kind: video
-          codec: h264
+          codec: av1
           source: synthetic
           bitrate: 1500kbps
           resolution: 1280x720
@@ -200,5 +214,7 @@ SDP rendezvous over [shared variables](core/shared-variables.md) with a
 configurable pairing rule), file sources (`source: file`), `sink: record`,
 `signal: library`.
 Phase 3 so far: real ICE restart (`on_disconnect: restart` +
-`webrtc_ice_restarts_total`) and receive-side jitter buffering
-(`jitter_buffer_ms`). Remaining: AV1, SVC/simulcast layers at publish.
+`webrtc_ice_restarts_total`), receive-side jitter buffering
+(`jitter_buffer_ms`), and AV1 publish (`codec: av1` — synthetic tracks
+encoded by rav1e, `.ivf` `AV01` file sources, AV1 → `.ivf` recordings).
+Remaining: SVC/simulcast layers at publish.
