@@ -42,7 +42,7 @@ webrtc:
 | `bearer` | string | — | Bearer-токен эндпоинта (только `signal: whip\|whep`) |
 | `library_call` | string | — | Только `signal: library`: один токен `${alias.fn(args)}`, указывающий функцию библиотеки, которая отвечает на SDP-оффер |
 | `trickle` | bool | `false` | Дотекание ICE-кандидатов через WHIP PATCH (только WHIP/WHEP — library-сигналинг всегда non-trickle, кандидаты встроены в оффер); по умолчанию non-trickle (детерминированные метрики сетапа) |
-| `on_disconnect` | string | `fail_fast` | `fail_fast` завершает шаг при ICE disconnect; `restart` пытается перезапустить ICE |
+| `on_disconnect` | string | `fail_fast` | `fail_fast` завершает последующие шаги при ICE disconnect; `restart` выполняет настоящий перезапуск ICE (см. ниже) |
 | `timeout` | ms | `10000` | Таймаут сигналинга и подключения (включая вызов библиотеки) |
 
 #### `signal: library`
@@ -59,6 +59,23 @@ RFC 005; токены `${…}` внутри аргументов раскрыв�
 вызова. `library_call` требует `signal: library` и наоборот; `url`/`bearer`/
 `trickle` с `library` отклоняются (всё необходимое библиотеке передавайте
 через аргументы вызова).
+
+#### `on_disconnect: restart`
+
+При ICE disconnect соединение выполняет настоящий перезапуск ICE вместо
+смерти: свежие ICE-креды (`restart_ice`), новый раунд сбора кандидатов и
+повторная сигнализация кредов — WHIP/WHEP отправляет PATCH на session-ресурс
+с ICE-restart-фрагментом `application/trickle-ice-sdpfrag` (форма перезапуска
+из драфта; если сервер не прислал `Location` при connect, session-ресурса нет
+и перезапуск невозможен), `signal: library` повторно вызывает функцию
+библиотеки с новым SDP-оффером. Трансиверы и треки переживают перезапуск,
+поэтому publish/subscribe продолжаются на новой ICE-сессии. На соединение
+выделяется максимум **3 попытки перезапуска** (с паузой 500 мс, каждая
+ограничена `timeout` шага); если цель окончательно мертва, бюджет
+исчерпывается и последующие шаги падают ровно как при `fail_fast`. Успешные
+перезапуски учитываются в `webrtc_ice_restarts_total` и поле снапшота
+`ice_restarts`, а также пишутся в лог. `pro/webrtc-call@v1` всегда работает
+в режиме `fail_fast`.
 
 ```yaml
 libraries:
@@ -99,7 +116,7 @@ DTX); синтетическое видео — движущийся тесто�
 | `id` | string | — | Хендл из connect |
 | `sink` | string | `measure` | `measure` считает кадры/пакеты; `record` дополнительно пишет каждый принятый трек на диск |
 | `record.dir` | string | — | Каталог для `sink: record` (файлы: `<шаг>-vu<vu>-track<idx>-<тип>.<ext>`; Opus → `.ogg`, VP8 → `.ivf`, H.264 → `.h264`) |
-| `jitter_buffer_ms` | ms | дефолт стека | Переопределение размера jitter-буфера |
+| `jitter_buffer_ms` | ms | выкл. (пакеты доставляются по прибытии) | Jitter-буфер на приёме: пакеты удерживаются до момента воспроизведения по расписанию RTP-таймстампов со смещением на эту задержку и отдаются в порядке sequence-номеров. Цена — рост TTFF/задержки на ту же величину (TTFF включает задержку). Применяется со следующего пакета, на всё соединение |
 
 ### `pro/webrtc-stats@v1`
 
@@ -145,6 +162,7 @@ stats → close, одним шагом. Пары VU находят друг др
 `webrtc_{audio,video}_rtt_ms`, `webrtc_{audio,video}_jitter_ms`,
 `webrtc_{audio,video}_packets_lost_total`,
 `webrtc_{audio,video}_bitrate_bps`, `webrtc_frames_decoded_total`.
+Перезапуски ICE: `webrtc_ice_restarts_total`.
 Композитные звонки: `webrtc_calls_total`, `webrtc_call_duration_ms`,
 `webrtc_call_errors_{ice,dtls,signaling,publish,subscribe,hold}`.
 
@@ -181,4 +199,6 @@ steps:
 SDP-рандеву через [общие переменные](core/shared-variables.md) с
 настраиваемым правилом парности), файловые источники (`source: file`),
 `sink: record`, `signal: library`.
-Фаза 3: AV1, SVC/simulcast-слои при публикации.
+Фаза 3 пока что: настоящий перезапуск ICE (`on_disconnect: restart` +
+`webrtc_ice_restarts_total`) и jitter-буфер на приёме (`jitter_buffer_ms`).
+Осталось: AV1, SVC/simulcast-слои при публикации.

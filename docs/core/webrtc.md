@@ -42,7 +42,7 @@ handle (`rtc-1`, …) via `outputs:` — the live-connection model shared with
 | `bearer` | string | — | Bearer token for the endpoint (`signal: whip\|whep` only) |
 | `library_call` | string | — | `signal: library` only: one `${alias.fn(args)}` token naming the library function that answers the SDP offer |
 | `trickle` | bool | `false` | Send ICE candidates via WHIP PATCH as they gather (WHIP/WHEP only — library signaling is always non-trickle, candidates bundled into the offer); default is non-trickle (deterministic setup metrics) |
-| `on_disconnect` | string | `fail_fast` | `fail_fast` ends the step early on ICE disconnect; `restart` attempts ICE restart |
+| `on_disconnect` | string | `fail_fast` | `fail_fast` fails later steps on ICE disconnect; `restart` performs a real ICE restart (see below) |
 | `timeout` | ms | `10000` | Signaling + connect timeout (covers the library call too) |
 
 #### `signal: library`
@@ -59,6 +59,22 @@ JSON string `{"sdp": "…", "type": "answer"}`; a malformed answer fails the
 step with the library call named. `library_call` requires `signal: library`
 and vice versa; `url`/`bearer`/`trickle` are rejected with `library` (pass
 everything the library needs through the call's arguments).
+
+#### `on_disconnect: restart`
+
+On ICE disconnect the connection performs a real ICE restart instead of
+dying: fresh ICE credentials (`restart_ice`), a new gathering round, and the
+new credentials re-signaled — WHIP/WHEP PATCHes the session resource with an
+`application/trickle-ice-sdpfrag` ICE-restart fragment (the draft's restart
+shape; a server that sent no `Location` at connect has no session resource
+and cannot be restarted), `signal: library` re-invokes the library call with
+the new offer SDP. Transceivers and tracks survive, so publish/subscribe
+resume on the new ICE session. A connection gets at most **3 restart
+attempts** (500 ms apart, each bounded by the step `timeout`); a target that
+stays dead exhausts the budget and later steps fail exactly as with
+`fail_fast`. Successful restarts count into `webrtc_ice_restarts_total` and
+the `ice_restarts` snapshot field, and are logged. `pro/webrtc-call@v1`
+always uses `fail_fast`.
 
 ```yaml
 libraries:
@@ -100,7 +116,7 @@ Receives remote tracks and measures them.
 | `id` | string | — | Handle from connect |
 | `sink` | string | `measure` | `measure` counts frames/packets; `record` additionally persists each received track to disk |
 | `record.dir` | string | — | Output directory for `sink: record` (files: `<step>-vu<vu>-track<idx>-<kind>.<ext>`; Opus → `.ogg`, VP8 → `.ivf`, H.264 → `.h264`) |
-| `jitter_buffer_ms` | ms | stack default | Jitter buffer sizing override |
+| `jitter_buffer_ms` | ms | off (packets dispatch as they arrive) | Receive-side jitter buffer: packets are held to an RTP-timestamp playout schedule offset by this delay and released in sequence order. Absorbing jitter costs TTFF/latency of the same size — TTFF includes the delay. Applies from the next packet, per connection |
 
 ### `pro/webrtc-stats@v1`
 
@@ -146,6 +162,7 @@ TTFF: `webrtc_ttff_ms`. Media quality (per kind):
 `webrtc_{audio,video}_rtt_ms`, `webrtc_{audio,video}_jitter_ms`,
 `webrtc_{audio,video}_packets_lost_total`,
 `webrtc_{audio,video}_bitrate_bps`, `webrtc_frames_decoded_total`.
+ICE restarts: `webrtc_ice_restarts_total`.
 Composite calls: `webrtc_calls_total`, `webrtc_call_duration_ms`,
 `webrtc_call_errors_{ice,dtls,signaling,publish,subscribe,hold}`.
 
@@ -182,4 +199,6 @@ Phase 2 shipped: `pro/webrtc-call@v1` (composite P2P calls between VU pairs,
 SDP rendezvous over [shared variables](core/shared-variables.md) with a
 configurable pairing rule), file sources (`source: file`), `sink: record`,
 `signal: library`.
-Phase 3: AV1, SVC/simulcast layers at publish.
+Phase 3 so far: real ICE restart (`on_disconnect: restart` +
+`webrtc_ice_restarts_total`) and receive-side jitter buffering
+(`jitter_buffer_ms`). Remaining: AV1, SVC/simulcast layers at publish.
