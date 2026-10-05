@@ -236,25 +236,73 @@ stats → close, одним шагом. Пары VU находят друг др
 
 ## Метрики
 
-Сетап: `webrtc_ice_duration_ms`, `webrtc_dtls_duration_ms`,
-`webrtc_setup_ms`, `webrtc_connect_total` (+ автоматический sibling с долей
-ошибок). TTFF: `webrtc_ttff_ms`. Качество медиа (по типу трека):
-`webrtc_{audio,video}_rtt_ms`, `webrtc_{audio,video}_jitter_ms`,
-`webrtc_{audio,video}_packets_lost_total`,
-`webrtc_{audio,video}_bitrate_bps`, `webrtc_frames_decoded_total`.
-Перезапуски ICE: `webrtc_ice_restarts_total`.
-Композитные звонки: `webrtc_calls_total`, `webrtc_call_duration_ms`,
-`webrtc_call_errors_{ice,dtls,signaling,publish,subscribe,hold}`.
+Сетап и звонки (по шагам, сворачиваются в сводку прогона):
+
+- `webrtc_ice_duration_ms` / `webrtc_dtls_duration_ms` / `webrtc_setup_ms`
+  — HDR-гистограммы в мс (процентили в сводке); согласование ICE,
+  DTLS-рукопожатие и полное время подключения. Один сэмпл на успешное
+  подключение, эмитируются шагом connect и композитными шагами call.
+- `webrtc_connect_total` / `webrtc_connect_errors` — счётчики, всегда
+  эмитируются как 1/0 или 1/1 на попытку подключения (при успехе и при
+  ошибке), поэтому гейты `webrtc_connect_errors: ["count==0"]` разрешаются
+  и на здоровых прогонах.
+- `webrtc_ttff_ms` — HDR-гистограмма в мс; время до первого кадра на
+  подписывающей стороне, один сэмпл на успешную подписку (шаг subscribe и
+  композитные звонки).
+- `webrtc_tracks_published_total` / `webrtc_subscriptions_total` /
+  `webrtc_connections_closed_total` — счётчики от шагов publish /
+  subscribe / close.
+- `webrtc_packets_sent_total` / `webrtc_packets_received_total` /
+  `webrtc_ice_restarts_total` — счётчики, эмитируемые шагом stats/close
+  (итоги соединения на момент закрытия; `webrtc_ice_restarts_total` также
+  сэмплируется во время звонка — см. ниже).
+
+Качество медиа (фоновый `getStats`-сэмплер, раз в stats-интервал, пока
+соединение открыто — **не** по шагам):
+
+- `webrtc_{audio,video}_rtt_ms` / `webrtc_{audio,video}_jitter_ms` /
+  `webrtc_{audio,video}_bitrate_bps` — сэмплы HDR-гистограмм на каждый тик
+  (битрейты вычисляются из приращений байтов за тик).
+- `webrtc_{audio,video}_packets_lost_total` /
+  `webrtc_frames_decoded_total` / `webrtc_ice_restarts_total` — счётчики,
+  пополняемые приращениями за тик.
+
+Поскольку эти сэмплы записывает сэмплер, а не вызов шага, производных
+`*_failed` для них нет — у качества медиа нет «вызова», который мог бы
+упасть. А вот шаговые гистограммы выше их имеют:
+`webrtc_setup_ms_failed`, `webrtc_ttff_ms_failed`,
+`webrtc_call_duration_ms_failed`, … (один сэмпл 0/1 на вызов,
+эмитировавший сэмпл — см.
+[metrics.md](metrics.md#метрики-доли-ошибок-family_failed)).
+
+Композитные звонки:
+
+- `webrtc_calls_total` — счётчик, по единице на шаг `call` (успех или
+  ошибка).
+- `webrtc_call_duration_ms` — HDR-гистограмма в мс; полная длина звонка
+  (оффер → hold → teardown), только успешные звонки.
+- `webrtc_call_errors_{ice,dtls,signaling,publish,subscribe,hold}` —
+  счётчики по стадиям; упавший звонок увеличивает ровно ту стадию, на
+  которой погиб. Это счётчики *причин* ошибок — другой сигнал, чем
+  производные `*_failed`: счётчики говорят, **какая стадия** сломалась (и
+  существуют, только когда эта стадия уже падала), а rate вроде
+  `webrtc_setup_ms_failed` измеряет, **как часто** падают вызовы (0/1 на
+  вызов), и именно его оценивают `rate`-гейты `std/thresholds@v1`.
+  Ограничивайтесь по обоим:
+  `webrtc_setup_ms_failed: ["rate<0.05"]` для SLO,
+  `webrtc_call_errors_ice: ["count==0"]`, чтобы привязать регрессию к
+  стадии.
 
 Потрековые серии отправки (мультитрек): опубликованный трек —
 `webrtc_<тип><порядковый>_…` с порядковым номером публикации внутри типа —
 `webrtc_video0_bitrate_bps`, `webrtc_video1_bitrate_bps`,
 `webrtc_audio0_bitrate_bps`, плюс `…_packets_sent_total`. Послойные серии
 simulcast-трека добавляют rid: `webrtc_video1_f_bitrate_bps`,
-`webrtc_video1_h_packets_sent_total`. Агрегатные серии по типу трека выше
-неизменны и смешивают все треки типа. Вывод шагов stats/close несёт ту же
-разбивку в `send_tracks` (`{name, layers: [{rid, packets_sent,
-bytes_sent}]}`).
+`webrtc_video1_h_packets_sent_total`. Как и серии по типу трека, они идут
+от фонового сэмплера (сэмплы гистограмм / приращения счётчиков за тик).
+Агрегатные серии по типу трека выше неизменны и смешивают все треки типа.
+Вывод шагов stats/close несёт ту же разбивку в `send_tracks` (`{name,
+layers: [{rid, packets_sent, bytes_sent}]}`).
 
 ## Пример
 

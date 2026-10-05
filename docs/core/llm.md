@@ -120,13 +120,20 @@ together and `extract` applies to the last JSON payload / the joined text.
 
 Every request folds into the run summary as custom metrics:
 
-- `llm_ttft_ms` — trend: request start → first content chunk (streamed
-  requests only).
-- `llm_tokens_per_sec` — trend: completion tokens / generation time (after
-  the first token when streamed, over the whole request otherwise).
-- `llm_prompt_tokens`, `llm_completion_tokens` — counters as reported by the
-  server.
-- `llm_chunks` — counter of SSE chunks received.
+- `llm_ttft_ms` — HDR histogram in ms (percentiles in the summary); request
+  start → first content chunk (time to first token). Streamed requests
+  only.
+- `llm_tokens_per_sec` — HDR histogram; completion tokens / generation time
+  (after the first token when streamed, over the whole request otherwise).
+  Only when the server reports completion tokens.
+- `llm_prompt_tokens`, `llm_completion_tokens` — counters as reported by
+  the server; absent when the server does not report usage.
+- `llm_chunks` — counter of SSE chunks received (0 for non-streamed
+  requests).
+- `llm_ttft_ms_failed` / `llm_tokens_per_sec_failed` — derived failure
+  rates: one 0/1 sample per invocation that produced the corresponding
+  sample (1 = the step failed — non-2xx, timeout, transport error). See
+  [metrics.md](metrics.md#failure-rate-metrics-family_failed).
 
 Gate a run on them with `std/thresholds@v1`:
 

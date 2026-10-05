@@ -153,12 +153,23 @@ same pair works inside one process: the bus fans out across VUs.)
 
 Every exchange folds into the run summary as custom metrics:
 
-- `pubsub_msgs_published` — counter of messages accepted by the transport.
-- `pubsub_msgs_received` — counter of matched messages (only when
-  `subscribe` is given).
-- `pubsub_e2e_ms` — trend with one sample per matched message: start of the
-  publish phase → consumed. For subscribe-only steps this is the wait time
-  (there is no publish to anchor on).
+- `pubsub_msgs_published` — counter (summed over the run); messages
+  accepted by the transport. Emitted by every completed exchange, on
+  success and on failure (0 for subscribe-only steps). A step that never
+  connected emits no metrics at all.
+- `pubsub_msgs_received` — counter; messages counted toward
+  `subscribe.count`. Emitted only when the step has a `subscribe` block.
+- `pubsub_e2e_ms` — HDR histogram in ms (percentiles in the summary); start
+  of the publish phase → message consumed, one sample per matched message.
+  Emitted only with `subscribe`, and only when at least one message
+  matched. For subscribe-only steps this is the wait time (there is no
+  publish to anchor on).
+- `pubsub_e2e_ms_failed` — derived failure rate: one 0/1 sample per
+  invocation that emitted an e2e sample (1 = the step failed, e.g. its
+  subscribe wait fell short of `count`). A wait that matched zero messages
+  records no sample — see
+  [metrics.md](metrics.md#failure-rate-metrics-family_failed) for how the
+  derivation works.
 
 Gate a run on them with `std/thresholds@v1`:
 

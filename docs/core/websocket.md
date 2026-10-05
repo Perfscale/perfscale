@@ -137,13 +137,21 @@ For deterministic exchanges, address one message by index:
 
 ## Metrics
 
-- **Handshakes** and **one-shot sessions** feed the shared latency histogram
-  (`http_req_duration`) — comparable with HTTP/TCP/UDP percentiles; failed
+- `http_req_duration` / `http_req_failed` — handshakes (`std/ws-connect@v1`)
+  and one-shot sessions (`std/ws@v1`) feed the shared latency histogram
+  (one sample per step) — comparable with HTTP/TCP/UDP percentiles; failed
   handshakes count in `http_req_failed`.
-- **`ws_msg_rtt`** — application-level message RTT: time from a send to the
-  first reply matching your until-rule, aggregated as a histogram (p50 / p95
-  / max in the summary).
-- **`ws_msgs_sent` / `ws_msgs_received`** — message throughput counters.
+- `ws_msg_rtt` — HDR histogram in ms (percentiles in the summary);
+  application-level message RTT: time from a send to the first reply
+  matching your until-rule. Emitted by `std/ws@v1` (one sample per matched
+  reply in the session) and `std/ws-recv@v1` (one sample, only when a rule
+  matched after a send on the same connection).
+- `ws_msg_failed` — derived failure rate: one 0/1 sample per invocation
+  that produced an RTT sample. See
+  [metrics.md](metrics.md#failure-rate-metrics-family_failed).
+- `ws_msgs_sent` / `ws_msgs_received` — message throughput counters,
+  summed over the run; `std/ws@v1` reports whole-session totals,
+  `std/ws-send@v1` / `std/ws-recv@v1` per-step counts.
 - Waiting on a server-push stream is deliberately *not* counted as latency —
   how long a server chooses to wait before pushing is not target latency and
   would poison the shared percentiles.

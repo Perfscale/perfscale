@@ -87,70 +87,167 @@ runner folds it into the run aggregates:
   reported as
   `<name>: avg=…ms p(50)=… p(90)=… p(95)=… p(99)=… min=… max=… count=N`.
 
-Built-in emitters:
+Built-in emitters, per metric (details on each family's page):
 
-| Name | Type | Emitted by | Meaning |
-|---|---|---|---|
-| `ws_msgs_sent` | counter | `std/ws@v1`, `std/ws-send@v1` | WS messages sent |
-| `ws_msgs_received` | counter | `std/ws@v1`, `std/ws-recv@v1` | WS messages read |
-| `ws_msg_rtt` | histogram | `std/ws@v1`, `std/ws-recv@v1` | Send → first matching reply (application-level RTT) |
-| `pubsub_msgs_published` | counter | `std/pubsub@v1` | Messages accepted by the transport |
-| `pubsub_msgs_received` | counter | `std/pubsub@v1` (with `subscribe`) | Messages counted toward `subscribe.count` |
-| `pubsub_e2e_ms` | histogram | `std/pubsub@v1` (with `subscribe`) | Publish-phase start → message consumed, one sample per matched message |
-| `shared_variable_wait_ms` | histogram | `std/get_shared_variable@v1` (with `wait_for`) | Time blocked in `wait_for` before the condition held, one sample per waiting read |
-| `llm_ttft_ms` | histogram | `std/llm@v1` (streamed) | Request start → first content chunk (time to first token) |
-| `llm_tokens_per_sec` | histogram | `std/llm@v1` | Completion tokens / generation time (after the first token when streamed) |
-| `llm_prompt_tokens` | counter | `std/llm@v1` | Prompt tokens as reported by the server |
-| `llm_completion_tokens` | counter | `std/llm@v1` | Completion tokens as reported by the server |
-| `llm_chunks` | counter | `std/llm@v1` (streamed) | SSE chunks received |
-| `grpc_req_duration` | histogram | `std/grpc@v1`, `std/grpc-call@v1` | Unary call latency |
-| `graphql_req_duration` | histogram | `std/graphql@v1` | GraphQL operation round trip |
-| `graphql_errors` | counter | `std/graphql@v1` | GraphQL-level errors, including partial-data responses that pass the step |
-| `graphql_op_<operationName>_duration` | histogram | `std/graphql@v1` | Per-operation latency, only for named operations (bounded cardinality) |
-| `grpc_msg_rtt` | histogram | `std/grpc-call@v1`, `std/grpc-stream-recv@v1` | Send → matching reply RTT |
-| `grpc_msgs_sent` | counter | `std/grpc-call@v1`, `std/grpc-stream-send@v1` | gRPC messages sent |
-| `grpc_msgs_received` | counter | `std/grpc-call@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1` | gRPC messages read |
-| `grpc_req_failed` | counter | `std/grpc-call@v1`, `std/grpc-stream-close@v1` | Calls that missed `expect_status` |
-| `db_connect_duration` | histogram | `std/db-connect@v1` (success) | Connect + pool setup latency |
-| `db_query_duration` | histogram | `std/db-query@v1`, `std/db-tx-*@v1` | Query latency; includes the fresh connect in per-query mode |
-| `db_rows` | counter | `std/db-query@v1` | Rows returned, or rows affected when the statement returned none |
-| `db_errors` | counter | `std/db-*@v1` (failure) | Failed DB steps, total. Successful DB steps emit `db_errors: 0`, so the counter exists (at 0) on fully healthy runs — gates like `db_errors: ["count==0"]` work either way |
-| `db_errors_connection` / `_constraint` / `_deadlock` / `_timeout` / `_other` | counter | `std/db-*@v1` (failure) | Same, split by class (SQLSTATE / errno / SQLite result code) |
+WebSocket — [websocket.md](websocket.md):
 
-Downstream actions use the same channel — e.g. the proprietary FIX action
-emits `fix_messages_sent`.
+- `ws_msgs_sent` — counter; WS messages sent. Emitted by `std/ws@v1`
+  (whole-session total) and `std/ws-send@v1` (per step), on success and on
+  failure.
+- `ws_msgs_received` — counter; WS messages read. Emitted by `std/ws@v1`
+  and `std/ws-recv@v1`.
+- `ws_msg_rtt` — HDR histogram (ms); send → first reply matching your
+  `until_*` rule (application-level RTT). One sample per matched reply;
+  emitted only when a rule matched after a send on the same connection —
+  pure push waits record nothing (deliberately, see
+  [websocket.md](websocket.md#metrics)).
+
+Pub/Sub — [pubsub.md](pubsub.md):
+
+- `pubsub_msgs_published` — counter; messages accepted by the transport.
+  Emitted by every completed `std/pubsub@v1` exchange (also 0 for
+  subscribe-only steps).
+- `pubsub_msgs_received` — counter; messages counted toward
+  `subscribe.count`. Only when the step has a `subscribe` block.
+- `pubsub_e2e_ms` — HDR histogram (ms); publish-phase start → message
+  consumed, one sample per matched message. Only with `subscribe`, and only
+  when at least one message matched (a subscribe wait that matched nothing
+  emits no samples). For subscribe-only steps this is the wait time.
+
+Shared variables:
+
+- `shared_variable_wait_ms` — HDR histogram (ms); time blocked in
+  `wait_for` before the condition held, one sample per waiting read.
+  Emitted by `std/get_shared_variable@v1` only with `wait_for`.
+
+LLM — [llm.md](llm.md):
+
+- `llm_ttft_ms` — HDR histogram (ms); request start → first content chunk
+  (time to first token). Streamed requests only.
+- `llm_tokens_per_sec` — HDR histogram; completion tokens / generation time
+  (after the first token when streamed). Only when the server reports
+  completion tokens.
+- `llm_prompt_tokens` / `llm_completion_tokens` — counters, as reported by
+  the server's `usage`; absent when the server does not report usage.
+- `llm_chunks` — counter; SSE chunks received (0 for non-streamed
+  requests).
+
+gRPC — [grpc.md](grpc.md):
+
+- `grpc_req_duration` — HDR histogram (ms); unary call latency, one sample
+  per completed call. `std/grpc@v1` and `std/grpc-call@v1` only — stream
+  lifetimes span user steps and deliberately feed nothing; a failed connect
+  emits no metrics at all (no RPC was made).
+- `grpc_msg_rtt` — HDR histogram (ms); send → matching reply RTT. On a
+  unary call emitted only when the status is OK (then it equals
+  `grpc_req_duration`); on `std/grpc-stream-recv@v1` only when an `until_*`
+  rule matched and a `grpc-stream-send` preceded it on the same stream.
+- `grpc_msgs_sent` — counter; messages sent, per `std/grpc-call@v1` call
+  (1) and per `std/grpc-stream-send@v1` step.
+- `grpc_msgs_received` — counter; messages read, per `std/grpc-call@v1`
+  call, per `std/grpc-stream-recv@v1` and per `std/grpc-stream-close@v1`
+  (drained at close).
+- `grpc_req_failed` — counter, 0/1 per call; calls that missed
+  `expect_status`. Emitted by `std/grpc-call@v1` and
+  `std/grpc-stream-close@v1` (close turns the stream's final status into
+  this counter). Note the derived same-named failure rate shadows this
+  counter — see [below](#failure-rate-metrics-family_failed).
+
+GraphQL — [graphql.md](graphql.md):
+
+- `graphql_req_duration` — HDR histogram (ms); the operation's round trip,
+  one sample per request that was actually sent (success or failure).
+- `graphql_errors` — counter; GraphQL-level errors, including partial-data
+  responses that pass the step. Always emitted (0 on clean responses), so
+  `graphql_errors: ["count==0"]` gates resolve on healthy runs too.
+- `graphql_op_<operationName>_duration` — HDR histogram (ms); per-operation
+  latency, emitted only for named operations (explicit `operation` or a
+  single named operation in the document), so cardinality stays bounded by
+  the test definition.
+
+Databases:
+
+- `db_connect_duration` — HDR histogram (ms); connect + pool setup latency,
+  `std/db-connect@v1` on success.
+- `db_query_duration` — HDR histogram (ms); query latency for
+  `std/db-query@v1` and `std/db-tx-*@v1`; includes the fresh connect in
+  per-query mode.
+- `db_rows` — counter; rows returned by `std/db-query@v1`, or rows affected
+  when the statement returned none.
+- `db_errors` — counter; failed DB steps, total, emitted by every
+  `std/db-*@v1` step. Successful steps emit `db_errors: 0`, so the counter
+  exists (at 0) on fully healthy runs — gates like
+  `db_errors: ["count==0"]` work either way.
+- `db_errors_connection` / `_constraint` / `_deadlock` / `_timeout` /
+  `_other` — counters; same, split by class (SQLSTATE / errno / SQLite
+  result code), emitted on failure.
+
+Downstream actions use the same channel — e.g. the WebRTC plugin emits
+`webrtc_*` series ([webrtc.md](webrtc.md#metrics)) and the proprietary FIX
+action emits `fix_messages_sent`.
 
 ## Failure-rate metrics (`<family>_failed`)
 
-Alongside the `metrics` payload, the runner derives per-invocation failure
-samples generically: for every histogram (array-valued) metric an invocation
-emits, it records one 0/1 sample — 1 when the step invocation failed, 0 when
-it succeeded — under the metric's family name with a trailing
-`_duration`/`_rtt` replaced by `_failed`:
+**Why they exist.** `std/thresholds@v1` `rate` expressions are the natural
+shape for an SLO gate — "fewer than 1% of calls may fail" — but a duration
+histogram alone cannot answer it: it holds latencies, and nothing in a
+latency sample says whether the invocation that produced it succeeded. So
+alongside the `metrics` payload, the runner derives a per-invocation
+failure signal generically.
+
+**How they are derived.** For every array-valued (histogram) metric a step
+invocation emits, the runner records one 0/1 sample — 1 when the step
+invocation failed, 0 when it succeeded — under the metric's family name: a
+trailing `_duration`/`_rtt` is replaced by `_failed`, and when there is no
+such suffix the full name gets `_failed` appended:
 
 | Duration metric | Derived failure metric |
 |---|---|
-| `http_req_duration` | `http_req_failed` (native to the HTTP path) |
+| `http_req_duration` | `http_req_failed` (native to the HTTP path — see below) |
 | `db_query_duration` | `db_query_failed` |
 | `db_connect_duration` | `db_connect_failed` |
 | `grpc_req_duration` | `grpc_req_failed` |
 | `graphql_req_duration` | `graphql_req_failed` |
+| `graphql_op_<name>_duration` | `graphql_op_<name>_failed` (per named operation) |
 | `ws_msg_rtt` | `ws_msg_failed` |
 | `pubsub_e2e_ms` | `pubsub_e2e_ms_failed` |
+| `shared_variable_wait_ms` | `shared_variable_wait_ms_failed` |
 | `llm_ttft_ms` | `llm_ttft_ms_failed` |
 | `llm_tokens_per_sec` | `llm_tokens_per_sec_failed` |
+| `webrtc_setup_ms`, `webrtc_ttff_ms`, `webrtc_call_duration_ms`, … | `<same name>_failed` — see [webrtc.md](webrtc.md#metrics) |
 
 These print as `<name>: <pct>%` (k6's `http_req_failed` shape). Because one
-sample is recorded **per invocation** (not per duration sample),
-`failed/total` over them is exactly the step family's failure rate — that is
-what `std/thresholds@v1` evaluates with `rate`, e.g.
-`db_query_failed: ["rate<0.05"]`. Note a failed step that emits no duration
-sample (e.g. `db-connect` that never connected) records no sample either, so
-its family rate covers completed invocations.
+sample is recorded **per invocation** (not per duration sample — an
+invocation that matched three messages still records one failure sample),
+`failed/total` over them is exactly the step family's invocation failure
+rate — that is what `std/thresholds@v1` evaluates with `rate`:
 
-When a family already has a same-named counter (the gRPC actions emit a
-`grpc_req_failed` counter for `expect_status` misses), the rate metric
-shadows it in the summary and in threshold evaluation.
+```yaml
+  - use: std/thresholds@v1
+    with:
+      graphql_req_failed:
+        - "rate<0.01"             # fewer than 1% failed operations
+      pubsub_e2e_ms_failed:
+        - "rate<0.05"             # subscribe waits mostly kept up
+```
+
+Note a failed step that emits no duration sample (e.g. `db-connect` that
+never connected, a subscribe wait that matched zero messages) records no
+failure sample either, so its family rate covers invocations that got far
+enough to produce a measurement.
+
+**Native vs derived.** `http_req_failed` is native to the HTTP path: every
+action returning an `HttpSample` marks it failed/succeeded itself (status ≥
+400, transport error, timeout), and no derivation is involved. The gRPC
+family is the asymmetric case: `std/grpc-call@v1` and
+`std/grpc-stream-close@v1` emit a `grpc_req_failed` **counter** (0/1 per
+call, driven by `expect_status`), and the runner *also* derives a
+`grpc_req_failed` rate from `grpc_req_duration`. When both exist, the rate
+metric shadows the counter in the summary and in threshold evaluation — so
+`grpc_req_failed: ["rate<0.05"]` works, while `count` expressions against
+that name do not see the counter. The WebRTC family has its own failure
+counters (`webrtc_connect_errors`, `webrtc_call_errors_<stage>`) that
+coexist with derived rates — see [webrtc.md](webrtc.md#metrics).
 
 ## Run-level gates (`std/thresholds@v1`)
 

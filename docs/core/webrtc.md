@@ -233,25 +233,71 @@ silently skipped.
 
 ## Metrics
 
-Setup: `webrtc_ice_duration_ms`, `webrtc_dtls_duration_ms`,
-`webrtc_setup_ms`, `webrtc_connect_total` (+ automatic failure sibling).
-TTFF: `webrtc_ttff_ms`. Media quality (per kind):
-`webrtc_{audio,video}_rtt_ms`, `webrtc_{audio,video}_jitter_ms`,
-`webrtc_{audio,video}_packets_lost_total`,
-`webrtc_{audio,video}_bitrate_bps`, `webrtc_frames_decoded_total`.
-ICE restarts: `webrtc_ice_restarts_total`.
-Composite calls: `webrtc_calls_total`, `webrtc_call_duration_ms`,
-`webrtc_call_errors_{ice,dtls,signaling,publish,subscribe,hold}`.
+Setup and calls (per step, folded into the run summary):
+
+- `webrtc_ice_duration_ms` / `webrtc_dtls_duration_ms` / `webrtc_setup_ms`
+  — HDR histograms in ms (percentiles in the summary); ICE negotiation,
+  DTLS handshake, and total connect time. One sample per successful
+  connect, emitted by the connect step and by composite call steps.
+- `webrtc_connect_total` / `webrtc_connect_errors` — counters, always
+  emitted as 1/0 or 1/1 per connect attempt (success and failure), so
+  `webrtc_connect_errors: ["count==0"]` gates resolve on healthy runs.
+- `webrtc_ttff_ms` — HDR histogram in ms; time to first frame on the
+  subscribing side, one sample per successful subscribe (subscribe step and
+  composite calls).
+- `webrtc_tracks_published_total` / `webrtc_subscriptions_total` /
+  `webrtc_connections_closed_total` — counters from the publish / subscribe
+  / close steps.
+- `webrtc_packets_sent_total` / `webrtc_packets_received_total` /
+  `webrtc_ice_restarts_total` — counters emitted by the stats/close step
+  (connection totals at close; `webrtc_ice_restarts_total` is also sampled
+  during the call — see below).
+
+Media quality (background `getStats` sampler, once per stats interval while
+a connection is open — **not** per step):
+
+- `webrtc_{audio,video}_rtt_ms` / `webrtc_{audio,video}_jitter_ms` /
+  `webrtc_{audio,video}_bitrate_bps` — HDR histogram samples per tick
+  (bitrates computed from byte deltas over the tick).
+- `webrtc_{audio,video}_packets_lost_total` /
+  `webrtc_frames_decoded_total` / `webrtc_ice_restarts_total` — counters
+  fed with per-tick deltas.
+
+Because these samples are recorded by the sampler rather than by a step
+invocation, they get no derived `*_failed` rates — media quality has no
+"invocation" to fail. The step-level histograms above do:
+`webrtc_setup_ms_failed`, `webrtc_ttff_ms_failed`,
+`webrtc_call_duration_ms_failed`, … (one 0/1 sample per invocation that
+emitted a sample — see
+[metrics.md](metrics.md#failure-rate-metrics-family_failed)).
+
+Composite calls:
+
+- `webrtc_calls_total` — counter, one per `call` step (success or failure).
+- `webrtc_call_duration_ms` — HDR histogram in ms; full call length
+  (offer → hold → teardown), successful calls only.
+- `webrtc_call_errors_{ice,dtls,signaling,publish,subscribe,hold}` —
+  counters, one per stage; a failed call increments exactly the stage it
+  died at. These are *failure-cause* counters, a different signal from the
+  derived `*_failed` rates: the counters tell you **which stage** broke
+  (and only exist once that stage has failed at least once), while a rate
+  like `webrtc_setup_ms_failed` measures **how often** invocations fail
+  (0/1 per invocation) and is what `std/thresholds@v1` `rate` gates
+  evaluate. Gate on both:
+  `webrtc_setup_ms_failed: ["rate<0.05"]` for the SLO,
+  `webrtc_call_errors_ice: ["count==0"]` to pin a regression to a stage.
 
 Per-track send series (multi-track): a published track is
 `webrtc_<kind><ordinal>_…` with the per-kind publish ordinal —
 `webrtc_video0_bitrate_bps`, `webrtc_video1_bitrate_bps`,
 `webrtc_audio0_bitrate_bps`, plus `…_packets_sent_total`. A simulcast
 track's per-layer series appends the rid: `webrtc_video1_f_bitrate_bps`,
-`webrtc_video1_h_packets_sent_total`. The aggregate per-kind series above
-are unchanged and blend all tracks of the kind. The stats/close step output
-carries the same breakdown under `send_tracks` (`{name, layers: [{rid,
-packets_sent, bytes_sent}]}`).
+`webrtc_video1_h_packets_sent_total`. Like the per-kind media series these
+come from the background sampler (histogram samples / counter deltas per
+tick). The aggregate per-kind series above are unchanged and blend all
+tracks of the kind. The stats/close step output carries the same breakdown
+under `send_tracks` (`{name, layers: [{rid, packets_sent,
+bytes_sent}]}`).
 
 ## Example
 

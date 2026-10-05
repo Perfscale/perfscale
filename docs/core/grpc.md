@@ -198,18 +198,27 @@ addressed field by field via `outputs` and `on:`.
 
 ## Metrics
 
-- **`grpc_req_duration`** — unary call latency histogram (`std/grpc@v1` and
-  `std/grpc-call@v1` only). Streams deliberately do not feed it: their
-  lifetimes span user steps.
-- **`grpc_msg_rtt`** — application-level message RTT. On a successful unary
-  call it equals the request duration; on a stream recv it is the send→match
-  time, reported only when an `until_*` rule matched and a
-  `grpc-stream-send` preceded it on the same stream.
-- **`grpc_msgs_sent` / `grpc_msgs_received`** — message throughput counters,
-  per call and per stream step.
-- **`grpc_req_failed`** — RPCs that did not meet `expect_status`. For
-  streams, `grpc-stream-close` is what turns the final status into this
-  counter.
+- `grpc_req_duration` — HDR histogram in ms (percentiles in the summary);
+  unary call latency, one sample per completed call (`std/grpc@v1` and
+  `std/grpc-call@v1` only, on success and on `expect_status` miss). Streams
+  deliberately do not feed it: their lifetimes span user steps.
+- `grpc_msg_rtt` — HDR histogram in ms; application-level message RTT. On a
+  unary call it is emitted only when the status is OK (then it equals the
+  request duration); on a stream recv it is the send→match time, reported
+  only when an `until_*` rule matched and a `grpc-stream-send` preceded it
+  on the same stream.
+- `grpc_msgs_sent` / `grpc_msgs_received` — message throughput counters,
+  summed over the run: per `std/grpc-call@v1` call (1 sent, 0/1 received),
+  per `std/grpc-stream-send@v1` / `std/grpc-stream-recv@v1` step, and
+  per `std/grpc-stream-close@v1` (messages drained at close).
+- `grpc_req_failed` — counter, 0/1 per call: RPCs that did not meet
+  `expect_status`. For streams, `grpc-stream-close` is what turns the final
+  status into this counter. The runner additionally derives a same-named
+  failure **rate** from `grpc_req_duration` (one 0/1 sample per
+  invocation), and the rate shadows this counter in the summary and in
+  `std/thresholds@v1` — gate with `grpc_req_failed: ["rate<…"]`, not
+  `count`. See
+  [metrics.md](metrics.md#failure-rate-metrics-family_failed).
 
 Unlike the WebSocket handshake, gRPC steps never feed `http_req_duration` /
 `http_req_failed` — the `grpc_*` series are the whole story, and a failed

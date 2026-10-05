@@ -101,14 +101,24 @@ decoded payload via a `std/check@v1` step:
 
 ## Metrics
 
-- `graphql_req_duration` — histogram of every operation's round trip; the
-  runner derives `graphql_req_failed` (rate). Gate on it with
-  `std/thresholds@v1`: `"graphql_req_duration": ["p99<200"]`.
-- `graphql_errors` — counter of GraphQL-level errors, including the
-  partial-data ones that pass the step.
-- `graphql_op_<operationName>_duration` — per-operation histogram, emitted
-  only when the operation is named (explicit `operation` or a single named
-  operation), so metric cardinality stays bounded by the test definition.
+- `graphql_req_duration` — HDR histogram in ms (percentiles in the
+  summary); every operation's round trip, one sample per request actually
+  sent, on success and on failure. Gate on it with `std/thresholds@v1`:
+  `"graphql_req_duration": ["p99<200"]`.
+- `graphql_req_failed` — failure rate derived from `graphql_req_duration`:
+  one 0/1 sample per invocation (1 = step failed: transport error, HTTP
+  error status, or `errors` without `data` — see above). Use it for SLO
+  gates: `graphql_req_failed: ["rate<0.01"]`. Derivation details:
+  [metrics.md](metrics.md#failure-rate-metrics-family_failed).
+- `graphql_errors` — counter, summed over the run; GraphQL-level errors,
+  including the partial-data ones that pass the step. Always emitted (0 on
+  clean responses), so `graphql_errors: ["count==0"]` gates resolve on
+  healthy runs too.
+- `graphql_op_<operationName>_duration` — HDR histogram in ms;
+  per-operation latency, emitted only when the operation is named (explicit
+  `operation` or a single named operation), so metric cardinality stays
+  bounded by the test definition. Each named operation also gets a derived
+  `graphql_op_<operationName>_failed` rate.
 - The request also feeds the standard `http_req_duration` / `http_req_failed`
   / `http_reqs` aggregates, like any HTTP step.
 
