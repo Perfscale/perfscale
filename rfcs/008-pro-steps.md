@@ -131,7 +131,9 @@ real failure mode (see the fix gap).
 1. **Crate**: `controlplane/packages/<family>` — `perfscale-<family>`
    package name, `ActionHandler` (or driver) impls, one `pub fn register()`,
    crate-level docs with the YAML surface, own tests against the OSS engine
-   as a dev-dependency.
+   as a dev-dependency. Metrics follow the in-step contract — reserved
+   `metrics` output key, `_duration`/`_rtt` histogram suffixes, suffix-based
+   breakdowns (see "Metrics from inside a step").
 2. **Workspace**: add to `members` in `controlplane/Cargo.toml`.
 3. **Agent dep**: git dependency in `perfscaled/Cargo.toml` + path patch in
    `perfscaled/.cargo/config.toml` (local dev; CI uses GH_PAT).
@@ -228,6 +230,66 @@ built-ins first, then registered handlers in registration order.
 `action_registered(id)` (actions.rs:299) is the probe the config gates use.
 A family handler conventionally matches both the canonical id
 (`pro/fix@v1`) and the short alias (`fix`).
+
+### Metrics from inside a step
+
+A custom step reports metrics through four channels — the same ones the
+`std/*` families use, no family-specific plumbing exists or is needed.
+
+1. **The reserved `metrics` key of the step output value** — the primary
+   channel. After `execute_action` returns, the runner folds
+   `output.value["metrics"]` into the run accumulator
+   (`crates/perfscale-core/src/step/runner.rs:1787-1811`,
+   `Metrics::add_counters`, runner.rs:163):
+   - a **number** is a *counter* — summed across all executions of the run
+     (`db_rows`, `webrtc_calls_total`);
+   - an **array of numbers** is a set of *histogram samples* in
+     **milliseconds** — each sample lands in the run's HDR histogram and
+     surfaces as percentiles in the run summary (`db_query_duration`,
+     `webrtc_setup_ms`).
+   The `metrics` object stays in the step output too, so `std/check@v1`
+   assertions can read the same numbers.
+2. **Automatic failure-rate sampling.** For every array metric whose name
+   ends in `_duration` or `_rtt`, the runner additionally records one 0/1
+   sample per invocation into a `<family>_failed` rate metric (family = the
+   metric name minus the suffix, or the full name otherwise):
+   `db_query_duration` → `db_query_failed`. A family that names its timing
+   histograms with these suffixes gets `std/thresholds@v1` `rate` gates for
+   free; a family that invents other suffixes does not.
+3. **`ActionOutput.http_sample`** — for HTTP-shaped work the step returns
+   `Some(HttpSample { duration_ms, status, failed })` and the runner folds
+   it through `Metrics::record` (the `std/http@v1` path: duration histogram
+   plus failure accounting). Use it when the step *is* an HTTP call; use
+   channel 1 for everything else.
+4. **`Context::run_metrics()`** — the shared accumulator
+   (`Arc<Mutex<Metrics>>`, context.rs:156) for metrics produced *outside* a
+   step's lifetime: background or periodic samplers that keep recording
+   between steps and after the step that spawned them returned (the webrtc
+   getStats sampler is the exemplar). Same `add_counters` / `record_rate`
+   API; the runner seeds the handle into every context of the run, and
+   `Context::set_run_metrics` is the test seam.
+
+A fifth, family-level shape exists for watching *other* families' metrics
+rather than emitting your own: `perfscale-llm-pro` registers observers at
+`register()` time (`register_llm_observer` / `register_llm_metrics_observer`
+→ `pro_llm_*` series on `std/llm@v1`, plus `register_gpu_collector` for
+run-level GPU collection). Reach for an observer when the data source is
+another family's steps; reach for channels 1–4 when the data source is your
+own.
+
+**Naming conventions** (the engine's metrics have no labels — dimensionality
+lives in the name):
+
+- counters end in `_total` / `_errors` (`webrtc_ice_restarts_total`,
+  `webrtc_call_errors_<stage>`);
+- histogram samples end in `_duration` / `_rtt` / `_ms` — the first two also
+  unlock the automatic `<family>_failed` rate (channel 2);
+- breakdowns are name suffixes, established by the webrtc family: per kind
+  `webrtc_audio_*` / `webrtc_video_*`, per track `webrtc_video0_*`, per
+  layer `webrtc_video1_f_*`, per stage `webrtc_call_errors_signaling`;
+- always emit a counter even at 0 (the `dropped_iterations` convention,
+  runner.rs:1493-1499), so `std/thresholds@v1` gates like `count==0`
+  resolve on clean runs instead of erroring on an unknown metric.
 
 ### The registration call site
 
