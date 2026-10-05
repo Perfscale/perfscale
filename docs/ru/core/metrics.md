@@ -190,7 +190,7 @@ GraphQL — [graphql.md](graphql.md):
   результата SQLite), эмитируются при ошибке.
 
 Нижестоящие действия используют тот же канал — например, WebRTC-плагин
-эмитирует серии `webrtc_*` ([webrtc.md](webrtc.md#метрики)), а
+эмитирует серии `webrtc_*` ([WebRTC (pro)](/docs/pro-features/webrtc#метрики)), а
 проприетарное FIX-действие эмитирует `fix_messages_sent`.
 
 ## Метрики доли ошибок (`<family>_failed`)
@@ -221,7 +221,7 @@ GraphQL — [graphql.md](graphql.md):
 | `shared_variable_wait_ms` | `shared_variable_wait_ms_failed` |
 | `llm_ttft_ms` | `llm_ttft_ms_failed` |
 | `llm_tokens_per_sec` | `llm_tokens_per_sec_failed` |
-| `webrtc_setup_ms`, `webrtc_ttff_ms`, `webrtc_call_duration_ms`, … | `<тем же именем>_failed` — см. [webrtc.md](webrtc.md#метрики) |
+| `webrtc_setup_ms`, `webrtc_ttff_ms`, `webrtc_call_duration_ms`, … | `<тем же именем>_failed` — см. [WebRTC (pro)](/docs/pro-features/webrtc#метрики) |
 
 Они выводятся как `<name>: <pct>%` (в форме k6 `http_req_failed`). Поскольку
 один сэмпл записывается **на вызов** (а не на сэмпл длительности — вызов,
@@ -254,7 +254,7 @@ rate-метрика затеняет счётчик и в сводке, и пр�
 работает `grpc_req_failed: ["rate<0.05"]`, а выражения с `count` по этому
 имени счётчик не видят. У семейства WebRTC есть собственные счётчики ошибок
 (`webrtc_connect_errors`, `webrtc_call_errors_<stage>`), сосуществующие с
-производными rate — см. [webrtc.md](webrtc.md#метрики).
+производными rate — см. [WebRTC (pro)](/docs/pro-features/webrtc#метрики).
 
 ## Пороговые проверки запуска (`std/thresholds@v1`)
 

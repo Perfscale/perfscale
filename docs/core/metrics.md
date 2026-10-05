@@ -183,7 +183,7 @@ Databases:
   result code), emitted on failure.
 
 Downstream actions use the same channel — e.g. the WebRTC plugin emits
-`webrtc_*` series ([webrtc.md](webrtc.md#metrics)) and the proprietary FIX
+`webrtc_*` series ([WebRTC (pro)](/docs/pro-features/webrtc#metrics)) and the proprietary FIX
 action emits `fix_messages_sent`.
 
 ## Failure-rate metrics (`<family>_failed`)
@@ -214,7 +214,7 @@ such suffix the full name gets `_failed` appended:
 | `shared_variable_wait_ms` | `shared_variable_wait_ms_failed` |
 | `llm_ttft_ms` | `llm_ttft_ms_failed` |
 | `llm_tokens_per_sec` | `llm_tokens_per_sec_failed` |
-| `webrtc_setup_ms`, `webrtc_ttff_ms`, `webrtc_call_duration_ms`, … | `<same name>_failed` — see [webrtc.md](webrtc.md#metrics) |
+| `webrtc_setup_ms`, `webrtc_ttff_ms`, `webrtc_call_duration_ms`, … | `<same name>_failed` — see [WebRTC (pro)](/docs/pro-features/webrtc#metrics) |
 
 These print as `<name>: <pct>%` (k6's `http_req_failed` shape). Because one
 sample is recorded **per invocation** (not per duration sample — an
@@ -247,7 +247,7 @@ metric shadows the counter in the summary and in threshold evaluation — so
 `grpc_req_failed: ["rate<0.05"]` works, while `count` expressions against
 that name do not see the counter. The WebRTC family has its own failure
 counters (`webrtc_connect_errors`, `webrtc_call_errors_<stage>`) that
-coexist with derived rates — see [webrtc.md](webrtc.md#metrics).
+coexist with derived rates — see [WebRTC (pro)](/docs/pro-features/webrtc#metrics).
 
 ## Run-level gates (`std/thresholds@v1`)
 
