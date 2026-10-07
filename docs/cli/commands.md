@@ -122,13 +122,16 @@ with `avg`/`min`/`max` only. There is no `std/thresholds@v1` integration for
 |---|---|---|
 | `--port <PORT>` | `7999` | Port to listen on; `0` picks a free port (printed at startup) |
 | `--tls` | off | Serve HTTPS with a self-signed certificate generated at startup — a local TLS target for load tests. Clients must skip verification (`insecure: true` in `std/http@v1`, k6's `insecureSkipTLSVerify`, locust's `verify=False`) |
+| `--no-ui` | off | Do not serve the built-in dashboard on `/`; the ingest API keeps working |
 
 Endpoints:
 
 | Method | Path | Description |
 |---|---|---|
+| `GET` | `/` | Built-in dashboard (absent with `--no-ui`): live time-series of during-run snapshots plus the last run summaries. Self-contained — no CDN, no build step; polls `/api/v1/state` |
 | `GET` | `/health` | Returns `ok` |
-| `POST` | `/api/v1/metrics` | Accepts `{"lines": ["...", ...]}` and prints the batch |
+| `POST` | `/api/v1/metrics` | Accepts the end-of-run summary `{"lines": ["...", ...]}` or a during-run snapshot `{"samples": [...], "seq": N}` (`report.during_run`), prints it, and keeps it in memory for the dashboard |
+| `GET` | `/api/v1/state` | Recent snapshot batches and the last run summaries as JSON — what the dashboard polls. Kept in memory only: the last 2000 snapshot batches and 20 summaries |
 | `GET` | `/ws` | WebSocket echo — every text (and binary) message is echoed back verbatim. A loopback target for WebSocket load tests and the `ws` benchmark suite |
 
 This is a development stand-in, not a control-plane: no persistence, no auth,

@@ -38,7 +38,7 @@ fn serve_after_help() -> String {
     format!(
         "Endpoints:\n  \
          GET  /health           liveness probe, returns `ok`\n  \
-         POST /api/v1/metrics   accepts {{\"lines\": [\"...\"]}} and prints the batch\n  \
+         POST /api/v1/metrics   accepts the run summary {{\"lines\": [...]}} or a during-run\n                         snapshot {{\"samples\": [...], \"seq\": N}} and prints it\n  \
          GET  /ws               WebSocket echo (target for WS load tests/benchmarks)\n\n\
          Examples:\n  \
          perfscale serve                 listen on the default port 7999\n  \
@@ -262,6 +262,13 @@ pub struct ServeArgs {
     /// k6's `insecureSkipTLSVerify`, locust's `verify=False`).
     #[arg(long)]
     pub tls: bool,
+
+    /// Do not serve the built-in dashboard on `/`. The metrics ingest API
+    /// (`POST /api/v1/metrics`, `GET /api/v1/state`) keeps working — this
+    /// only removes the human-facing page (and is implied on headless
+    /// automation that parses stdout).
+    #[arg(long)]
+    pub no_ui: bool,
 }
 
 fn lint_after_help() -> String {
@@ -617,6 +624,20 @@ mod tests {
     #[test]
     fn serve_invalid_port_is_rejected() {
         assert!(parse(&["serve", "--port", "not-a-port"]).is_err());
+    }
+
+    #[test]
+    fn serve_ui_is_on_by_default_and_no_ui_disables() {
+        let cli = parse(&["serve"]).unwrap();
+        match cli.command {
+            Commands::Serve(args) => assert!(!args.no_ui),
+            _ => panic!("expected Serve"),
+        }
+        let cli = parse(&["serve", "--no-ui"]).unwrap();
+        match cli.command {
+            Commands::Serve(args) => assert!(args.no_ui),
+            _ => panic!("expected Serve"),
+        }
     }
 
     #[test]

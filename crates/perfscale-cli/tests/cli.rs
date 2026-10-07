@@ -454,18 +454,24 @@ fn run_k6_trivial_script_succeeds() {
 async fn serve_binds_and_answers_health_check() {
     let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("perfscale"))
         .args(["serve", "--port", "18453"])
+        // Null the child's stdio: on a panic-before-kill the orphan would
+        // otherwise inherit our stdout pipe and hold it open forever.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn perfscale serve");
 
     // Poll until the server accepts connections instead of a fixed sleep.
+    // Generous window: spawning the ~80MB debug binary on a busy/loaded
+    // machine can take far longer than CI's usual milliseconds.
     let mut resp = None;
-    for _ in 0..50 {
+    for _ in 0..120 {
         match reqwest::get("http://127.0.0.1:18453/health").await {
             Ok(r) => {
                 resp = Some(r);
                 break;
             }
-            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
         }
     }
     let resp = resp.expect("GET /health");

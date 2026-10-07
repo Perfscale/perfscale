@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>perfscale serve</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1d21; --muted: #6b7280; --card: #f6f7f9;
+    --border: #e2e5ea; --accent: #2563eb; --ok: #16a34a; --warn: #d97706;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101316; --fg: #e5e9ef; --muted: #8b939e; --card: #1a1f26;
+      --border: #2a313a; --accent: #5b9dff; --ok: #3fb950; --warn: #d29922;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; font-weight: 650; }
+  #status { color: var(--muted); font-size: 13px; }
+  #status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--warn); margin-right: 6px; vertical-align: 1px; }
+  #status.live .dot { background: var(--ok); }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .card .name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .labels { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .value { font-size: 24px; font-weight: 650; margin: 4px 0 6px; font-variant-numeric: tabular-nums; }
+  .card .value .unit { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .card canvas { display: block; width: 100%; height: 48px; }
+  #empty { color: var(--muted); margin: 40px 0; text-align: center; }
+  #empty code { background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    padding: 2px 6px; font-size: 12px; }
+  h2 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 28px 0 8px; }
+  pre { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px; overflow-x: auto; font-size: 12.5px; margin: 0 0 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <h1>perfscale serve</h1>
+  <span id="status"><span class="dot"></span><span id="status-text">connecting…</span></span>
+</header>
+
+<div id="empty">No metrics yet — point a run at this server:
+  <code>perfscale run -f test.yaml -c config.yaml --report http://&lt;this-host&gt;:&lt;port&gt;</code>
+  with <code>report.during_run: true</code> for live series.
+</div>
+<div id="grid"></div>
+
+<h2 id="summaries-title" hidden>Run summaries</h2>
+<div id="summaries"></div>
+
+<script>
+(function () {
+  "use strict";
+  var POLL_MS = 2000;
+  var MAX_POINTS = 300;
+  var grid = document.getElementById("grid");
+  var empty = document.getElementById("empty");
+  var summariesEl = document.getElementById("summaries");
+  var summariesTitle = document.getElementById("summaries-title");
+  var statusEl = document.getElementById("status");
+  var statusText = document.getElementById("status-text");
+  // seriesKey -> { name, labels, points: [number|null], el: {...} }
+  var series = {};
+  var lastSeq = -1;
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function labelString(labels) {
+    var keys = Object.keys(labels || {}).sort();
+    if (!keys.length) return "";
+    return "{" + keys.map(function (k) {
+      return k + "=" + JSON.stringify(labels[k]);
+    }).join(",") + "}";
+  }
+
+  function fmt(v) {
+    if (v === null || v === undefined) return "—";
+    var a = Math.abs(v);
+    if (a >= 1000000) return (v / 1000000).toFixed(2) + "M";
+    if (a >= 1000) return (v / 1000).toFixed(2) + "k";
+    if (a >= 100) return v.toFixed(1);
+    if (a >= 1) return v.toFixed(2);
+    if (a === 0) return "0";
+    return v.toPrecision(3);
+  }
+
+  function draw(canvas, points) {
+    var dpr = window.devicePixelRatio || 1;
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w) return;
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+      canvas.width = w * dpr; canvas.height = h * dpr;
+    }
+    var ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    var vals = points.filter(function (p) { return p !== null; });
+    if (!vals.length) return;
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    if (min === max) { min -= 1; max += 1; }
+    var pad = 3;
+    var accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#2563eb";
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    var started = false;
+    for (var i = 0; i < points.length; i++) {
+      var p = points[i];
+      if (p === null) { started = false; continue; }
+      var x = pad + (points.length < 2 ? (w - 2 * pad) / 2 : (w - 2 * pad) * i / (points.length - 1));
+      var y = h - pad - (h - 2 * pad) * (p - min) / (max - min);
+      if (started) ctx.lineTo(x, y); else { ctx.moveTo(x, y); started = true; }
+    }
+    ctx.stroke();
+  }
+
+  function card(key, s) {
+    if (s.el) return s.el;
+    var div = document.createElement("div");
+    div.className = "card";
+    div.innerHTML = '<div class="name"></div><div class="labels"></div>' +
+      '<div class="value"></div><canvas></canvas>';
+    grid.appendChild(div);
+    s.el = {
+      root: div,
+      name: div.querySelector(".name"),
+      labels: div.querySelector(".labels"),
+      value: div.querySelector(".value"),
+      canvas: div.querySelector("canvas")
+    };
+    s.el.name.textContent = s.name;
+    s.el.labels.textContent = s.labels;
+    s.el.labels.style.display = s.labels ? "" : "none";
+    return s.el;
+  }
+
+  function render(state) {
+    var batches = state.snapshots || [];
+    var summaries = state.summaries || [];
+    var seen = {};
+    batches.forEach(function (batch, bi) {
+      (batch.samples || []).forEach(function (sample) {
+        var key = sample.metric + labelString(sample.labels);
+        if (!series[key]) {
+          series[key] = { name: sample.metric, labels: labelString(sample.labels), points: [], el: null };
+        }
+        var s = series[key];
+        while (s.points.length < bi) s.points.push(null);
+        s.points[bi] = sample.value;
+        seen[key] = true;
+      });
+    });
+    Object.keys(series).forEach(function (key) {
+      var s = series[key];
+      while (s.points.length < batches.length) s.points.push(null);
+      if (s.points.length > MAX_POINTS) s.points = s.points.slice(-MAX_POINTS);
+      var el = card(key, s);
+      var last = null;
+      for (var i = s.points.length - 1; i >= 0; i--) {
+        if (s.points[i] !== null) { last = s.points[i]; break; }
+      }
+      el.value.textContent = fmt(last);
+      draw(el.canvas, s.points);
+    });
+
+    var hasData = batches.length > 0 || summaries.length > 0;
+    empty.style.display = hasData ? "none" : "";
+    summariesTitle.hidden = summaries.length === 0;
+    summariesEl.innerHTML = "";
+    summaries.slice().reverse().forEach(function (lines) {
+      var pre = document.createElement("pre");
+      pre.textContent = lines.join("\n");
+      summariesEl.appendChild(pre);
+    });
+
+    var lastBatch = batches[batches.length - 1];
+    var seq = lastBatch && typeof lastBatch.seq === "number" ? lastBatch.seq : batches.length;
+    if (seq !== lastSeq) {
+      lastSeq = seq;
+      statusEl.classList.add("live");
+      statusText.textContent = hasData
+        ? batches.length + " batches · updated " + new Date().toLocaleTimeString()
+        : "connected, waiting for data…";
+    } else {
+      statusText.textContent = hasData
+        ? batches.length + " batches · no new data since " + new Date().toLocaleTimeString()
+        : "connected, waiting for data…";
+    }
+  }
+
+  function poll() {
+    fetch("api/v1/state")
+      .then(function (r) { return r.json(); })
+      .then(render)
+      .catch(function () {
+        statusEl.classList.remove("live");
+        statusText.textContent = "connection lost — retrying…";
+      })
+      .finally(function () { setTimeout(poll, POLL_MS); });
+  }
+  window.addEventListener("resize", function () {
+    Object.keys(series).forEach(function (key) {
+      var s = series[key];
+      if (s.el) draw(s.el.canvas, s.points);
+    });
+  });
+  poll();
+})();
+</script>
+</body>
+</html>

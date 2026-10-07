@@ -48,7 +48,14 @@ below.
 .B serve
 Start a local dev server that receives metric summaries from
 .B "perfscale run \-\-report"
-and prints them. Endpoints:
+and prints them. Unless
+.B \-\-no\-ui
+is passed,
+.B GET /
+serves a built-in dashboard (live time-series of during-run snapshots plus
+the last run summaries, polled from
+.BR "GET /api/v1/state" ).
+Other endpoints:
 .B GET /health
 (liveness, returns
 .IR ok ),
