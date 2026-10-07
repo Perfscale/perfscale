@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*"]
 
+# Default for jobs without their own block (build); publish jobs declare the
+# elevated scopes they need (contents: write, packages: write, id-token).
+permissions:
+  contents: read
+
 jobs:
   # ── Build ────────────────────────────────────────────────────────────────────
   build:
