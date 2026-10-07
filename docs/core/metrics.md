@@ -73,6 +73,11 @@ Every 5 seconds while VUs run, one machine-readable line:
   iterations.
 - With no requests yet the percentiles are omitted:
   `[stats] ts=… rps=0.00 reqs=0 iters=3`.
+- `std/llm@v1` reports through its own metric family and never feeds
+  `reqs`/`rps`, so a pure-LLM run shows `reqs=0` while requests are flowing.
+  Once any LLM request completes, the line carries `llm_reqs` (completed LLM
+  requests) and `llm_tok_s` (mean completion tok/s):
+  `[stats] ts=… rps=0.00 reqs=0 iters=12 llm_reqs=9 llm_tok_s=38.7`.
 - These lines exist for streaming consumers (the controlplane parses them
   out of the log stream); see [`--quiet`](#quiet) for console behavior.
 

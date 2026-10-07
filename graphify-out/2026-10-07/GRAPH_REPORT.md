@@ -1,16 +1,16 @@
-# Graph Report - perfscale  (2026-10-07)
+# Graph Report - perfscale  (2026-10-04)
 
 ## Corpus Check
-- 161 files · ~327,151 words
+- 159 files · ~313,217 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 5105 nodes · 11608 edges · 217 communities (197 shown, 20 thin omitted)
-- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 368 edges (avg confidence: 0.81)
+- 5001 nodes · 11380 edges · 220 communities (200 shown, 20 thin omitted)
+- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 367 edges (avg confidence: 0.81)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `586c9ca7`
+- Built from commit: `57770266`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -214,6 +214,7 @@
 - [[_COMMUNITY_Community 200|Community 200]]
 - [[_COMMUNITY_Community 201|Community 201]]
 - [[_COMMUNITY_Community 202|Community 202]]
+- [[_COMMUNITY_Community 203|Community 203]]
 - [[_COMMUNITY_Community 204|Community 204]]
 - [[_COMMUNITY_Community 205|Community 205]]
 - [[_COMMUNITY_Community 206|Community 206]]
@@ -225,16 +226,18 @@
 - [[_COMMUNITY_Community 212|Community 212]]
 - [[_COMMUNITY_Community 213|Community 213]]
 - [[_COMMUNITY_Community 214|Community 214]]
+- [[_COMMUNITY_Community 215|Community 215]]
+- [[_COMMUNITY_Community 216|Community 216]]
 - [[_COMMUNITY_Community 217|Community 217]]
 - [[_COMMUNITY_Community 218|Community 218]]
 - [[_COMMUNITY_Community 219|Community 219]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `execute_action()` - 238 edges
+1. `execute_action()` - 237 edges
 2. `lint()` - 57 edges
 3. `validate_libraries()` - 56 edges
-4. `Context` - 52 edges
-5. `run_native()` - 50 edges
+4. `run_native()` - 50 edges
+5. `Context` - 43 edges
 6. `Built-in actions` - 43 edges
 7. `SelfUpdateArgs` - 38 edges
 8. `Resources` - 37 edges
@@ -280,7 +283,7 @@
 - **Observer-contributed LLM metrics flowing into the run metrics pipeline** — step_llm_llm_action, step_llm_collect_observer_metrics, step_llm_llmmetricsobserver, step_runner_add_counters [INFERRED 0.85]
 - **Registry-based downstream (pro) extension seam pattern shared by GPU collectors and LLM observers** — src_gpu_register_gpu_collector, src_gpu_gpucollector, step_llm_register_llm_metrics_observer, step_llm_llmmetricsobserver [INFERRED 0.75]
 
-## Communities (217 total, 20 thin omitted)
+## Communities (220 total, 20 thin omitted)
 
 ### Community 0 - "Core Runtime Primitives"
 Cohesion: 0.11
@@ -288,31 +291,31 @@ Nodes (53): RunConfig, after_can_kill_a_process_by_its_outputs_name(), after_run
 
 ### Community 1 - "Dynamic Messages & Codecs"
 Cohesion: 0.05
-Nodes (113): Code, Codec, Dynamic messages, ActionOutput, Arc, Channel, Context, DescriptorPool (+105 more)
+Nodes (114): Code, Codec, Dynamic messages, ActionOutput, Arc, Channel, Context, DescriptorPool (+106 more)
 
 ### Community 2 - "HTTP Action Context"
 Cohesion: 0.10
-Nodes (63): ActionOutput, ClientConfig, ActionOutput, Context, Gen, Instant, Option, Result (+55 more)
+Nodes (61): ActionOutput, ClientConfig, ActionOutput, Context, Gen, Instant, Option, Result (+53 more)
 
 ### Community 3 - "Check Action Assertions"
 Cohesion: 0.04
-Nodes (101): Path, ProcessRegistry, check_action_bad_on_path_falls_back_to_last(), check_action_body_contains_pass_and_fail(), check_action_duration_ms_lt_handles_fractional_values(), check_action_duration_ms_lt_pass_and_fail(), check_action_message_contains_any_semantics(), check_action_message_matches_ws_strings_and_fix_objects() (+93 more)
+Nodes (98): Path, ProcessRegistry, check_action_bad_on_path_falls_back_to_last(), check_action_body_contains_pass_and_fail(), check_action_duration_ms_lt_handles_fractional_values(), check_action_duration_ms_lt_pass_and_fail(), check_action_message_contains_any_semantics(), check_action_message_matches_ws_strings_and_fix_objects() (+90 more)
 
 ### Community 4 - "Arc"
 Cohesion: 0.06
-Nodes (84): ActionOutput, Arc, Context, Instant, Map, Mutex, Option, Response (+76 more)
+Nodes (86): ActionOutput, Arc, Context, Instant, Map, Mutex, Option, Response (+78 more)
 
 ### Community 5 - "Run & Serve Commands"
 Cohesion: 0.05
 Nodes (92): run --report to serve reporting loop, ServeArgs, CliError, base_args(), build_export(), build_export_parses_summary_and_stamps_meta(), build_export_picks_up_gpu_line(), build_export_picks_up_thresholds_line() (+84 more)
 
 ### Community 6 - "Config & Import Model"
-Cohesion: 0.06
-Nodes (74): ActionFuture, ActionHandler, Default, ImportSpec, JSONSchema, LibraryRef, Map, Option (+66 more)
+Cohesion: 0.07
+Nodes (67): Default, ImportSpec, JSONSchema, LibraryRef, Map, Option, ReportRunConfig, Result (+59 more)
 
 ### Community 7 - "Process Spawning Primitives"
-Cohesion: 0.14
-Nodes (33): Command, SecretRegistry, Self, Value, parse_duration_secs(), build_command(), kill_targets_the_current_pid_after_a_restart(), mirrored_output_is_masked_against_the_secret_registry() (+25 more)
+Cohesion: 0.08
+Nodes (65): c_int, Arc, Child, Command, Duration, HashMap, LogLine, LogSource (+57 more)
 
 ### Community 8 - "YAML Parsing Internals"
 Cohesion: 0.06
@@ -320,27 +323,27 @@ Nodes (40): after_steps_are_linted_like_before_steps(), config_before_steps_are_
 
 ### Community 9 - "CLI Self-Update"
 Cohesion: 0.06
-Nodes (81): Atomic self-update binary swap pattern, Cli root parser, download(), replace_executable(), replace_executable_swaps_contents_atomically(), self_update(), staged_path(), staged_path_is_next_to_exe() (+73 more)
+Nodes (80): Atomic self-update binary swap pattern, Cli root parser, download(), replace_executable(), replace_executable_swaps_contents_atomically(), self_update(), staged_path(), staged_path_is_next_to_exe() (+72 more)
 
 ### Community 10 - "Arc"
-Cohesion: 0.06
-Nodes (66): Arc, BTreeMap, Client, Default, GpuSampleFuture, JoinHandle, LogLine, Mutex (+58 more)
+Cohesion: 0.07
+Nodes (64): Arc, BTreeMap, Client, Default, GpuSampleFuture, JoinHandle, LogLine, Mutex (+56 more)
 
 ### Community 11 - "Config File Handling"
-Cohesion: 0.07
-Nodes (90): Arc, ConfigFile, Debug, Default, Formatter, Mutex, Option, Path (+82 more)
+Cohesion: 0.08
+Nodes (89): Arc, ConfigFile, Debug, Default, Formatter, Mutex, Option, Path (+81 more)
 
 ### Community 12 - "Serve HTTP Server"
-Cohesion: 0.14
-Nodes (24): app(), dashboard(), dashboard_is_404_when_ui_disabled(), dashboard_is_served_when_ui_enabled(), health_route_rejects_post(), health_route_returns_ok(), metrics_route_accepts_during_run_snapshot(), metrics_route_accepts_empty_lines() (+16 more)
+Cohesion: 0.18
+Nodes (20): app(), health_route_rejects_post(), health_route_returns_ok(), metrics_route_accepts_empty_lines(), metrics_route_accepts_json_batch(), metrics_route_rejects_missing_lines_field(), metrics_route_rejects_syntactically_invalid_json(), serve() (+12 more)
 
 ### Community 13 - "gRPC Dynamic Client"
 Cohesion: 0.06
 Nodes (55): Arc, Channel, Connection, ConnectionRegistry, DbState, Debug, Default, DescriptorPool (+47 more)
 
 ### Community 14 - "Metrics Collection"
-Cohesion: 0.07
-Nodes (54): ActionOutput, Arc, BTreeMap, Context, Histogram, Metrics, Mutex, Option (+46 more)
+Cohesion: 0.08
+Nodes (55): ActionOutput, Arc, BTreeMap, Context, Histogram, Metrics, Mutex, Option (+47 more)
 
 ### Community 15 - "Config JSON Schema"
 Cohesion: 0.07
@@ -355,8 +358,8 @@ Cohesion: 0.06
 Nodes (55): C, Clone, ConnectionRegistry, Arc, AtomicBool, Drop, Self, Send (+47 more)
 
 ### Community 18 - "Core Std Actions"
-Cohesion: 0.05
-Nodes (40): ActionHandler trait / register_action, ActionHandler registration seam for downstream crates, crates/perfscale-core/src/step/actions.rs, Built-in actions (steps use/with/check model), std/check@v1 assertion action, std/db-*@v1 database action family, std/grpc@v1 gRPC action family, Step interpolation (${{ }} placeholders and ${} generator tokens) (+32 more)
+Cohesion: 0.08
+Nodes (35): std/check@v1 action, std/http@v1 action, ActionHandler trait / register_action, crates/perfscale-core/src/step/actions.rs, Built-in actions (steps use/with/check model), std/check@v1 assertion action, std/db-*@v1 database action family, std/grpc@v1 gRPC action family (+27 more)
 
 ### Community 19 - "Summary & Thresholds Export"
 Cohesion: 0.10
@@ -367,72 +370,72 @@ Cohesion: 0.09
 Nodes (36): Box, Error, Option, Result, BidiStream, Box, Echo, EchoRequest (+28 more)
 
 ### Community 21 - "LogLine Pipeline"
-Cohesion: 0.07
-Nodes (49): Arc, AtomicU64, Default, ExtensionRegistries, Gen, HashMap, LibraryMetrics, LibrarySet (+41 more)
+Cohesion: 0.08
+Nodes (47): Arc, AtomicU64, Default, ExtensionRegistries, Gen, HashMap, LibraryMetrics, LibrarySet (+39 more)
 
 ### Community 22 - "DB Error Classification"
 Cohesion: 0.07
-Nodes (37): connect_bad_driver_rejected(), connect_invalid_dsn_does_not_leak_password(), connect_malformed_dsn_errors_are_clean(), connect_memory(), connect_params_defaults(), connect_params_full_override(), connect_params_interpolated_string_forms(), connect_params_pool_size_is_clamped() (+29 more)
+Nodes (37): connect_bad_driver_rejected(), connect_invalid_dsn_does_not_leak_password(), connect_malformed_dsn_errors_are_clean(), connect_memory(), gated_dsn(), mysql_flow_gated(), parse_query_spec(), postgres_flow_gated() (+29 more)
 
 ### Community 23 - "Protobuf Descriptors"
 Cohesion: 0.13
 Nodes (39): DescriptorPool, MessageDescriptor, Option, Result, String, Value, Vec, Endpoint (+31 more)
 
 ### Community 24 - "CLI Test Harness"
-Cohesion: 0.11
-Nodes (35): Command, NamedTempFile, cmd(), errors_carry_hint_and_docs_sections(), help_flag_lists_all_commands(), k6_available(), lint_anchors_relative_library_paths_to_the_declaring_file(), lint_missing_file_is_a_cli_error_with_hint() (+27 more)
+Cohesion: 0.10
+Nodes (36): Command, NamedTempFile, cmd(), errors_carry_hint_and_docs_sections(), help_flag_lists_all_commands(), k6_available(), lint_anchors_relative_library_paths_to_the_declaring_file(), lint_missing_file_is_a_cli_error_with_hint() (+28 more)
 
 ### Community 25 - "Graphify Skill Docs"
 Cohesion: 0.06
 Nodes (35): For --cluster-only, For git commit hook, For /graphify add, For /graphify explain, For /graphify path, For /graphify query, For native CLAUDE.md integration, For --update (incremental re-extraction) (+27 more)
 
 ### Community 26 - "Actions Documentation"
-Cohesion: 0.30
-Nodes (21): Map, Option, Value, Vec, lint::lint, LintIssue, schema_issues, Map (+13 more)
+Cohesion: 0.45
+Nodes (14): Map, Option, Value, LintIssue, Map, did_you_mean(), is_known_action(), lint_config_fields() (+6 more)
 
 ### Community 27 - "Runner Spawning"
 Cohesion: 0.11
 Nodes (34): k6-compatible summary format, Child, Default, Error, Option, Path, PathBuf, Result (+26 more)
 
 ### Community 28 - "Step Context Utilities"
-Cohesion: 0.17
-Nodes (34): Context, HttpSample, LogTag, Map, Option, PathBuf, Result, String (+26 more)
+Cohesion: 0.12
+Nodes (43): Context, Error, HashMap, HttpSample, LogTag, Map, Mutex, Option (+35 more)
 
 ### Community 29 - "Code Generation"
 Cohesion: 0.07
-Nodes (70): AttachedLibrary, Arc, Box, CallCtx, FunctionInfo, Into, LibraryInstance, LibraryMetrics (+62 more)
+Nodes (62): AttachedLibrary, Arc, Box, CallCtx, FunctionInfo, Into, LibraryInstance, LibraryMetrics (+54 more)
 
 ### Community 30 - "README Overview"
 Cohesion: 0.08
 Nodes (38): Benchmarking, CLI commands, Engine availability errors, Environment variables, Exit code semantics, npm installs, Output streams, `perfscale burn` (+30 more)
 
 ### Community 31 - "Lint Command CLI"
-Cohesion: 0.06
-Nodes (40): Commands, Error, Result, String, burn_after_help(), burn_parses_files_config_and_output(), Cli, Commands (+32 more)
+Cohesion: 0.08
+Nodes (25): Error, Result, burn_parses_files_config_and_output(), Commands, install_parses_files_and_refresh(), lint_accepts_multiple_files_and_schema_override(), lint_default_schema_is_auto(), man_install_with_dir_parses() (+17 more)
 
 ### Community 32 - "Error Display Types"
 Cohesion: 0.15
 Nodes (23): A, Box, Display, Error, Send, Sync, Vec, DatabaseError (+15 more)
 
 ### Community 33 - "Arrival-Rate Scheduling"
-Cohesion: 0.11
-Nodes (29): ArrivalConfig, Option, Result, Self, String, T, Vec, arrival_config() (+21 more)
+Cohesion: 0.15
+Nodes (23): ArrivalConfig, Result, Self, String, Vec, arrival_config(), arrival_rejects_negative_and_nan_rates(), arrival_requires_max_vus_and_stages() (+15 more)
 
 ### Community 34 - "Man Page Generation"
 Cohesion: 0.16
 Nodes (25): default_man_dir(), default_man_dir_from(), default_man_dir_is_per_user_man1(), flush_fill(), install(), install_writes_the_page(), nofill_blocks_stay_verbatim(), push_indented() (+17 more)
 
 ### Community 35 - "Crate Module Map"
-Cohesion: 0.09
-Nodes (31): perfscale-connection crate, runner::execute, runner::k6, runner::locust, step::context, step::resources, step::runner (native VU engine), Fixed-size HDR histograms (+23 more)
+Cohesion: 0.14
+Nodes (25): std/log@v1 action, std/sleep@v1 action, perfscale-connection crate, runner::execute, runner::k6, runner::locust, step::context, step::resources (+17 more)
 
 ### Community 36 - "DB Connection Options"
-Cohesion: 0.14
-Nodes (25): DbState, Formatter, Result, String, DbState, Formatter, MySqlConnectOptions, SqliteConnectOptions (+17 more)
+Cohesion: 0.15
+Nodes (24): DbState, Formatter, Result, String, DbState, Formatter, MySqlConnectOptions, SqliteConnectOptions (+16 more)
 
 ### Community 37 - "Rate Stage Scheduling"
-Cohesion: 0.06
-Nodes (35): Box, Default, ImportSpec, LibraryRef, Option, PathBuf, ReportRunConfig, Result (+27 more)
+Cohesion: 0.08
+Nodes (15): Result, Self, String, default_duration(), default_vus(), parse_duration_ms(), parse_duration_ms_strict(), parse_duration_secs_strict() (+7 more)
 
 ### Community 38 - "GraphQL Fragments"
 Cohesion: 0.07
@@ -443,24 +446,24 @@ Cohesion: 0.12
 Nodes (24): build_cmd(), cmd_jmeter_native(), cmd_jmeter_wrapped(), cmd_k6_native(), cmd_k6_wrapped(), cmd_locust_native(), cmd_locust_wrapped(), cmd_yaml() (+16 more)
 
 ### Community 40 - "Unified Log Streaming"
-Cohesion: 0.13
-Nodes (24): Unified LogLine output stream, LogSource, Option, Receiver, Result, String, Value, LogSource (+16 more)
+Cohesion: 0.12
+Nodes (25): Unified LogLine output stream, LogSource, Option, Receiver, Result, String, Value, LogSource (+17 more)
 
 ### Community 41 - "Process Run Output"
 Cohesion: 0.17
 Nodes (23): Child, Error, PathBuf, Result, RunOutput, String, k6_available(), k6_exec_error() (+15 more)
 
 ### Community 42 - "GraphQL Step"
-Cohesion: 0.12
-Nodes (30): SchemaType, custom_headers_are_forwarded(), get_method_uses_query_params(), graphql_errors_without_data_fail_the_step(), http_500_fails(), introspection_unavailable_runs_unvalidated_with_sys_line(), named_schema_type(), no_introspection() (+22 more)
+Cohesion: 0.06
+Nodes (77): ClientPool, ActionOutput, Client, Context, Gen, HashMap, Mutex, Option (+69 more)
 
 ### Community 43 - "Runner Process Handling"
 Cohesion: 0.18
 Nodes (17): Child, Error, PathBuf, Result, RunOutput, String, Vec, jmeter_available() (+9 more)
 
 ### Community 44 - "DB Actions"
-Cohesion: 0.14
-Nodes (33): Error, ActionOutput, Context, Map, R, Value, DbConn, MySqlRow (+25 more)
+Cohesion: 0.15
+Nodes (30): ActionOutput, Context, Map, R, Value, DbConn, MySqlRow, PgRow (+22 more)
 
 ### Community 45 - "YAML Parsing Internals"
 Cohesion: 0.09
@@ -471,8 +474,8 @@ Cohesion: 0.08
 Nodes (55): Arc, Capability, Debug, FnOnce, Formatter, HashMap, Option, Path (+47 more)
 
 ### Community 47 - "YAML Config Reference"
-Cohesion: 0.15
-Nodes (18): AOT compilation (burn cache) and `perfscale burn`, Composing documents: `import`, Config (`-c config.yaml`), GPU metrics (`gpu:`), Libraries (`libraries:`), Policy rules: `secret` / `allow` / `deny` / `log`, Run settings (`CallCtx.settings_json`), Setup and variables (+10 more)
+Cohesion: 0.10
+Nodes (25): ConfigFile schema, AOT compilation (burn cache) and `perfscale burn`, Composing documents: `import`, Config (`-c config.yaml`), GPU metrics (`gpu:`), Libraries (`libraries:`), Policy rules: `secret` / `allow` / `deny` / `log`, Run settings (`CallCtx.settings_json`) (+17 more)
 
 ### Community 48 - "Actions Documentation"
 Cohesion: 0.07
@@ -487,8 +490,8 @@ Cohesion: 0.12
 Nodes (17): Alternatives considered, Benefits, Detailed design, Drawbacks, Goals, Layer 1 — the contract: test definition schema as the API, Layer 2 — Rust: stabilize a `perfscale` facade crate, Layer 3 — language SDKs: builders + drivers, not engines (+9 more)
 
 ### Community 51 - "Setup-Teardown Docs"
-Cohesion: 0.12
-Nodes (16): std/child_process@v1 action, std/kill_process@v1 action, `std/child_process@v1`, waitUntil — readiness gate, Background processes end to end, Data flow: `vars.*` and `config.*`, Interrupts (SIGINT / SIGTERM), Run-scoped managed process registry and auto-kill (+8 more)
+Cohesion: 0.08
+Nodes (25): std/child_process@v1 action, std/kill_process@v1 action, `std/child_process@v1`, waitUntil — readiness gate, Caching, Composing documents: `import`, Document import / composition, Interaction with the rest of the engine (+17 more)
 
 ### Community 52 - "Bench Metrics Tooling"
 Cohesion: 0.18
@@ -500,15 +503,15 @@ Nodes (21): Arc, Cow, Option, RwLock, Self, String, HashSet, cloned_registries_s
 
 ### Community 54 - "End-to-End Run Tests"
 Cohesion: 0.12
-Nodes (31): LogLine, Option, PathBuf, RunOutput, String, Vec, RunConfig::resolve_schedule, bench_gpu_profile_yamls_parse_and_have_valid_gates() (+23 more)
+Nodes (30): LogLine, Option, PathBuf, RunOutput, String, Vec, RunConfig::resolve_schedule, bench_gpu_profile_yamls_parse_and_have_valid_gates() (+22 more)
 
 ### Community 55 - "GraphQL Example Server"
-Cohesion: 0.21
-Nodes (12): Option, String, Vec, main(), Mutation, Query, Viewer, Widget (+4 more)
+Cohesion: 0.31
+Nodes (7): Option, String, Vec, Mutation, Query, Viewer, Widget
 
 ### Community 56 - "DB Actions"
 Cohesion: 0.07
-Nodes (67): ActionOutput, Arc, Map, Option, Result, RwLock, Send, Step (+59 more)
+Nodes (61): ActionOutput, Arc, Map, Option, Result, RwLock, Send, Step (+53 more)
 
 ### Community 57 - "SDK & Marketplace RFCs"
 Cohesion: 0.19
@@ -516,11 +519,11 @@ Nodes (10): perfscale facade crate with curated re-exports, Test definition sche
 
 ### Community 58 - "Boundary Benchmark Suite"
 Cohesion: 0.08
-Nodes (23): common, manPage, TARGETS, [version, distDir, outDir], Added, boundary benchmark suite (UPCOMING entry), Breaking: `capabilities:` is required on every library entry, Changed (+15 more)
+Nodes (22): common, manPage, TARGETS, [version, distDir, outDir], Added, boundary benchmark suite (UPCOMING entry), Breaking: `capabilities:` is required on every library entry, Changed (+14 more)
 
 ### Community 59 - "Benchmark Methodology Docs"
-Cohesion: 0.14
-Nodes (23): HashMap, Mutex, Result, String, FragmentDefinition, QueryDocument, SelectionSet, check_variables_defined() (+15 more)
+Cohesion: 0.12
+Nodes (19): Box, Default, ImportSpec, LibraryRef, Option, PathBuf, ReportRunConfig, Step (+11 more)
 
 ### Community 60 - "Setup-Teardown RFC"
 Cohesion: 0.15
@@ -539,56 +542,56 @@ Cohesion: 0.15
 Nodes (13): Alternatives considered, Benefits, Drawbacks, Goals, Motivation, Non-goals, Non-obvious pitfalls, Open questions (+5 more)
 
 ### Community 64 - "Core Std Actions"
-Cohesion: 0.15
-Nodes (25): Capability, Component, FunctionInfo, LibraryProvider, Option, Path, PathBuf, Result (+17 more)
+Cohesion: 0.10
+Nodes (39): Arc, CallCtx, Capability, Component, Error, FunctionInfo, LibraryInstance, LibraryProvider (+31 more)
 
 ### Community 65 - "CLI Docs"
 Cohesion: 0.11
 Nodes (20): anyOf, description, definitions, Capability, GitImport, ImportSpec, Step, additionalProperties (+12 more)
 
 ### Community 66 - "Schema Command"
-Cohesion: 0.28
-Nodes (7): run(), CliError, Result, SchemaArgs, SchemaDumpKind, SchemaArgs, main()
+Cohesion: 0.22
+Nodes (9): Commands, run(), CliError, Result, SchemaArgs, SchemaDumpKind, Cli, SchemaArgs (+1 more)
 
 ### Community 67 - "gRPC Action Family"
-Cohesion: 0.07
-Nodes (33): Interpolation rules, `std/llm@v1`, Anthropic streaming, Connection posture, LLM endpoint wire formats (openai/anthropic/generic), Endpoints, Generic endpoint with extract, Limits (+25 more)
+Cohesion: 0.05
+Nodes (45): Interpolation rules, `std/llm@v1`, Configuration, dcgm-exporter GPU source, Example: ANE (Neural Engine) load via Core ML, Example: game-style rendering load, Example: Ollama under load, GPU watch on, Extension seam (+37 more)
 
 ### Community 68 - "Boundary Benchmark Suite"
 Cohesion: 0.13
 Nodes (33): Component, HashMap, Option, Result, String, Vec, artifact_matches(), burn_component() (+25 more)
 
 ### Community 69 - "GraphQL Step"
-Cohesion: 0.10
-Nodes (34): description, description, $ref, description, items, type, description, type (+26 more)
+Cohesion: 0.12
+Nodes (30): description, description, $ref, description, type, description, type, description (+22 more)
 
 ### Community 70 - "Docs How-To Guides"
 Cohesion: 0.10
 Nodes (19): Alternatives considered, Benefits, Detailed design, Drawbacks, Enforcement semantics, Goals, Hosting and delivery — the channel, Key management and rotation (+11 more)
 
 ### Community 71 - "GraphQL Docs"
-Cohesion: 0.25
-Nodes (22): effective_kind(), graphql_remote_pass(), has_import_key(), kind_label(), lint_file(), print_issues(), run(), CliError (+14 more)
+Cohesion: 0.29
+Nodes (20): effective_kind(), graphql_remote_pass(), has_import_key(), kind_label(), lint_file(), print_issues(), run(), CliError (+12 more)
 
 ### Community 72 - "Imports & Process Actions"
 Cohesion: 0.26
 Nodes (15): bench_std_random_call(), bench_wasm_call_blocking_hop(), bench_wasm_call_current_thread_hop(), bench_wasm_call_inline(), ctx(), fixture_hello(), lib_ref(), wasm_instance() (+7 more)
 
 ### Community 73 - "Schedule Interpolation"
-Cohesion: 0.15
-Nodes (16): Arc, Child, HashMap, LogLine, LogSource, Mutex, R, Sender (+8 more)
+Cohesion: 0.24
+Nodes (6): Option, T, DispatchCursor, lerp_segments(), Schedule, Segment
 
 ### Community 74 - "YAML Config Reference"
 Cohesion: 0.25
 Nodes (9): Benchmark methodology (hyperfine), ReportConfig schema, perfscale serve command, --report summary forwarding, bench.sh benchmark script, GET /health endpoint, POST /api/v1/metrics endpoint, bench CI workflow (+1 more)
 
 ### Community 75 - "CLI Args"
-Cohesion: 0.09
-Nodes (21): Alternatives considered, BFF validation and billing, Catalog of existing families, Dependency wiring, Drawbacks, Guide-level explanation, Immediate action item: wire `perfscale-fix` into perfscaled, Metrics from inside a step (+13 more)
+Cohesion: 0.11
+Nodes (17): ActionHandler registration seam for downstream crates, `std/pubsub@v1`, gpu::GpuCollector extension seam, Connection posture, Consumer with assertions, Drivers, Limits, memory pubsub driver (in-process broadcast bus) (+9 more)
 
 ### Community 76 - "WebSocket Action Family"
-Cohesion: 0.06
-Nodes (78): Default, Option, Path, PathBuf, Result, Self, String, Vec (+70 more)
+Cohesion: 0.09
+Nodes (62): Arc, BTreeMap, Client, Duration, Error, GpuSample, Instant, JoinHandle (+54 more)
 
 ### Community 77 - "Bench Metrics Tooling"
 Cohesion: 0.18
@@ -607,8 +610,8 @@ Cohesion: 0.07
 Nodes (30): description, items, type, description, type, LibraryRef, description, items (+22 more)
 
 ### Community 81 - "Action Registry"
-Cohesion: 0.20
-Nodes (12): Arc, RwLock, Send, Sync, RwLock, Send, action_registered(), action_registry() (+4 more)
+Cohesion: 0.16
+Nodes (14): Arc, RwLock, Send, Sync, Vec, RwLock, Send, action_registered() (+6 more)
 
 ### Community 82 - "Architecture Docs"
 Cohesion: 0.39
@@ -627,8 +630,8 @@ Cohesion: 0.13
 Nodes (16): boundary suite — VU level where cumulative error rate first reaches the threshold, boundary_row(), boundary_jmeter(), boundary_k6(), boundary_locust(), boundary_native(), _boundary_out(), cmd_boundary() (+8 more)
 
 ### Community 86 - "Metrics Documentation"
-Cohesion: 0.08
-Nodes (24): `std/graphql@v1`, std/pubsub@v1 action, `std/thresholds@v1`, LLM metrics (llm_ttft_ms, llm_tokens_per_sec, token counters), Custom metrics via value.metrics, Custom metrics (`value.metrics`), During-run metrics (`report.during_run`), Failure-rate metrics (<family>_failed) (+16 more)
+Cohesion: 0.12
+Nodes (15): Custom metrics (`value.metrics`), During-run metrics (`report.during_run`), Failure-rate metrics (`<family>_failed`), Final summary, Forwarding the summary (`report`), GPU metrics (`gpu:`), Live `[stats]` lines, Metrics (+7 more)
 
 ### Community 88 - "Action Resolution Design"
 Cohesion: 0.40
@@ -647,8 +650,8 @@ Cohesion: 0.50
 Nodes (3): Commit messages, graphify, perfscale — opensource repo rules
 
 ### Community 92 - "Shared gRPC Clients"
-Cohesion: 0.60
-Nodes (5): Client, client_shard_count(), shared_client(), shared_insecure_client(), client_for()
+Cohesion: 0.67
+Nodes (4): Client, client_shard_count(), shared_client(), shared_insecure_client()
 
 ### Community 93 - "Run Result Models"
 Cohesion: 0.50
@@ -667,16 +670,16 @@ Cohesion: 0.50
 Nodes (4): Shared base config (vus/duration/variables), Base test steps (ping), Import config (inherits and overrides base), Import test (inherits base steps)
 
 ### Community 101 - "Locust Runner"
-Cohesion: 0.15
-Nodes (25): Cow, Cow, From, LibraryMetrics, LibrarySet, LogTag, Option, ProcessRegistry (+17 more)
+Cohesion: 0.16
+Nodes (24): Cow, Cow, From, LibraryMetrics, LibrarySet, LogTag, Option, ProcessRegistry (+16 more)
 
 ### Community 117 - "Community 117"
-Cohesion: 0.09
-Nodes (21): Alternatives considered, BFF and agent, Capabilities for steps, Discovery, lint, and save-time validation, Dispatch integration, Drawbacks, Guide-level explanation, Instance lifecycle and cost (+13 more)
+Cohesion: 0.16
+Nodes (16): Default, Option, Path, PathBuf, Result, Self, String, Vec (+8 more)
 
 ### Community 118 - "Community 118"
-Cohesion: 0.12
-Nodes (25): BTreeMap, BTreeMap, Default, Duration, GpuSample, Histogram, LibraryRef, Map (+17 more)
+Cohesion: 0.08
+Nodes (35): BTreeMap, BTreeMap, Default, Duration, GpuSample, Histogram, HttpSample, LibraryRef (+27 more)
 
 ### Community 119 - "Community 119"
 Cohesion: 0.06
@@ -695,8 +698,8 @@ Cohesion: 0.08
 Nodes (24): items, description, items, type, WebRtcConfig, description, items, type (+16 more)
 
 ### Community 123 - "Community 123"
-Cohesion: 0.15
-Nodes (23): NamedTempFile, Self, NamedTempFile, Runtime, config_after_section_is_flagged_by_lint(), config_after_section_lints_clean(), k6_available(), locust_available() (+15 more)
+Cohesion: 0.19
+Nodes (20): NamedTempFile, NamedTempFile, Runtime, config_after_section_is_flagged_by_lint(), config_after_section_lints_clean(), k6_available(), locust_available(), locust_headless_run_produces_unified_summary() (+12 more)
 
 ### Community 124 - "Community 124"
 Cohesion: 0.11
@@ -707,8 +710,8 @@ Cohesion: 0.45
 Nodes (12): RunConfig, library_calls_land_in_the_run_summary_line(), one_second(), quick_run(), run_native_full(), run_without_libraries_emits_no_libraries_line(), sqlite_db_steps(), thresholds_failing_gate_fails_the_run() (+4 more)
 
 ### Community 126 - "Community 126"
-Cohesion: 0.10
-Nodes (20): GitImport, description, type, description, type, additionalProperties, description, properties (+12 more)
+Cohesion: 0.20
+Nodes (10): description, type, description, type, properties, file, git, ref (+2 more)
 
 ### Community 127 - "Community 127"
 Cohesion: 0.40
@@ -727,8 +730,8 @@ Cohesion: 0.31
 Nodes (13): bench_interpolate(), bench_metrics(), bench_pubsub(), bench_ring_buf(), bench_shared_variable(), bench_wait_until(), bench_yaml_parse(), filled_capture() (+5 more)
 
 ### Community 131 - "Community 131"
-Cohesion: 0.29
-Nodes (12): LintArgs, RunArgs, Option, PathBuf, SummaryFormat, Vec, BurnArgs, InstallArgs (+4 more)
+Cohesion: 0.22
+Nodes (15): LintArgs, RunArgs, Option, PathBuf, SummaryFormat, Vec, lint command handler, BurnArgs (+7 more)
 
 ### Community 132 - "Community 132"
 Cohesion: 0.30
@@ -743,28 +746,28 @@ Cohesion: 0.13
 Nodes (19): description, type, GpuConfig, description, type, default, description, type (+11 more)
 
 ### Community 135 - "Community 135"
-Cohesion: 0.22
-Nodes (8): BufReader, ChildStdout, Child, Drop, String, Vec, Drop, ServeProc
+Cohesion: 0.18
+Nodes (11): BufReader, ChildStdout, Child, Drop, Self, String, Vec, Drop (+3 more)
 
 ### Community 136 - "Community 136"
-Cohesion: 0.17
-Nodes (26): BurnArgs, CollectedLibrary, ensure_burned(), run(), same_file(), fetch_bytes(), install_git(), install_https() (+18 more)
+Cohesion: 0.29
+Nodes (18): CollectedLibrary, fetch_bytes(), install_git(), install_https(), install_one(), locals_deduped(), run(), sha256_hex() (+10 more)
 
 ### Community 137 - "Community 137"
 Cohesion: 0.12
 Nodes (14): Extending the image, External runners (k6 / JMeter / locust), Flavors, GitHub Actions, In CI, Kubernetes, Kubernetes, Limits (+6 more)
 
 ### Community 138 - "Community 138"
-Cohesion: 0.20
-Nodes (16): c_int, Duration, Option, Result, String, Matcher, kill_raw_pid(), KillOutcome (+8 more)
+Cohesion: 0.28
+Nodes (4): GpuCollector, FakeCollector, BrokenGpuCollector, FakeGpuCollector
 
 ### Community 139 - "Community 139"
-Cohesion: 0.14
-Nodes (12): ws_echo(), ws_upgrade(), Asserting messages, Limits, Live connection, Metrics, One-shot session, Two styles (+4 more)
+Cohesion: 0.18
+Nodes (9): ws_echo(), Asserting messages, Limits, Live connection, Metrics, One-shot session, Two styles, WebSocket load testing (+1 more)
 
 ### Community 140 - "Community 140"
-Cohesion: 0.12
-Nodes (18): Cow, Option, Self, DbDriver, ErrorKind, classify(), classify_db_error(), DbConnRef (+10 more)
+Cohesion: 0.16
+Nodes (13): Cow, Option, Self, DbDriver, ErrorKind, classify(), classify_db_error(), DbConnRef (+5 more)
 
 ### Community 141 - "Community 141"
 Cohesion: 0.11
@@ -775,8 +778,8 @@ Cohesion: 0.19
 Nodes (14): Benchmarks, GPU inference (local only), Methodology, Reading `IO ops` (`in` / `out`), Reading the numbers, Running locally, Running on CI (canonical), Suites (+6 more)
 
 ### Community 143 - "Community 143"
-Cohesion: 0.09
-Nodes (23): gen_schema example main, description, required, type, anyOf, description, definitions, ArrivalConfig (+15 more)
+Cohesion: 0.08
+Nodes (27): gen_schema example main, description, required, type, anyOf, description, definitions, ArrivalConfig (+19 more)
 
 ### Community 144 - "Community 144"
 Cohesion: 0.20
@@ -791,8 +794,8 @@ Cohesion: 0.25
 Nodes (6): Barrier: accumulate N items, Declaration (mandatory), Drivers: memory vs redis, Limits, Producer / consumer queue, Shared variables
 
 ### Community 147 - "Community 147"
-Cohesion: 0.08
-Nodes (26): Configuration, dcgm-exporter GPU source, Example: ANE (Neural Engine) load via Core ML, Example: game-style rendering load, Example: Ollama under load, GPU watch on, Extension seam, GPU benchmark suite, GPU metrics (+18 more)
+Cohesion: 0.31
+Nodes (9): scripts/bench.sh engine comparison benchmark, bench CI workflow (canonical runs), Regression tracking, CLI (`perfscale` binary), Core (`perfscale-core` library), perfscale documentation index, For contributors, perfscale documentation (+1 more)
 
 ### Community 148 - "Community 148"
 Cohesion: 0.47
@@ -803,8 +806,8 @@ Cohesion: 0.18
 Nodes (9): Ctx, Error, FunctionInfo, Library, Result, String, Value, Vec (+1 more)
 
 ### Community 150 - "Community 150"
-Cohesion: 0.18
-Nodes (20): AppState, format_labels(), ingest(), LiveSample, MetricsPayload, SnapshotBatch, state_view(), StateInner (+12 more)
+Cohesion: 0.47
+Nodes (6): ingest(), MetricsPayload, String, Vec, Json, MetricsPayload
 
 ### Community 151 - "Community 151"
 Cohesion: 0.31
@@ -835,8 +838,8 @@ Cohesion: 0.33
 Nodes (5): Core ML / ANE (Neural Engine) load example, Files, Reading the result, Run, Setup (once)
 
 ### Community 158 - "Community 158"
-Cohesion: 0.17
-Nodes (14): HttpSample, failed_samples_track_invocation_outcomes(), metric_snapshot_covers_samples_counters_and_rates(), metrics_custom_counters_appear_in_summary(), metrics_custom_histograms_appear_in_summary(), metrics_histogram_clamps_extreme_durations(), metrics_histogram_quantiles_within_one_percent(), metrics_mixed_counters_and_histograms() (+6 more)
+Cohesion: 0.33
+Nodes (6): additionalProperties, variables, additionalProperties, default, description, type
 
 ### Community 160 - "Community 160"
 Cohesion: 0.12
@@ -847,8 +850,8 @@ Cohesion: 0.22
 Nodes (8): Go, Library SDKs, Links, Running and distributing your library, Rust, The ABI contract, TypeScript / JavaScript, What every SDK gives you
 
 ### Community 163 - "Community 163"
-Cohesion: 0.25
-Nodes (15): Arc, LibraryProvider, LibraryRules, Result, String, balanced_args(), call_shape(), config_with_stages_and_fixed_fields_warns_but_passes() (+7 more)
+Cohesion: 0.40
+Nodes (10): Arc, LibraryProvider, LibraryRules, Result, String, balanced_args(), call_shape(), lint_library_token() (+2 more)
 
 ### Community 164 - "Community 164"
 Cohesion: 0.15
@@ -871,12 +874,12 @@ Cohesion: 0.15
 Nodes (12): Kubernetes, WASM-библиотеки, В CI, Варианты образов, Внешние раннеры (k6 / JMeter / locust), Запуск perfscale в Docker, Монтирование сценариев, Ограничения (+4 more)
 
 ### Community 169 - "Community 169"
-Cohesion: 0.29
-Nodes (7): IntoIterator, Item, IntoIterator, did_you_mean (edit-distance suggest), edit_distance, closest_name(), edit_distance()
+Cohesion: 0.25
+Nodes (8): IntoIterator, Item, IntoIterator, Item, did_you_mean (edit-distance suggest), edit_distance, closest_name(), edit_distance()
 
 ### Community 170 - "Community 170"
-Cohesion: 0.20
-Nodes (17): ClientPool, ActionOutput, Client, Context, Gen, Option, Value, Vec (+9 more)
+Cohesion: 0.24
+Nodes (13): Vec, lint::lint, schema_issues, ResolvedProviders, config_with_stages_and_fixed_fields_warns_but_passes(), declared_libraries(), detect_kind(), DocKind (+5 more)
 
 ### Community 171 - "Community 171"
 Cohesion: 0.39
@@ -895,8 +898,8 @@ Cohesion: 0.18
 Nodes (18): cmd_parse(), parse_db_text(), parse_grpc_text(), parse_locust_csv(), parse_text(), parse_ws_text(), Parse a pure-gRPC native run: `grpc_msgs_sent...: N R/s` (counter) and     `grpc, Parse the `Aggregated` row of locust's `--csv` stats output —     the same sourc (+10 more)
 
 ### Community 175 - "Community 175"
-Cohesion: 0.13
-Nodes (33): Arc, AtomicBool, AtomicU64, Arc, AtomicBool, AtomicU64, Context, GpuSampleFuture (+25 more)
+Cohesion: 0.17
+Nodes (30): Arc, AtomicBool, AtomicU64, Arc, AtomicBool, AtomicU64, Context, GpuSampleFuture (+22 more)
 
 ### Community 176 - "Community 176"
 Cohesion: 0.17
@@ -935,20 +938,20 @@ Cohesion: 0.50
 Nodes (4): FnOnce, R, Send, off_runtime()
 
 ### Community 185 - "Community 185"
-Cohesion: 0.11
-Nodes (20): std/thresholds@v1 run-level SLO gates, Derived <family>_failed failure-rate metrics, Summary forwarding (report / perfscale serve), Native load profiles (fixed / stages / arrival-rate), step::schedule::Schedule, Two-stage SIGINT/SIGTERM handling, before:/after: run lifecycle, perfscale CLI install and first run (+12 more)
+Cohesion: 0.10
+Nodes (22): std/thresholds@v1 run-level SLO gates, Derived <family>_failed failure-rate metrics, Summary forwarding (report / perfscale serve), Native load profiles (fixed / stages / arrival-rate), step::schedule::Schedule, Two-stage SIGINT/SIGTERM handling, before:/after: run lifecycle, perfscale CLI install and first run (+14 more)
 
 ### Community 186 - "Community 186"
 Cohesion: 0.17
 Nodes (11): Живые строки `[stats]`, Итоговая сводка, Метрики, Метрики GPU (`gpu:`), Метрики во время запуска (`report.during_run`), Метрики доли ошибок (`<family>_failed`), Метрики запросов (`http_req_*`), Пересылка сводки (`report`) (+3 more)
 
 ### Community 187 - "Community 187"
-Cohesion: 0.18
-Nodes (14): Arc, CallCtx, Error, LibraryInstance, call_guest(), HostState, Instantiated, WasmLibraryInstance (+6 more)
+Cohesion: 0.50
+Nodes (4): description, items, type, libraries
 
 ### Community 188 - "Community 188"
-Cohesion: 0.16
-Nodes (16): std/check@v1 action, std/http@v1 action, std/log@v1 action, std/sleep@v1 action, ConfigFile schema, draft-ietf-httpbis-safe-method-w-body (QUERY method), std/tcp@v1 action, http_req_* request metrics (+8 more)
+Cohesion: 0.17
+Nodes (10): Choosing an engine, Exit marker on agent streams, JMeter (`runner::jmeter`), k6 (`runner::k6`), locust (`runner::locust`), Native step engine (`step::runner`), Runners, JMeter (`runner::jmeter`) (+2 more)
 
 ### Community 189 - "Community 189"
 Cohesion: 0.18
@@ -976,15 +979,15 @@ Nodes (9): Драйверы, Круговой обмен в одном шаге,
 
 ### Community 195 - "Community 195"
 Cohesion: 0.20
-Nodes (9): Caching, Composing documents: `import`, Document import / composition, Interaction with the rest of the engine, Limits, Merge semantics, --allow-remote-import fail-closed gate, Security: remote imports are opt-in (+1 more)
+Nodes (10): String, burn_after_help(), install_after_help(), lint_after_help(), man_after_help(), run_after_help(), schema_after_help(), self_update_after_help() (+2 more)
 
 ### Community 196 - "Community 196"
 Cohesion: 0.20
 Nodes (9): GPU-инференс (только локально), Бенчмарки, Запуск в CI (канонический), Как читать `IO ops` (`in` / `out`), Как читать числа, Локальный запуск, Методология, Наборы тестов (suites) (+1 more)
 
 ### Community 197 - "Community 197"
-Cohesion: 0.70
-Nodes (5): HashMap, Mutex, FileCacheEntry, FileCacheKey, file_cache()
+Cohesion: 0.42
+Nodes (8): BurnArgs, ensure_burned(), run(), same_file(), CliError, Path, Result, String
 
 ### Community 198 - "Community 198"
 Cohesion: 0.22
@@ -1005,6 +1008,10 @@ Nodes (8): Два стиля, Динамические сообщения, Жи�
 ### Community 202 - "Community 202"
 Cohesion: 0.22
 Nodes (8): ABI-контракт, Go, Rust, SDK для библиотек, TypeScript / JavaScript, Запуск и распространение вашей библиотеки, Ссылки, Что даёт каждый SDK
+
+### Community 203 - "Community 203"
+Cohesion: 0.32
+Nodes (5): ActionFuture, ActionHandler, Context, Value, StubWebrtc
 
 ### Community 204 - "Community 204"
 Cohesion: 0.25
@@ -1050,6 +1057,14 @@ Nodes (5): MCP-сервер, Инструменты, Переменные окр
 Cohesion: 0.33
 Nodes (5): CLI (бинарник `perfscale`), Для контрибьюторов, Документация perfscale, С чего начать, Ядро (библиотека `perfscale-core`)
 
+### Community 215 - "Community 215"
+Cohesion: 0.33
+Nodes (6): connect_params_defaults(), connect_params_full_override(), connect_params_interpolated_string_forms(), connect_params_pool_size_is_clamped(), connect_params_rejections(), parse_connect_params()
+
+### Community 216 - "Community 216"
+Cohesion: 0.40
+Nodes (5): CI pipeline integration, Perfscale/github-action composite action, Perfscale/gitlab-ci templates repo, Perfscale/perfscale-demo playground repo, --summary-export machine-readable summary
+
 ### Community 217 - "Community 217"
 Cohesion: 0.40
 Nodes (4): CI-конвейеры, GitHub Actions, GitLab CI, Любой другой CI
@@ -1059,7 +1074,7 @@ Nodes (4): CI-конвейеры, GitHub Actions, GitLab CI, Любой друг
   crates/perfscale-core/src/lib.rs · relation: conceptually_related_to
 
 ## Knowledge Gaps
-- **1316 isolated node(s):** `PreToolUse`, `run.sh script`, `Commands`, `SchemaDumpKind`, `SelfUpdateArgs` (+1311 more)
+- **1279 isolated node(s):** `PreToolUse`, `run.sh script`, `Commands`, `SchemaDumpKind`, `SelfUpdateArgs` (+1274 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **20 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -1068,14 +1083,14 @@ _Questions this graph is uniquely positioned to answer:_
 
 - **What is the exact relationship between `run_native()` and `perfscale-core crate root`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
-- **Why does `execute_action()` connect `Check Action Assertions` to `Dynamic Messages & Codecs`, `HTTP Action Context`, `Arc`, `YAML Parsing Internals`, `Metrics Collection`, `PubSub Byte Streaming`, `LogLine Pipeline`, `DB Error Classification`, `Actions Documentation`, `Step Context Utilities`, `DB Connection Options`, `Community 170`, `GraphQL Step`, `DB Actions`, `Community 175`, `HTTP Client Pool`, `GraphQL Example Server`, `DB Actions`, `Action Registry`, `Locust Runner`, `Community 118`?**
-  _High betweenness centrality (0.189) - this node is a cross-community bridge._
-- **Why does `Sync` connect `Action Registry` to `Core Runtime Primitives`, `Check Action Assertions`, `GraphQL Fragments`, `Process Spawning Primitives`, `Community 136`, `GraphQL Step`, `Runner Process Handling`, `Serve HTTP Server`, `Bench Metrics Tooling`, `gRPC Dynamic Client`, `Metrics Collection`, `Connection Registry Crate`, `Import Resolution`?**
-  _High betweenness centrality (0.124) - this node is a cross-community bridge._
+- **Why does `execute_action()` connect `Check Action Assertions` to `Dynamic Messages & Codecs`, `HTTP Action Context`, `Arc`, `YAML Parsing Internals`, `Metrics Collection`, `PubSub Byte Streaming`, `LogLine Pipeline`, `DB Error Classification`, `Step Context Utilities`, `DB Connection Options`, `Community 170`, `GraphQL Step`, `DB Actions`, `Community 175`, `HTTP Client Pool`, `DB Actions`, `Action Registry`, `Locust Runner`, `Community 118`?**
+  _High betweenness centrality (0.166) - this node is a cross-community bridge._
+- **Why does `Duration` connect `CLI Self-Update` to `HTTP Action Context`, `Check Action Assertions`, `Arc`, `Run & Serve Commands`, `Arc`, `GraphQL Step`, `PubSub Byte Streaming`, `HTTP Client Pool`, `DB Error Classification`, `Protobuf Descriptors`, `DB Actions`, `CLI Test Harness`, `Community 123`?**
+  _High betweenness centrality (0.135) - this node is a cross-community bridge._
 - **Why does `Json` connect `Community 150` to `Core Runtime Primitives`, `Dynamic Messages & Codecs`, `Community 130`, `Check Action Assertions`, `GraphQL Step`, `Bench Metrics Tooling`, `Community 142`, `Metrics Collection`, `HTTP Client Pool`, `Bench Metrics Tooling`, `LogLine Pipeline`, `DB Error Classification`?**
-  _High betweenness centrality (0.120) - this node is a cross-community bridge._
-- **Are the 115 inferred relationships involving `execute_action()` (e.g. with `lint::lint` and `lint()`) actually correct?**
-  _`execute_action()` has 115 INFERRED edges - model-reasoned connections that need verification._
+  _High betweenness centrality (0.110) - this node is a cross-community bridge._
+- **Are the 114 inferred relationships involving `execute_action()` (e.g. with `lint::lint` and `lint()`) actually correct?**
+  _`execute_action()` has 114 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 4 inferred relationships involving `lint()` (e.g. with `lint_file()` and `lint_file`) actually correct?**
   _`lint()` has 4 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 27 inferred relationships involving `validate_libraries()` (e.g. with `bench_std_random_call()` and `wasm_instance()`) actually correct?**

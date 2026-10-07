@@ -371,25 +371,45 @@ impl Metrics {
     /// latency percentiles are cumulative since run start (the HDR histogram
     /// is never reset, so they converge instead of jittering).
     ///
+    /// LLM steps (`std/llm@v1`) report through their own metric family and
+    /// never produce `HttpSample`s, so `reqs`/`rps` stay 0 on pure-LLM runs.
+    /// When any LLM throughput samples were recorded, the line carries
+    /// `llm_reqs` (completed LLM requests) and `llm_tok_s` (mean completion
+    /// throughput) so LLM load tests still get a live signal.
+    ///
     /// ```text
     /// [stats] ts=1720000000000 rps=246.80 err_pct=0.00 p50=1.20 p90=3.40 p95=4.10 p99=8.20 reqs=1234 iters=456
+    /// [stats] ts=1720000000000 rps=0.00 reqs=0 iters=12 llm_reqs=9 llm_tok_s=38.7
     /// ```
     pub fn stats_line(&self, ts_ms: u64, window_reqs: u64, window_secs: f64, iters: u64) -> String {
         let rps = window_reqs as f64 / window_secs.max(0.001);
-        if self.total == 0 {
-            return format!("[stats] ts={ts_ms} rps={rps:.2} reqs=0 iters={iters}");
+        let mut line = if self.total == 0 {
+            format!("[stats] ts={ts_ms} rps={rps:.2} reqs=0 iters={iters}")
+        } else {
+            let h = &self.durations_micros;
+            let pct = |q: f64| -> f64 { h.value_at_quantile(q) as f64 / 1000.0 };
+            let err = self.failures as f64 / self.total as f64 * 100.0;
+            format!(
+                "[stats] ts={ts_ms} rps={rps:.2} err_pct={err:.2} p50={p50:.2} p90={p90:.2} p95={p95:.2} p99={p99:.2} reqs={total} iters={iters}",
+                p50 = pct(0.50),
+                p90 = pct(0.90),
+                p95 = pct(0.95),
+                p99 = pct(0.99),
+                total = self.total,
+            )
+        };
+        if let Some(tps) = self.hists.get("llm_tokens_per_sec") {
+            if !tps.is_empty() {
+                // Samples are stored in microseconds (ms * 1000) like every
+                // custom histogram; tok/s means are read back in plain units.
+                line.push_str(&format!(
+                    " llm_reqs={} llm_tok_s={:.1}",
+                    tps.len(),
+                    tps.mean() / 1000.0
+                ));
+            }
         }
-        let h = &self.durations_micros;
-        let pct = |q: f64| -> f64 { h.value_at_quantile(q) as f64 / 1000.0 };
-        let err = self.failures as f64 / self.total as f64 * 100.0;
-        format!(
-            "[stats] ts={ts_ms} rps={rps:.2} err_pct={err:.2} p50={p50:.2} p90={p90:.2} p95={p95:.2} p99={p99:.2} reqs={total} iters={iters}",
-            p50 = pct(0.50),
-            p90 = pct(0.90),
-            p95 = pct(0.95),
-            p99 = pct(0.99),
-            total = self.total,
-        )
+        line
     }
 }
 
@@ -2076,6 +2096,54 @@ mod tests {
         let line = m.stats_line(1, 0, 5.0, 3);
         assert!(line.contains("reqs=0"), "{line}");
         assert!(!line.contains("p50="), "{line}");
+        assert!(!line.contains("llm_reqs="), "{line}");
+    }
+
+    /// Pure-LLM runs record no `HttpSample`s, so `reqs`/`rps` stay 0 — the
+    /// line must still surface the LLM signal via `llm_reqs`/`llm_tok_s`.
+    #[test]
+    fn metrics_stats_line_reports_llm_fields_without_http_requests() {
+        let mut m = Metrics::default();
+        m.add_counters(
+            json!({ "llm_tokens_per_sec": [32.0], "llm_completion_tokens": 128.0 })
+                .as_object()
+                .unwrap(),
+        );
+        m.add_counters(json!({ "llm_tokens_per_sec": [32.0] }).as_object().unwrap());
+
+        let line = m.stats_line(1_720_000_000_000, 0, 5.0, 2);
+        assert!(line.contains("reqs=0"), "{line}");
+        assert!(line.contains("llm_reqs=2"), "{line}");
+        let tok_s: f64 = line
+            .split_whitespace()
+            .find_map(|f| f.strip_prefix("llm_tok_s="))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
+        // HDR stores at 2 significant figures — compare with slack.
+        assert!((tok_s - 32.0).abs() < 1.0, "{line}");
+    }
+
+    /// Mixed runs keep the HTTP percentiles AND carry the LLM fields.
+    #[test]
+    fn metrics_stats_line_reports_llm_fields_alongside_http() {
+        let mut m = Metrics::default();
+        m.record(&HttpSample {
+            duration_ms: 2.0,
+            status: 200,
+            failed: false,
+        });
+        m.add_counters(json!({ "llm_tokens_per_sec": [25.5] }).as_object().unwrap());
+
+        let line = m.stats_line(1, 1, 5.0, 1);
+        assert!(line.contains("reqs=1"), "{line}");
+        assert!(line.contains("p50="), "{line}");
+        assert!(line.contains("llm_reqs=1"), "{line}");
+        let tok_s: f64 = line
+            .split_whitespace()
+            .find_map(|f| f.strip_prefix("llm_tok_s="))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
+        assert!((tok_s - 25.5).abs() < 1.0, "{line}");
     }
 
     /// Out-of-range values must clamp, not panic or vanish.
