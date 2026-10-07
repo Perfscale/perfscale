@@ -210,7 +210,10 @@ async fn tls_config() -> Result<axum_server::tls_rustls::RustlsConfig, CliError>
     .map_err(|e| CliError::new("failed to build TLS config").cause(e.to_string()))
 }
 
-async fn ingest(State(state): State<AppState>, Json(payload): Json<MetricsPayload>) -> &'static str {
+async fn ingest(
+    State(state): State<AppState>,
+    Json(payload): Json<MetricsPayload>,
+) -> &'static str {
     match payload {
         MetricsPayload::Summary { lines } => {
             println!("--- metrics batch ({} lines) ---", lines.len());
@@ -221,7 +224,10 @@ async fn ingest(State(state): State<AppState>, Json(payload): Json<MetricsPayloa
         }
         MetricsPayload::Snapshot { samples, seq } => {
             let seq_label = seq.map_or_else(|| "?".to_string(), |s| s.to_string());
-            println!("--- live snapshot #{seq_label} ({} samples) ---", samples.len());
+            println!(
+                "--- live snapshot #{seq_label} ({} samples) ---",
+                samples.len()
+            );
             for s in &samples {
                 println!("  {}{} {}", s.metric, format_labels(&s.labels), s.value);
             }
@@ -505,7 +511,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json, serde_json::json!({ "snapshots": [], "summaries": [] }));
+        assert_eq!(
+            json,
+            serde_json::json!({ "snapshots": [], "summaries": [] })
+        );
     }
 
     /// POST a snapshot and a summary to a live server, then read them back
