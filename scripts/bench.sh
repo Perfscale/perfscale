@@ -635,10 +635,12 @@ EOF
 libraries:
   - use: $LIB_WASM
     as: hello
+    capabilities: []
 EOF
   cat >"$WORKDIR/lib-builtin.yaml" <<'EOF'
 libraries:
   - use: '@std/random@v1'
+    capabilities: []
 EOF
 fi
 
