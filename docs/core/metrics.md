@@ -362,6 +362,18 @@ counters never reset during a run. To derive per-window numbers consumer-side,
 diff successive snapshots: `rate(x_count[window])`-style for throughput,
 `Δ_sum / Δ_count` for windowed average latency.
 
+**Every snapshot also carries two run-progress gauges**, so a run whose steps
+record no samples yet — e.g. a pure-LLM run waiting on its first 60 s
+completion — still streams a non-empty batch every interval:
+
+| Shipped sample | Meaning |
+|---|---|
+| `perfscale_iterations_completed` | iterations started since run start (monotonic) |
+| `perfscale_vus` | live VU count at snapshot time (the configured count on fixed runs) |
+
+`perfscale_iterations_completed` is cumulative (diff it for a per-window
+iteration rate); `perfscale_vus` is a point-in-time gauge — chart as-is.
+
 **GPU gauges stream too** when the run also has `gpu.enabled: true` (see
 [GPU metrics](gpu.md)): each snapshot carries the GPU samples taken since the
 previous one, as point-in-time gauges with the collector's own timestamps —

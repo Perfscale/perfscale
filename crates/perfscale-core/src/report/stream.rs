@@ -26,7 +26,10 @@
 //!   metric `x` ships as `x{quantile="0.5"|"0.9"|"0.95"|"0.99"}` plus
 //!   `x_count` and `x_sum`; a counter `y` ships as `y_total`; a rate metric
 //!   `z` ships as `z_total` (invocations) and `z_failed_total` (failures).
-//!   GPU gauges ship per device as `gpu_utilization_pct`,
+//!   Every snapshot also carries two run-progress gauges,
+//!   `perfscale_iterations_completed` and `perfscale_vus`, so a live run
+//!   never flattens to an empty batch (LLM runs record no samples until
+//!   their first request completes). GPU gauges ship per device as `gpu_utilization_pct`,
 //!   `gpu_memory_used_mib`, `gpu_memory_total_mib`, `gpu_temperature_c` and
 //!   `gpu_power_w`, each with a `gpu="<index>"` label (plus any
 //!   collector-specific extras under their own names).
@@ -62,12 +65,23 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// Cumulative: the underlying HDR histograms and counters never reset during
 /// a run, so values grow monotonically and percentiles converge. `ts_ms` is
 /// strictly increasing across a run's snapshots.
+///
+/// `iterations_completed`/`vus` are run-progress gauges: they ride every
+/// snapshot so a run whose steps record no request samples yet (e.g. an LLM
+/// run waiting on its first 60s completion) still flattens to a non-empty
+/// batch — the stream is never silent while the run is alive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricSnapshot {
     /// Snapshot time, milliseconds since the Unix epoch.
     pub ts_ms: i64,
     /// Aggregates per metric name, as of `ts_ms`.
     pub metrics: BTreeMap<String, MetricAgg>,
+    /// Iterations started since run start (monotonic).
+    #[serde(default)]
+    pub iterations_completed: u64,
+    /// Live VU count at snapshot time (configured count on fixed runs).
+    #[serde(default)]
+    pub vus: u64,
     /// GPU gauge samples taken since the previous snapshot (empty when the
     /// run has no `gpu:` section). Unlike `metrics` these are NOT
     /// cumulative: each carries its own `ts_ms`, and consumers chart them
@@ -206,6 +220,15 @@ pub fn snapshot_to_samples(snap: &MetricSnapshot, labels: &Map<String, Value>) -
             }
         }
     }
+    // Run-progress gauges ride every snapshot: plain names (no `_total` —
+    // they are charted as-is, never diffed), so even a snapshot with zero
+    // recorded samples proves the run is alive.
+    sample(
+        "perfscale_iterations_completed".to_string(),
+        None,
+        snap.iterations_completed as f64,
+    );
+    sample("perfscale_vus".to_string(), None, snap.vus as f64);
     // GPU gauges: point-in-time, one series per device (`gpu="<index>"`),
     // each sample keeping the collector's own timestamp. `None` fields are
     // the source's "N/A" — skipped, never shipped as zeros. Pro-collector
@@ -669,8 +692,8 @@ mod tests {
         );
     }
 
-    /// One snapshot with a single sample-kind metric → 6 samples
-    /// (4 quantiles + `_count` + `_sum`).
+    /// One snapshot with a single sample-kind metric → 8 samples
+    /// (4 quantiles + `_count` + `_sum` + the 2 run-progress gauges).
     fn sample_snapshot(ts_ms: i64, count: f64) -> MetricSnapshot {
         let mut metrics = BTreeMap::new();
         metrics.insert(
@@ -691,6 +714,8 @@ mod tests {
         MetricSnapshot {
             ts_ms,
             metrics,
+            iterations_completed: 7,
+            vus: 1,
             gpu: Vec::new(),
         }
     }
@@ -750,14 +775,16 @@ mod tests {
         let snap = MetricSnapshot {
             ts_ms: 42,
             metrics,
+            iterations_completed: 3,
+            vus: 2,
             gpu: Vec::new(),
         };
         let mut labels = Map::new();
         labels.insert("run".to_string(), Value::String("r1".into()));
 
         let samples = snapshot_to_samples(&snap, &labels);
-        // 6 (lat) + 1 (rows_total) + 2 (req_failed_*) = 9.
-        assert_eq!(samples.len(), 9);
+        // 6 (lat) + 1 (rows_total) + 2 (req_failed_*) + 2 progress gauges = 11.
+        assert_eq!(samples.len(), 11);
         let find = |metric: &str, quantile: Option<&str>| {
             samples
                 .iter()
@@ -783,6 +810,34 @@ mod tests {
         assert_eq!(find("rows_total", None).value, 7.0);
         assert_eq!(find("req_failed_total", None).value, 10.0);
         assert_eq!(find("req_failed_failed_total", None).value, 2.0);
+
+        // Run-progress gauges: plain gauge names (no `_total`), as-is values.
+        let iters = find("perfscale_iterations_completed", None);
+        assert_eq!(iters.value, 3.0);
+        assert_eq!(iters.ts_ms, 42);
+        assert_eq!(iters.labels["run"], "r1");
+        assert_eq!(find("perfscale_vus", None).value, 2.0);
+    }
+
+    /// The gauges are the liveness contract: a snapshot whose steps recorded
+    /// nothing (a pure-LLM run before its first completion) still flattens
+    /// to a non-empty batch, so the shipper never goes silent mid-run.
+    #[test]
+    fn snapshot_to_samples_empty_metrics_still_carries_progress_gauges() {
+        let snap = MetricSnapshot {
+            ts_ms: 42,
+            metrics: BTreeMap::new(),
+            iterations_completed: 5,
+            vus: 3,
+            gpu: Vec::new(),
+        };
+        let samples = snapshot_to_samples(&snap, &Map::new());
+        assert_eq!(samples.len(), 2, "{samples:?}");
+        assert_eq!(samples[0].metric, "perfscale_iterations_completed");
+        assert_eq!(samples[0].value, 5.0);
+        assert_eq!(samples[1].metric, "perfscale_vus");
+        assert_eq!(samples[1].value, 3.0);
+        assert!(samples.iter().all(|s| s.ts_ms == 42));
     }
 
     /// GPU gauges ride the same snapshot as per-device series with the
@@ -816,14 +871,17 @@ mod tests {
         let snap = MetricSnapshot {
             ts_ms: 8_000,
             metrics: BTreeMap::new(),
+            iterations_completed: 0,
+            vus: 1,
             gpu: vec![g0, g1],
         };
         let mut labels = Map::new();
         labels.insert("task_id".to_string(), Value::String("t1".into()));
 
         let samples = snapshot_to_samples(&snap, &labels);
-        // g0: 5 built-ins + 1 extra; g1: 2 built-ins (util + mem used).
-        assert_eq!(samples.len(), 8, "{samples:?}");
+        // g0: 5 built-ins + 1 extra; g1: 2 built-ins (util + mem used);
+        // plus the 2 run-progress gauges.
+        assert_eq!(samples.len(), 10, "{samples:?}");
         let find = |metric: &str, gpu: &str| {
             samples
                 .iter()
@@ -890,7 +948,7 @@ mod tests {
             .await;
 
         let cfg = ReportRunConfig {
-            batch_size: 6, // one snapshot fills a batch exactly
+            batch_size: 8, // one snapshot fills a batch exactly
             ..test_cfg()
         };
         let (tx, _handle) = spawn_shipper(&server, cfg, || None);
@@ -902,7 +960,7 @@ mod tests {
         assert_eq!(bodies.len(), 2, "one POST per full batch");
         assert_eq!(bodies[0]["seq"], 1);
         assert_eq!(bodies[1]["seq"], 2);
-        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 6);
+        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 8);
     }
 
     #[tokio::test]
@@ -914,7 +972,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        // batch_size far above the snapshot's 6 samples → only the 1s tick
+        // batch_size far above the snapshot's 8 samples → only the 1s tick
         // can flush it.
         let (tx, _handle) = spawn_shipper(&server, test_cfg(), || None);
         tx.send(sample_snapshot(1000, 4.0)).await.unwrap();
@@ -923,7 +981,7 @@ mod tests {
         let bodies = bodies(&reqs);
         assert_eq!(bodies.len(), 1, "tick flushed the open batch");
         assert_eq!(bodies[0]["seq"], 1);
-        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 6);
+        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 8);
         // No taskId field when the shipper has no task id.
         assert!(bodies[0].get("taskId").is_none());
     }
@@ -1151,7 +1209,7 @@ mod tests {
             1,
             "deferred snapshots sealed into one batch: {bodies:?}"
         );
-        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 12);
+        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 16);
     }
 
     #[tokio::test]
@@ -1236,6 +1294,6 @@ mod tests {
         let bodies = bodies(&reqs);
         assert_eq!(bodies.len(), 1, "open snapshots sealed into one batch");
         assert_eq!(bodies[0]["seq"], 1);
-        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 12);
+        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 16);
     }
 }

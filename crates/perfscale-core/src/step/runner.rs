@@ -583,7 +583,10 @@ fn build_library_settings(config: &RunConfig, vars: &Value, secrets: &SecretRegi
 /// When `config.report.during_run` is set and `metrics_tx` is `Some`, a
 /// snapshot pump sends a cumulative [`MetricSnapshot`] over the channel every
 /// `report.interval_ms` while the VUs run (try_send only — a stalled consumer
-/// never backpressures the VU loop). With `gpu.enabled` on, each snapshot
+/// never backpressures the VU loop). Every snapshot also carries the
+/// run-progress gauges (`iterations_completed`, `vus`), so even a run whose
+/// steps record no samples yet — e.g. a pure-LLM run mid-request — streams a
+/// non-empty batch every interval. With `gpu.enabled` on, each snapshot
 /// also carries the GPU gauge samples taken since the previous one. The
 /// channel's receiver is typically driven by a
 /// [`crate::report::DuringRunShipper`]. With no `report` block (or
@@ -900,6 +903,14 @@ pub async fn run_native(
                 snap_tx,
                 report.interval(),
                 gpu_session.as_ref().map(|s| s.buffer()),
+                StreamProgress {
+                    iterations: Arc::clone(&iter_count),
+                    active_vus: shared.active_vus.clone(),
+                    fixed_vus: match &schedule {
+                        Schedule::Fixed { vus, .. } => *vus as u64,
+                        _ => 0,
+                    },
+                },
             ))
         }
         _ => None,
@@ -1069,11 +1080,18 @@ pub async fn run_native(
 /// snapshot also carries the GPU gauge samples appended since the previous
 /// tick — a cursor over the shared buffer, so every GPU sample streams
 /// exactly once while the run is still going.
+///
+/// Every snapshot also carries the run-progress gauges
+/// (`iterations_completed`, `vus` from `progress`), so a snapshot is never
+/// empty while the run is alive — a pure-LLM run records no metric samples
+/// until its first request completes, and without the gauges the shipper
+/// would flatten those snapshots to nothing.
 fn spawn_metrics_stream(
     metrics: Arc<Mutex<Metrics>>,
     tx: mpsc::Sender<MetricSnapshot>,
     interval: Duration,
     gpu: Option<Arc<Mutex<Vec<crate::gpu::GpuSample>>>>,
+    progress: StreamProgress,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
@@ -1102,6 +1120,8 @@ fn spawn_metrics_stream(
                 ts_ms,
                 metrics: metrics.lock().unwrap().metric_snapshot(),
                 gpu: gpu_samples,
+                iterations_completed: progress.iterations.load(Ordering::Relaxed),
+                vus: progress.vus(),
             };
             if tx.try_send(snap).is_err() {
                 dropped += 1;
@@ -1114,6 +1134,26 @@ fn spawn_metrics_stream(
             }
         }
     })
+}
+
+/// Run-liveness gauges the snapshot pump stamps on every [`MetricSnapshot`].
+struct StreamProgress {
+    /// Iterations started since run start (the VU loop's shared counter).
+    iterations: Arc<AtomicU64>,
+    /// Live-VU gauge for staged/arrival runs; `None` on fixed runs, which
+    /// report `fixed_vus` instead.
+    active_vus: Option<Arc<AtomicU64>>,
+    /// The resolved fixed-profile VU count.
+    fixed_vus: u64,
+}
+
+impl StreamProgress {
+    fn vus(&self) -> u64 {
+        self.active_vus
+            .as_ref()
+            .map(|g| g.load(Ordering::Relaxed))
+            .unwrap_or(self.fixed_vus)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4149,6 +4189,60 @@ mod tests {
         let (_lines, snaps) = run_native_streaming(vec![sleep_step(100)], config).await;
         assert!(!snaps.is_empty());
         assert!(snaps.iter().all(|s| s.gpu.is_empty()));
+    }
+
+    /// Liveness for silent-step runs: a run whose steps record no metric
+    /// samples at all (a sleep-only loop — same shape as a pure-LLM run
+    /// before its first completion) still streams from the first interval,
+    /// because every snapshot carries the iterations/VU progress gauges and
+    /// therefore flattens to a non-empty sample batch.
+    #[tokio::test]
+    async fn run_native_streams_progress_gauges_without_recorded_samples() {
+        let config = RunConfig {
+            vus: 2,
+            duration: "700ms".into(),
+            report: Some(crate::report::ReportRunConfig {
+                during_run: true,
+                interval_ms: 200,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (_lines, snaps) = run_native_streaming(vec![sleep_step(150)], config).await;
+
+        assert!(
+            snaps.len() >= 2,
+            "expected ≥2 snapshots over a 700ms run, got {}",
+            snaps.len()
+        );
+        // No step ever recorded a sample: the metrics map is empty on every
+        // snapshot, yet each one still flattens to the two gauge samples —
+        // the very first interval included.
+        for snap in &snaps {
+            assert!(
+                snap.metrics.is_empty(),
+                "sleep-only run records no samples: {:?}",
+                snap.metrics.keys().collect::<Vec<_>>()
+            );
+            assert_eq!(snap.vus, 2, "fixed profile reports the configured VUs");
+            let samples = crate::report::snapshot_to_samples(snap, &serde_json::Map::new());
+            assert_eq!(
+                samples.len(),
+                2,
+                "gauges alone keep the batch non-empty: {samples:?}"
+            );
+            assert!(samples
+                .iter()
+                .any(|s| s.metric == "perfscale_iterations_completed"));
+            assert!(samples.iter().any(|s| s.metric == "perfscale_vus"));
+        }
+        // Iterations are cumulative and the run did make progress.
+        let iters: Vec<u64> = snaps.iter().map(|s| s.iterations_completed).collect();
+        assert!(
+            iters.windows(2).all(|w| w[1] >= w[0]),
+            "cumulative iterations never shrink: {iters:?}"
+        );
+        assert!(*iters.last().unwrap() > 0, "iterations happened: {iters:?}");
     }
 
     // --- frozen run settings handed to libraries (RFC 005 phase 3.5) ------
