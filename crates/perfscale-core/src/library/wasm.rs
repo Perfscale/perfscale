@@ -1883,12 +1883,16 @@ mod tests {
         let resolved = validate_libraries(&[r], true, None).unwrap();
         let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
         let url = format!("http://127.0.0.1:{port}/corpus");
-        let v =
-            tokio::task::spawn(
-                async move { inst.call(&ctx(), "get", &[Value::from(url)]).unwrap() },
-            )
-            .await
-            .unwrap();
+        // spawn_blocking, not spawn: the guest call blocks its thread for the
+        // whole fetch. On a worker thread it can starve the runtime that
+        // drives the host-side hyper socket (wasi-http sync bindings block on
+        // the ambient runtime) — under CI load that surfaced as a flaky
+        // "connection reset". The blocking pool keeps the runtime free.
+        let v = tokio::task::spawn_blocking(move || {
+            inst.call(&ctx(), "get", &[Value::from(url)]).unwrap()
+        })
+        .await
+        .unwrap();
         assert_eq!(v, "corpus-over-http");
     }
 
