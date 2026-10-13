@@ -94,11 +94,13 @@ jobs:
         run: echo "/opt/apache-jmeter-${JMETER_VERSION}/bin" >> "$GITHUB_PATH"
 
       # Prebuilt binary (seconds) instead of `cargo install` compiling from
-      # source (minutes).
+      # source (minutes). Pinned: bench numbers must stay comparable between
+      # runs, and 1.22 changed the command-string rules (env-prefixed
+      # commands are refused — bench.sh routes those through `env` anyway).
       - name: Install hyperfine
         uses: taiki-e/install-action@v2
         with:
-          tool: hyperfine
+          tool: hyperfine@1.21.0
 
       - name: Install GNU time
         run: sudo apt-get install -y --no-install-recommends time

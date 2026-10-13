@@ -476,17 +476,19 @@ cfg() {
 }
 
 # Command builders: $1 vus, $2 duration, $3 target base URL, $4 insecure(0/1)
+# Env vars go through `env`: hyperfine ≥1.22 refuses to run a command string
+# that starts with a variable assignment.
 cmd_k6_native() {
-  echo "BENCH_VUS=$1 BENCH_DURATION=$2 BENCH_TARGET=$3/health BENCH_INSECURE=$4 k6 run --quiet $WORKDIR/script.js"
+  echo "env BENCH_VUS=$1 BENCH_DURATION=$2 BENCH_TARGET=$3/health BENCH_INSECURE=$4 k6 run --quiet $WORKDIR/script.js"
 }
 cmd_k6_wrapped() {
-  echo "BENCH_VUS=$1 BENCH_DURATION=$2 BENCH_TARGET=$3/health BENCH_INSECURE=$4 $BIN run --k6 $WORKDIR/script.js"
+  echo "env BENCH_VUS=$1 BENCH_DURATION=$2 BENCH_TARGET=$3/health BENCH_INSECURE=$4 $BIN run --k6 $WORKDIR/script.js"
 }
 cmd_locust_native() { # $5 csv prefix
-  echo "BENCH_INSECURE=$4 locust -f $WORKDIR/locustfile.py --headless -u $1 -r $1 -t $2 --host $3 --only-summary --csv $5"
+  echo "env BENCH_INSECURE=$4 locust -f $WORKDIR/locustfile.py --headless -u $1 -r $1 -t $2 --host $3 --only-summary --csv $5"
 }
 cmd_locust_wrapped() {
-  echo "BENCH_INSECURE=$4 $BIN run --locust $WORKDIR/locustfile.py --host $3 -c $(cfg "$1" "$2")"
+  echo "env BENCH_INSECURE=$4 $BIN run --locust $WORKDIR/locustfile.py --host $3 -c $(cfg "$1" "$2")"
 }
 cmd_yaml() { # $1 vus, $2 duration, $3 test file, $4 extra flags (optional)
   echo "$BIN run -f $3 -c $(cfg "$1" "$2")${4:+ $4}"
