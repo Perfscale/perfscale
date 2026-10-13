@@ -138,3 +138,36 @@ impl MetricsFamily for LlmFamily {
         }
     }
 }
+
+/// `std/pubsub@v1` metrics (emitted by the core step in `step/pubsub.rs` —
+/// the pro packages only ship the broker drivers, so the defs live here).
+pub(crate) struct PubsubFamily;
+
+impl MetricsFamily for PubsubFamily {
+    fn family(&self) -> &'static str {
+        "pubsub"
+    }
+
+    fn defs(&self) -> &'static [MetricDef] {
+        &[
+            MetricDef {
+                name: "pubsub_msgs_published",
+                kind: MetricKind::Counter,
+                unit: "count",
+                description: "Messages accepted by the transport",
+            },
+            MetricDef {
+                name: "pubsub_msgs_received",
+                kind: MetricKind::Counter,
+                unit: "count",
+                description: "Messages counted toward the subscribe expectation",
+            },
+            MetricDef {
+                name: "pubsub_e2e_ms",
+                kind: MetricKind::Histogram,
+                unit: "ms",
+                description: "End-to-end latency: publish-phase start to message receipt",
+            },
+        ]
+    }
+}

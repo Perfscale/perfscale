@@ -67,7 +67,8 @@ pub struct SamplerContext {
 }
 
 /// A family of related metrics, declared by the crate that owns the steps
-/// emitting them. Core registers the built-in `http` and `llm` families;
+/// emitting them. Core registers the built-in `http`, `llm` and `pubsub`
+/// families;
 /// downstream (pro) crates register theirs next to their `register_action`
 /// calls.
 ///
@@ -110,6 +111,7 @@ fn registry() -> &'static RwLock<Vec<Arc<dyn MetricsFamily>>> {
         RwLock::new(vec![
             Arc::new(super::builtin::HttpFamily),
             Arc::new(super::builtin::LlmFamily),
+            Arc::new(super::builtin::PubsubFamily),
         ])
     })
 }
