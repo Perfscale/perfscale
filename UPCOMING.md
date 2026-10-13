@@ -12,6 +12,16 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+## WASM libraries: the `net` capability
+
+- A library can now be granted `capabilities: [net: [hosts]]` for outgoing
+  HTTP via `wasi:http`. Every request's destination is checked host-side
+  against the allowlist (`api.acme.com` = any port, `api.acme.com:8443` =
+  pinned port, `*.internal` = suffix wildcard); anything else fails with an
+  error naming the destination. Requests are bounded at 30 s and 16 MiB per
+  body. Raw sockets (`wasi:sockets`) stay unsupported. A component importing
+  `wasi:http` without a `net` grant is a hard load error.
+
 ## Pro extension point: connection registries + `webrtc:` config gate
 
 - `perfscale-connection` gains `ExtensionRegistries`, a type-erased parking

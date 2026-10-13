@@ -2822,12 +2822,15 @@ dependencies = [
  "async-nats",
  "axum 0.7.9",
  "base64 0.22.1",
+ "bytes",
  "criterion",
  "csv",
  "futures-util",
  "graphql-parser",
  "hdrhistogram",
  "http",
+ "http-body",
+ "http-body-util",
  "jsonschema",
  "libc",
  "perfscale-connection",
@@ -2862,6 +2865,7 @@ dependencies = [
  "uuid",
  "wasmtime",
  "wasmtime-wasi",
+ "wasmtime-wasi-http",
  "webpki-roots 0.26.11",
  "wiremock",
 ]
@@ -5609,6 +5613,30 @@ dependencies = [
  "wasmtime-wasi-io",
  "windows-sys 0.61.2",
  "winx",
+]
+
+[[package]]
+name = "wasmtime-wasi-http"
+version = "49.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c91ec67afa7d94f3762ed523c7f25908406f146d91fadd4dd7c013869608c3ed"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "pin-project-lite",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wasmtime-wasi-io",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]

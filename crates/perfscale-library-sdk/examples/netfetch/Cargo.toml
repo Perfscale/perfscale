@@ -1,0 +1,19 @@
+[package]
+name = "perfscale-netfetch-library"
+version = "0.1.0"
+edition = "2021"
+description = "Test fixture perfscale WASM library: HTTP GET via wasi:http/outgoing-handler (net capability)"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+perfscale-library-sdk = { path = "../.." }
+serde_json = "1"
+# Minimal HTTP client over wasi:http 0.2.x — its `wasip2` bindings pin
+# wasi:http@0.2.12, the exact version wasmtime-wasi-http 49 implements.
+wstd = "0.6.8"
+
+# Standalone fixture crate, built on demand by perfscale-core tests.
+[workspace]

@@ -98,11 +98,44 @@ Then `${fix.clordid(new)}` in any `${...}`-expanding payload.
   cross-step reuse is `outputs:` + `${{ }}`.
 - **Determinism**: draw *all* randomness from `ctx.prng()` (xorshift64 seeded
   per instance — the same algorithm as the engine's own generator). The
-  sandbox never provides `wasi:random`; avoid `HashMap`/`RandomState` (use
-  `Vec`/`BTreeMap`) and `println!` (imports `wasi:cli/*`, never granted).
+  sandbox never provides real entropy (`wasi:random/random`,
+  `wasi:random/insecure` stay unlinked); `wasi:random/insecure-seed` — which
+  std's `HashMap` imports on wasip2 — is sunk at a fixed value, so `HashMap`
+  works but iterates in a fixed order. Avoid `println!` (imports
+  `wasi:cli/*`, never granted).
 - **Capabilities**: `fs` (read-only preopen of `fs_root`), `clock`
-  (`wasi:clocks`) are granted in YAML and enforced at load — importing more
-  than granted is a hard load error. `net` is not yet supported.
+  (`wasi:clocks`), and `net: [hosts]` (`wasi:http` outgoing-handler, host
+  allowlist) are granted in YAML and enforced at load — importing more than
+  granted is a hard load error.
+
+### Network access (`net`)
+
+A library that performs outgoing HTTP imports `wasi:http/outgoing-handler`
+from its own WIT dependencies — no SDK change is needed. The ergonomic way
+from Rust is the [`wstd`](https://crates.io/crates/wstd) client (see
+[`examples/netfetch`](examples/netfetch)):
+
+```rust
+let mut response = wstd::runtime::block_on(async {
+    wstd::http::Client::new()
+        .send(wstd::http::Request::get(url).body(wstd::http::Body::empty())?)
+        .await
+})?;
+```
+
+The YAML grant is an allowlist of destination hosts, and the engine checks
+every request against it host-side (a request to anything else fails with an
+error naming the destination):
+
+```yaml
+capabilities:
+  - net: ["api.acme.com"]        # any port
+  # - net: ["api.acme.com:8443"] # pinned port
+  # - net: ["*.internal"]        # any host under the suffix
+```
+
+Host-side limits: 30 s per request, 16 MiB per request/response body. Raw
+sockets (`wasi:sockets`) are never provided.
 - **Secrets**: mark credential-minting functions `secret: true` — the engine
   masks their results in logs.
 - **Run settings**: `ctx.settings_json` (or parsed via `ctx.settings()`)

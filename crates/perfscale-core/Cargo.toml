@@ -105,10 +105,27 @@ async-nats = "0.50.0"
 # is sync); the p2-only feature set of wasmtime-wasi keeps wasip1 out.
 wasmtime = { version = "49", optional = true }
 wasmtime-wasi = { version = "49", optional = true, default-features = false, features = ["p2"] }
+# wasi:http (outgoing-handler) host for the `net: [hosts]` capability — p2
+# only, `default_send_request` provides the hyper-based HTTP implementation
+# the host's WasiHttpHooks wraps with the allowlist/timeout/body-cap checks.
+wasmtime-wasi-http = { version = "49", optional = true, default-features = false, features = ["p2", "default-send-request"] }
+
+# wasmtime-wasi-http's body/HTTP types, for the net capability's host-side
+# hooks (allowlist check, timeout clamp, request/response body caps).
+bytes = { version = "1", optional = true }
+http-body = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
 
 [features]
 # WASM value-generator libraries (RFC 005 phase 2).
-wasm-libs = ["dep:wasmtime", "dep:wasmtime-wasi"]
+wasm-libs = [
+    "dep:wasmtime",
+    "dep:wasmtime-wasi",
+    "dep:wasmtime-wasi-http",
+    "dep:bytes",
+    "dep:http-body",
+    "dep:http-body-util",
+]
 
 # kill(2)/killpg(2) for the managed child processes of `std/child_process@v1`
 # and `std/kill_process@v1` (signal delivery + tree kill by process group).

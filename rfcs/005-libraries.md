@@ -608,6 +608,10 @@ Decided after phase 1 (2026-09-24):
    Dogfood: `@std/random` reimplemented as a WASM component in the public
    `Perfscale/library-random` repo and embedded into the engine at build
    time; the native implementation stays for comparison/benchmarks.
+   **Status note (2026-10):** `fs`/`clock` shipped first; the `net`
+   capability (wasi:http outgoing-handler behind the host allowlist) landed
+   later as designed here — host/port checked per request, 30 s per-request
+   timeout, 16 MiB body caps, raw `wasi:sockets` still never provided.
 3. **Distribution**: `perfscale install` + `perfscale.lock` + HTTPS/git
    sources + offline cache. **(Shipped in v0.22.0.)**
 4. **Agent**: managed install path, digest-keyed cache, fleet policy ∩

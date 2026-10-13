@@ -100,6 +100,24 @@ any actual file access fails at runtime.
 |---|---|---|
 | `fs` | `wasi:filesystem` preopens | only paths under `fs_root`, read-only |
 | `clock` | `wasi:clocks` | wall time also arrives via the call context |
+| `net: [hosts]` | `wasi:http` outgoing-handler | destination host/port checked against the allowlist on every request |
+
+`net` takes a host allowlist instead of a bare flag:
+
+```yaml
+capabilities:
+  - net: ["api.acme.com", "api.acme.com:8443", "*.internal"]
+```
+
+Entry forms (case-insensitive): `api.acme.com` allows that host on **any**
+port; `api.acme.com:8443` pins the port; `*.internal` allows any host under
+the suffix (`db.internal`, `a.b.internal` — but not bare `internal` or
+`internal.evil.net`). A request to a destination outside the allowlist fails
+with an error naming the destination. Fuel does not see time spent inside a
+host HTTP call, so the host bounds it instead: **30 s per request** (connect,
+first byte, between bytes, and the overall send) and a **16 MiB cap** on both
+request and response bodies. **Raw `wasi:sockets` is never provided** — an
+allowlist is only enforceable while the host mediates the connection.
 
 Any non-empty grant requires `allow_library_capabilities: true` in the
 config — the same fail-closed pattern as `allow_file_actions`. The

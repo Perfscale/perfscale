@@ -26,9 +26,11 @@
 //! # Sandboxing notes for authors
 //!
 //! - Draw all randomness from [`Ctx::prng`] (seeded per instance, so `seed:`
-//!   runs are reproducible). `wasi:random` is **not** provided to guests —
-//!   avoid `HashMap`/`RandomState` (they pull it in); this SDK deliberately
-//!   uses `Vec`-backed maps.
+//!   runs are reproducible). Real entropy (`wasi:random/random`,
+//!   `wasi:random/insecure`) is **not** provided to guests;
+//!   `wasi:random/insecure-seed` (imported by std's `HashMap` on wasip2) is
+//!   sunk at a fixed value, so `HashMap` works but iterates in a fixed
+//!   order.
 //! - Avoid `println!`/`eprintln!` (imports `wasi:cli/*`, never granted).
 //! - `fs` / `clock` / `net` access must be granted explicitly in the YAML
 //!   `capabilities:` list; the engine refuses to load a component importing

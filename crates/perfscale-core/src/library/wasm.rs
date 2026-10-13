@@ -16,12 +16,19 @@
 //! `capabilities:` list grants what it may use. At load time the imports are
 //! inspected ([`Component::component_type`]) and mapped: `wasi:filesystem/*`
 //! (+ the `wasi:io/*` plumbing it needs) → `fs`, `wasi:clocks/*` → `clock`,
-//! `wasi:http/*` → `net` (**rejected in this build** — see
-//! [`WasmLibraryProvider::load`]). A component importing more than granted is
+//! `wasi:http/*` → `net`. A component importing more than granted is
 //! a hard load error naming needed vs granted capabilities. The linker then
 //! connects *only* the granted interfaces: `fs` is a read-only preopen
-//! confined to the run's `fs_root`, `clock` is `wasi:clocks`. `wasi:random`
-//! is never connected (determinism: libraries draw from `ctx.seed`).
+//! confined to the run's `fs_root`, `clock` is `wasi:clocks`, `net` is
+//! `wasi:http/outgoing-handler` behind a host-side [`WasiHttpHooks`] that
+//! checks every request's destination against the grant's host allowlist
+//! (`api.acme.com` = any port, `api.acme.com:8443` = pinned port,
+//! `*.internal` = suffix wildcard; see [`net_allowlist`]). Raw
+//! `wasi:sockets` is never provided (RFC 005): an allowlist is only
+//! enforceable while the host mediates the connection. `wasi:random`'s real
+//! entropy interfaces are never connected (determinism: libraries draw from
+//! `ctx.seed`); only `insecure-seed` is linked, sunk at a fixed value because
+//! std's `HashMap` imports it unconditionally on wasip2.
 //!
 //! # Resource limits
 //!
@@ -29,18 +36,34 @@
 //!   `call`/`init` runs under a fresh [`PER_CALL_FUEL`] budget; a runaway
 //!   guest traps and fails the step. Wall-time epoch interruption is *not*
 //!   wired in phase 2: it needs a dedicated ticking thread per engine, and
-//!   fuel already bounds non-I/O execution — documented deviation, revisit
-//!   when `net` lands.
+//!   fuel already bounds guest compute. A guest blocked in a host-mediated
+//!   HTTP call consumes no fuel, so the `net` hooks bound that separately:
+//!   [`NET_REQUEST_TIMEOUT`] caps every request's connect/first-byte/
+//!   between-bytes waits (and the whole send), and [`NET_BODY_CAP`] caps
+//!   request and response bodies.
 //! - **Memory**: [`StoreLimits`] caps linear memory at [`MEMORY_CAP`].
+//!
+//! # Runtime requirements for `net`
+//!
+//! wasmtime-wasi's sync hostcalls drive tokio internally. Every guest-call
+//! path here lands where that is legal: `block_in_place` on the runner's
+//! multi-thread runtime, the blocking pool on single-thread runtimes, and —
+//! with no ambient runtime at all (lint, sync embedders) — wasmtime-wasi's
+//! own internal fallback runtime. `net`-granted libraries therefore work on
+//! every call path; the multi-thread runner hot path is covered by the
+//! `multi_thread_runtime_calls_work_in_place` test.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use serde_json::Value;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::p2::bindings as wasi_bindings;
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
+use wasmtime_wasi_http::p2::add_only_http_to_linker_sync;
+use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpCtxView, WasiHttpView};
 
 use super::{CallCtx, Capability, FunctionInfo, LibraryInstance, LibraryProvider};
 
@@ -76,6 +99,19 @@ const PER_CALL_FUEL: u64 = 50_000_000;
 /// owner), so this multiplies — keep it tight (RFC 005 pitfall 5).
 const MEMORY_CAP: usize = 64 << 20; // 64 MiB
 
+/// Per-request wall-clock cap for host-mediated HTTP (the `net` capability).
+/// A guest blocked in a hostcall consumes no fuel, so network time is bounded
+/// host-side: applied as the ceiling for connect, first-byte and
+/// between-bytes timeouts (guest `request-options` can only tighten it) and
+/// as an overall deadline on the send itself.
+const NET_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Per-message body cap (request and response) for host-mediated HTTP.
+/// 16 MiB is generous for corpus/config fetches — the expected `net` use —
+/// while keeping a hostile or broken endpoint from exhausting the per-instance
+/// memory budget (fuel cannot see host-side buffers).
+const NET_BODY_CAP: u64 = 16 << 20; // 16 MiB
+
 /// Load-time size cap for a component file. Compilation memory scales with
 /// module size and happens before fuel/memory limits can apply, so an
 /// unbounded local `.wasm` is a host-side OOM vector; the cap matches the
@@ -109,9 +145,14 @@ pub(crate) fn engine() -> Result<&'static Engine, String> {
         .map_err(Clone::clone)
 }
 
-/// Per-instance host state. `limits` enforces [`MEMORY_CAP`].
+/// Per-instance host state. `limits` enforces [`MEMORY_CAP`]. The HTTP
+/// context and hooks are always present (cheap); the `net` boundary is that
+/// the linker only connects `wasi:http` when the grant exists — and the
+/// hooks' allowlist then mediates every request.
 struct HostState {
     ctx: WasiCtx,
+    http_ctx: WasiHttpCtx,
+    hooks: net_allowlist::NetHooks,
     table: ResourceTable,
     limits: StoreLimits,
 }
@@ -125,12 +166,270 @@ impl WasiView for HostState {
     }
 }
 
+impl WasiHttpView for HostState {
+    fn http(&mut self) -> WasiHttpCtxView<'_> {
+        WasiHttpCtxView {
+            hooks: &mut self.hooks,
+            table: &mut self.table,
+            ctx: &mut self.http_ctx,
+        }
+    }
+}
+
 /// Marker for the `wasi:io/*` plumbing (streams/poll/error) that `fs`- and
 /// `clock`-granted guests import transitively.
 struct HasIo;
 
 impl wasmtime::component::HasData for HasIo {
     type Data<'a> = &'a mut ResourceTable;
+}
+
+/// The `net` capability: host allowlist matching plus the [`WasiHttpHooks`]
+/// implementation that enforces it (and the timeout/body caps) on every
+/// outgoing request.
+mod net_allowlist {
+    use super::{NET_BODY_CAP, NET_REQUEST_TIMEOUT};
+    use bytes::Bytes;
+    use http_body::{Body, Frame, SizeHint};
+    use http_body_util::BodyExt;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{ready, Context, Poll};
+    use wasmtime_wasi_http::{
+        default_send_request, Error, RequestOptions, WasiBody, WasiHttpHooks,
+    };
+
+    /// One parsed allowlist entry. Grammar (case-insensitive):
+    /// `host` (any port), `host:port` (pinned port), `*.suffix` (any host
+    /// under the suffix, any port), `*.suffix:port` (wildcard + pinned port).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(super) struct AllowEntry {
+        /// As written in the YAML (error messages).
+        pub(super) raw: String,
+        host: HostPattern,
+        port: Option<u16>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum HostPattern {
+        /// Exact host, lowercased, trailing dot stripped.
+        Exact(String),
+        /// `*.suffix` — stored as the lowercased suffix with the leading
+        /// dot (`.internal`); matches `foo.internal`, not `internal` itself.
+        Suffix(String),
+    }
+
+    impl AllowEntry {
+        pub(super) fn parse(raw: &str) -> Result<Self, String> {
+            let raw = raw.trim();
+            let (host, port) = match raw.rsplit_once(':') {
+                // An entry ending in ":digits" pins the port; a trailing ':'
+                // or non-numeric tail is a malformed entry, said explicitly.
+                Some((h, p)) if !h.is_empty() => {
+                    let port = p.parse::<u16>().map_err(|_| {
+                        format!(
+                            "invalid net allowlist entry '{raw}' — expected host, host:port, or *.suffix"
+                        )
+                    })?;
+                    (h, Some(port))
+                }
+                _ => (raw, None),
+            };
+            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            let pattern = if let Some(suffix) = host.strip_prefix('*') {
+                if !suffix.starts_with('.') || suffix.len() < 2 {
+                    return Err(format!(
+                        "invalid net allowlist entry '{raw}' — a wildcard must look like '*.suffix'"
+                    ));
+                }
+                HostPattern::Suffix(suffix.to_string())
+            } else {
+                // No IPv6 or otherwise colon-bearing hosts in v1.
+                if host.is_empty() || host.contains(['*', ':', '/', ' ']) {
+                    return Err(format!(
+                        "invalid net allowlist entry '{raw}' — expected host, host:port, or *.suffix"
+                    ));
+                }
+                HostPattern::Exact(host)
+            };
+            Ok(Self {
+                raw: raw.to_string(),
+                host: pattern,
+                port,
+            })
+        }
+
+        fn matches(&self, host: &str, port: u16) -> bool {
+            if self.port.is_some_and(|pinned| pinned != port) {
+                return false;
+            }
+            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            match &self.host {
+                HostPattern::Exact(h) => *h == host,
+                HostPattern::Suffix(s) => host.ends_with(s.as_str()),
+            }
+        }
+    }
+
+    /// Whether `host:port` is allowed by the grant. `port` must already be
+    /// resolved (explicit URI port, else the scheme default).
+    pub(super) fn allowed(entries: &[AllowEntry], host: &str, port: u16) -> bool {
+        entries.iter().any(|e| e.matches(host, port))
+    }
+
+    /// The host-side enforcement point for `wasi:http/outgoing-handler`:
+    /// every request the guest sends goes through here before any socket is
+    /// opened. Wraps the crate's default hyper-based sender with (a) the
+    /// allowlist check and (b) the timeout/body caps of
+    /// [`NET_REQUEST_TIMEOUT`]/[`NET_BODY_CAP`].
+    pub(super) struct NetHooks {
+        allowlist: Vec<AllowEntry>,
+    }
+
+    impl NetHooks {
+        pub(super) fn new(allowlist: Vec<AllowEntry>) -> Self {
+            Self { allowlist }
+        }
+    }
+
+    impl WasiHttpHooks for NetHooks {
+        fn send_request(
+            &mut self,
+            request: http::Request<WasiBody>,
+            options: Option<RequestOptions>,
+            fut: Box<dyn Future<Output = Result<(), Error>> + Send>,
+        ) -> Box<
+            dyn Future<
+                    Output = Result<
+                        (
+                            http::Response<WasiBody>,
+                            Box<dyn Future<Output = Result<(), Error>> + Send>,
+                        ),
+                        Error,
+                    >,
+                > + Send,
+        > {
+            _ = fut; // response-processing error reporting: unchanged default
+            let uri = request.uri();
+            // The handler fills scheme/authority from the request before the
+            // hook runs; a missing piece is the guest's own malformed input.
+            let host = uri.host().unwrap_or_default().to_string();
+            let https = uri.scheme() == Some(&http::uri::Scheme::HTTPS);
+            let port = uri.port_u16().unwrap_or(if https { 443 } else { 80 });
+            if !allowed(&self.allowlist, &host, port) {
+                let entries = self
+                    .allowlist
+                    .iter()
+                    .map(|e| e.raw.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                // Drain the request body before answering: the guest streams
+                // it concurrently, and erroring with it unread races the
+                // guest's own body-send teardown ("connection reset") — the
+                // refusal must be the deterministic, host-named outcome.
+                let mut body = request.into_body();
+                return Box::new(async move {
+                    use http_body_util::BodyExt;
+                    while let Some(frame) = body.frame().await {
+                        if frame.is_err() {
+                            break;
+                        }
+                    }
+                    Err(Error::InternalError(Some(format!(
+                        "net capability: destination '{host}:{port}' is not allowlisted (granted: {entries})"
+                    ))))
+                });
+            }
+
+            // Time bound: clamp every phase timeout the guest asked for (or
+            // defaulted) to NET_REQUEST_TIMEOUT, and put the same deadline on
+            // the whole send — a guest in a hostcall burns no fuel, so this
+            // is the only bound on network time.
+            let mut options = options.unwrap_or_default();
+            for t in [
+                &mut options.connect_timeout,
+                &mut options.first_byte_timeout,
+                &mut options.between_bytes_timeout,
+            ] {
+                *t = Some(t.map_or(NET_REQUEST_TIMEOUT, |v| v.min(NET_REQUEST_TIMEOUT)));
+            }
+
+            let request = request.map(|b| LimitedBody::request(b, NET_BODY_CAP).boxed_unsync());
+            Box::new(async move {
+                let send = default_send_request(request, Some(options));
+                let (response, io) = match tokio::time::timeout(NET_REQUEST_TIMEOUT, send).await {
+                    Ok(r) => r?,
+                    Err(_) => return Err(Error::HttpResponseTimeout),
+                };
+                Ok((
+                    response.map(|b| {
+                        LimitedBody::response(b.boxed_unsync(), NET_BODY_CAP).boxed_unsync()
+                    }),
+                    Box::new(io) as Box<dyn Future<Output = Result<(), Error>> + Send>,
+                ))
+            })
+        }
+    }
+
+    /// A body wrapper enforcing the total-bytes cap: past the cap the stream
+    /// errors with the wasi:http body-size error for the direction, so the
+    /// guest sees a regular failure instead of a host-side abort.
+    struct LimitedBody {
+        inner: WasiBody,
+        remaining: u64,
+        over: fn(u64) -> Error,
+    }
+
+    impl LimitedBody {
+        fn request(inner: WasiBody, cap: u64) -> Self {
+            Self {
+                inner,
+                remaining: cap,
+                over: |c| Error::HttpRequestBodySize(Some(c)),
+            }
+        }
+
+        fn response(inner: WasiBody, cap: u64) -> Self {
+            Self {
+                inner,
+                remaining: cap,
+                over: |c| Error::HttpResponseBodySize(Some(c)),
+            }
+        }
+    }
+
+    impl Body for LimitedBody {
+        type Data = Bytes;
+        type Error = Error;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
+            let this = &mut *self;
+            match ready!(Pin::new(&mut this.inner).poll_frame(cx)) {
+                Some(Ok(frame)) => {
+                    if let Some(data) = frame.data_ref() {
+                        let len = data.len() as u64;
+                        if len > this.remaining {
+                            return Poll::Ready(Some(Err((this.over)(NET_BODY_CAP))));
+                        }
+                        this.remaining -= len;
+                    }
+                    Poll::Ready(Some(Ok(frame)))
+                }
+                other => Poll::Ready(other),
+            }
+        }
+
+        fn is_end_stream(&self) -> bool {
+            self.inner.is_end_stream()
+        }
+
+        fn size_hint(&self) -> SizeHint {
+            self.inner.size_hint()
+        }
+    }
 }
 
 /// Capabilities a component's imports require — computed at load and compared
@@ -147,8 +446,8 @@ struct Needed {
 struct Grants {
     fs: bool,
     clock: bool,
-    /// Host allowlist; rejected at load in this build (see [`WasmLibraryProvider::load`]).
-    net: Vec<String>,
+    /// Host allowlist, parsed at load (fail-fast on malformed entries).
+    net: Vec<net_allowlist::AllowEntry>,
 }
 
 impl Grants {
@@ -163,7 +462,11 @@ impl Grants {
                         "unknown capability '{s}' — supported grants: fs, clock, net: [hosts]"
                     ));
                 }
-                Capability::Net { net } => g.net = net.clone(),
+                Capability::Net { net } => {
+                    for entry in net {
+                        g.net.push(net_allowlist::AllowEntry::parse(entry)?);
+                    }
+                }
             }
         }
         Ok(g)
@@ -178,7 +481,13 @@ impl Grants {
             out.push("clock".to_string());
         }
         if !self.net.is_empty() {
-            out.push(format!("net: [{}]", self.net.join(", ")));
+            let entries = self
+                .net
+                .iter()
+                .map(|e| e.raw.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push(format!("net: [{entries}]"));
         }
         if out.is_empty() {
             "(none)".into()
@@ -213,17 +522,24 @@ fn import_capability(name: &str) -> Result<Option<&'static str>, String> {
             // by design (RFC 005).
             "io" | "cli" => None,
             "clocks" if rest == "clocks/monotonic-clock" => None,
+            // wasi:random/insecure-seed is toolchain noise too: std's HashMap
+            // (RandomState) imports it on wasip2. The host sinks it at a fixed
+            // value (deterministic — insecure-seed is documented as not for
+            // sensitive data, and libraries draw randomness from ctx.seed).
+            // wasi:random/random and wasi:random/insecure (real entropy) stay
+            // unconnected forever.
+            "random" if rest == "random/insecure-seed" => None,
             "clocks" => Some("clock"),
             "http" => Some("net"),
             other => {
                 return Err(format!(
-                    "wasi:{other}/* — this capability is not supported (supported: fs, clock)"
+                    "wasi:{other}/* — this capability is not supported (supported: fs, clock, net; raw wasi:sockets is never provided)"
                 ));
             }
         });
     }
     Err(format!(
-        "'{name}' — unknown import; only wasi:filesystem, wasi:clocks (and their wasi:io plumbing) are supportable"
+        "'{name}' — unknown import; only wasi:filesystem, wasi:clocks, wasi:http (and their wasi:io plumbing) are supportable"
     ))
 }
 
@@ -374,11 +690,15 @@ impl WasmLibraryProvider {
                 unsupported.join("\n  ")
             ));
         }
-        if needed.net {
-            // No grant can satisfy it in this build — say so explicitly.
+        // net is enforced before the linker/probe: the `pure` marker never
+        // waives it (it covers fs/clock only), and the wasi:http interfaces
+        // are connected ONLY when granted — so without a grant the component
+        // could not even instantiate for the info() probe.
+        if needed.net && grants.net.is_empty() {
             return Err(format!(
-                "library '{}' imports wasi:http (net): net capability is not yet supported in this build",
-                display()
+                "library '{}': the component needs capabilities the YAML does not grant — needed: net; granted: {}. Add `- net: [\"host\", ...]` to the libraries: entry's capabilities (requires allow_library_capabilities: true)",
+                display(),
+                grants.describe(),
             ));
         }
 
@@ -388,8 +708,9 @@ impl WasmLibraryProvider {
         // can only be probed once those imports link. The security boundary
         // is unchanged: the fs *preopen* is attached in `instantiate_store`
         // only when the YAML grants `fs`, so an ungranted guest that touches
-        // the filesystem fails at runtime.
-        let linker = build_linker(engine, &display())?;
+        // the filesystem fails at runtime. wasi:http, in contrast, is linked
+        // only with a net grant, and its hooks hold the allowlist.
+        let linker = build_linker(engine, &display(), !grants.net.is_empty())?;
 
         // The fs preopen: confined to the run's fs_root; without one, the
         // directory containing the .wasm (the smallest sensible root).
@@ -457,6 +778,9 @@ impl WasmLibraryProvider {
             // `fs` already covers the wall clock.
             unused.push("clock");
         }
+        if !grants.net.is_empty() && !needed.net {
+            unused.push("net");
+        }
         if !unused.is_empty() {
             tracing::warn!(
                 "library '{}': capabilities granted but not imported by the component: {} — the grant is inert; drop it",
@@ -487,6 +811,9 @@ impl WasmLibraryProvider {
     /// interfaces with zero preopens, so any file access fails at runtime.
     fn instantiate_store(&self) -> Result<(Store<HostState>, Instantiated), String> {
         let mut ctx = WasiCtx::builder();
+        // Fixed insecure-seed: `seed:` runs stay reproducible even if the guest's
+        // toolchain (std HashMap) asks for it.
+        ctx.insecure_random_seed(0);
         if self.grants.fs {
             let root = self.fs_root.as_deref().ok_or_else(|| {
                 format!(
@@ -506,6 +833,8 @@ impl WasmLibraryProvider {
         }
         let state = HostState {
             ctx: ctx.build(),
+            http_ctx: WasiHttpCtx::new(),
+            hooks: net_allowlist::NetHooks::new(self.grants.net.clone()),
             table: ResourceTable::new(),
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY_CAP)
@@ -904,21 +1233,9 @@ fn link_err(file: &str, e: wasmtime::Error) -> String {
     format!("library '{file}': failed to connect a granted capability: {e}")
 }
 
-/// Parse the YAML grant and reject `net` (not implemented in this build) —
-/// shared by the file and embedded load paths.
+/// Parse the YAML grant — shared by the file and embedded load paths.
 fn check_grants(display: &str, capabilities: Option<&[Capability]>) -> Result<Grants, String> {
-    let grants = Grants::parse(capabilities.unwrap_or(&[]))
-        .map_err(|e| format!("library '{display}': {e}"))?;
-
-    // Phase 2 deviation: wasi:http egress (host-mediated, allowlisted) is
-    // not implemented in this build. The grant is still parsed and
-    // reported, but rejected — fail-closed rather than silently unmediated.
-    if !grants.net.is_empty() {
-        return Err(format!(
-            "library '{display}': net capability is not yet supported in this build"
-        ));
-    }
-    Ok(grants)
+    Grants::parse(capabilities.unwrap_or(&[])).map_err(|e| format!("library '{display}': {e}"))
 }
 
 /// Build the per-provider linker: wasi:io plumbing and wasi:cli in sink form
@@ -930,7 +1247,17 @@ fn check_grants(display: &str, capabilities: Option<&[Capability]>) -> Result<Gr
 /// any actual file access fails at runtime; the wall clock is data, not
 /// authority. The fail-closed boundary is the grant-gated preopen in
 /// [`WasmLibraryProvider::instantiate_store`], not the link set.
-fn build_linker(engine: &Engine, display: &str) -> Result<Linker<HostState>, String> {
+///
+/// `wasi:http` is the exception: connected only when `net_granted` (a
+/// net-importing component without a grant is already a hard load error, and
+/// leaving the interfaces out removes the runtime boundary question
+/// entirely). When linked, [`net_allowlist::NetHooks`] mediates every
+/// request.
+fn build_linker(
+    engine: &Engine,
+    display: &str,
+    net_granted: bool,
+) -> Result<Linker<HostState>, String> {
     use wasmtime_wasi::cli::{WasiCli, WasiCliView};
 
     let mut linker = Linker::<HostState>::new(engine);
@@ -984,6 +1311,14 @@ fn build_linker(engine: &Engine, display: &str) -> Result<Linker<HostState>, Str
         HostState::clocks,
     )
     .map_err(|e| link_err(display, e))?;
+    // wasi:random/insecure-seed, sunk at a fixed value (see import_capability
+    // and instantiate_store): std's HashMap imports it on wasip2. The real
+    // entropy interfaces (random/random, random/insecure) are never linked.
+    use wasmtime_wasi::random::WasiRandom;
+    wasi_bindings::random::insecure_seed::add_to_linker::<HostState, WasiRandom>(l, |t| {
+        t.ctx().ctx.random()
+    })
+    .map_err(|e| link_err(display, e))?;
     // The filesystem interfaces are linked for every component (see the
     // doc comment): with no preopens in the WASI context they are inert.
     use wasmtime_wasi::filesystem::{WasiFilesystem, WasiFilesystemView};
@@ -997,6 +1332,12 @@ fn build_linker(engine: &Engine, display: &str) -> Result<Linker<HostState>, Str
         HostState::filesystem,
     )
     .map_err(|e| link_err(display, e))?;
+
+    // wasi:http only when the YAML grants net: the hooks (allowlist, timeout,
+    // body caps) live on HostState and mediate every request the guest sends.
+    if net_granted {
+        add_only_http_to_linker_sync(l).map_err(|e| link_err(display, e))?;
+    }
     Ok(linker)
 }
 
@@ -1015,6 +1356,7 @@ mod tests {
         fsreader: PathBuf,
         purefs: PathBuf,
         memhog: PathBuf,
+        netfetch: PathBuf,
     }
 
     fn wasip2_installed() -> bool {
@@ -1073,6 +1415,7 @@ mod tests {
                     fsreader: build("fsreader", "perfscale_fsreader_library")?,
                     purefs: build("purefs", "perfscale_purefs_library")?,
                     memhog: build("memhog", "perfscale_memhog_library")?,
+                    netfetch: build("netfetch", "perfscale_netfetch_library")?,
                 })
             })
             .as_ref()
@@ -1125,7 +1468,13 @@ mod tests {
             import_capability("wasi:http/outgoing-handler@0.2.0").unwrap(),
             Some("net")
         );
+        assert_eq!(
+            import_capability("wasi:random/insecure-seed@0.2.12").unwrap(),
+            None,
+            "insecure-seed is toolchain noise (std HashMap), sunk at a fixed value"
+        );
         assert!(import_capability("wasi:random/random@0.2.0").is_err());
+        assert!(import_capability("wasi:random/insecure@0.2.0").is_err());
         assert!(import_capability("wasi:sockets/tcp@0.2.0").is_err());
         assert!(import_capability("acme:custom/thing").is_err());
     }
@@ -1473,15 +1822,157 @@ mod tests {
         assert!(err.contains("64 MiB"), "{err}");
     }
 
-    #[test]
-    fn net_grant_is_rejected_in_this_build() {
+    // --- net capability (wasi:http, host allowlist) -------------------------
+
+    /// A one-shot loopback HTTP server answering a canned response; returns
+    /// the bound port. No dev-dependency needed for a single GET.
+    fn canned_http_server(body: &'static str) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                use std::io::{Read, Write};
+                let mut conn = conn.unwrap();
+                // Read the request head (the fixture sends a bodyless GET).
+                let mut buf = [0u8; 4096];
+                let mut read = 0;
+                while !buf[..read].windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = conn.read(&mut buf[read..]).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    read += n;
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                conn.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        port
+    }
+
+    /// net-granted library fetches from an allowlisted host (the grant pins
+    /// the exact loopback port), through the runner's multi-thread hot path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn net_grant_fetches_from_an_allowlisted_host() {
         let Some(f) = fixtures() else { return };
-        let mut r = lib_ref(&f.hello);
+        let port = canned_http_server("corpus-over-http\n");
+        let mut r = lib_ref(&f.netfetch);
+        r.r#as = Some("net".into());
         r.capabilities = Some(vec![Capability::Net {
-            net: vec!["api.example.com".into()],
+            net: vec![format!("127.0.0.1:{port}")],
         }]);
-        let err = validate_libraries(&[r], true, None).unwrap_err();
-        assert!(err.contains("net capability is not yet supported"), "{err}");
+        let resolved = validate_libraries(&[r], true, None).unwrap();
+        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+        let url = format!("http://127.0.0.1:{port}/corpus");
+        let v =
+            tokio::task::spawn(
+                async move { inst.call(&ctx(), "get", &[Value::from(url)]).unwrap() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(v, "corpus-over-http");
+    }
+
+    /// A destination outside the allowlist is refused by the host's
+    /// send-request hook, and the error names the destination.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn net_refuses_a_host_outside_the_allowlist() {
+        let Some(f) = fixtures() else { return };
+        let port = canned_http_server("nope");
+        let mut r = lib_ref(&f.netfetch);
+        r.r#as = Some("net".into());
+        // The grant pins a different port than the server listens on.
+        r.capabilities = Some(vec![Capability::Net {
+            net: vec!["127.0.0.1:1".into()],
+        }]);
+        let resolved = validate_libraries(&[r], true, None).unwrap();
+        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+        let url = format!("http://127.0.0.1:{port}/corpus");
+        let err = tokio::task::spawn(async move {
+            inst.call(&ctx(), "get", &[Value::from(url)]).unwrap_err()
+        })
+        .await
+        .unwrap();
+        assert!(
+            err.contains("not allowlisted") && err.contains(&format!("127.0.0.1:{port}")),
+            "the refusal must name the destination: {err}"
+        );
+    }
+
+    /// A component importing wasi:http WITHOUT a net grant is a hard load
+    /// error (fail-closed: imports declare need, YAML grants).
+    #[test]
+    fn net_import_without_grant_is_a_hard_load_error() {
+        let Some(f) = fixtures() else { return };
+        let err = validate_libraries(&[lib_ref(&f.netfetch)], true, None).unwrap_err();
+        assert!(
+            err.contains("needed: net") && err.contains("does not grant"),
+            "{err}"
+        );
+    }
+
+    // --- net allowlist matcher (pure unit tests, no fixtures) ---------------
+
+    use super::net_allowlist::{allowed, AllowEntry};
+
+    fn entries(raw: &[&str]) -> Vec<AllowEntry> {
+        raw.iter().map(|e| AllowEntry::parse(e).unwrap()).collect()
+    }
+
+    #[test]
+    fn net_allowlist_exact_hosts_and_default_ports() {
+        let e = entries(&["api.acme.com"]);
+        assert!(allowed(&e, "api.acme.com", 443));
+        assert!(allowed(&e, "api.acme.com", 8443), "no port pin = any port");
+        // Case-insensitive, trailing dot tolerated.
+        assert!(allowed(&e, "API.Acme.COM.", 443));
+        // Not subdomains, not siblings.
+        assert!(!allowed(&e, "www.api.acme.com", 443));
+        assert!(!allowed(&e, "acme.com", 443));
+        assert!(!allowed(&e, "api.acme.com.evil.net", 443));
+    }
+
+    #[test]
+    fn net_allowlist_port_pinning() {
+        let e = entries(&["api.acme.com:8443"]);
+        assert!(allowed(&e, "api.acme.com", 8443));
+        assert!(!allowed(&e, "api.acme.com", 443));
+        assert!(!allowed(&e, "api.acme.com", 80));
+    }
+
+    #[test]
+    fn net_allowlist_suffix_wildcards() {
+        let e = entries(&["*.internal"]);
+        assert!(allowed(&e, "db.internal", 5432));
+        assert!(allowed(&e, "a.b.internal", 443));
+        // The bare suffix and lookalikes stay out.
+        assert!(!allowed(&e, "internal", 443));
+        assert!(!allowed(&e, "foo.internal.evil.net", 443));
+        assert!(!allowed(&e, "foointernal", 443));
+        // Wildcard with a pinned port.
+        let e = entries(&["*.internal:8080"]);
+        assert!(allowed(&e, "db.internal", 8080));
+        assert!(!allowed(&e, "db.internal", 443));
+    }
+
+    #[test]
+    fn net_allowlist_rejects_malformed_entries() {
+        for bad in [
+            "",
+            ":",
+            "host:",
+            "host:abc",
+            "host:99999",
+            "*",
+            "*.",
+            "*internal",
+            "a*b.com",
+        ] {
+            assert!(AllowEntry::parse(bad).is_err(), "{bad:?} must be rejected");
+        }
     }
 
     #[test]
