@@ -17,6 +17,7 @@ pub mod lint;
 pub(crate) mod log_mask;
 pub mod metrics;
 pub mod models;
+pub mod pro;
 pub mod report;
 pub mod runner;
 pub mod schema;

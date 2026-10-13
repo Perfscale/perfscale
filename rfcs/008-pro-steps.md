@@ -1,8 +1,10 @@
 # RFC 008: Pro step families — architecture, catalog, and registration contract
 
-- **Status**: Draft
+- **Status**: Implemented
 - **Author**: Perfscale Team
 - **Created**: 2026-10-05
+- **Implemented**: 2026-10-13 (module catalog + bake-time feature flags +
+  heartbeat advertisement)
 - **Requires**: the pro action seam (`crates/perfscale-core/src/step/actions.rs`),
   RFC 004 (setup/teardown — pro `*-config` actions run in config `before:`),
   RFC 005 (libraries — custom signaling for `pro/webrtc-*`)
@@ -21,10 +23,28 @@ so the same YAML either runs (paid build) or fails loudly (OSS build).
 
 This RFC catalogs the six families that exist, documents the four integration
 seams they use (action registry, connection/driver registries, config gates,
-BFF billing), records a concrete wiring gap found while writing it —
-**`perfscale-fix` is shipped and documented but never registered in
-`perfscaled`** — and defines the registration checklist plus a general
+BFF billing), and defines the registration checklist plus a general
 mechanism for tiered (base vs pro) limits *within* a family.
+
+The 2026-10-13 implementation round added the **plug in/out** layer on top:
+
+- a **module catalog** — the lightweight `perfscale-pro-catalog` crate is the
+  single source of truth about families (one `ProModuleInfo` const each); the
+  pro crates self-register it into the engine's `pro` registry, and the BFF
+  links the same catalog for entitlement, validation, and discovery — without
+  linking any heavy protocol stack;
+- **bake-time feature flags** — every pro dependency of the paid agent sits
+  behind a cargo feature (`pro-fix`, `pro-soap`, …, default `pro-full`), so a
+  family is removed from the binary by a build flag, not a code edit;
+- **capability advertisement** — the agent reports its baked module set in
+  the controlplane heartbeat (`pro_modules`), and the BFF refuses to dispatch
+  a run whose config needs a module the target machine does not carry.
+
+A wiring gap found while writing the first draft — **`perfscale-fix` shipped
+and documented but never registered in `perfscaled`** — was fixed as an
+immediate action item; the catalog round makes that class of mistake
+impossible to miss (a family missing from the catalog has no actions, no
+entitlement entry, no advertisement).
 
 ## Motivation
 
@@ -90,7 +110,7 @@ The same YAML either works or fails honestly:
 | `perfscale-webrtc` (`webrtc`) | ✅ | `pro/webrtc-connect@v1`, `-publish`, `-subscribe`, `-stats`, `-close`, `-call@v1` + unblocks the `webrtc:` config gate | `ActionHandler` + `Context::extensions()` connection registry |
 | `perfscale-llm-pro` (`llm`) | ✅ | `pro_llm_*` metrics observers on `std/llm@v1` + `nvidia-smi-pro` GPU collector | `register_llm_observer` / `register_llm_metrics_observer` / `register_gpu_collector` |
 | `perfscale-shared-redis` (`shared-redis`) | ✅ (conditionally) | `redis` driver for `std/set_shared_variable@v1` / `std/get_shared_variable@v1` — registered only when `PERFSCALE_SHARED_REDIS_URL` is set | `SharedVariableDriver` |
-| `perfscale-fix` (`fix`) | ❌ **not registered** | `pro/fix@v1`, `pro/fix-config@v1` | `ActionHandler` (implemented, never called) |
+| `perfscale-fix` (`fix`) | ✅ | `pro/fix@v1`, `pro/fix-config@v1` | `ActionHandler` |
 
 ### The four integration seams
 
@@ -128,33 +148,44 @@ The same YAML either works or fails honestly:
 Every step exists because some existing family needed it; skipping any is a
 real failure mode (see the fix gap).
 
-1. **Crate**: `controlplane/packages/<family>` — `perfscale-<family>`
-   package name, `ActionHandler` (or driver) impls, one `pub fn register()`,
+1. **Catalog entry**: `controlplane/packages/pro-catalog/src/lib.rs` — one
+   `pub const <FAMILY>: ProModuleInfo` (name, action ids, metrics family,
+   optional config block, one-line description) appended to `MODULES`. This
+   single const is what the BFF validates and gates against, what the family
+   self-registers into the engine, and what the agent advertises.
+2. **Crate**: `controlplane/packages/<family>` — `perfscale-<family>`
+   package name, `ActionHandler` (or driver) impls, one `pub fn register()`
+   whose first line is
+   `perfscale_core::pro::register_pro_module(perfscale_pro_catalog::<FAMILY>)`,
    crate-level docs with the YAML surface, own tests against the OSS engine
    as a dev-dependency. Metrics follow the in-step contract — reserved
    `metrics` output key, `_duration`/`_rtt` histogram suffixes, suffix-based
    breakdowns (see "Metrics from inside a step").
-2. **Workspace**: add to `members` in `controlplane/Cargo.toml`.
-3. **Agent dep**: git dependency in `perfscaled/Cargo.toml` + path patch in
-   `perfscaled/.cargo/config.toml` (local dev; CI uses GH_PAT).
-4. **Agent registration**: call `<family>::register()` in
-   `perfscaled/src/pro.rs`, extend the doc header and the
-   `info!("Pro features registered: …")` line, and **add a wiring test**
-   mirroring the existing ones (execute the action with deliberately invalid
-   params; assert the failure is the family's own validation error, not the
-   engine's "unknown action" / "unknown driver"). This test is what would
-   have caught the fix gap.
-5. **Config gate** (only if the family adds a top-level config block): OSS
+3. **Workspace**: add to `members` in `controlplane/Cargo.toml`.
+4. **Agent dep**: git dependency in `perfscaled/Cargo.toml` marked
+   `optional = true` + cargo feature `pro-<family> = ["dep:perfscale-<family>"]`
+   added to `pro-full`; path patch in `perfscaled/.cargo/config.toml` (local
+   dev; CI uses GH_PAT).
+5. **Agent registration**: call `<family>::register()` in
+   `perfscaled/src/pro.rs` under `#[cfg(feature = "pro-<family>")]`, extend
+   the doc header, and **add a wiring test** mirroring the existing ones
+   (execute the action with deliberately invalid params; assert the failure
+   is the family's own validation error, not the engine's "unknown action" /
+   "unknown driver"). This test is what would have caught the fix gap. The
+   startup log line needs no edit — it is rendered from `pro_modules()`.
+6. **Config gate** (only if the family adds a top-level config block): OSS
    schema field + `require_<family>_module` check in
-   `crates/perfscale-core/src/yaml.rs`, following `require_webrtc_module`.
-6. **BFF Dockerfile**: `controlplane/docker/prod.Dockerfile` — copy the new
+   `crates/perfscale-core/src/yaml.rs`, following `require_webrtc_module`;
+   the same block name goes into the catalog const's `config_block`.
+7. **BFF Dockerfile**: `controlplane/docker/prod.Dockerfile` — copy the new
    package's `Cargo.toml` (and stub `src/`) so the workspace resolves during
    the dependency-cache layer.
-7. **Billing/validation**: confirm the family's actions flow through
+8. **Billing/validation**: confirm the family's actions flow through
    save-time validation (422) and that the gated operations sit behind the
    402 middleware on enforced deployments; extend the OpenAPI gate list if a
-   new endpoint is added.
-8. **Docs**: pro-feature page in `site/content/{en,ru}/pro-features/` and the
+   new endpoint is added. Entitlement and unknown-action checks read the
+   catalog automatically — no per-family BFF code.
+9. **Docs**: pro-feature page in `site/content/{en,ru}/pro-features/` and the
    OSS docs noting the "pro module required" behavior; README of the crate
    itself.
 
@@ -190,7 +221,10 @@ Explicitly rejected as over-engineering: a generic limit-expression DSL, and
 per-shape metering/billing — the platform's billing unit stays the tenant
 subscription; tiered limits only *gate* shapes.
 
-### Immediate action item: wire `perfscale-fix` into perfscaled
+### Resolved action item: `perfscale-fix` registration gap
+
+*(Fixed on 2026-10-06; kept for the record — the catalog round above is the
+systemic follow-up.)*
 
 Found while cataloging: `perfscale-fix` is complete and actively maintained
 in controlplane (`pro/fix@v1` + `pro/fix-config@v1`, schema/session/tls/wire
@@ -209,6 +243,14 @@ and registration log line, and add two wiring tests (`pro/fix@v1` and
 validation error, not "unknown action"). Until then, any test YAML using
 `pro/fix*` fails on the paid agent with the engine's "unknown action" — the
 paid build silently behaves like OSS for this family.
+
+**Resolution**: the git dep, the `perfscale_fix::register()` call in
+`pro::register()`, the doc header entry, and the two wiring tests all landed;
+the catalog table above now marks the family ✅. The follow-up that prevents
+the whole class is the module catalog: a family absent from
+`perfscale-pro-catalog` now has no actions, no entitlement entry, and no
+heartbeat advertisement, so an unregistered family fails loudly in the BFF
+(422 "unknown pro action") instead of silently passing as OSS.
 
 ## Reference-level explanation
 
@@ -290,6 +332,49 @@ lives in the name):
 - always emit a counter even at 0 (the `dropped_iterations` convention,
   runner.rs:1493-1499), so `std/thresholds@v1` gates like `count==0`
   resolve on clean runs instead of erroring on an unknown metric.
+
+### The module catalog (implemented 2026-10-13)
+
+`controlplane/packages/pro-catalog` (`perfscale-pro-catalog`) is a
+near-dependency-free crate holding one
+`perfscale_core::pro::ProModuleInfo` const per family plus
+`pub const MODULES: &[ProModuleInfo]`. It exists so that metadata consumers
+never link the heavy family crates (the WebRTC stack alone pulls rav1e):
+
+- each family crate's `register()` starts with
+  `perfscale_core::pro::register_pro_module(perfscale_pro_catalog::<FAMILY>)`,
+  landing the module in the engine's process-global `pro` registry
+  (`crates/perfscale-core/src/pro.rs`; idempotent by `name`);
+- the controlplane BFF depends on the catalog directly: entitlement checks
+  (`controlplane/src/entitlements.rs`), save-time validation
+  (`controlplane/src/testdef.rs` — an unknown `pro/*` action is a 422 naming
+  the action and listing the known modules), and the discovery endpoint
+  `GET /api/v1/pro-modules` all read the same `MODULES` slice;
+- the frontend step registry and YAML completion fetch that endpoint instead
+  of hardcoding pro step ids.
+
+### Bake-time feature flags (implemented 2026-10-13)
+
+Every pro dependency in `perfscaled/Cargo.toml` is `optional = true` behind a
+cargo feature: `pro-fix`, `pro-soap`, `pro-llm`, `pro-webrtc`, `pro-pubsub`,
+`pro-shared-redis`, bundled by `pro-full` (the default, so release builds are
+unchanged). `perfscaled/src/pro.rs` calls each family's `register()` under
+its `#[cfg(feature = …)]`; `perfscale-shared-redis` additionally stays
+env-conditional at runtime. Removing a family from the binary is
+`cargo build --no-default-features --features pro-soap,pro-fix` — no code
+edits. CI checks `--no-default-features` and a single-family build so a
+family that accidentally leaks a hard dependency on another family fails CI.
+
+### Capability advertisement (implemented 2026-10-13)
+
+The agent's heartbeat ping carries `pro_modules: Vec<String>` built from
+`perfscale_core::pro::pro_modules()` — i.e. what is *actually* registered,
+not what the manifest claims. The BFF stores it on the machine row
+(`machines.pro_modules`, jsonb, default `[]`). At run dispatch the BFF
+compares the config's pro actions against the target machine's baked set and
+rejects with 422 naming the missing module; a machine that has never
+reported (pre-upgrade agent) is treated as unknown and skipped by the check
+(fail-open, preserving today's behavior for old agents).
 
 ### The registration call site
 
