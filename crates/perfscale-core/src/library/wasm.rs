@@ -1833,6 +1833,8 @@ mod tests {
             for conn in listener.incoming() {
                 use std::io::{Read, Write};
                 let mut conn = conn.unwrap();
+                conn.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
                 // Read the request head (the fixture sends a bodyless GET).
                 let mut buf = [0u8; 4096];
                 let mut read = 0;
@@ -1848,6 +1850,20 @@ mod tests {
                     body.len()
                 );
                 conn.write_all(response.as_bytes()).unwrap();
+                // Close gracefully: half-close the write side, then drain
+                // whatever the client still sends (chunked terminators,
+                // pipelined bytes) until it hangs up. Dropping the socket
+                // with unread inbound data sends RST, and the guest then
+                // reports "connection reset" instead of reading the body.
+                conn.shutdown(std::net::Shutdown::Write).ok();
+                let mut sink = [0u8; 4096];
+                loop {
+                    match conn.read(&mut sink) {
+                        Ok(0) => break,  // client closed
+                        Ok(_) => {}      // discard
+                        Err(_) => break, // read timeout — give up
+                    }
+                }
             }
         });
         port
