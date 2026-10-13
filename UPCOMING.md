@@ -12,6 +12,17 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+## Metrics registry + `perfscale metrics`
+
+- Steps now declare their metrics in typed **families** (name, kind, unit,
+  description) registered with the engine; core ships the built-in `http` and
+  `llm` families, and pro modules register theirs the same way. New
+  `perfscale metrics` command prints the full catalog.
+- Emitting a registered metric with the wrong JSON shape (a scalar where a
+  histogram was declared, or vice versa) now logs a warning naming the metric
+  — the value still folds, so a buggy step degrades its own metric instead of
+  failing the run. Output formats are unchanged.
+
 ## WASM libraries: the `net` capability
 
 - A library can now be granted `capabilities: [net: [hosts]]` for outgoing

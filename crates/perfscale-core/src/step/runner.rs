@@ -56,7 +56,7 @@ use crate::report::MetricSnapshot;
 use crate::runner::{LogLine, LogSource};
 use crate::step::schedule::{lerp_segments, DispatchCursor, Schedule, Segment};
 use crate::step::{
-    actions::{execute_action, HttpSample, LogTag},
+    actions::{execute_action, LogTag},
     context::Context,
     process::ProcessRegistry,
     RunConfig, Step,
@@ -76,342 +76,10 @@ impl From<LogTag> for LogSource {
 // Shared metrics
 // ---------------------------------------------------------------------------
 
-/// Durations are tracked in microseconds: 1µs floor keeps sub-millisecond
-/// loopback requests distinguishable, the 1-hour ceiling is far beyond any
-/// sane single request.
-const HIST_LOW_MICROS: u64 = 1;
-const HIST_HIGH_MICROS: u64 = 3_600_000_000;
-/// Two significant digits → quantiles within ≤1% of the true value.
-const HIST_SIGFIGS: u8 = 2;
-
-/// Per-run HTTP metrics accumulator.
-///
-/// Durations live in a fixed-size HDR histogram (~tens of KB) instead of one
-/// f64 per request: storing raw samples made memory grow 8 bytes per request
-/// — a 30-hour soak at 10k RPS would have needed ~26 GB at the final
-/// clone-and-sort. The histogram trades that for a ≤1% quantile error,
-/// invisible at the 2-decimal precision the summary prints.
-///
-/// Public only so `benches/` can exercise the hot paths (`record`, quantile
-/// computation in `summary_lines`) — not part of the supported API surface.
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct Metrics {
-    durations_micros: hdrhistogram::Histogram<u64>,
-    failures: u64,
-    total: u64,
-    /// Custom named counters contributed by actions via the reserved
-    /// `metrics` key of their output value — e.g. `pro/fix@v1` emits
-    /// `fix_messages_sent`. Summed across VUs/iterations, then reported as
-    /// `<name>: <total> <rate>/s` so the same downstream parser handles them.
-    counters: std::collections::BTreeMap<String, f64>,
-    /// Custom named histograms: an action reports duration samples (ms) as a
-    /// JSON *array* under the same reserved `metrics` key — e.g. `std/ws@v1`
-    /// emits `ws_msg_rtt: [12.3, 15.1]`. Aggregated with the same HDR
-    /// settings as the request-duration histogram and summarised in the same
-    /// `avg/p(..)/min/max` shape, plus a sample count.
-    hists: std::collections::BTreeMap<String, hdrhistogram::Histogram<u64>>,
-    /// Per-invocation failure samples as `(total, failed)` pairs, recorded by
-    /// the runner for every histogram metric a step emits (see
-    /// [`execute_step`]): `db_query_duration` → `db_query_failed`. These are
-    /// NOT stored in `hists` — the HDR histogram clamps samples to ≥1µs,
-    /// which would turn every 0 (success) into a 1 (failure). Summarised as
-    /// `<name>: <pct>%` like k6's `http_req_failed`, and the source of the
-    /// `rate` aggregate for `std/thresholds@v1`.
-    rates: std::collections::BTreeMap<String, (u64, u64)>,
-    /// Outcomes of `std/thresholds@v1` steps (run in `after:`), combined into
-    /// the run summary's `thresholds` field at the end of the run.
-    threshold_results: Vec<crate::step::thresholds::ThresholdsSummary>,
-}
-
-impl Default for Metrics {
-    fn default() -> Self {
-        Self {
-            durations_micros: hdrhistogram::Histogram::new_with_bounds(
-                HIST_LOW_MICROS,
-                HIST_HIGH_MICROS,
-                HIST_SIGFIGS,
-            )
-            .expect("static histogram bounds are valid"),
-            failures: 0,
-            total: 0,
-            counters: std::collections::BTreeMap::new(),
-            hists: std::collections::BTreeMap::new(),
-            rates: std::collections::BTreeMap::new(),
-            threshold_results: Vec::new(),
-        }
-    }
-}
-
-impl Metrics {
-    pub fn record(&mut self, s: &HttpSample) {
-        self.total += 1;
-        if s.failed {
-            self.failures += 1;
-        }
-        let micros = (s.duration_ms * 1000.0).round() as u64;
-        // Clamped into bounds, so the record cannot fail.
-        let _ = self
-            .durations_micros
-            .record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
-    }
-
-    /// Fold a step's custom `metrics` object into the run aggregates. A
-    /// numeric value increments a counter; an array of numbers records each
-    /// element as a histogram sample in milliseconds. Anything else is
-    /// ignored.
-    pub fn add_counters(&mut self, obj: &serde_json::Map<String, Value>) {
-        for (name, v) in obj {
-            match v {
-                Value::Array(samples) => {
-                    let h = self.hists.entry(name.clone()).or_insert_with(|| {
-                        hdrhistogram::Histogram::new_with_bounds(
-                            HIST_LOW_MICROS,
-                            HIST_HIGH_MICROS,
-                            HIST_SIGFIGS,
-                        )
-                        .expect("static histogram bounds are valid")
-                    });
-                    for s in samples.iter().filter_map(|s| s.as_f64()) {
-                        let micros = (s * 1000.0).round() as u64;
-                        let _ = h.record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
-                    }
-                }
-                _ => {
-                    if let Some(x) = v.as_f64() {
-                        *self.counters.entry(name.clone()).or_insert(0.0) += x;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Record one invocation outcome for a failure-rate metric: `failed`
-    /// is 1 when the step invocation failed, 0 when it succeeded. `rate`
-    /// over these samples is exactly failed/total invocations.
-    pub fn record_rate(&mut self, name: &str, failed: bool) {
-        let e = self.rates.entry(name.to_string()).or_insert((0, 0));
-        e.0 += 1;
-        if failed {
-            e.1 += 1;
-        }
-    }
-
-    /// Store the outcome of a `std/thresholds@v1` step for the run summary.
-    pub fn record_threshold_result(&mut self, result: crate::step::thresholds::ThresholdsSummary) {
-        self.threshold_results.push(result);
-    }
-
-    /// All gate outcomes combined (worst status wins), for the run summary's
-    /// `thresholds` field. `None` when no thresholds step ran.
-    pub fn thresholds_summary(&self) -> Option<crate::step::thresholds::ThresholdsSummary> {
-        crate::step::thresholds::combine(self.threshold_results.clone())
-    }
-
-    /// Snapshot every metric the run collected, for `std/thresholds@v1`
-    /// evaluation. Percentiles come from the same HDR histograms (and the
-    /// same accessors) as [`Metrics::summary_lines`], so gate numbers match
-    /// the printed summary.
-    ///
-    /// A counter is shadowed by a same-named failure-rate metric (the gRPC
-    /// actions emit a `grpc_req_failed` counter AND the runner derives
-    /// `grpc_req_failed` rate samples from `grpc_req_duration`): the rate
-    /// view wins, since `rate`/`count` on it answer both use cases.
-    pub fn metric_snapshot(
-        &self,
-    ) -> std::collections::BTreeMap<String, crate::step::thresholds::MetricAgg> {
-        use crate::step::thresholds::MetricAgg;
-        let mut out = std::collections::BTreeMap::new();
-        if self.total > 0 {
-            out.insert(
-                "http_req_duration".to_string(),
-                MetricAgg::sample(&self.durations_micros),
-            );
-            out.insert(
-                "http_req_failed".to_string(),
-                MetricAgg::rate(self.total, self.failures),
-            );
-        }
-        for (name, h) in &self.hists {
-            out.insert(name.clone(), MetricAgg::sample(h));
-        }
-        for (name, v) in &self.counters {
-            if !self.rates.contains_key(name) {
-                out.insert(name.clone(), MetricAgg::counter(*v));
-            }
-        }
-        for (name, (total, failed)) in &self.rates {
-            out.insert(name.clone(), MetricAgg::rate(*total, *failed));
-        }
-        out
-    }
-
-    /// Emit k6-compatible summary lines.
-    ///
-    /// ```text
-    /// http_req_duration: avg=0.42ms p(50)=0.31ms p(90)=0.88ms p(95)=1.02ms p(99)=1.90ms min=0.09ms max=3.10ms
-    /// http_req_failed: 0.00%
-    /// http_reqs: 120 2.00/s
-    /// ```
-    pub fn summary_lines(&self, wall_secs: f64, total_iters: u64, vus: u32) -> Vec<String> {
-        self.summary_lines_inner(
-            wall_secs,
-            total_iters,
-            format!("vus....................: {vus} min=1 max={vus}"),
-        )
-    }
-
-    /// Summary for staged/arrival-rate runs: the `vus` line reports the
-    /// *observed* concurrency (last sample plus min/max over the run) instead
-    /// of a fixed configured count. Everything else is identical to
-    /// [`Metrics::summary_lines`].
-    pub fn summary_lines_observed(
-        &self,
-        wall_secs: f64,
-        total_iters: u64,
-        last_vus: u64,
-        min_vus: u64,
-        max_vus: u64,
-    ) -> Vec<String> {
-        self.summary_lines_inner(
-            wall_secs,
-            total_iters,
-            format!("vus....................: {last_vus} min={min_vus} max={max_vus}"),
-        )
-    }
-
-    fn summary_lines_inner(
-        &self,
-        wall_secs: f64,
-        total_iters: u64,
-        vus_line: String,
-    ) -> Vec<String> {
-        // Always emit iteration stats (even with no HTTP requests) so
-        // downstream parsers can extract metrics from sleep-only runs.
-        let iter_rate = total_iters as f64 / wall_secs.max(0.001);
-        let mut lines = vec![
-            vus_line,
-            format!("iterations..............: {total_iters} {iter_rate:.2}/s"),
-        ];
-
-        // Custom action counters (e.g. FIX message rates) — emitted whether or
-        // not the run made HTTP-style requests. A counter shadowed by a
-        // same-named failure-rate metric (e.g. `grpc_req_failed`) is skipped:
-        // the rate line below carries the same information in k6's `%` shape.
-        for (name, total) in &self.counters {
-            if self.rates.contains_key(name) {
-                continue;
-            }
-            let rate = total / wall_secs.max(0.001);
-            lines.push(format!("{name}: {total:.0} {rate:.2}/s"));
-        }
-
-        // Failure-rate metrics (`db_query_failed`, …) — k6's
-        // `http_req_failed: 0.00%` shape.
-        for (name, (total, failed)) in &self.rates {
-            let pct = *failed as f64 / (*total).max(1) as f64 * 100.0;
-            lines.push(format!("{name}: {pct:.2}%"));
-        }
-
-        // Custom action histograms (e.g. `ws_msg_rtt`) — same shape as
-        // `http_req_duration` plus a sample count, so downstream percentile
-        // parsers can reuse one grammar.
-        for (name, h) in &self.hists {
-            let pct = |q: f64| -> f64 { h.value_at_quantile(q) as f64 / 1000.0 };
-            lines.push(format!(
-                "{name}: avg={avg:.2}ms p(50)={p50:.2}ms p(90)={p90:.2}ms p(95)={p95:.2}ms p(99)={p99:.2}ms min={min:.2}ms max={max:.2}ms count={count}",
-                avg = h.mean() / 1000.0,
-                p50 = pct(0.50),
-                p90 = pct(0.90),
-                p95 = pct(0.95),
-                p99 = pct(0.99),
-                min = h.min() as f64 / 1000.0,
-                max = h.max() as f64 / 1000.0,
-                count = h.len(),
-            ));
-        }
-
-        if self.total == 0 {
-            return lines;
-        }
-
-        let h = &self.durations_micros;
-        let pct = |q: f64| -> f64 { h.value_at_quantile(q) as f64 / 1000.0 };
-
-        let rps = self.total as f64 / wall_secs.max(0.001);
-        let err = self.failures as f64 / self.total as f64 * 100.0;
-
-        lines.extend([
-            format!(
-                "http_req_duration......: avg={avg:.2}ms p(50)={p50:.2}ms p(90)={p90:.2}ms p(95)={p95:.2}ms p(99)={p99:.2}ms min={min:.2}ms max={max:.2}ms",
-                avg = h.mean() / 1000.0,
-                p50 = pct(0.50),
-                p90 = pct(0.90),
-                p95 = pct(0.95),
-                p99 = pct(0.99),
-                min = h.min() as f64 / 1000.0,
-                max = h.max() as f64 / 1000.0,
-            ),
-            format!("http_req_failed........: {err:.2}%"),
-            format!("http_reqs..............: {total} {rps:.2}/s", total = self.total),
-        ]);
-        lines
-    }
-
-    /// Total requests recorded so far (used by the periodic stats reporter to
-    /// compute the per-window throughput).
-    pub fn total_requests(&self) -> u64 {
-        self.total
-    }
-
-    /// One-line machine-readable snapshot for streaming time-series consumers
-    /// (the controlplane parses these out of the OTEL log stream).
-    ///
-    /// `window_reqs`/`window_secs` yield the instantaneous throughput; the
-    /// latency percentiles are cumulative since run start (the HDR histogram
-    /// is never reset, so they converge instead of jittering).
-    ///
-    /// LLM steps (`std/llm@v1`) report through their own metric family and
-    /// never produce `HttpSample`s, so `reqs`/`rps` stay 0 on pure-LLM runs.
-    /// When any LLM throughput samples were recorded, the line carries
-    /// `llm_reqs` (completed LLM requests) and `llm_tok_s` (mean completion
-    /// throughput) so LLM load tests still get a live signal.
-    ///
-    /// ```text
-    /// [stats] ts=1720000000000 rps=246.80 err_pct=0.00 p50=1.20 p90=3.40 p95=4.10 p99=8.20 reqs=1234 iters=456
-    /// [stats] ts=1720000000000 rps=0.00 reqs=0 iters=12 llm_reqs=9 llm_tok_s=38.7
-    /// ```
-    pub fn stats_line(&self, ts_ms: u64, window_reqs: u64, window_secs: f64, iters: u64) -> String {
-        let rps = window_reqs as f64 / window_secs.max(0.001);
-        let mut line = if self.total == 0 {
-            format!("[stats] ts={ts_ms} rps={rps:.2} reqs=0 iters={iters}")
-        } else {
-            let h = &self.durations_micros;
-            let pct = |q: f64| -> f64 { h.value_at_quantile(q) as f64 / 1000.0 };
-            let err = self.failures as f64 / self.total as f64 * 100.0;
-            format!(
-                "[stats] ts={ts_ms} rps={rps:.2} err_pct={err:.2} p50={p50:.2} p90={p90:.2} p95={p95:.2} p99={p99:.2} reqs={total} iters={iters}",
-                p50 = pct(0.50),
-                p90 = pct(0.90),
-                p95 = pct(0.95),
-                p99 = pct(0.99),
-                total = self.total,
-            )
-        };
-        if let Some(tps) = self.hists.get("llm_tokens_per_sec") {
-            if !tps.is_empty() {
-                // Samples are stored in microseconds (ms * 1000) like every
-                // custom histogram; tok/s means are read back in plain units.
-                line.push_str(&format!(
-                    " llm_reqs={} llm_tok_s={:.1}",
-                    tps.len(),
-                    tps.mean() / 1000.0
-                ));
-            }
-        }
-        line
-    }
-}
+// The store lives in the metrics module (RFC 010); re-exported so the
+// historical `step::runner::Metrics` path keeps working (benches, contexts,
+// thresholds).
+pub use crate::metrics::Metrics;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -875,6 +543,17 @@ pub async fn run_native(
     // GPU/tool warns once and the run continues without GPU metrics. Started
     // before the snapshot pump so the pump can drain its live buffer.
     let gpu_session = crate::gpu::start(config.gpu.as_deref(), &tx).await;
+
+    // Family background samplers (RFC 010): metrics produced between steps
+    // (e.g. periodic WebRTC getStats polling in pro builds) start here, at
+    // the top of the VU phase. Built-in families register no samplers.
+    let sampler_ctx = crate::metrics::SamplerContext {
+        metrics: Arc::clone(&metrics),
+        stop: Arc::clone(&stop),
+    };
+    for family in crate::metrics::families() {
+        family.start_samplers(&sampler_ctx);
+    }
 
     // During-run metrics streaming: one cumulative snapshot every
     // `report.interval_ms` for a shipper at the other end of `metrics_tx`.
@@ -1846,28 +1525,43 @@ async fn execute_step(
     // Collect HTTP timing and any custom counters the action exposed under the
     // reserved `metrics` key of its output value.
     if output.http_sample.is_some() || output.value.get("metrics").is_some() {
-        let mut m = metrics.lock().unwrap();
-        if let Some(ref sample) = output.http_sample {
-            m.record(sample);
-        }
-        if let Some(obj) = output.value.get("metrics").and_then(|v| v.as_object()) {
-            m.add_counters(obj);
-            // Failure sampling: one 0/1 sample per invocation for every
-            // family-duration metric the invocation emitted, so
-            // `std/thresholds@v1` can compute `rate` = failed/total
-            // invocations. `db_query_duration` → `db_query_failed`,
-            // `ws_msg_rtt` → `ws_msg_failed`, matching the HTTP family's
-            // native `http_req_failed`.
-            let failed = !output.success;
-            for (name, v) in obj {
-                if v.is_array() {
-                    let family = name
-                        .strip_suffix("_duration")
-                        .or_else(|| name.strip_suffix("_rtt"))
-                        .unwrap_or(name);
-                    m.record_rate(&format!("{family}_failed"), failed);
+        // Kind validation (RFC 010): a registered metric emitted with the
+        // wrong JSON shape (scalar vs array) warns in the run log — the value
+        // still folds as today, so a buggy step degrades its own metric
+        // instead of failing the run. Unknown names pass through silently.
+        let mut warnings = Vec::new();
+        {
+            let mut m = metrics.lock().unwrap();
+            if let Some(ref sample) = output.http_sample {
+                m.record(sample);
+            }
+            if let Some(obj) = output.value.get("metrics").and_then(|v| v.as_object()) {
+                for (name, v) in obj {
+                    if let Some(w) = crate::metrics::kind_mismatch_warning(name, v.is_array()) {
+                        warnings.push(w);
+                    }
+                }
+                m.add_counters(obj);
+                // Failure sampling: one 0/1 sample per invocation for every
+                // family-duration metric the invocation emitted, so
+                // `std/thresholds@v1` can compute `rate` = failed/total
+                // invocations. `db_query_duration` → `db_query_failed`,
+                // `ws_msg_rtt` → `ws_msg_failed`, matching the HTTP family's
+                // native `http_req_failed`.
+                let failed = !output.success;
+                for (name, v) in obj {
+                    if v.is_array() {
+                        let family = name
+                            .strip_suffix("_duration")
+                            .or_else(|| name.strip_suffix("_rtt"))
+                            .unwrap_or(name);
+                        m.record_rate(&format!("{family}_failed"), failed);
+                    }
                 }
             }
+        }
+        for warning in warnings {
+            emit(tx, LogSource::Stderr, &warning, &ctx.secrets).await;
         }
     }
 
@@ -1952,6 +1646,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::step::actions::HttpSample;
 
     fn sleep_step(ms: u64) -> Step {
         Step {
@@ -4346,5 +4041,124 @@ mod tests {
         assert_eq!(v["variables"]["plain"], "visible");
         assert_eq!(secrets.mask("key=s3cr3t-t0ken"), "key=***");
         assert_eq!(secrets.mask("plain=visible"), "plain=visible");
+    }
+
+    // -----------------------------------------------------------------
+    // Golden output: byte-exact [stats] lines and summary blocks.
+    //
+    // External consumers parse these with fixed keys (controlplane
+    // `parse_stats_lines`, `crate::summary`) — the strings below are the
+    // contract. If a refactor changes them, the change is breaking whether
+    // or not it was intentional.
+    // -----------------------------------------------------------------
+
+    /// Deterministic HTTP-run store: 4 samples (one failed), 2 VUs, 8
+    /// iterations over 2s wall clock.
+    fn golden_http_metrics() -> Metrics {
+        let mut m = Metrics::default();
+        for (i, ms) in [10.0_f64, 20.0, 30.0, 40.0].iter().enumerate() {
+            m.record(&HttpSample {
+                duration_ms: *ms,
+                status: 200,
+                failed: i == 3,
+            });
+        }
+        m
+    }
+
+    /// Deterministic LLM-run store: two `std/llm@v1` invocations folded the
+    /// way `execute_step` folds the reserved `metrics` key (histogram arrays
+    /// plus the derived per-invocation failure rates).
+    fn golden_llm_metrics() -> Metrics {
+        let mut m = Metrics::default();
+        for _ in 0..2 {
+            let obj = json!({
+                "llm_ttft_ms": [120.0],
+                "llm_tokens_per_sec": [45.0],
+                "llm_prompt_tokens": 12.0,
+                "llm_completion_tokens": 96.0,
+                "llm_chunks": 34.0,
+            });
+            let obj = obj.as_object().unwrap();
+            m.add_counters(obj);
+            for (name, v) in obj {
+                if v.is_array() {
+                    let family = name
+                        .strip_suffix("_duration")
+                        .or_else(|| name.strip_suffix("_rtt"))
+                        .unwrap_or(name);
+                    m.record_rate(&format!("{family}_failed"), false);
+                }
+            }
+        }
+        m
+    }
+
+    #[test]
+    fn golden_summary_http_run() {
+        let lines = golden_http_metrics().summary_lines(2.0, 8, 2);
+        assert_eq!(
+            lines,
+            vec![
+                "vus....................: 2 min=1 max=2",
+                "iterations..............: 8 4.00/s",
+                "http_req_duration......: avg=25.03ms p(50)=20.09ms p(90)=40.19ms p(95)=40.19ms p(99)=40.19ms min=9.98ms max=40.19ms",
+                "http_req_failed........: 25.00%",
+                "http_reqs..............: 4 2.00/s",
+            ]
+        );
+    }
+
+    #[test]
+    fn golden_summary_llm_run() {
+        let lines = golden_llm_metrics().summary_lines(2.0, 2, 1);
+        assert_eq!(
+            lines,
+            vec![
+                "vus....................: 1 min=1 max=1",
+                "iterations..............: 2 1.00/s",
+                "llm_chunks: 68 34.00/s",
+                "llm_completion_tokens: 192 96.00/s",
+                "llm_prompt_tokens: 24 12.00/s",
+                "llm_tokens_per_sec_failed: 0.00%",
+                "llm_ttft_ms_failed: 0.00%",
+                "llm_tokens_per_sec: avg=44.93ms p(50)=45.05ms p(90)=45.05ms p(95)=45.05ms p(99)=45.05ms min=44.80ms max=45.05ms count=2",
+                "llm_ttft_ms: avg=120.06ms p(50)=120.32ms p(90)=120.32ms p(95)=120.32ms p(99)=120.32ms min=119.81ms max=120.32ms count=2",
+            ]
+        );
+    }
+
+    #[test]
+    fn golden_stats_line_http_run() {
+        let line = golden_http_metrics().stats_line(1_720_000_000_000, 4, 5.0, 8);
+        assert_eq!(
+            line,
+            "[stats] ts=1720000000000 rps=0.80 err_pct=25.00 p50=20.09 p90=40.19 p95=40.19 p99=40.19 reqs=4 iters=8"
+        );
+    }
+
+    #[test]
+    fn golden_stats_line_llm_run() {
+        let line = golden_llm_metrics().stats_line(1_720_000_000_000, 0, 5.0, 2);
+        assert_eq!(
+            line,
+            "[stats] ts=1720000000000 rps=0.00 reqs=0 iters=2 llm_reqs=2 llm_tok_s=44.9"
+        );
+    }
+
+    #[test]
+    fn golden_stats_line_mixed_http_llm_run() {
+        let mut m = Metrics::default();
+        m.record(&HttpSample {
+            duration_ms: 2.0,
+            status: 200,
+            failed: false,
+        });
+        m.add_counters(json!({ "llm_tokens_per_sec": [25.5] }).as_object().unwrap());
+        let line = m.stats_line(1, 1, 5.0, 1);
+        assert_eq!(
+            line,
+            "[stats] ts=1 rps=0.20 err_pct=0.00 p50=2.01 p90=2.01 p95=2.01 p99=2.01 reqs=1 iters=1 llm_reqs=1 llm_tok_s=25.5"
+        );
     }
 }

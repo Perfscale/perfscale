@@ -24,6 +24,7 @@ async fn main() {
         Commands::Lint(args) => commands::lint::run(args).await,
         Commands::Install(args) => commands::install::run(args).await,
         Commands::Burn(args) => commands::burn::run(args).await,
+        Commands::Metrics => commands::metrics::run().await,
         Commands::Schema(args) => commands::schema::run(args).await,
         Commands::Man(args) => commands::man::run(args).await,
         Commands::SelfUpdate(args) => commands::self_update::self_update(args).await,

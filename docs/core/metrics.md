@@ -292,6 +292,40 @@ timeline with the `[stats]` lines, so load and GPU state correlate directly —
 the primary use case is [`std/llm@v1`](llm.md) runs against local model
 servers. Full guide: [gpu.md](gpu.md).
 
+## The metrics registry (for step authors)
+
+Step implementations declare their metrics in a **family**
+(`MetricsFamily`): a set of `MetricDef`s — name, kind (`counter`, `gauge`,
+`histogram`, `rate`), unit, description — registered process-globally via
+`perfscale_core::metrics::register_family`, next to the family's
+`register_action` calls. Core registers the built-in `http` family
+(`http_req_duration`, `http_req_failed`, `http_reqs`, plus the
+`perfscale_iterations_completed` / `perfscale_vus` run-progress gauges) and
+the `llm` family (`llm_ttft_ms`, `llm_tokens_per_sec`, the token counters);
+downstream pro crates register theirs the same way.
+
+What the registry buys:
+
+- **Catalog** — `perfscale metrics` prints every declared metric with its
+  family, kind, unit, and description.
+- **Fold-time validation** — when a step emits a registered name with the
+  wrong JSON shape (a scalar where the family declared a `histogram`, an
+  array for a scalar kind), the run log gets a warning naming the metric and
+  family. The value still folds (unknown-name behavior), so a buggy step
+  degrades its own metric instead of failing the run; unregistered names
+  pass through silently, as before.
+- **Presentation hooks** — a family can append fields to the live `[stats]`
+  line (`stats_extras`, how the `llm` family adds `llm_reqs`/`llm_tok_s`)
+  and its own block to the end-of-run summary (`summary_lines`, how the
+  `http` family renders the `http_req_*` triple). Families without overrides
+  render through the generic shapes above, byte-identical to unregistered
+  metrics.
+- **Background samplers** — `start_samplers` runs at the start of the VU
+  phase for metrics produced between steps (e.g. periodic WebRTC stats
+  polling in pro builds). Built-in families register no samplers.
+
+See RFC 010 (`rfcs/010-metrics-module.md`) for the full design.
+
 ## `--quiet`
 
 Two independent layers:

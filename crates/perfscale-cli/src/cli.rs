@@ -73,6 +73,8 @@ pub enum Commands {
     Install(InstallArgs),
     /// Build a standalone binary with the documents' WASM libraries embedded.
     Burn(BurnArgs),
+    /// List every metric the registered families declare (name, kind, unit, description).
+    Metrics,
     /// Print the JSON Schema for test or config YAML files.
     Schema(SchemaArgs),
     /// Print the perfscale manual as plain text, or install it for `man perfscale`.

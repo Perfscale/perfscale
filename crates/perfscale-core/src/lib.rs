@@ -15,6 +15,7 @@ pub mod introspect;
 pub mod library;
 pub mod lint;
 pub(crate) mod log_mask;
+pub mod metrics;
 pub mod models;
 pub mod report;
 pub mod runner;

@@ -86,6 +86,18 @@ uses). Argument:
 or
 .BR config .
 .TP
+.B metrics
+Print the metric catalog: every metric the registered families declare
+(the built-in
+.B http
+and
+.B llm
+families, plus any pro modules in the build), as a table of family, name,
+kind
+.RB ( counter / gauge / histogram / rate ),
+unit, and description. See
+.BR "RFC 010" .
+.TP
 .B install
 Fetch remote libraries (RFC 005) declared in the given YAML documents and
 pin them. Every

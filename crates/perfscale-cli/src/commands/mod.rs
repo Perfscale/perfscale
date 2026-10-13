@@ -2,6 +2,7 @@ pub mod burn;
 pub mod install;
 pub mod lint;
 pub mod man;
+pub mod metrics;
 pub mod run;
 pub mod schema;
 pub mod self_update;

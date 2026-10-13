@@ -7,6 +7,7 @@ perfscale lint         Validate test/config YAML files without running them
 perfscale install      Fetch remote libraries and pin them in perfscale.lock
 perfscale burn         Build a standalone binary with WASM libraries embedded
 perfscale schema       Print the JSON Schema for test or config YAML files
+perfscale metrics      List every metric the registered families declare
 perfscale man          Print the bundled man page (or install it for `man perfscale`)
 perfscale self-update  Update perfscale to the latest release for this platform
 ```
@@ -271,6 +272,20 @@ perfscale schema config   # schema for run configs
 - **Автодополнение в редакторе** — направьте ваш языковой сервер YAML на этот вывод
 - **Инструментарий агентов** — [MCP-сервер perfscale](../mcp.md) вызывает эту команду, чтобы
   дать моделям контракт авторинга
+
+Код выхода: `0` при успехе.
+
+## `perfscale metrics`
+
+Печатает каталог метрик: каждую метрику, объявленную зарегистрированными
+семействами, в виде таблицы — семейство, имя, вид
+(`counter`/`gauge`/`histogram`/`rate`), единица измерения и описание.
+Встроенные семейства `http` и `llm` присутствуют всегда; сборки с pro-модулями
+показывают и их семейства. См. [Метрики](../core/metrics.md).
+
+```sh
+perfscale metrics
+```
 
 Код выхода: `0` при успехе.
 
