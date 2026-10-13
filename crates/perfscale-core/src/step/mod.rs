@@ -50,7 +50,11 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Top-level test definition — a list of steps executed per VU iteration.
+///
+/// Unknown keys are rejected (`deny_unknown_fields`): a typo'd key must fail
+/// loudly at load time instead of silently falling back to defaults.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TestDef {
     /// Base document to inherit from — a relative path, an `http(s)://` URL,
     /// or `{ git, ref, file }`. The base loads first (recursively), then this
@@ -74,7 +78,11 @@ pub struct TestDef {
 // ---------------------------------------------------------------------------
 
 /// A single step in a test definition.
+///
+/// Unknown keys are rejected (`deny_unknown_fields`): a typo like `output:`
+/// (instead of `outputs:`) must fail at load time, not silently drop data.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Step {
     /// Human-readable label shown in log output.
     pub name: Option<String>,
@@ -111,7 +119,13 @@ pub struct Step {
 // ---------------------------------------------------------------------------
 
 /// Load configuration — number of virtual users and how long to run.
+///
+/// Unknown keys are rejected (`deny_unknown_fields`): a typo like
+/// `iterations: 1` must fail loudly instead of silently changing the load
+/// profile (#8). All fields have serde defaults, so every legit key stays
+/// optional.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RunConfig {
     /// Number of virtual users (concurrent workers).
     #[serde(default = "default_vus")]
@@ -212,6 +226,7 @@ pub struct RunConfig {
 /// `duration`. The first stage ramps from 0 VUs, each later stage from the
 /// previous stage's `target` (like k6's `ramping-vus` with `startVUs: 0`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct VuStage {
     /// Stage length: `"30s"`, `"500ms"`, `"1.5s"`, `"1m"`, `"5m30s"`, `"1h"`
     /// — minimum 1ms.
@@ -226,6 +241,7 @@ pub struct VuStage {
 /// holds an iterations-per-second profile and scales a worker pool to keep
 /// up, instead of looping a fixed set of VUs.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ArrivalConfig {
     /// Hard cap on the worker pool — must be ≥ 1. A permit that arrives while
     /// all `max_vus` workers are busy is dropped and counted in the
@@ -247,6 +263,7 @@ pub struct ArrivalConfig {
 /// One `arrival.stages:` entry — ramp the arrival rate linearly to `rate`
 /// over `duration`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RateStage {
     /// Stage length: `"30s"`, `"500ms"`, `"1.5s"`, `"1m"`, `"5m30s"`, `"1h"`
     /// — minimum 1ms.
@@ -574,11 +591,57 @@ mod tests {
     #[test]
     fn run_config_fs_root_is_not_deserializable() {
         // A client must not pick its own sandbox root — the field is
-        // `#[serde(skip)]` and stays `None` even when present in the input.
-        let cfg: RunConfig =
-            serde_json::from_str(r#"{ "fs_root": "/", "allow_file_actions": true }"#).unwrap();
-        assert!(cfg.allow_file_actions);
-        assert!(cfg.fs_root.is_none());
+        // `#[serde(skip)]`, and with `deny_unknown_fields` an `fs_root` key
+        // in the input is now an outright error, not silently ignored.
+        let err =
+            serde_json::from_str::<RunConfig>(r#"{ "fs_root": "/", "allow_file_actions": true }"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("unknown field"), "{err}");
+    }
+
+    #[test]
+    fn run_config_rejects_unknown_keys() {
+        // The issue-#8 case: a typo'd key names itself in the error instead
+        // of silently falling back to defaults.
+        let err =
+            serde_json::from_str::<RunConfig>(r#"{ "vus": 2, "iterations": 1 }"#).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown field"), "{msg}");
+        assert!(msg.contains("iterations"), "{msg}");
+        // …and names the legit keys as a hint.
+        assert!(msg.contains("vus"), "{msg}");
+    }
+
+    #[test]
+    fn step_rejects_unknown_keys() {
+        // `output` (instead of `outputs`) must not silently drop the binding.
+        let err = serde_json::from_str::<Step>(r#"{ "use": "std/log@v1", "output": "resp" }"#)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown field"), "{msg}");
+        assert!(msg.contains("output"), "{msg}");
+        // The `uses` alias stays accepted under strict parsing.
+        let step: Step = serde_json::from_str(r#"{ "uses": "std/log@v1" }"#).unwrap();
+        assert_eq!(step.action, "std/log@v1");
+    }
+
+    #[test]
+    fn test_def_rejects_unknown_keys() {
+        let err =
+            serde_json::from_str::<TestDef>(r#"{ "steps": [], "libraires": [] }"#).unwrap_err();
+        assert!(err.to_string().contains("libraires"), "{err}");
+    }
+
+    #[test]
+    fn load_profile_stages_reject_unknown_keys() {
+        let err =
+            serde_json::from_str::<VuStage>(r#"{ "duration": "30s", "target": 5, "ramp": true }"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("ramp"), "{err}");
+        let err =
+            serde_json::from_str::<ArrivalConfig>(r#"{ "max_vus": 10, "stages": [], "rate": 5 }"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("rate"), "{err}");
     }
 
     #[test]

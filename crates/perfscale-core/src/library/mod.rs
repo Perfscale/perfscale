@@ -73,7 +73,12 @@ pub const RESERVED_TOKEN_NAMES: &[&str] = &[
 // ---------------------------------------------------------------------------
 
 /// One `libraries:` entry — a value-generator library bound to a token alias.
+///
+/// Unknown keys are rejected (`deny_unknown_fields`): a typo'd policy key
+/// (`capabilties:`, `allows:`) must fail loudly — silently dropping it would
+/// weaken the fail-closed capability model.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LibraryRef {
     /// Library reference:
     ///
@@ -721,6 +726,18 @@ mod tests {
             deny: None,
             log: None,
         }
+    }
+
+    #[test]
+    fn library_ref_rejects_unknown_keys() {
+        // A typo'd key (`capabilties`) must fail loudly instead of being
+        // dropped — it would silently change the capability contract.
+        let err =
+            serde_json::from_str::<LibraryRef>(r#"{ "use": "@std/random@v1", "capabilties": [] }"#)
+                .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown field"), "{msg}");
+        assert!(msg.contains("capabilties"), "{msg}");
     }
 
     #[test]

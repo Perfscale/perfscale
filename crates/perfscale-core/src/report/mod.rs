@@ -35,7 +35,11 @@ pub const MIN_INTERVAL_MS: u64 = 100;
 /// it is `Option` here because the embedding config file keeps `url` in its
 /// own `report:` section and the caller (CLI, agent) may also supply it via
 /// a flag — the resolved URL wins and is what the shipper POSTs to.
+///
+/// Unknown keys are rejected (`deny_unknown_fields`) — on the agent wire a
+/// typo'd key must fail instead of silently reverting the block to defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReportRunConfig {
     /// Base URL of the report target, e.g. `http://localhost:7999`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

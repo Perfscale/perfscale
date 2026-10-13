@@ -10,7 +10,12 @@ use crate::step::{RunConfig, Step, TestDef};
 /// Where to forward run metrics: the aggregated summary after `perfscale run`
 /// finishes, and — with `during_run: true` — cumulative metric snapshots
 /// while the run is in progress. See [crate::report].
+///
+/// Unknown keys are rejected (`deny_unknown_fields`) — a typo'd knob
+/// (`duringrun: true`) must fail at load time, not silently disable
+/// streaming.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReportConfig {
     /// Base URL of a running `perfscale serve` instance, e.g. `http://localhost:7999`.
     pub url: String,
@@ -70,6 +75,7 @@ impl ReportConfig {
 
 /// One STUN/TURN server entry of the `webrtc:` config block (RFC 007).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WebRtcIceServer {
     /// Server URIs, e.g. `["stun:stun.l.google.com:19302"]` or
     /// `["turn:turn.example.com:3478"]`.
@@ -88,6 +94,7 @@ pub struct WebRtcIceServer {
 /// pro `pro/webrtc-*` action module. Declaring the block on a build without
 /// the pro module is a configuration error.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WebRtcConfig {
     /// STUN/TURN servers for ICE. Default (when absent):
     /// `[stun:stun.l.google.com:19302]`.
@@ -287,6 +294,53 @@ steps:
         let yaml = "steps: [this is not valid: yaml: at all";
         let err = parse_test_file(yaml).unwrap_err();
         assert!(err.contains("invalid YAML"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rejects_config_with_unknown_key() {
+        // The issue-#8 case: a typo'd key in `-c config.yaml` must fail
+        // loudly, naming the key, instead of silently changing the load
+        // profile. `ConfigFile` flattens `RunConfig`, so serde's
+        // `deny_unknown_fields` cannot apply at the top level — the schema
+        // pre-validation is what rejects unknown keys here.
+        let err = parse_config_file("vus: 2\niterations: 1\n").unwrap_err();
+        assert!(err.contains("iterations"), "key named: {err}");
+        // Same for a key that only exists on the wrong nesting level.
+        let err = parse_config_file("vus: 2\nurl: http://x\n").unwrap_err();
+        assert!(err.contains("url"), "key named: {err}");
+    }
+
+    #[test]
+    fn rejects_test_file_with_unknown_keys() {
+        // A typo'd step key (`output:` for `outputs:`) fails, naming the key.
+        let err = parse_test_file("steps:\n  - use: std/log@v1\n    output: resp\n").unwrap_err();
+        assert!(err.contains("output"), "key named: {err}");
+        // A typo'd top-level key fails too.
+        let err = parse_test_file("steps: []\nstep_defaults: {}\n").unwrap_err();
+        assert!(err.contains("step_defaults"), "key named: {err}");
+    }
+
+    #[test]
+    fn rejects_unknown_keys_in_nested_config_blocks() {
+        for (yaml, key) in [
+            ("report:\n  url: http://x\n  duringrun: true\n", "duringrun"),
+            ("gpu:\n  enabled: true\n  interval: 500\n", "interval"),
+            (
+                "stages:\n  - duration: 30s\n    target: 5\n    ramp: true\n",
+                "ramp",
+            ),
+            (
+                "arrival:\n  max_vus: 5\n  rate: 1\n  stages:\n    - duration: 30s\n      rate: 1\n",
+                "rate",
+            ),
+            (
+                "libraries:\n  - use: '@std/random@v1'\n    capabilities: []\n    allows: [uuid4]\n",
+                "allows",
+            ),
+        ] {
+            let err = parse_config_file(yaml).unwrap_err();
+            assert!(err.contains(key), "'{yaml}' → {err}");
+        }
     }
 
     #[test]

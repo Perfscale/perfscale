@@ -680,7 +680,12 @@ did-you-mean suggestions (`chek` → `check`, `vsu` → `vus`, `std/htp@v1` →
 
 ## Validation errors
 
-perfscale validates before running. Examples of what you'll see:
+perfscale validates before running. Parsing is strict: unknown keys are
+rejected, not ignored — a typo like `iterations: 1` (or `chek:` instead of
+`check:`) fails validation and names the offending key, instead of silently
+changing the load profile. This applies to the top level, every step's fixed
+fields, and the `report:`, `gpu:`, `stages:`/`arrival:`, and `libraries:`
+blocks. Examples of what you'll see:
 
 ```text
 error: schema validation failed:

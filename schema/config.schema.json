@@ -1,7 +1,9 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
   "definitions": {
     "ArrivalConfig": {
+      "additionalProperties": false,
       "description": "Arrival-rate configuration (`arrival:`) — an open load model: the engine holds an iterations-per-second profile and scales a worker pool to keep up, instead of looping a fixed set of VUs.",
       "properties": {
         "max_vus": {
@@ -83,7 +85,8 @@
       "type": "object"
     },
     "GpuConfig": {
-      "description": "GPU metrics collection for a run (`gpu:` next to `vus`/`duration`).\n\nOff by default; set `enabled: true` to sample every GPU (or the `devices` subset) for the duration of the VU phase. Failures are non-fatal: one warning is logged and the run continues without GPU metrics.",
+      "additionalProperties": false,
+      "description": "GPU metrics collection for a run (`gpu:` next to `vus`/`duration`).\n\nOff by default; set `enabled: true` to sample every GPU (or the `devices` subset) for the duration of the VU phase. Failures are non-fatal: one warning is logged and the run continues without GPU metrics.\n\nUnknown keys are rejected (`deny_unknown_fields`) — a typo'd key must fail at load time instead of silently leaving the section at defaults.",
       "properties": {
         "dcgm_url": {
           "description": "dcgm-exporter metrics endpoint, used with `source: dcgm`.",
@@ -142,7 +145,8 @@
       "description": "The value of a top-level `import:` key."
     },
     "LibraryRef": {
-      "description": "One `libraries:` entry — a value-generator library bound to a token alias.",
+      "additionalProperties": false,
+      "description": "One `libraries:` entry — a value-generator library bound to a token alias.\n\nUnknown keys are rejected (`deny_unknown_fields`): a typo'd policy key (`capabilties:`, `allows:`) must fail loudly — silently dropping it would weaken the fail-closed capability model.",
       "properties": {
         "allow": {
           "description": "Whitelist of callable functions (`${alias.fn(...)}`). When present, calling a function not listed fails the step. `deny:` wins over `allow:` when a name appears in both.",
@@ -219,6 +223,7 @@
       "type": "object"
     },
     "RateStage": {
+      "additionalProperties": false,
       "description": "One `arrival.stages:` entry — ramp the arrival rate linearly to `rate` over `duration`.",
       "properties": {
         "duration": {
@@ -238,7 +243,8 @@
       "type": "object"
     },
     "ReportConfig": {
-      "description": "Where to forward run metrics: the aggregated summary after `perfscale run` finishes, and — with `during_run: true` — cumulative metric snapshots while the run is in progress. See [crate::report].",
+      "additionalProperties": false,
+      "description": "Where to forward run metrics: the aggregated summary after `perfscale run` finishes, and — with `during_run: true` — cumulative metric snapshots while the run is in progress. See [crate::report].\n\nUnknown keys are rejected (`deny_unknown_fields`) — a typo'd knob (`duringrun: true`) must fail at load time, not silently disable streaming.",
       "properties": {
         "batch_size": {
           "default": 500,
@@ -283,6 +289,7 @@
       "type": "object"
     },
     "Step": {
+      "additionalProperties": false,
       "anyOf": [
         {
           "required": [
@@ -295,7 +302,7 @@
           ]
         }
       ],
-      "description": "A single step in a test definition.",
+      "description": "A single step in a test definition.\n\nUnknown keys are rejected (`deny_unknown_fields`): a typo like `output:` (instead of `outputs:`) must fail at load time, not silently drop data.",
       "properties": {
         "check": {
           "description": "Post-execution assertions.  Keys are assertion names; values are expected values.  Example: `{ \"status\": 200, \"duration_ms_lt\": 500 }`."
@@ -343,6 +350,7 @@
       "type": "object"
     },
     "VuStage": {
+      "additionalProperties": false,
       "description": "One `stages:` entry — ramp the VU count linearly to `target` over `duration`. The first stage ramps from 0 VUs, each later stage from the previous stage's `target` (like k6's `ramping-vus` with `startVUs: 0`).",
       "properties": {
         "duration": {
@@ -363,6 +371,7 @@
       "type": "object"
     },
     "WebRtcConfig": {
+      "additionalProperties": false,
       "description": "WebRTC media-plane configuration (`webrtc:`, RFC 007) — consumed by the pro `pro/webrtc-*` action module. Declaring the block on a build without the pro module is a configuration error.",
       "properties": {
         "ice_servers": {
@@ -388,6 +397,7 @@
       "type": "object"
     },
     "WebRtcIceServer": {
+      "additionalProperties": false,
       "description": "One STUN/TURN server entry of the `webrtc:` config block (RFC 007).",
       "properties": {
         "credential": {

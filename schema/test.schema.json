@@ -1,5 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
   "definitions": {
     "Capability": {
       "anyOf": [
@@ -68,7 +69,8 @@
       "description": "The value of a top-level `import:` key."
     },
     "LibraryRef": {
-      "description": "One `libraries:` entry — a value-generator library bound to a token alias.",
+      "additionalProperties": false,
+      "description": "One `libraries:` entry — a value-generator library bound to a token alias.\n\nUnknown keys are rejected (`deny_unknown_fields`): a typo'd policy key (`capabilties:`, `allows:`) must fail loudly — silently dropping it would weaken the fail-closed capability model.",
       "properties": {
         "allow": {
           "description": "Whitelist of callable functions (`${alias.fn(...)}`). When present, calling a function not listed fails the step. `deny:` wins over `allow:` when a name appears in both.",
@@ -145,6 +147,7 @@
       "type": "object"
     },
     "Step": {
+      "additionalProperties": false,
       "anyOf": [
         {
           "required": [
@@ -157,7 +160,7 @@
           ]
         }
       ],
-      "description": "A single step in a test definition.",
+      "description": "A single step in a test definition.\n\nUnknown keys are rejected (`deny_unknown_fields`): a typo like `output:` (instead of `outputs:`) must fail at load time, not silently drop data.",
       "properties": {
         "check": {
           "description": "Post-execution assertions.  Keys are assertion names; values are expected values.  Example: `{ \"status\": 200, \"duration_ms_lt\": 500 }`."
@@ -205,7 +208,7 @@
       "type": "object"
     }
   },
-  "description": "Top-level test definition — a list of steps executed per VU iteration.",
+  "description": "Top-level test definition — a list of steps executed per VU iteration.\n\nUnknown keys are rejected (`deny_unknown_fields`): a typo'd key must fail loudly at load time instead of silently falling back to defaults.",
   "properties": {
     "import": {
       "anyOf": [

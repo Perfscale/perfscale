@@ -64,7 +64,11 @@ use crate::runner::{LogLine, LogSource};
 /// `devices` subset) for the duration of the VU phase. Failures are
 /// non-fatal: one warning is logged and the run continues without GPU
 /// metrics.
+///
+/// Unknown keys are rejected (`deny_unknown_fields`) — a typo'd key must
+/// fail at load time instead of silently leaving the section at defaults.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GpuConfig {
     /// Master switch. When `false` the whole section is ignored.
     #[serde(default)]
