@@ -14,6 +14,7 @@ and the pitfalls — before code, so the hard decisions are argued on paper.
 | [007](007-webrtc.md) | pro/webrtc — WebRTC load testing (full media path) | Draft | 005 |
 | [008](008-pro-steps.md) | Pro step families — architecture, catalog, registration contract | Draft | 004, 005 |
 | [009](009-custom-sdk-steps.md) | Custom SDK steps — wasm components as `use:` actions | Draft | 005, 008 |
+| [010](010-metrics-module.md) | Metrics module — families, registry, catalog | Draft | — |
 
 ## Status values
 
