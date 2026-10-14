@@ -465,8 +465,12 @@ WASM library rules:
   `wasi:clocks/wall-clock` imports are waived as toolchain noise (the guest
   still gets no preopens, so actual file access fails at runtime). `fs` is
   a read-only preopen confined to `fs_root` (default: the directory
-  containing the `.wasm`); `clock` is `wasi:clocks`; `net: [hosts]` is
-  **not yet supported** (a `net` grant fails the load with a clear error);
+  containing the `.wasm`); `clock` is `wasi:clocks`; `net: [hosts]` grants
+  outbound HTTP via `wasi:http` with a destination allowlist checked on
+  every request (`host` allows any port, `host:port` pins one, `*.suffix`
+  matches any host under the suffix); requests outside the allowlist fail
+  with an error naming the destination, and the host bounds each call at
+  30 s per request with a 16 MiB cap on request and response bodies;
   `wasi:random` and raw sockets are never provided — libraries draw
   randomness from the seeded PRNG (`ctx.seed`) in their SDK.
 - `with:` is passed to the component's `init()` as JSON; an init failure is
