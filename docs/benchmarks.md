@@ -39,7 +39,7 @@ wrapping overhead — not the underlying tool.
 | `library` | WASM value-generator cost: per-run compile (cold) vs burn-cache deserialize vs the `@std/random` builtin |
 | `grpc` | `std/grpc@v1` unary echo against the repo's `grpc_echo_server` example |
 | `graphql` | `std/graphql@v1` query against the repo's `graphql_server` example |
-| `db` | SQL: cold connect+query vs warm persistent pool vs transactions (`std/db-*@v1`, PostgreSQL + in-process SQLite), plus the warm shape from locust (psycopg2) and JMeter (JDBC) when their drivers are installed |
+| `db` | SQL: cold connect+query vs warm persistent pool vs transactions (`std/db-*@v1`, PostgreSQL + in-process SQLite), plus the warm shape from locust (psycopg2), JMeter (JDBC) and k6 — the k6 row is a **custom binary** built with the `xk6-sql` extension + postgres driver (stock k6 has no SQL module), used only by this row |
 
 JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
 console summary has no percentiles, so it stays out of the `throughput`
@@ -68,10 +68,15 @@ query per iteration, connection dropped at iteration end) from the warm path
 (`db-warm`: one persistent pool per iteration, `DB_WARM_QUERIES` queries,
 `db-close`; `db-warm-tx`: `DB_TX_CYCLES` × begin+query+commit) and adds an
 in-process SQLite floor (`db-sqlite`, `db-sqlite-warm`, no server needed).
-The locust row (`pipx inject locust psycopg2-binary`) and the JMeter row
+The locust row (`pipx inject locust psycopg2-binary`), the JMeter row
 (PostgreSQL JDBC jar in JMeter's `lib/`, `BENCH_PG_JDBC_JAR` to point
-elsewhere) repeat the warm shape. There is deliberately no k6 row: k6 has no
-SQL module without a custom `xk6-sql` build.
+elsewhere), and the k6 row repeat the warm shape. The `k6 (xk6-sql)` row is
+**not stock k6**: stock k6 has no SQL module, so the bench workflow builds a
+separate binary with `xk6 build` (xk6-sql extension + postgres driver, all
+versions pinned, binary cached; `K6_SQL_BIN`, default
+`target/xk6-sql/k6`). Its k6 core version may differ from the stock one — the
+CI environment summary prints both. The custom binary serves only this row;
+every other k6 scenario keeps using the stock binary.
 
 Micro-benchmarks for the native engine's hot paths (YAML parse, `${{ ... }}`
 interpolation, metrics recording / percentile summary, `RingBuf` process-output
@@ -137,6 +142,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `DB_DURATION` / `DB_WARM_QUERIES` / `DB_TX_CYCLES` | `10s` / `10` / `5` | db-suite per-scenario length / queries per warm iteration / tx cycles per iteration |
 | `BENCH_PG_DSN` | `postgres://postgres:perfscale@127.0.0.1:5432/postgres` | PostgreSQL DSN for the db suite |
 | `BENCH_PG_JDBC_JAR` | autodetected from JMeter's `lib/` | PostgreSQL JDBC driver jar for the JMeter db row |
+| `K6_SQL_BIN` | `target/xk6-sql/k6` | Custom k6 with the xk6-sql extension for the db-suite k6 row (built by the bench workflow) |
 | `PORT` / `TLS_PORT` | `18999` / `18998` | Ports for the throwaway serve targets |
 | `OUTPUT` | `bench-report.md` | Markdown report path |
 | `RESULTS` | `bench-results.json` | Machine-readable results (regression tracking input) |

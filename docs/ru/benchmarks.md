@@ -39,7 +39,7 @@ loopback, поэтому любая разница между строкой `pe
 | `library` | Стоимость WASM-библиотек значений: компиляция на каждый прогон (холодный кэш) против десериализации burn-кэша против встроенной `@std/random` |
 | `grpc` | Унарный вызов `std/grpc@v1` против примера `grpc_echo_server` из репозитория |
 | `graphql` | Запрос `std/graphql@v1` против примера `graphql_server` из репозитория |
-| `db` | SQL: холодный connect+query против тёплого постоянного пула против транзакций (`std/db-*@v1`, PostgreSQL + in-process SQLite), плюс тёплая форма от locust (psycopg2) и JMeter (JDBC), если их драйверы установлены |
+| `db` | SQL: холодный connect+query против тёплого постоянного пула против транзакций (`std/db-*@v1`, PostgreSQL + in-process SQLite), плюс тёплая форма от locust (psycopg2), JMeter (JDBC) и k6 — строка k6 использует **кастомный бинарь**, собранный с расширением `xk6-sql` и postgres-драйвером (в стоковом k6 SQL-модуля нет), и только она его использует |
 
 JMeter участвует только в наборах hyperfine (`overhead`/`startup`): его
 консольная сводка в non-GUI режиме не содержит перцентилей, поэтому он не
@@ -70,9 +70,14 @@ JMeter участвует только в наборах hyperfine (`overhead`/`
 `db-warm-tx`: `DB_TX_CYCLES` × begin+query+commit) и добавляет in-process
 SQLite-«пол» (`db-sqlite`, `db-sqlite-warm`, сервер не нужен). Строка locust
 (`pipx inject locust psycopg2-binary`) и строка JMeter (PostgreSQL JDBC jar в
-`lib/` JMeter, переменная `BENCH_PG_JDBC_JAR` для другого пути) повторяют
-тёплую форму. Строки k6 намеренно нет: у k6 нет SQL-модуля без
-самостоятельной сборки `xk6-sql`.
+`lib/` JMeter, переменная `BENCH_PG_JDBC_JAR` для другого пути) и строка k6
+повторяют тёплую форму. Строка `k6 (xk6-sql)` — это **не стоковый k6**: в
+нём нет SQL-модуля, поэтому bench-workflow собирает отдельный бинарь через
+`xk6 build` (расширение xk6-sql + postgres-драйвер, все версии зафиксированы,
+бинарь кэшируется; `K6_SQL_BIN`, по умолчанию `target/xk6-sql/k6`). Версия
+ядра k6 внутри может отличаться от стоковой — сводка окружения в CI печатает
+обе. Кастомный бинарь обслуживает только эту строку; все остальные сценарии
+k6 продолжают использовать стоковый.
 
 Микробенчмарки горячих путей нативного движка (парсинг YAML, подстановка
 `${{ ... }}`, запись метрик / перцентильная сводка, захват вывода процессов
@@ -139,6 +144,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `DB_DURATION` / `DB_WARM_QUERIES` / `DB_TX_CYCLES` | `10s` / `10` / `5` | длительность сценария db / запросов на тёплую итерацию / циклов транзакций на итерацию |
 | `BENCH_PG_DSN` | `postgres://postgres:perfscale@127.0.0.1:5432/postgres` | DSN PostgreSQL для набора db |
 | `BENCH_PG_JDBC_JAR` | определяется из `lib/` JMeter | jar JDBC-драйвера PostgreSQL для строки JMeter db |
+| `K6_SQL_BIN` | `target/xk6-sql/k6` | Кастомный k6 с расширением xk6-sql для строки k6 набора db (собирается bench-workflow) |
 | `PORT` / `TLS_PORT` | `18999` / `18998` | Порты для одноразовых целей serve |
 | `OUTPUT` | `bench-report.md` | Путь к Markdown-отчёту |
 | `RESULTS` | `bench-results.json` | Машиночитаемые результаты (вход для отслеживания регрессий) |

@@ -36,6 +36,16 @@ env:
   PGJDBC_VERSION: "42.7.4"
   PGJDBC_SHA256: "188976721ead8e8627eb6d8389d500dccc0c9bebd885268a3047180274a6031e"
   PSYCOPG2_VERSION: "2.9.10"
+  # Custom k6 for the db suite's `k6 (xk6-sql)` row: xk6 build tool + the
+  # xk6-sql extension + its postgres driver, all pinned. The k6 core version
+  # comes from xk6-sql's go.mod (v1.2.3 pins go.k6.io/k6/v2 v2.3.0) — the
+  # stock apt k6 is untouched and serves every other suite.
+  XK6_VERSION: "1.4.14"
+  XK6_SQL_VERSION: "1.2.3"
+  XK6_SQL_PG_VERSION: "0.3.2"
+  XK6_K6_VERSION: "2.3.0"
+  # xk6-sql v1.2.3 / driver v0.3.2 declare `go 1.26.0` / `toolchain go1.26.8`.
+  XK6_GO_VERSION: "1.26.8"
 
 jobs:
   bench:
@@ -121,6 +131,39 @@ jobs:
           echo "${PGJDBC_SHA256}  $jar" | sha256sum -c -
           sudo cp "$jar" "/opt/apache-jmeter-${JMETER_VERSION}/lib/"
 
+      # Custom k6 with the xk6-sql extension for the db suite. Builds take
+      # minutes (full k6 recompile), so the binary is cached by version key;
+      # a version bump of any component changes the key and forces a rebuild.
+      # bench.sh picks the binary up at target/xk6-sql/k6 (K6_SQL_BIN).
+      - name: Set up Go (for the xk6 build)
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.XK6_GO_VERSION }}
+
+      - name: Cache k6+xk6-sql binary
+        id: k6sql-cache
+        uses: actions/cache@v4
+        with:
+          path: target/xk6-sql/k6
+          key: xk6sql-${{ env.XK6_VERSION }}-${{ env.XK6_SQL_VERSION }}-${{ env.XK6_SQL_PG_VERSION }}-k6${{ env.XK6_K6_VERSION }}-go${{ env.XK6_GO_VERSION }}
+
+      - name: Build k6 with xk6-sql
+        if: steps.k6sql-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .gobin
+          GOBIN="$PWD/.gobin" go install "go.k6.io/xk6/cmd/xk6@v${XK6_VERSION}"
+          ./.gobin/xk6 build "v${XK6_K6_VERSION}" \
+            --with "github.com/grafana/xk6-sql@v${XK6_SQL_VERSION}" \
+            --with "github.com/grafana/xk6-sql-driver-postgres@v${XK6_SQL_PG_VERSION}" \
+            --output target/xk6-sql/k6
+          rm -rf .gobin
+
+      - name: Verify k6+xk6-sql binary
+        run: |
+          target/xk6-sql/k6 version
+          echo 'import sql from "k6/x/sql"; import driver from "k6/x/sql/driver/postgres"; export default function() {}' \
+            | target/xk6-sql/k6 run -
+
       # Prebuilt binary (seconds) instead of `cargo install` compiling from
       # source (minutes). Pinned: bench numbers must stay comparable between
       # runs, and 1.22 changed the command-string rules (env-prefixed
@@ -153,6 +196,7 @@ jobs:
             echo '|---|---|'
             echo "| perfscale | $(./target/release/perfscale --version) |"
             echo "| k6 | $(k6 version 2>/dev/null || echo 'not installed') |"
+            echo "| k6 (xk6-sql custom build) | $(target/xk6-sql/k6 version 2>/dev/null || echo 'not built') — xk6-sql ${XK6_SQL_VERSION} + driver-postgres ${XK6_SQL_PG_VERSION} |"
             echo "| locust | $(locust --version 2>/dev/null || echo 'not installed') |"
             echo "| jmeter | ${JMETER_VERSION} |"
             echo "| pgjdbc | ${PGJDBC_VERSION} |"

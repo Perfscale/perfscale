@@ -43,9 +43,9 @@ set -euo pipefail
 #                 at BENCH_PG_DSN (cold connect+query per iteration, warm
 #                 persistent pool, transactions) plus an in-process SQLite
 #                 baseline, and the same warm SELECT 1 shape from locust
-#                 (psycopg2) and JMeter (JDBC) when their drivers are
-#                 installed. k6 is omitted on purpose: it has no SQL module
-#                 without a custom xk6-sql build.
+#                 (psycopg2), JMeter (JDBC) and k6 — the k6 row needs a
+#                 custom binary with the xk6-sql extension (K6_SQL_BIN;
+#                 built by the bench workflow), stock k6 has no SQL module.
 #
 # No llm/pubsub suites: the engine's LLM and pubsub (nats) drivers need
 # backing services that don't fit a bench CI job cleanly (an LLM endpoint
@@ -102,6 +102,11 @@ DB_DURATION="${DB_DURATION:-10s}"
 DB_WARM_QUERIES="${DB_WARM_QUERIES:-10}"
 DB_TX_CYCLES="${DB_TX_CYCLES:-5}"
 BENCH_PG_DSN="${BENCH_PG_DSN:-postgres://postgres:perfscale@127.0.0.1:5432/postgres}"
+# Custom k6 binary with the xk6-sql extension + postgres driver, used ONLY by
+# the db suite's `k6 (xk6-sql)` row — every other k6 scenario keeps using the
+# stock binary. Built by the bench workflow (see bench.yml); local runs skip
+# the row when the binary is absent. Resolved after ROOT below.
+K6_SQL_BIN="${K6_SQL_BIN:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${PERFSCALE_BIN:-$ROOT/target/release/perfscale}"
@@ -309,6 +314,21 @@ if [[ "$HAS_DB" == 1 && "$HAS_JMETER" == 1 ]]; then
     HAS_JMETER_DB=1
   else
     echo "skipping jmeter db scenario: no postgresql JDBC jar in JMeter's lib/ (BENCH_PG_JDBC_JAR)" >&2
+  fi
+fi
+
+# The k6 db row needs a custom binary with the xk6-sql extension (stock k6
+# has no SQL module). Default path matches what the bench workflow builds;
+# K6_SQL_BIN overrides it. NOTE: this binary is deliberately NOT on the k6
+# scenarios above — the stock k6 keeps serving every other suite, and the
+# custom build's k6 core version may differ from the apt-installed one.
+HAS_K6_SQL=0
+K6_SQL_BIN="${K6_SQL_BIN:-$ROOT/target/xk6-sql/k6}"
+if [[ "$HAS_DB" == 1 ]]; then
+  if [[ -x "$K6_SQL_BIN" ]]; then
+    HAS_K6_SQL=1
+  else
+    echo "skipping k6 (xk6-sql) db scenario: no custom binary at $K6_SQL_BIN (built by the bench workflow)" >&2
   fi
 fi
 
@@ -1004,6 +1024,54 @@ if [[ "$HAS_JMETER_DB" == 1 ]]; then
     </hashTree>
   </hashTree>
 </jmeterTestPlan>
+EOF
+fi
+
+# k6 db scenario (custom xk6-sql binary): one connection per VU opened in the
+# init scope, then SELECT 1 per iteration — the same warm shape as the locust
+# and JMeter rows. Metrics mirror the native engine's names
+# (db_query_duration Trend, db_errors Counter) so bench_metrics.py's db-text
+# parser reads it unchanged; k6's built-in `iterations` counter supplies the
+# query rate (one query per iteration).
+if [[ "$HAS_K6_SQL" == 1 ]]; then
+  K6_SQL_DSN="$BENCH_PG_DSN"
+  case "$K6_SQL_DSN" in
+    *\?*) K6_SQL_DSN="$K6_SQL_DSN&sslmode=disable" ;;
+    *) K6_SQL_DSN="$K6_SQL_DSN?sslmode=disable" ;;
+  esac
+  cat >"$WORKDIR/db-k6.js" <<'EOF'
+import sql from 'k6/x/sql';
+import driver from 'k6/x/sql/driver/postgres';
+import { Counter, Trend } from 'k6/metrics';
+
+// Trend in the native engine's db_query_duration shape (isTime, values are
+// ms from Date.now()).
+const queryDuration = new Trend('db_query_duration', true);
+const errors = new Counter('db_errors');
+
+export const options = {
+  vus: Number(__ENV.BENCH_VUS || 1),
+  duration: __ENV.BENCH_DURATION || '10s',
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(50)', 'p(90)', 'p(95)', 'p(99)'],
+};
+
+// Init scope runs once per VU: one connection per VU, reused by every
+// iteration below — the warm-pool shape.
+const db = sql.open(driver, __ENV.BENCH_PG_SQL_DSN);
+
+export default function () {
+  const t0 = Date.now();
+  try {
+    db.query('SELECT 1');
+  } catch (e) {
+    errors.add(1);
+  }
+  queryDuration.add(Date.now() - t0);
+}
+
+export function teardown() {
+  db.close();
+}
 EOF
 fi
 
@@ -1706,6 +1774,13 @@ if has_suite db; then
         locust-csv 1 "$WORKDIR/loc-db_stats.csv"
     fi
 
+    if [[ "$HAS_K6_SQL" == 1 ]]; then
+      # NOT the stock k6: a custom binary with the xk6-sql extension.
+      db_row "k6 (xk6-sql)" \
+        "env BENCH_VUS=$VUS BENCH_DURATION=$DB_DURATION BENCH_PG_SQL_DSN='$K6_SQL_DSN' $K6_SQL_BIN run --quiet $WORKDIR/db-k6.js" \
+        db-text
+    fi
+
     if [[ "$HAS_JMETER_DB" == 1 ]]; then
       db_secs="${DB_DURATION%s}"
       sed -e "s/@VUS@/$VUS/" -e "s/@SECS@/$db_secs/" \
@@ -1734,9 +1809,12 @@ if has_suite db; then
     echo "loops \`SELECT 1\` (needs \`pipx inject locust psycopg2-binary\`); JMeter"
     echo "uses a JDBC connection pool + \`SELECT 1\` sampler (needs the PostgreSQL"
     echo "JDBC jar in JMeter's \`lib/\`; its console summary has no percentiles, so"
-    echo "its p95 cell is empty and avg/min/max are console aggregates). No k6 row:"
-    echo "k6 has no SQL module without a custom \`xk6-sql\` binary, which a pinned,"
-    echo "reproducible CI install cannot supply._"
+    echo "its p95 cell is empty and avg/min/max are console aggregates);"
+    echo "**k6 (xk6-sql)** is NOT stock k6 — a custom binary built with the"
+    echo "\`xk6-sql\` extension + postgres driver (one connection per VU opened in"
+    echo "the init scope, \`SELECT 1\` per iteration; metrics reported in the"
+    echo "native engine's \`db_query_duration\`/\`db_errors\` shapes). Its k6 core"
+    echo "version may differ from the stock k6 — see the CI environment summary._"
   } >>"$OUTPUT"
 fi
 

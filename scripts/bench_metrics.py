@@ -133,9 +133,11 @@ def parse_grpc_text(content):
 
 
 def parse_db_text(content):
-    """Parse a pure-DB native run: one query per iteration, so the rate comes
+    """Parse a pure-DB run: one query per iteration, so the rate comes
     from `iterations...: N R/s`; latency from the `db_query_duration...`
-    trend; errors from the `db_errors` counter.
+    trend; errors from the `db_errors` counter. Fits both the native
+    engine's summary and the k6 (xk6-sql) script's k6-shaped summary
+    (dot-padded names, same metric names).
     """
     out = zeroed()
 
@@ -148,7 +150,7 @@ def parse_db_text(content):
     if m:
         _trend_stats(out, m.group(1))
 
-    m = re.search(r"^db_errors:\s*(\d+)\s+[\d.]+/s", content, re.M)
+    m = re.search(r"^[ \t]*db_errors[.\s]*:\s*(\d+)\s+[\d.]+/s", content, re.M)
     if m and out["requests"]:
         out["err_pct"] = int(m.group(1)) / out["requests"] * 100
 
