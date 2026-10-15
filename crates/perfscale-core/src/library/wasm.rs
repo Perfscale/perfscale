@@ -1935,26 +1935,51 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn net_grant_fetches_from_an_allowlisted_host() {
         let Some(f) = fixtures() else { return };
-        let port = canned_http_server("corpus-over-http\n");
         let mut r = lib_ref(&f.netfetch);
         r.r#as = Some("net".into());
-        r.capabilities = Some(vec![Capability::Net {
-            net: vec![format!("127.0.0.1:{port}")],
-        }]);
-        let resolved = validate_libraries(&[r], true, None).unwrap();
-        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
-        let url = format!("http://127.0.0.1:{port}/corpus");
-        // spawn_blocking, not spawn: the guest call blocks its thread for the
-        // whole fetch. On a worker thread it can starve the runtime that
-        // drives the host-side hyper socket (wasi-http sync bindings block on
-        // the ambient runtime) — under CI load that surfaced as a flaky
-        // "connection reset". The blocking pool keeps the runtime free.
-        let v = tokio::task::spawn_blocking(move || {
-            inst.call(&ctx(), "get", &[Value::from(url)]).unwrap()
-        })
-        .await
-        .unwrap();
-        assert_eq!(v, "corpus-over-http");
+
+        // The exchange parks the guest on a blocking-pool thread while
+        // wasmtime-wasi-http drives its spawned send/IO tasks on this
+        // 2-worker runtime. Under full-suite CI load (2 vCPUs, ~900 tests)
+        // that runtime starves long enough for the connection to die with a
+        // spurious "connection reset" (CI runs 38750639062 and 38755874228,
+        // both ubuntu; never reproduced locally, even CPU-saturated — 85/85).
+        // What's under test is the allowlist semantics, not the kernel's
+        // patience, so that one flake class retries with a fresh server; any
+        // other error (a real regression, e.g. a refusal) fails immediately.
+        let mut last_reset = None;
+        for attempt in 1..=3 {
+            let port = canned_http_server("corpus-over-http\n");
+            let mut grant = r.clone();
+            grant.capabilities = Some(vec![Capability::Net {
+                net: vec![format!("127.0.0.1:{port}")],
+            }]);
+            let resolved = validate_libraries(&[grant], true, None).unwrap();
+            let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+            let url = format!("http://127.0.0.1:{port}/corpus");
+            // spawn_blocking, not spawn: the guest call blocks its thread for
+            // the whole fetch. On a worker thread it can starve the runtime
+            // that drives the host-side hyper socket (wasi-http sync bindings
+            // block on the ambient runtime) — under CI load that surfaced as
+            // a flaky "connection reset". The blocking pool keeps the runtime
+            // free.
+            let result =
+                tokio::task::spawn_blocking(move || inst.call(&ctx(), "get", &[Value::from(url)]))
+                    .await
+                    .unwrap();
+            match result {
+                Ok(v) => {
+                    assert_eq!(v, "corpus-over-http");
+                    return;
+                }
+                Err(e) if e.contains("connection reset") => {
+                    eprintln!("attempt {attempt}: flaky connection reset, retrying");
+                    last_reset = Some(e);
+                }
+                Err(e) => panic!("unexpected fetch error: {e}"),
+            }
+        }
+        panic!("3 attempts all hit the CI flake, last: {last_reset:?}");
     }
 
     /// A destination outside the allowlist is refused by the host's
