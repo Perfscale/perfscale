@@ -144,7 +144,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       - name: Assemble packages
@@ -152,10 +152,14 @@ jobs:
 
       # Platform packages first — the meta package's optionalDependencies
       # must be resolvable the moment @perfscale/exe lands.
+      # Publishes via OIDC trusted publishing: the workflow authenticates with
+      # its OIDC token (no long-lived npm token anywhere) and the packages
+      # carry provenance attestations. The binding lives on npmjs.com →
+      # package settings → Trusted Publisher → GitHub Actions.
+      # Requires npm ≥ 11.5.1 (hence the npm@latest upgrade).
       - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          npm install -g npm@latest
           for pkg in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64 exe; do
             npm publish "npm/out/$pkg" --access public --provenance
           done
