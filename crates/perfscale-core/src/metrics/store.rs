@@ -106,14 +106,21 @@ impl Metrics {
         for (name, v) in obj {
             match v {
                 Value::Array(samples) => {
-                    let h = self.hists.entry(name.clone()).or_insert_with(|| {
-                        hdrhistogram::Histogram::new_with_bounds(
-                            HIST_LOW_MICROS,
-                            HIST_HIGH_MICROS,
-                            HIST_SIGFIGS,
-                        )
-                        .expect("static histogram bounds are valid")
-                    });
+                    // get_mut first: the per-step fold hits existing entries
+                    // ~always, and BTreeMap::entry would allocate an owned
+                    // key String on every hit.
+                    if self.hists.get_mut(name).is_none() {
+                        self.hists.insert(
+                            name.clone(),
+                            hdrhistogram::Histogram::new_with_bounds(
+                                HIST_LOW_MICROS,
+                                HIST_HIGH_MICROS,
+                                HIST_SIGFIGS,
+                            )
+                            .expect("static histogram bounds are valid"),
+                        );
+                    }
+                    let h = self.hists.get_mut(name).expect("inserted above");
                     for s in samples.iter().filter_map(|s| s.as_f64()) {
                         let micros = (s * 1000.0).round() as u64;
                         let _ = h.record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
@@ -121,7 +128,12 @@ impl Metrics {
                 }
                 _ => {
                     if let Some(x) = v.as_f64() {
-                        *self.counters.entry(name.clone()).or_insert(0.0) += x;
+                        match self.counters.get_mut(name) {
+                            Some(e) => *e += x,
+                            None => {
+                                self.counters.insert(name.clone(), x);
+                            }
+                        }
                     }
                 }
             }
@@ -132,10 +144,16 @@ impl Metrics {
     /// is 1 when the step invocation failed, 0 when it succeeded. `rate`
     /// over these samples is exactly failed/total invocations.
     pub fn record_rate(&mut self, name: &str, failed: bool) {
-        let e = self.rates.entry(name.to_string()).or_insert((0, 0));
-        e.0 += 1;
-        if failed {
-            e.1 += 1;
+        // Same get_mut-first shape as add_counters: the name exists after
+        // the first step, so the to_string alloc must not repeat per call.
+        match self.rates.get_mut(name) {
+            Some(e) => {
+                e.0 += 1;
+                e.1 += failed as u64;
+            }
+            None => {
+                self.rates.insert(name.to_string(), (1, failed as u64));
+            }
         }
     }
 
@@ -144,22 +162,34 @@ impl Metrics {
     /// `metrics` key. Engine-internal producers (the `engine_metrics:` probe)
     /// use it directly instead of building a throwaway JSON object per tick.
     pub(crate) fn record_hist_sample(&mut self, name: &str, ms: f64) {
-        let h = self.hists.entry(name.to_string()).or_insert_with(|| {
-            hdrhistogram::Histogram::new_with_bounds(
-                HIST_LOW_MICROS,
-                HIST_HIGH_MICROS,
-                HIST_SIGFIGS,
-            )
-            .expect("static histogram bounds are valid")
-        });
+        if self.hists.get_mut(name).is_none() {
+            self.hists.insert(
+                name.to_string(),
+                hdrhistogram::Histogram::new_with_bounds(
+                    HIST_LOW_MICROS,
+                    HIST_HIGH_MICROS,
+                    HIST_SIGFIGS,
+                )
+                .expect("static histogram bounds are valid"),
+            );
+        }
         let micros = (ms * 1000.0).round() as u64;
-        let _ = h.record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
+        let _ = self
+            .hists
+            .get_mut(name)
+            .expect("inserted above")
+            .record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
     }
 
     /// Set a gauge's current value — last write wins, unlike
     /// [`Metrics::add_counters`]' summing.
     pub(crate) fn set_gauge(&mut self, name: &str, value: f64) {
-        self.gauges.insert(name.to_string(), value);
+        match self.gauges.get_mut(name) {
+            Some(e) => *e = value,
+            None => {
+                self.gauges.insert(name.to_string(), value);
+            }
+        }
     }
 
     /// Fold another store's contents into this one — the per-shard merge

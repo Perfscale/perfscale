@@ -45,7 +45,17 @@ const SUBSTRING_MIN_LEN: usize = 4;
 /// VU resolved so far. Thread-safe — VUs interpolate concurrently.
 #[derive(Debug, Clone, Default)]
 pub struct SecretRegistry {
-    values: Arc<RwLock<HashSet<String>>>,
+    inner: Arc<RwLock<Secrets>>,
+}
+
+/// The recorded values in two shapes: a set for dedup on `record`, and the
+/// mask-order view — longest first, so overlapping secrets mask the longer
+/// one. `sorted` is rebuilt on insert (rare: one per distinct resolved env
+/// value), so `mask` never allocates or sorts per log line.
+#[derive(Debug, Default)]
+struct Secrets {
+    set: HashSet<String>,
+    sorted: Vec<String>,
 }
 
 impl SecretRegistry {
@@ -60,7 +70,11 @@ impl SecretRegistry {
         if value.trim().is_empty() {
             return;
         }
-        self.values.write().unwrap().insert(value.to_string());
+        let mut inner = self.inner.write().unwrap();
+        if inner.set.insert(value.to_string()) {
+            inner.sorted.push(value.to_string());
+            inner.sorted.sort_by_key(|v| std::cmp::Reverse(v.len()));
+        }
     }
 
     /// Replace every recorded value in `line` with `***`.
@@ -69,21 +83,16 @@ impl SecretRegistry {
     /// before any scanning when the registry is empty (runs without
     /// `${{ env.* }}` placeholders pay nothing).
     pub fn mask<'a>(&self, line: &'a str) -> Cow<'a, str> {
-        let values = self.values.read().unwrap();
-        if values.is_empty() {
+        let inner = self.inner.read().unwrap();
+        if inner.sorted.is_empty() {
             return Cow::Borrowed(line);
         }
-        // Longest first: when two recorded values overlap, the longer one
-        // must win — masking the shorter first would leave the tail of the
-        // longer one behind in plain text.
-        let mut values: Vec<&str> = values.iter().map(String::as_str).collect();
-        values.sort_by_key(|v| std::cmp::Reverse(v.len()));
 
         let mut out = Cow::Borrowed(line);
-        for value in values {
+        for value in &inner.sorted {
             if value.len() >= SUBSTRING_MIN_LEN {
-                if out.contains(value) {
-                    out = Cow::Owned(out.replace(value, MASK));
+                if out.contains(value.as_str()) {
+                    out = Cow::Owned(out.replace(value.as_str(), MASK));
                 }
             } else if let Some(masked) = mask_whole_token(&out, value) {
                 out = Cow::Owned(masked);
@@ -213,6 +222,19 @@ mod tests {
             reg.mask("anything at all"),
             Cow::Borrowed("anything at all")
         ));
+    }
+
+    /// The pre-sorted view stays longest-first however the values were
+    /// inserted, and re-recording a value inserts it once.
+    #[test]
+    fn record_keeps_the_mask_order_longest_first() {
+        let reg = SecretRegistry::new();
+        reg.record("key");
+        reg.record("secret-key");
+        reg.record("secret");
+        reg.record("secret"); // duplicate — recorded once
+        assert_eq!(reg.mask("a secret-key and secret"), "a *** and ***");
+        assert_eq!(reg.mask("secret-key"), "***");
     }
 
     #[test]

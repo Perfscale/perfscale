@@ -1623,11 +1623,18 @@ async fn execute_step(
             let failed = !output.success;
             for (name, v) in obj {
                 if v.is_array() {
-                    let family = name
-                        .strip_suffix("_duration")
-                        .or_else(|| name.strip_suffix("_rtt"))
-                        .unwrap_or(name);
-                    metrics.record_rate(&format!("{family}_failed"), failed);
+                    // The derived `<family>_failed` name is static per
+                    // metric — memoized on the context instead of a fresh
+                    // format! String per step.
+                    if !ctx.rate_names.contains_key(name) {
+                        let family = name
+                            .strip_suffix("_duration")
+                            .or_else(|| name.strip_suffix("_rtt"))
+                            .unwrap_or(name);
+                        ctx.rate_names
+                            .insert(name.clone(), format!("{family}_failed"));
+                    }
+                    metrics.record_rate(&ctx.rate_names[name], failed);
                 }
             }
         }

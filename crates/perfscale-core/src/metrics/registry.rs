@@ -14,6 +14,7 @@
 //!   [`Metrics::stats_line`](super::Metrics) ask every registered family for
 //!   its own rendering after the generic fallback lines.
 
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -122,6 +123,29 @@ fn registry() -> &'static RwLock<Vec<Arc<dyn MetricsFamily>>> {
 /// consulted in registration order (built-ins first).
 pub fn register_family(family: Arc<dyn MetricsFamily>) {
     registry().write().unwrap().push(family);
+    // Registration is a startup-time event; keep the fold-time lookup table
+    // coherent.
+    *lookup_table().write().unwrap() = rebuild_lookup_table();
+}
+
+/// Metric name → (family, def), rebuilt on every registration. The runner's
+/// step fold validates every emitted metric name against it — per step, per
+/// name — so lookup is one read-locked hash hit, not a `Vec<Arc>` clone +
+/// linear family scan (what `families()` would cost at that rate).
+fn lookup_table() -> &'static RwLock<HashMap<&'static str, (&'static str, MetricDef)>> {
+    static TABLE: OnceLock<RwLock<HashMap<&'static str, (&'static str, MetricDef)>>> =
+        OnceLock::new();
+    TABLE.get_or_init(|| RwLock::new(rebuild_lookup_table()))
+}
+
+fn rebuild_lookup_table() -> HashMap<&'static str, (&'static str, MetricDef)> {
+    families()
+        .iter()
+        .flat_map(|f| {
+            let family = f.family();
+            f.defs().iter().map(move |d| (d.name, (family, *d)))
+        })
+        .collect()
 }
 
 /// The registered families, in registration order (built-ins first).
@@ -141,20 +165,13 @@ pub fn catalog() -> Vec<(&'static str, MetricDef)> {
     out
 }
 
-/// Look up a metric's declaration by name across all registered families.
-pub(crate) fn lookup(name: &str) -> Option<MetricDef> {
-    families()
-        .iter()
-        .flat_map(|f| f.defs().iter().copied())
-        .find(|d| d.name == name)
-}
-
 /// Fold-time kind validation (RFC 010): when `name` is registered and the
 /// emitted JSON shape disagrees with the declared kind — a scalar for a
 /// `Histogram`, an array for a scalar kind — return the warning text for the
 /// run log. Unknown names and matching shapes return `None`.
 pub(crate) fn kind_mismatch_warning(name: &str, value_is_array: bool) -> Option<String> {
-    let def = lookup(name)?;
+    let table = lookup_table().read().unwrap();
+    let (family, def) = table.get(name)?;
     let mismatch = match def.kind {
         MetricKind::Histogram => !value_is_array,
         MetricKind::Counter | MetricKind::Gauge | MetricKind::Rate => value_is_array,
@@ -164,17 +181,9 @@ pub(crate) fn kind_mismatch_warning(name: &str, value_is_array: bool) -> Option<
     }
     let actual = if value_is_array { "array" } else { "scalar" };
     Some(format!(
-        "metric '{name}' is declared as {} (family '{}') but was emitted as {actual} — check the emitting step",
+        "metric '{name}' is declared as {} (family '{family}') but was emitted as {actual} — check the emitting step",
         def.kind.as_str(),
-        lookup_family(name).unwrap_or("?"),
     ))
-}
-
-fn lookup_family(name: &str) -> Option<&'static str> {
-    families()
-        .iter()
-        .find(|f| f.defs().iter().any(|d| d.name == name))
-        .map(|f| f.family())
 }
 
 #[cfg(test)]
@@ -224,6 +233,34 @@ mod tests {
         assert_eq!(family, "test/rfc010");
         assert_eq!(def.kind, MetricKind::Histogram);
         assert_eq!(def.unit, "ms");
+    }
+
+    /// The fold-time lookup table is rebuilt on registration: a family
+    /// registered after the table was built (any earlier lookup) is seen.
+    #[test]
+    fn lookup_table_rebuilds_on_registration() {
+        struct LateFamily;
+
+        impl MetricsFamily for LateFamily {
+            fn family(&self) -> &'static str {
+                "test/late"
+            }
+            fn defs(&self) -> &'static [MetricDef] {
+                &[MetricDef {
+                    name: "test_late_hist",
+                    kind: MetricKind::Histogram,
+                    unit: "ms",
+                    description: "late registration probe",
+                }]
+            }
+        }
+
+        // Force the table to build before the family exists.
+        assert!(kind_mismatch_warning("test_late_hist", false).is_none());
+        register_family(Arc::new(LateFamily));
+        let w = kind_mismatch_warning("test_late_hist", false)
+            .expect("registered after first lookup must still validate");
+        assert!(w.contains("test/late"), "{w}");
     }
 
     /// Kind validation: registered name + wrong shape warns; right shape and

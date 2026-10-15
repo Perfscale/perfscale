@@ -97,6 +97,10 @@ pub struct Context {
     /// Counts generators minted by this context — the `conn_seq` input of the
     /// per-instance seed derivation.
     gen_counter: Arc<std::sync::atomic::AtomicU64>,
+    /// Derived `<family>_failed` rate-metric names, memoized per context:
+    /// the step fold would otherwise format! a fresh String per histogram
+    /// metric per step.
+    pub(crate) rate_names: HashMap<String, String>,
 }
 
 impl Default for Context {
@@ -122,6 +126,7 @@ impl Default for Context {
             vu_id: 0,
             iteration_seq: 0,
             gen_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            rate_names: HashMap::new(),
         }
     }
 }
@@ -133,14 +138,22 @@ impl Context {
 
     /// Store a step's output under `name`.
     pub fn set(&mut self, name: &str, value: Value) {
-        self.vars.insert(name.to_string(), Arc::new(value));
+        self.set_shared(name, Arc::new(value));
     }
 
     /// Store an already-shared value — the runner's step fold uses this so
     /// `outputs:` and `__last__` share one allocation instead of two
     /// deep clones.
     pub(crate) fn set_shared(&mut self, name: &str, value: Arc<Value>) {
-        self.vars.insert(name.to_string(), value);
+        // get_mut first: the per-step names (`__last__`, every `outputs:`)
+        // exist after the first iteration, so the key String must not
+        // re-allocate per step.
+        match self.vars.get_mut(name) {
+            Some(slot) => *slot = value,
+            None => {
+                self.vars.insert(name.to_string(), value);
+            }
+        }
     }
 
     /// Which HTTP client shard this VU is pinned to (see
