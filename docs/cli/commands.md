@@ -135,6 +135,27 @@ Endpoints:
 | `GET` | `/api/v1/state` | Recent snapshot batches and the last run summaries as JSON — what the dashboard polls. Kept in memory only: the last 2000 snapshot batches and 20 summaries |
 | `GET` | `/ws` | WebSocket echo — every text (and binary) message is echoed back verbatim. A loopback target for WebSocket load tests and the `ws` benchmark suite |
 
+### Dashboard
+
+The dashboard is on by default — start `perfscale serve` and open
+`http://localhost:7999/` (there is no `--ui` flag; the page is served unless
+`--no-ui` is passed):
+
+![perfscale serve dashboard: live metric cards with sparklines above the last run summary](../images/serve-dashboard.png)
+
+Every series from `report.during_run` snapshots becomes a card with the latest
+value and a sparkline; finished runs stack up as summary blocks below. The
+page is a single self-contained HTML file — no CDN, no build step — and polls
+`GET /api/v1/state` every 2 seconds.
+
+```bash
+# terminal 1 — the dashboard is served on /
+perfscale serve
+
+# terminal 2 — live series need report.during_run: true in the config
+perfscale run -f test.yaml -c config.yaml --report http://127.0.0.1:7999
+```
+
 This is a development stand-in, not a control-plane: no persistence, no auth,
 no aggregation across runs. Anything that speaks these endpoints can replace
 it.
