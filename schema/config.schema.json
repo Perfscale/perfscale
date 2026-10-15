@@ -60,6 +60,25 @@
       ],
       "description": "A capability grant in a `libraries:` entry (RFC 005 capability model)."
     },
+    "EngineMetricsConfig": {
+      "additionalProperties": false,
+      "description": "Engine self-observability for a run (`engine_metrics:` next to `vus`/`duration`).\n\nOff by default; set `enabled: true` to probe scheduler lag and run-log channel depth every `interval_ms` for the duration of the VU phase.\n\nUnknown keys are rejected (`deny_unknown_fields`) — a typo'd key must fail at load time instead of silently leaving the section at defaults.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Master switch. When `false` the whole section is ignored and no probe task is spawned.",
+          "type": "boolean"
+        },
+        "interval_ms": {
+          "default": 100,
+          "description": "Probe interval in milliseconds (default 100, minimum 10). The scheduler-lag reading is measured against this interval, so it is also the resolution of the lag histogram.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "GitImport": {
       "additionalProperties": false,
       "description": "`import: { git, ref, file }` — fetch `file` from `git` at `ref`.",
@@ -476,6 +495,17 @@
       "default": "1m",
       "description": "Duration string: `\"30s\"`, `\"500ms\"`, `\"1.5s\"`, `\"1m\"`, `\"5m30s\"`, `\"1h\"`. Sub-second values are honored by the native engine.",
       "type": "string"
+    },
+    "engine_metrics": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/EngineMetricsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Engine self-observability (`engine_metrics:`) — a probe task that records the engine's own overhead (`engine_scheduler_lag_ms`, `engine_log_channel_depth_max`) into the run metrics while the VUs run. Off by default: nothing is spawned unless `enabled: true`, so regular runs pay nothing. Native engine only. Boxed like `gpu`."
     },
     "gpu": {
       "anyOf": [

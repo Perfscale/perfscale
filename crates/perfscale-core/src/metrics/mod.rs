@@ -14,11 +14,17 @@
 //! the run log), and family-owned presentation (families append their own
 //! summary lines / `[stats]` extras after the generic fallback, which keeps
 //! unregistered names byte-identical to the historical output).
+//!
+//! [`engine`] holds the optional self-observability probe
+//! (`engine_metrics:`): scheduler lag and run-log channel depth, recorded
+//! into the same store during the VU phase.
 
 mod builtin;
+pub(crate) mod engine;
 mod registry;
 mod store;
 
+pub use engine::EngineMetricsConfig;
 pub use registry::{
     catalog, register_family, MetricDef, MetricKind, MetricsFamily, SamplerContext,
 };

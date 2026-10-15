@@ -184,6 +184,14 @@ pub struct RunConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu: Option<Box<crate::gpu::GpuConfig>>,
 
+    /// Engine self-observability (`engine_metrics:`) — a probe task that
+    /// records the engine's own overhead (`engine_scheduler_lag_ms`,
+    /// `engine_log_channel_depth_max`) into the run metrics while the VUs
+    /// run. Off by default: nothing is spawned unless `enabled: true`, so
+    /// regular runs pay nothing. Native engine only. Boxed like `gpu`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_metrics: Option<Box<crate::metrics::EngineMetricsConfig>>,
+
     /// Metrics reporting (`report:`) — forward the run summary, and with
     /// `during_run: true` stream cumulative metric snapshots while the VUs
     /// run (see [`crate::report`]). Off by default. Native engine only.
@@ -293,6 +301,7 @@ impl Default for RunConfig {
             stages: Vec::new(),
             arrival: None,
             gpu: None,
+            engine_metrics: None,
             report: None,
             fs_root: None,
             webrtc: None,

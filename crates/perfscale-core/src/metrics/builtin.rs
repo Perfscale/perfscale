@@ -139,6 +139,35 @@ impl MetricsFamily for LlmFamily {
     }
 }
 
+/// Engine self-observability (RFC 010 family for what the
+/// `engine_metrics:` probe records — see [`super::engine`]). Rendering
+/// stays generic: the lag histogram and the depth gauge need no
+/// family-owned shapes.
+pub(crate) struct EngineFamily;
+
+impl MetricsFamily for EngineFamily {
+    fn family(&self) -> &'static str {
+        "engine"
+    }
+
+    fn defs(&self) -> &'static [MetricDef] {
+        &[
+            MetricDef {
+                name: "engine_scheduler_lag_ms",
+                kind: MetricKind::Histogram,
+                unit: "ms",
+                description: "Tokio scheduler lag: probe wake-up delay (actual minus expected)",
+            },
+            MetricDef {
+                name: "engine_log_channel_depth_max",
+                kind: MetricKind::Gauge,
+                unit: "lines",
+                description: "Peak pending lines in the bounded run-log channel",
+            },
+        ]
+    }
+}
+
 /// `std/pubsub@v1` metrics (emitted by the core step in `step/pubsub.rs` —
 /// the pro packages only ship the broker drivers, so the defs live here).
 pub(crate) struct PubsubFamily;

@@ -55,6 +55,11 @@ pub struct Metrics {
     /// `<name>: <pct>%` like k6's `http_req_failed`, and the source of the
     /// `rate` aggregate for `std/thresholds@v1`.
     pub(crate) rates: std::collections::BTreeMap<String, (u64, u64)>,
+    /// Point-in-time values ([`MetricKind::Gauge`](super::MetricKind::Gauge))
+    /// — last write wins, unlike counters. What engine self-observability
+    /// (`engine_metrics:`) uses for `engine_log_channel_depth_max`. Rendered
+    /// as `<name>: <value>` — no `/s` rate, a gauge is not a flow.
+    pub(crate) gauges: std::collections::BTreeMap<String, f64>,
     /// Outcomes of `std/thresholds@v1` steps (run in `after:`), combined into
     /// the run summary's `thresholds` field at the end of the run.
     pub(crate) threshold_results: Vec<crate::step::thresholds::ThresholdsSummary>,
@@ -74,6 +79,7 @@ impl Default for Metrics {
             counters: std::collections::BTreeMap::new(),
             hists: std::collections::BTreeMap::new(),
             rates: std::collections::BTreeMap::new(),
+            gauges: std::collections::BTreeMap::new(),
             threshold_results: Vec::new(),
         }
     }
@@ -133,6 +139,25 @@ impl Metrics {
         }
     }
 
+    /// Record one duration sample (milliseconds) into a named histogram —
+    /// the programmatic equivalent of emitting `[ms]` under a step's
+    /// `metrics` key. Engine-internal producers (the `engine_metrics:` probe)
+    /// use it directly instead of building a throwaway JSON object per tick.
+    pub(crate) fn record_hist_sample(&mut self, name: &str, ms: f64) {
+        let h = self.hists.entry(name.to_string()).or_insert_with(|| {
+            hdrhistogram::Histogram::new_with_bounds(HIST_LOW_MICROS, HIST_HIGH_MICROS, HIST_SIGFIGS)
+                .expect("static histogram bounds are valid")
+        });
+        let micros = (ms * 1000.0).round() as u64;
+        let _ = h.record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
+    }
+
+    /// Set a gauge's current value — last write wins, unlike
+    /// [`Metrics::add_counters`]' summing.
+    pub(crate) fn set_gauge(&mut self, name: &str, value: f64) {
+        self.gauges.insert(name.to_string(), value);
+    }
+
     /// Store the outcome of a `std/thresholds@v1` step for the run summary.
     pub fn record_threshold_result(&mut self, result: crate::step::thresholds::ThresholdsSummary) {
         self.threshold_results.push(result);
@@ -175,6 +200,11 @@ impl Metrics {
             if !self.rates.contains_key(name) {
                 out.insert(name.clone(), MetricAgg::counter(*v));
             }
+        }
+        // Gauges surface as counters in the snapshot — a threshold like
+        // `engine_log_channel_depth_max < 400` reads the latest value.
+        for (name, v) in &self.gauges {
+            out.insert(name.clone(), MetricAgg::counter(*v));
         }
         for (name, (total, failed)) in &self.rates {
             out.insert(name.clone(), MetricAgg::rate(*total, *failed));
@@ -240,6 +270,12 @@ impl Metrics {
             }
             let rate = total / wall_secs.max(0.001);
             lines.push(format!("{name}: {total:.0} {rate:.2}/s"));
+        }
+
+        // Gauges (e.g. `engine_log_channel_depth_max`) — a bare value, no
+        // rate: a point-in-time reading is not a flow.
+        for (name, value) in &self.gauges {
+            lines.push(format!("{name}: {value:.0}"));
         }
 
         // Failure-rate metrics (`db_query_failed`, …) — k6's

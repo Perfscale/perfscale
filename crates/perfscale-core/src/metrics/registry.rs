@@ -112,6 +112,7 @@ fn registry() -> &'static RwLock<Vec<Arc<dyn MetricsFamily>>> {
             Arc::new(super::builtin::HttpFamily),
             Arc::new(super::builtin::LlmFamily),
             Arc::new(super::builtin::PubsubFamily),
+            Arc::new(super::builtin::EngineFamily),
         ])
     })
 }

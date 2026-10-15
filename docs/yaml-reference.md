@@ -167,6 +167,7 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `report.max_cpu_percent` | `90` | CPU gate: while host CPU% ≥ this, batches are held (no POSTs) and snapshots queued — never dropped — until the gate opens; `0` disables; inert off-Linux |
 | `report.max_pending` | `24` | Soft cap on undelivered batches — crossing it warns, but batches are kept and delivered in order, never dropped mid-run |
 | `gpu` | — | GPU metrics collection — see [GPU metrics](#gpu-metrics-gpu). Native engine only |
+| `engine_metrics` | — | Engine self-observability — see [Engine self-metrics](#engine-self-metrics-engine_metrics). Native engine only |
 | `before` | `[]` | One-time setup steps — see [Setup and variables](#setup-and-variables) |
 | `after` | `[]` | One-time teardown steps — see [Teardown](#teardown-after) |
 | `variables` | `{}` | Static values exposed to steps as `${{ vars.* }}`. Keep secrets out of this block — it is plain YAML, checked into repos and shown in diffs; use `${{ env.NAME }}` (process environment, masked in run logs) for those |
@@ -194,6 +195,28 @@ gpu:
 ```
 
 Full guide: [core/gpu.md](core/gpu.md).
+
+### Engine self-metrics (`engine_metrics:`)
+
+The engine measures the system under test but, by default, not itself. With
+`engine_metrics.enabled: true` a probe task wakes every `interval_ms` during
+the VU phase and records the engine's own overhead into the run summary:
+
+- `engine_scheduler_lag_ms` (histogram) — tokio scheduler lag: how late the
+  probe woke relative to its schedule. A starved runtime shows up here
+  before it shows up in the workload's percentiles.
+- `engine_log_channel_depth_max` (gauge) — peak pending lines in the bounded
+  run-log channel (capacity 512). Approaching the capacity means step
+  logging is back-pressuring the VUs.
+
+```yaml
+engine_metrics:
+  enabled: true
+  interval_ms: 100        # default 100 (min 10) — also the lag resolution
+```
+
+Off by default: nothing is spawned unless `enabled: true`, so a regular run
+pays nothing. Native engine only.
 
 ### Load profiles
 

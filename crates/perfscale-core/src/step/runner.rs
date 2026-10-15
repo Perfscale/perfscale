@@ -544,6 +544,15 @@ pub async fn run_native(
     // before the snapshot pump so the pump can drain its live buffer.
     let gpu_session = crate::gpu::start(config.gpu.as_deref(), &tx).await;
 
+    // Engine self-observability probe (`engine_metrics:`): scheduler lag and
+    // log-channel depth, recorded into the same metrics store while the VUs
+    // run. None unless enabled — a regular run spawns nothing.
+    let engine_probe = crate::metrics::engine::start(
+        config.engine_metrics.as_deref(),
+        Arc::clone(&metrics),
+        tx.clone(),
+    );
+
     // Family background samplers (RFC 010): metrics produced between steps
     // (e.g. periodic WebRTC getStats polling in pro builds) start here, at
     // the top of the VU phase. Built-in families register no samplers.
@@ -646,6 +655,11 @@ pub async fn run_native(
         ),
     };
     reporter.abort();
+    // The engine probe stops with the reporter — the summary reads the
+    // store right after, and no probe write may interleave with that read.
+    if let Some(probe) = engine_probe {
+        probe.abort();
+    }
     // Dropping the pump's sender closes the snapshot channel — the shipper
     // sees it and runs its final drain.
     if let Some(task) = metrics_stream {
