@@ -61,7 +61,11 @@ cost. A non-zero engine exit without a detected crossing (OOM, crash) is
 recorded as the boundary at that rung with a "process died" note. Wrapped
 locust/jmeter rows are omitted: the wrapper is a pass-through, the boundary
 is an engine property. `BOUNDARY_MAX_VUS`, when set, replaces the ladder with
-a single rung (backwards-compatible override).
+a single rung (backwards-compatible override). Between runs the suite probes
+the target with 50 fresh connections and waits out any loopback TIME_WAIT
+drain left by the previous engine (the CI runner also gets a widened
+`ip_local_port_range` + `tcp_tw_reuse`) — a boundary must be the engine's,
+not the machine's exhausted ephemeral ports.
 
 The `db` suite separates the cold path (`db`, `db-params`: connect + one
 query per iteration, connection dropped at iteration end) from the warm path

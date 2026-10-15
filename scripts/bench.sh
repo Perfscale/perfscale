@@ -1508,11 +1508,37 @@ if has_suite boundary; then
   # crosses BOUNDARY_ERR_PCT percent OR the process dies (OOM, crash — a
   # non-zero exit without a detected crossing; that IS the boundary, recorded
   # with a note). Engines that survive a rung move on to the next one.
+  #
+  # Before each run the target must accept fresh connections: a previous
+  # engine's high-VU rung leaves tens of thousands of loopback TIME_WAIT
+  # sockets behind, and with an exhausted ephemeral port range the NEXT
+  # engine's every connect fails instantly (EADDRNOTAVAIL) — a bogus "1 VU,
+  # 100% errors" boundary that measures the machine's drain window, not the
+  # engine. The probe is 50 sequential fresh curl connections; it waits for a
+  # clean round for up to ~100s (a TIME_WAIT generation is ~60s).
+  boundary_settle() {
+    local try fails
+    for try in $(seq 1 20); do
+      fails=0
+      for _ in $(seq 1 50); do
+        curl -sf "$TARGET/health" >/dev/null || fails=$((fails + 1))
+      done
+      if [[ "$fails" == 0 ]]; then
+        [[ "$try" == 1 ]] || echo "  (settled after $(( (try - 1) * 5 ))s of TIME_WAIT drain)" >&2
+        return 0
+      fi
+      [[ "$try" == 1 ]] && echo "  target not accepting fresh connections ($fails/50 failed) — waiting for TIME_WAIT drain" >&2
+      sleep 5
+    done
+    echo "warning: target still refusing fresh connections after 100s — the next row may measure the machine, not the engine" >&2
+  }
+
   boundary_ladder() {
     local label="$1" kind="$2" builder="$3"
     local rung crossed boundary_vus boundary_s boundary_rps rc parse_file
     for rung in $BOUNDARY_LADDER; do
       echo "  $label @ $rung VUs" >&2
+      boundary_settle
       rc=0
       bash -c "$("$builder" "$rung")" >"$b_out" 2>&1 || rc=$?
       parse_file="$b_out"
@@ -1565,7 +1591,11 @@ if has_suite boundary; then
     echo "rows are omitted: the wrapper is a pass-through, the boundary is an"
     echo "engine property. The \`perfscale (yaml)\` row runs without \`--quiet\`"
     echo "(quiet suppresses \`[stats]\`), so it includes the per-request logging"
-    echo "cost._"
+    echo "cost. Between runs the suite probes the target with 50 fresh"
+    echo "connections and waits out any loopback TIME_WAIT drain left by the"
+    echo "previous engine — a boundary must be the engine's, not the machine's"
+    echo "exhausted ephemeral ports (the workflow also widens"
+    echo "\`ip_local_port_range\` and enables \`tcp_tw_reuse\`)._"
   } >>"$OUTPUT"
 fi
 

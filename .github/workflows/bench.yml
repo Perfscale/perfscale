@@ -182,6 +182,18 @@ jobs:
       - name: Install GNU time
         run: sudo apt-get install -y --no-install-recommends time
 
+      # High-VU boundary ramps churn tens of thousands of loopback
+      # connections per engine; their TIME_WAIT sockets (60s lifetime) can
+      # exhaust the default ephemeral range (~28k ports) and make the NEXT
+      # engine's every connect fail with EADDRNOTAVAIL — a bogus boundary.
+      # Widen the range and let the kernel reuse TIME_WAIT sockets for
+      # outgoing connections. bench.sh additionally probes the target between
+      # runs and waits out any remaining drain.
+      - name: Tune loopback for high-VU ramps
+        run: |
+          sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+          sudo sysctl -w net.ipv4.tcp_tw_reuse=1
+
       - name: Build perfscale (release)
         run: cargo build --release
 
