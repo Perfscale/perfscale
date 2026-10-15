@@ -58,6 +58,13 @@ These are engine metrics: always recorded on arrival-rate runs (two
 histogram writes per iteration), registered in the built-in `engine` family,
 visible to `std/thresholds@v1` like any other metric.
 
+Related engine counter, recorded on every run profile:
+`engine_log_lines_dropped` — per-step log lines dropped because the bounded
+run-log channel (512 lines) was full. Per-request output is lossy by design
+(a slow stdout consumer must not stretch VU iterations); the summary and
+engine errors always get through, and a dropped total > 0 prints one warning
+at the end of the run.
+
 ## Final summary
 
 Printed at the end of every run, k6-compatible so downstream parsers

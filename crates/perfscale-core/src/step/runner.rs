@@ -750,6 +750,28 @@ pub async fn run_native(
             .await;
         }
     }
+    // Lossy per-step logging: if the bounded log channel backpressured
+    // (slow stdout consumer), per-request lines were dropped — the summary
+    // above went out via guaranteed delivery and is complete. Surface the
+    // dropped total once, loudly.
+    let dropped_logs = metrics
+        .merged()
+        .counters
+        .get(crate::metrics::engine::LOG_LINES_DROPPED_METRIC)
+        .copied()
+        .unwrap_or(0.0);
+    if dropped_logs > 0.0 {
+        emit(
+            &tx,
+            LogSource::Stderr,
+            &format!(
+                "log channel overflow: {} per-step log lines were dropped (the summary above is complete; only request-level output was lost)",
+                dropped_logs as u64
+            ),
+            &secrets,
+        )
+        .await;
+    }
     emit(
         &tx,
         LogSource::System,
@@ -1614,15 +1636,22 @@ async fn execute_step(
         }
     }
 
-    // Stream log lines (quiet drops everything except errors)
+    // Stream log lines (quiet drops everything except errors). Per-request
+    // lines are lossy: a backed-up log channel must not stall the VU; drops
+    // are counted and folded into `engine_log_lines_dropped` below.
+    let mut dropped_logs = 0u64;
     for (tag, text) in &output.logs {
         if quiet && *tag != LogTag::Err {
             continue;
         }
-        emit(tx, LogSource::from(*tag), text, &ctx.secrets).await;
+        emit_lossy(
+            tx,
+            LogSource::from(*tag),
+            text,
+            &ctx.secrets,
+            &mut dropped_logs,
+        );
     }
-
-    // Store output for later interpolation / checks: one allocation behind
     // an Arc, shared by the `outputs:` name and `__last__` — the per-step
     // double deep-clone of the response body is gone.
     let output_value = Arc::new(output.value);
@@ -1636,15 +1665,29 @@ async fn execute_step(
     // Always store as __last__ for inline checks
     ctx.set_shared("__last__", output_value);
 
-    // Inline checks (step.check field)
+    // Inline checks (step.check field) — same lossy treatment: these are
+    // per-iteration lines too.
     if let Some(checks) = &step.check {
         let check_out = execute_action("std/check@v1", checks, ctx, step_name).await;
         for (tag, text) in &check_out.logs {
             if quiet && *tag != LogTag::Err {
                 continue;
             }
-            emit(tx, LogSource::from(*tag), text, &ctx.secrets).await;
+            emit_lossy(
+                tx,
+                LogSource::from(*tag),
+                text,
+                &ctx.secrets,
+                &mut dropped_logs,
+            );
         }
+    }
+    if dropped_logs > 0 {
+        metrics.add_counters(
+            serde_json::json!({ crate::metrics::engine::LOG_LINES_DROPPED_METRIC: dropped_logs })
+                .as_object()
+                .unwrap(),
+        );
     }
 }
 
@@ -1691,6 +1734,30 @@ async fn emit(tx: &mpsc::Sender<LogLine>, source: LogSource, text: &str, secrets
         .await;
 }
 
+/// Send one *per-step* log line without ever blocking the VU. The bounded
+/// log channel is the run's stdout backpressure point: a slow consumer (a
+/// CI pipe) must not stretch iterations, and it does not — a full channel
+/// drops the line and counts it (the caller folds the count into
+/// `engine_log_lines_dropped`). Masking stays identical to [`emit`].
+///
+/// Only per-request volume goes through here; engine-level lines — the
+/// summary, errors, lifecycle — keep [`emit`]'s guaranteed delivery.
+fn emit_lossy(
+    tx: &mpsc::Sender<LogLine>,
+    source: LogSource,
+    text: &str,
+    secrets: &SecretRegistry,
+    dropped: &mut u64,
+) {
+    let line = LogLine {
+        source,
+        text: secrets.mask(text).into_owned(),
+    };
+    if tx.try_send(line).is_err() {
+        *dropped += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -1729,6 +1796,110 @@ mod tests {
         }
         handle.await.unwrap();
         lines
+    }
+
+    /// emit_lossy never blocks: a full channel drops and counts the line;
+    /// emit (guaranteed delivery — summary, engine errors) waits for room.
+    #[tokio::test]
+    async fn emit_lossy_drops_when_full_emit_waits_for_room() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let secrets = SecretRegistry::new();
+        emit(&tx, LogSource::Stdout, "first", &secrets).await;
+
+        let mut dropped = 0u64;
+        emit_lossy(&tx, LogSource::Stdout, "noise", &secrets, &mut dropped);
+        assert_eq!(dropped, 1, "full channel drops without blocking");
+
+        // Guaranteed delivery: emit waits for the drain to make room.
+        let drain = tokio::spawn(async move { rx.recv().await });
+        emit(&tx, LogSource::Stdout, "second", &secrets).await;
+        assert_eq!(drain.await.unwrap().unwrap().text, "first");
+    }
+
+    /// The bounded log channel must not stretch VU iterations: with a slow
+    /// consumer, per-step lines drop (counted into
+    /// `engine_log_lines_dropped` in the summary), the end-of-run warning
+    /// fires, and the summary itself — guaranteed delivery — arrives whole.
+    #[tokio::test]
+    async fn log_channel_backpressure_drops_per_step_lines_but_not_summary() {
+        // One step, one log line per iteration — the delivered+dropped
+        // accounting below is exact.
+        let (tx, mut rx) = mpsc::channel(512);
+        let steps = vec![Step {
+            name: None,
+            action: "std/log@v1".into(),
+            with: Some(json!({ "message": "noise" })),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+        }];
+        let config = RunConfig {
+            vus: 4,
+            duration: "300ms".into(),
+            ..Default::default()
+        };
+        let handle = tokio::spawn(run_native(
+            steps,
+            Vec::new(),
+            Vec::new(),
+            config,
+            Map::new(),
+            Map::new(),
+            Vec::new(),
+            false,
+            tx,
+            None,
+        ));
+        // Slow consumer: 2ms per line — the 512-deep channel stays full
+        // through the VU phase, exactly the CI-pipe shape from the audit.
+        let drain = tokio::spawn(async move {
+            let mut lines = Vec::new();
+            while let Some(line) = rx.recv().await {
+                lines.push(line);
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            lines
+        });
+        handle.await.unwrap();
+        let lines = drain.await.unwrap();
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+
+        assert!(
+            texts.iter().any(|l| l.starts_with("iterations")),
+            "summary arrived despite the backpressure: {texts:?}"
+        );
+        let dropped_line = texts
+            .iter()
+            .find(|l| l.starts_with("engine_log_lines_dropped"))
+            .unwrap_or_else(|| panic!("dropped counter in summary: {texts:?}"));
+        let dropped: u64 = dropped_line
+            .split(':')
+            .nth(1)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(dropped > 0, "the flood must have dropped lines");
+        assert!(
+            texts.iter().any(|l| l.contains("log channel overflow")),
+            "end-of-run warning: {texts:?}"
+        );
+        // Exact accounting: every iteration emits one noise line, and each
+        // was either delivered or dropped.
+        let iters: u64 = texts
+            .iter()
+            .find(|l| l.starts_with("iterations"))
+            .and_then(|l| l.split(':').nth(1)?.split_whitespace().next()?.parse().ok())
+            .unwrap();
+        let noise = texts.iter().filter(|l| **l == "noise").count() as u64;
+        assert_eq!(
+            noise + dropped,
+            iters,
+            "delivered ({noise}) + dropped ({dropped}) must equal iterations ({iters})"
+        );
     }
 
     /// The histogram must stay within its promised ≤1% quantile error and

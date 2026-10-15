@@ -42,6 +42,9 @@ pub(crate) const LOG_CHANNEL_DEPTH_METRIC: &str = "engine_log_channel_depth_max"
 /// `http_req_duration`, which deliberately stays pure server time.
 pub(crate) const ARRIVAL_QUEUE_WAIT_METRIC: &str = "engine_arrival_queue_wait_ms";
 pub(crate) const ARRIVAL_ITERATION_METRIC: &str = "engine_arrival_iteration_ms";
+/// Per-step log lines dropped on a full run-log channel (lossy per-request
+/// logging; the summary and engine errors always get through).
+pub(crate) const LOG_LINES_DROPPED_METRIC: &str = "engine_log_lines_dropped";
 
 /// Engine self-observability for a run (`engine_metrics:` next to
 /// `vus`/`duration`).

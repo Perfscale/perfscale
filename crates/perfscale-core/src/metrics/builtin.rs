@@ -182,6 +182,12 @@ impl MetricsFamily for EngineFamily {
                 unit: "count",
                 description: "Arrival permits no worker could serve (pool saturated at arrival.max_vus)",
             },
+            MetricDef {
+                name: "engine_log_lines_dropped",
+                kind: MetricKind::Counter,
+                unit: "lines",
+                description: "Per-step log lines dropped because the bounded run-log channel was full",
+            },
         ]
     }
 }
