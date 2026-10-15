@@ -36,8 +36,7 @@ mod tests {
 
     /// The committed blob this test keeps in sync, next to this source file.
     fn data_file() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/commands/serve_docs_data.html")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/serve_docs_data.html")
     }
 
     struct Page {
@@ -194,7 +193,10 @@ mod tests {
         pulldown_cmark::html::push_html(&mut html, parser);
         // pulldown-cmark emits plain <a href="…">: the only http(s) hrefs left
         // are external ones (relative .md links were rewritten above).
-        html.replace("<a href=\"http", "<a target=\"_blank\" rel=\"noopener\" href=\"http")
+        html.replace(
+            "<a href=\"http",
+            "<a target=\"_blank\" rel=\"noopener\" href=\"http",
+        )
     }
 
     fn generate() -> String {
