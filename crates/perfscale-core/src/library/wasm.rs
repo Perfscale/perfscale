@@ -1867,45 +1867,64 @@ mod tests {
     // --- net capability (wasi:http, host allowlist) -------------------------
 
     /// A one-shot loopback HTTP server answering a canned response; returns
-    /// the bound port. No dev-dependency needed for a single GET.
+    /// the bound port. Runs on the test's tokio runtime (the previous
+    /// std::net thread with a 5s blocking read timeout was the flake source:
+    /// under CI load the starved runtime could deliver the host-side hyper
+    /// request later than that, the server's `read().unwrap()` panicked, and
+    /// the dropped socket surfaced at the guest as "connection reset").
+    /// Timeouts here stay under the host's 30s request budget; every error
+    /// just ends that connection — a test server must never panic.
     fn canned_http_server(body: &'static str) -> u16 {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for conn in listener.incoming() {
-                use std::io::{Read, Write};
-                let mut conn = conn.unwrap();
-                conn.set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                    .unwrap();
-                // Read the request head (the fixture sends a bodyless GET).
-                let mut buf = [0u8; 4096];
-                let mut read = 0;
-                while !buf[..read].windows(4).any(|w| w == b"\r\n\r\n") {
-                    let n = conn.read(&mut buf[read..]).unwrap();
-                    if n == 0 {
-                        break;
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = std_listener.local_addr().unwrap().port();
+        std_listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut conn, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    // Read the request head (the fixture sends a bodyless GET).
+                    let mut buf = [0u8; 4096];
+                    let mut read = 0;
+                    let head = tokio::time::timeout(Duration::from_secs(25), async {
+                        while !buf[..read].windows(4).any(|w| w == b"\r\n\r\n") {
+                            match conn.read(&mut buf[read..]).await {
+                                Ok(0) | Err(_) => return false,
+                                Ok(n) => read += n,
+                            }
+                        }
+                        true
+                    })
+                    .await;
+                    if head != Ok(true) {
+                        return;
                     }
-                    read += n;
-                }
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                conn.write_all(response.as_bytes()).unwrap();
-                // Close gracefully: half-close the write side, then drain
-                // whatever the client still sends (chunked terminators,
-                // pipelined bytes) until it hangs up. Dropping the socket
-                // with unread inbound data sends RST, and the guest then
-                // reports "connection reset" instead of reading the body.
-                conn.shutdown(std::net::Shutdown::Write).ok();
-                let mut sink = [0u8; 4096];
-                loop {
-                    match conn.read(&mut sink) {
-                        Ok(0) => break,  // client closed
-                        Ok(_) => {}      // discard
-                        Err(_) => break, // read timeout — give up
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    if conn.write_all(response.as_bytes()).await.is_err() {
+                        return;
                     }
-                }
+                    // Close gracefully: half-close the write side, then drain
+                    // whatever the client still sends (chunked terminators,
+                    // pipelined bytes) until it hangs up. Dropping the socket
+                    // with unread inbound data sends RST, and the guest then
+                    // reports "connection reset" instead of reading the body.
+                    if conn.shutdown().await.is_err() {
+                        return;
+                    }
+                    let mut sink = [0u8; 4096];
+                    let _ = tokio::time::timeout(Duration::from_secs(25), async {
+                        loop {
+                            match conn.read(&mut sink).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(_) => {}
+                            }
+                        }
+                    })
+                    .await;
+                });
             }
         });
         port
