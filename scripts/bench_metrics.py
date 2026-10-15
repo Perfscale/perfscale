@@ -216,11 +216,11 @@ def cmd_parse(kind, path):
 
 
 # ---------------------------------------------------------------------------
-# boundary suite: ramp 0→MAX VUs and find where the error rate first reaches
-# BOUNDARY_ERR_PCT (default 1%). One parser per engine's periodic output; all
-# report the same shape: crossed=0|1, boundary_vus, boundary_s, boundary_rps.
-# crossed=0 means the run never hit the threshold — the boundary lies beyond
-# MAX ("<MAX" is rendered by bench.sh).
+# boundary suite: ramp 0→ a ladder rung (max_vus) and find where the error
+# rate first reaches BOUNDARY_ERR_PCT (default 1%). One parser per engine's
+# periodic output; all report the same shape: crossed=0|1, boundary_vus,
+# boundary_s, boundary_rps. crossed=0 means the run never hit the threshold —
+# bench.sh then either climbs to the next rung or renders ">last rung".
 # ---------------------------------------------------------------------------
 
 

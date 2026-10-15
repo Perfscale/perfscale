@@ -20,9 +20,14 @@ set -euo pipefail
 #   ws          – WebSocket echo: same-connection round-trips against the
 #                 serve target's /ws endpoint — messages/sec and RTT (k6 +
 #                 native engine; locust has no built-in WS support).
-#   boundary    – ramp 0→BOUNDARY_MAX_VUS over BOUNDARY_DURATION and find the
-#                 load where the cumulative error rate first reaches
-#                 BOUNDARY_ERR_PCT percent (default 1%).
+#   boundary    – ladder of VU ceilings (BOUNDARY_LADDER, default
+#                 "5000 15000 30000"): every engine ramps 0→ceiling over
+#                 BOUNDARY_DURATION at each rung until its cumulative error
+#                 rate crosses BOUNDARY_ERR_PCT percent (default 1%) or the
+#                 process dies (OOM counts — recorded as the boundary). An
+#                 engine that crossed stops climbing; the rest continue.
+#                 BOUNDARY_MAX_VUS, when set, replaces the ladder with a
+#                 single rung (backwards-compatible override).
 #   tls         – engines against `perfscale serve --tls` (self-signed HTTPS).
 #   library     – native engine with a WASM value-generator library
 #                 (`${hello.greet(...)}` from the SDK hello component):
@@ -75,8 +80,13 @@ TLS_DURATION="${TLS_DURATION:-10s}"
 WS_DURATION="${WS_DURATION:-10s}"
 WS_ROUNDS="${WS_ROUNDS:-10}"
 BOUNDARY_DURATION="${BOUNDARY_DURATION:-30s}"
-BOUNDARY_MAX_VUS="${BOUNDARY_MAX_VUS:-5000}"
+# Ladder of ramp ceilings for the boundary suite; an explicit
+# BOUNDARY_MAX_VUS replaces the ladder with a single rung (legacy override).
+BOUNDARY_LADDER="${BOUNDARY_MAX_VUS:-${BOUNDARY_LADDER:-5000 15000 30000}}"
 BOUNDARY_ERR_PCT="${BOUNDARY_ERR_PCT:-1}"
+# JMeter heap for the high-VU boundary rungs (the default 1g OOMs well below
+# 30k threads; ubuntu-latest runners have 16 GB).
+BOUNDARY_JMETER_HEAP="${BOUNDARY_JMETER_HEAP:--Xms512m -Xmx4g}"
 LIB_DURATION="${LIB_DURATION:-10s}"
 LIB_STARTUP_DURATION="${LIB_STARTUP_DURATION:-1s}"
 LIB_RUNS="${LIB_RUNS:-5}"
@@ -497,11 +507,11 @@ cmd_yaml() { # $1 vus, $2 duration, $3 test file, $4 extra flags (optional)
 cmd_jmeter_native() { echo "cd $WORKDIR && jmeter -n -t $(jmeter_plan "$1" "$2")"; }
 cmd_jmeter_wrapped() { echo "cd $WORKDIR && $BIN run --jmeter $(jmeter_plan "$1" "$2")"; }
 
-# Error-boundary scenario (boundary suite): every engine ramps 0→
-# BOUNDARY_MAX_VUS VUs over BOUNDARY_DURATION against GET /health while its
-# periodic output is watched for the cumulative error rate crossing
-# BOUNDARY_ERR_PCT percent. Detection differs per engine — k6 aborts itself
-# via a threshold, the others are parsed from their periodic lines.
+# Error-boundary scenario (boundary suite): every engine ramps 0→ the current
+# ladder rung over BOUNDARY_DURATION against GET /health while its periodic
+# output is watched for the cumulative error rate crossing BOUNDARY_ERR_PCT
+# percent. Detection differs per engine — k6 aborts itself via a threshold,
+# the others are parsed from their periodic lines.
 cat >"$WORKDIR/boundary.js" <<'EOF'
 import http from 'k6/http';
 
@@ -539,9 +549,8 @@ steps:
       url: "${TARGET}/health"
 EOF
 
-# Staged ramp for the native engine: 0→target over BOUNDARY_DURATION.
-printf 'stages:\n  - duration: "%s"\n    target: %s\n' \
-  "$BOUNDARY_DURATION" "$BOUNDARY_MAX_VUS" >"$WORKDIR/boundary-cfg.yaml"
+# Staged ramp config for the native engine, one file per ladder rung
+# (generated lazily by boundary_native_cfg below).
 
 cat >"$WORKDIR/boundary_locust.py" <<'EOF'
 import os
@@ -1094,72 +1103,113 @@ fi
 
 if has_suite boundary; then
   echo "suite: boundary" >&2
-  section "1% error boundary (ramp 0→${BOUNDARY_MAX_VUS} VUs over ${BOUNDARY_DURATION})"
+  # High-VU ramps exhaust file descriptors fast (one socket per VU); lift the
+  # soft limit to the hard cap where permitted. Best-effort: macOS and some
+  # CI containers refuse, and a lower ceiling simply shows up as the
+  # boundary — which is exactly what this suite measures.
+  ulimit -n 1048576 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
+
+  b_dur_s="${BOUNDARY_DURATION%s}"
+  b_out="$WORKDIR/boundary-out.$$"
+  b_last_rung="${BOUNDARY_LADDER##* }"
+  section "1% error boundary (ladder: $(echo "$BOUNDARY_LADDER" | tr ' ' '→') VUs, ${BOUNDARY_DURATION} per rung)"
   {
     echo "| Engine | Boundary | Time | RPS at boundary |"
     echo "|---|---:|---:|---:|"
   } >>"$OUTPUT"
-  b_dur_s="${BOUNDARY_DURATION%s}"
-  b_out="$WORKDIR/boundary-out.$$"
 
-  # boundary_row $1 label, $2 parse kind, $3 file to parse
-  boundary_row() {
-    local crossed boundary_vus boundary_s boundary_rps
-    eval "$($METRICS boundary "$2" "$3" "$BOUNDARY_MAX_VUS" "$b_dur_s" "$BOUNDARY_ERR_PCT")"
-    $METRICS append "$RESULTS_D/boundary.json" "$1" \
-      crossed="$crossed" boundary_vus="$boundary_vus" \
-      boundary_s="$boundary_s" boundary_rps="$boundary_rps"
-    if [[ "$crossed" == 1 ]]; then
-      echo "| $1 | ${boundary_vus} VUs | ${boundary_s}s | $boundary_rps |" >>"$OUTPUT"
-    else
-      echo "| $1 | >${BOUNDARY_MAX_VUS} VUs (never crossed) | — | — |" >>"$OUTPUT"
-    fi
+  # Native-engine staged-ramp config for one ladder rung. Prints the path.
+  boundary_native_cfg() {
+    local path="$WORKDIR/boundary-cfg-$1.yaml"
+    [[ -f "$path" ]] || printf 'stages:\n  - duration: "%s"\n    target: %s\n' \
+      "$BOUNDARY_DURATION" "$1" >"$path"
+    echo "$path"
   }
 
-  if [[ "$HAS_K6" == 1 ]]; then
-    b_k6_env="BENCH_TARGET=$TARGET/health BENCH_MAX_VUS=$BOUNDARY_MAX_VUS BENCH_DURATION=$BOUNDARY_DURATION BENCH_ERR_PCT=$BOUNDARY_ERR_PCT"
-    echo "  k6 (native)" >&2
-    run_timed "$b_out" "$b_k6_env k6 run $WORKDIR/boundary.js"
-    boundary_row "k6 (native)" k6 "$b_out"
-    echo "  perfscale (k6)" >&2
-    run_timed "$b_out" "$b_k6_env $BIN run --k6 $WORKDIR/boundary.js"
-    boundary_row "perfscale (k6)" k6 "$b_out"
-  fi
-
-  if [[ "$HAS_LOCUST" == 1 ]]; then
-    echo "  locust (native)" >&2
-    run_timed "$b_out" "BENCH_MAX_VUS=$BOUNDARY_MAX_VUS BENCH_DURATION_S=$b_dur_s locust -f $WORKDIR/boundary_locust.py --headless --host $TARGET --run-time $((b_dur_s + 10))s --csv $WORKDIR/b-loc --csv-full-history"
-    boundary_row "locust (native)" locust "$WORKDIR/b-loc_stats_history.csv"
-  fi
-
-  if [[ "$HAS_JMETER" == 1 ]]; then
-    echo "  jmeter (native)" >&2
-    sed -e "s/@VUS@/$BOUNDARY_MAX_VUS/" -e "s/@RAMP@/$b_dur_s/" \
+  # Command builders, one per engine row: $1 = ladder rung (ramp target).
+  b_cmd_k6_native() {
+    echo "BENCH_TARGET=$TARGET/health BENCH_MAX_VUS=$1 BENCH_DURATION=$BOUNDARY_DURATION BENCH_ERR_PCT=$BOUNDARY_ERR_PCT k6 run $WORKDIR/boundary.js"
+  }
+  b_cmd_k6_wrapped() {
+    echo "BENCH_TARGET=$TARGET/health BENCH_MAX_VUS=$1 BENCH_DURATION=$BOUNDARY_DURATION BENCH_ERR_PCT=$BOUNDARY_ERR_PCT $BIN run --k6 $WORKDIR/boundary.js"
+  }
+  b_cmd_locust() {
+    echo "BENCH_MAX_VUS=$1 BENCH_DURATION_S=$b_dur_s locust -f $WORKDIR/boundary_locust.py --headless --host $TARGET --run-time $((b_dur_s + 10))s --csv $WORKDIR/b-loc-$1 --csv-full-history"
+  }
+  b_cmd_jmeter() {
+    sed -e "s/@VUS@/$1/" -e "s/@RAMP@/$b_dur_s/" \
       -e "s/@SECS@/$((b_dur_s + 10))/" -e "s/@PORT@/$PORT/" \
-      "$WORKDIR/plan-boundary-template.jmx" >"$WORKDIR/plan-boundary.jmx"
-    run_timed "$b_out" "cd $WORKDIR && jmeter -n -t $WORKDIR/plan-boundary.jmx -Jsummariser.interval=2"
-    boundary_row "jmeter (native)" jmeter "$b_out"
-  fi
+      "$WORKDIR/plan-boundary-template.jmx" >"$WORKDIR/plan-boundary-$1.jmx"
+    echo "cd $WORKDIR && HEAP='$BOUNDARY_JMETER_HEAP' jmeter -n -t $WORKDIR/plan-boundary-$1.jmx -Jsummariser.interval=2"
+  }
+  b_cmd_native() {
+    echo "$BIN run -f $WORKDIR/boundary.yaml -c $(boundary_native_cfg "$1")"
+  }
+
+  # boundary_ladder $1 label, $2 parse kind, $3 command builder
+  # Climbs BOUNDARY_LADDER: at each rung the engine ramps 0→rung over
+  # BOUNDARY_DURATION. A rung ends the climb when the cumulative error rate
+  # crosses BOUNDARY_ERR_PCT percent OR the process dies (OOM, crash — a
+  # non-zero exit without a detected crossing; that IS the boundary, recorded
+  # with a note). Engines that survive a rung move on to the next one.
+  boundary_ladder() {
+    local label="$1" kind="$2" builder="$3"
+    local rung crossed boundary_vus boundary_s boundary_rps rc parse_file
+    for rung in $BOUNDARY_LADDER; do
+      echo "  $label @ $rung VUs" >&2
+      rc=0
+      bash -c "$("$builder" "$rung")" >"$b_out" 2>&1 || rc=$?
+      parse_file="$b_out"
+      [[ "$kind" == locust ]] && parse_file="$WORKDIR/b-loc-${rung}_stats_history.csv"
+      eval "$($METRICS boundary "$kind" "$parse_file" "$rung" "$b_dur_s" "$BOUNDARY_ERR_PCT")"
+      if [[ "$crossed" == 1 ]]; then
+        $METRICS append "$RESULTS_D/boundary.json" "$label" \
+          crossed=1 boundary_vus="$boundary_vus" boundary_s="$boundary_s" \
+          boundary_rps="$boundary_rps" rung="$rung"
+        echo "| $label | ${boundary_vus} VUs | ${boundary_s}s | $boundary_rps |" >>"$OUTPUT"
+        return
+      fi
+      if [[ "$rc" != 0 ]]; then
+        # Died without a detected crossing: OOM/crash at this rung counts as
+        # the boundary (the engine could not finish the ramp).
+        $METRICS append "$RESULTS_D/boundary.json" "$label" \
+          crossed=1 boundary_vus="$rung" boundary_s=0 boundary_rps=0 \
+          rung="$rung" note="process died (exit $rc)"
+        echo "| $label | ≈${rung} VUs (process died, exit $rc) | — | — |" >>"$OUTPUT"
+        return
+      fi
+    done
+    $METRICS append "$RESULTS_D/boundary.json" "$label" \
+      crossed=0 boundary_vus=0 boundary_s=0 boundary_rps=0 rung="$b_last_rung"
+    echo "| $label | >${b_last_rung} VUs (never crossed) | — | — |" >>"$OUTPUT"
+  }
+
+  [[ "$HAS_K6" == 1 ]] && boundary_ladder "k6 (native)" k6 b_cmd_k6_native
+  [[ "$HAS_K6" == 1 ]] && boundary_ladder "perfscale (k6)" k6 b_cmd_k6_wrapped
+  [[ "$HAS_LOCUST" == 1 ]] && boundary_ladder "locust (native)" locust b_cmd_locust
+  [[ "$HAS_JMETER" == 1 ]] && boundary_ladder "jmeter (native)" jmeter b_cmd_jmeter
 
   # The native run is NOT --quiet: the boundary is read from its periodic
   # [stats] stream, which quiet mode suppresses. Its boundary therefore
   # includes the per-request logging cost, unlike the yaml/throughput rows.
-  echo "  perfscale (yaml)" >&2
-  run_timed "$b_out" "$BIN run -f $WORKDIR/boundary.yaml -c $WORKDIR/boundary-cfg.yaml"
-  boundary_row "perfscale (yaml)" native "$b_out"
+  boundary_ladder "perfscale (yaml)" native b_cmd_native
 
   {
     echo
-    echo "_Every engine ramps 0→${BOUNDARY_MAX_VUS} VUs over ${BOUNDARY_DURATION};"
-    echo "the boundary is the load at which the cumulative error rate first"
-    echo "reaches ${BOUNDARY_ERR_PCT}%. Detection is engine-specific: k6 aborts"
-    echo "itself via a threshold (\`vus_max\` at abort is the boundary), locust is"
-    echo "read from \`--csv-full-history\`, jmeter from accumulated \`summary +\`"
-    echo "deltas, the native engine from its periodic \`[stats]\` lines. Wrapped"
-    echo "locust/jmeter rows are omitted: the wrapper is a pass-through, the"
-    echo "boundary is an engine property. The \`perfscale (yaml)\` row runs"
-    echo "without \`--quiet\` (quiet suppresses \`[stats]\`), so it includes the"
-    echo "per-request logging cost._"
+    echo "_Every engine climbs the ladder ${BOUNDARY_LADDER} (VU ramp ceilings,"
+    echo "${BOUNDARY_DURATION} per rung); the boundary is the load at which the"
+    echo "cumulative error rate first reaches ${BOUNDARY_ERR_PCT}%. An engine that"
+    echo "crosses stops climbing; the rest continue to the next rung. A process"
+    echo "dying on the ramp (OOM, crash — non-zero exit without a detected"
+    echo "crossing) counts as the boundary at that rung. Detection is"
+    echo "engine-specific: k6 aborts itself via a threshold (\`vus\` at abort is"
+    echo "the boundary), locust is read from \`--csv-full-history\`, jmeter from"
+    echo "accumulated \`summary +\` deltas (heap: \`${BOUNDARY_JMETER_HEAP}\`), the"
+    echo "native engine from its periodic \`[stats]\` lines. Wrapped locust/jmeter"
+    echo "rows are omitted: the wrapper is a pass-through, the boundary is an"
+    echo "engine property. The \`perfscale (yaml)\` row runs without \`--quiet\`"
+    echo "(quiet suppresses \`[stats]\`), so it includes the per-request logging"
+    echo "cost._"
   } >>"$OUTPUT"
 fi
 
