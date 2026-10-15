@@ -628,7 +628,7 @@ fn check_action(params: &Value, ctx: &Context, step_name: &str) -> ActionOutput 
     let on_var = params.get("on").and_then(|v| v.as_str());
     let target = on_var
         .and_then(|path| resolve_check_target(ctx, path))
-        .or_else(|| ctx.vars.get("__last__").cloned())
+        .or_else(|| ctx.vars.get("__last__").map(|v| (**v).clone()))
         .unwrap_or(Value::Null);
 
     let mut all_pass = true;
@@ -738,7 +738,7 @@ fn check_action(params: &Value, ctx: &Context, step_name: &str) -> ActionOutput 
 /// `on: got.messages.0` checks a single message.
 fn resolve_check_target(ctx: &Context, path: &str) -> Option<Value> {
     let mut segments = path.split('.');
-    let mut current = ctx.vars.get(segments.next()?)?;
+    let mut current = ctx.vars.get(segments.next()?).map(|v| &**v)?;
     for seg in segments {
         current = match current {
             Value::Array(a) => a.get(seg.parse::<usize>().ok()?)?,

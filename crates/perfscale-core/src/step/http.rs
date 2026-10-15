@@ -148,6 +148,12 @@ pub enum BodyKind {
     Text,
 }
 
+/// Default response body cap for HTTP-family steps (the
+/// `max_response_body_bytes` run config key). Matches the WASM `net`
+/// capability's 16 MiB body cap — one size for "a response we hold in
+/// memory".
+pub const DEFAULT_MAX_RESPONSE_BODY_BYTES: u64 = 16 * 1024 * 1024;
+
 /// One finished HTTP exchange, body already read and decoded.
 pub struct HttpOutcome {
     pub status: u16,
@@ -161,49 +167,91 @@ pub struct HttpOutcome {
     pub body_base64: Option<String>,
 }
 
+/// Why an exchange failed. Transport covers connect/TLS/read errors (the
+/// reqwest error chain is reported); `BodyTooLarge` is a client-side cap
+/// breach — the response body exceeded `max_response_body_bytes`. Both fail
+/// the step; the cap breach gets its own variant so the error names the
+/// config key and a truncated body can never silently feed a `check:`.
+pub enum ExchangeError {
+    Transport(reqwest::Error),
+    BodyTooLarge { limit: u64, status: u16 },
+}
+
+/// Read the whole response body, rejecting anything over `limit` bytes. A
+/// declared over-cap `Content-Length` fails before a single body byte is
+/// read; chunked responses are accumulated with the same cap. A mid-body
+/// read error is a transport failure — the previous behavior
+/// (`unwrap_or_default`, empty body on error) could let a truncated
+/// payload pass a `check:`.
+async fn read_body_capped(
+    resp: &mut reqwest::Response,
+    limit: u64,
+    status: u16,
+) -> Result<Vec<u8>, ExchangeError> {
+    if resp.content_length().is_some_and(|len| len > limit) {
+        return Err(ExchangeError::BodyTooLarge { limit, status });
+    }
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(ExchangeError::Transport)? {
+        if buf.len() + chunk.len() > limit as usize {
+            return Err(ExchangeError::BodyTooLarge { limit, status });
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
 /// Send `req`, timing the whole exchange (connect → body read). A transport
 /// error returns `(elapsed_ms, error)` so the caller reports timing and the
-/// failure from one code path.
+/// failure from one code path. Bodies over `max_body_bytes` fail with
+/// [`ExchangeError::BodyTooLarge`] — never silently truncated.
 pub async fn timed_exchange(
     req: reqwest::RequestBuilder,
     body_kind: BodyKind,
-) -> Result<HttpOutcome, (f64, reqwest::Error)> {
+    max_body_bytes: u64,
+) -> Result<HttpOutcome, (f64, ExchangeError)> {
     let t0 = Instant::now();
-    let resp = match req.send().await {
+    let mut resp = match req.send().await {
         Ok(r) => r,
-        Err(e) => return Err((t0.elapsed().as_secs_f64() * 1000.0, e)),
+        Err(e) => {
+            return Err((
+                t0.elapsed().as_secs_f64() * 1000.0,
+                ExchangeError::Transport(e),
+            ))
+        }
     };
     let status = resp.status().as_u16();
     let reason = resp.status().canonical_reason().unwrap_or("").to_string();
     let headers = header_map_to_json(resp.headers());
 
+    let bytes = match read_body_capped(&mut resp, max_body_bytes, status).await {
+        Ok(b) => b,
+        Err(e) => return Err((t0.elapsed().as_secs_f64() * 1000.0, e)),
+    };
+    // `text()` on this reqwest build (default-features off, no `charset`) is
+    // exactly `from_utf8_lossy(bytes)` — decoding the capped buffer is the
+    // byte-identical decode.
     let (body, body_base64) = match body_kind {
-        BodyKind::Text => (resp.text().await.unwrap_or_default(), None),
+        BodyKind::Text => (String::from_utf8_lossy(&bytes).into_owned(), None),
         BodyKind::Auto => {
-            // Textual payloads keep the historic `body` string (reqwest's
-            // charset-aware decoding); binary payloads surface as
-            // `body_base64` so protobuf descriptor sets, images etc. can flow
-            // into later steps (`descriptor_set: "${{ fetch.body_base64 }}"`).
+            // Textual payloads keep the historic `body` string; binary
+            // payloads surface as `body_base64` so protobuf descriptor sets,
+            // images etc. can flow into later steps
+            // (`descriptor_set: "${{ fetch.body_base64 }}"`).
             let textual = resp
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .map(is_textual_content_type);
-            // Headers were snapshotted above; re-reading them off `resp` is
-            // not possible after consuming the body, so decode from here on.
+            // Headers were snapshotted above; the body is already read, so
+            // decide from the snapshot + the buffer itself.
             match textual {
-                Some(true) => (resp.text().await.unwrap_or_default(), None),
-                Some(false) => {
-                    let bytes = resp.bytes().await.unwrap_or_default();
-                    (String::new(), Some(base64_encode(&bytes)))
-                }
-                None => {
-                    let bytes = resp.bytes().await.unwrap_or_default();
-                    match std::str::from_utf8(&bytes) {
-                        Ok(_) => (String::from_utf8_lossy(&bytes).into_owned(), None),
-                        Err(_) => (String::new(), Some(base64_encode(&bytes))),
-                    }
-                }
+                Some(true) => (String::from_utf8_lossy(&bytes).into_owned(), None),
+                Some(false) => (String::new(), Some(base64_encode(&bytes))),
+                None => match std::str::from_utf8(&bytes) {
+                    Ok(_) => (String::from_utf8_lossy(&bytes).into_owned(), None),
+                    Err(_) => (String::new(), Some(base64_encode(&bytes))),
+                },
             }
         }
     };
@@ -441,7 +489,7 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         }
     }
 
-    match timed_exchange(req, BodyKind::Auto).await {
+    match timed_exchange(req, BodyKind::Auto, ctx.max_response_body_bytes).await {
         Ok(out) => {
             let failed = out.status >= 400;
             let mut value = json!({
@@ -468,7 +516,43 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
                 }),
             }
         }
-        Err((duration_ms, e)) => transport_error(step_name, &method, &url, &e, duration_ms),
+        Err((duration_ms, e)) => exchange_error(step_name, &method, &url, &e, duration_ms),
+    }
+}
+
+/// Map an exchange failure to the action output: transport errors report
+/// the reqwest error chain (timeouts in their historic shape); a
+/// `max_response_body_bytes` breach fails the step with the cap named — the
+/// real status and timing are recorded, so the summary shows it as a failed
+/// request, not a green one with a silently missing body.
+pub fn exchange_error(
+    step_name: &str,
+    method: &str,
+    url: &str,
+    e: &ExchangeError,
+    duration_ms: f64,
+) -> ActionOutput {
+    match e {
+        ExchangeError::Transport(e) => transport_error(step_name, method, url, e, duration_ms),
+        ExchangeError::BodyTooLarge { limit, status } => {
+            let msg = format!(
+                "{method} {url} → response body exceeds max_response_body_bytes ({limit} bytes) after {duration_ms:.2}ms"
+            );
+            ActionOutput {
+                value: json!({
+                    "error": msg,
+                    "status": status,
+                    "duration_ms": duration_ms,
+                }),
+                logs: vec![(LogTag::Err, msg.clone())],
+                success: false,
+                http_sample: Some(HttpSample {
+                    duration_ms,
+                    status: *status,
+                    failed: true,
+                }),
+            }
+        }
     }
 }
 
@@ -684,6 +768,74 @@ mod tests {
         ] {
             assert!(is_textual_content_type(ct), "{ct} should be textual");
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Response body cap (max_response_body_bytes)
+    // -----------------------------------------------------------------
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A declared over-cap Content-Length fails the step: the error names
+    /// the config key, the real status is recorded, and the request counts
+    /// as failed — never a green step with a silently truncated body.
+    #[tokio::test]
+    async fn response_body_over_cap_fails_the_step() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/big"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(4096)))
+            .mount(&server)
+            .await;
+
+        let mut ctx = Context::new();
+        ctx.max_response_body_bytes = 1024;
+        let out = http_action(
+            &json!({ "method": "GET", "url": format!("{}/big", server.uri()) }),
+            "fetch",
+            &ctx,
+        )
+        .await;
+
+        assert!(!out.success, "over-cap body must fail the step");
+        let line = &out.logs[0].1;
+        assert!(line.contains("max_response_body_bytes"), "{line}");
+        assert!(line.contains("1024"), "{line}");
+        let sample = out.http_sample.expect("failed sample recorded");
+        assert!(sample.failed);
+        assert_eq!(sample.status, 200, "the real status is kept");
+    }
+
+    /// A body under the cap decodes exactly as before (textual path,
+    /// interpolation into the next step intact).
+    #[tokio::test]
+    async fn response_body_under_cap_decodes_normally() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/small"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("hello body")
+                    .insert_header("content-type", "text/plain"),
+            )
+            .mount(&server)
+            .await;
+
+        let mut ctx = Context::new();
+        ctx.max_response_body_bytes = 1024;
+        let out = http_action(
+            &json!({ "method": "GET", "url": format!("{}/small", server.uri()) }),
+            "fetch",
+            &ctx,
+        )
+        .await;
+
+        assert!(out.success);
+        assert_eq!(out.value["body"], "hello body");
+        // The stored output interpolates as before.
+        ctx.set("resp", out.value);
+        assert_eq!(ctx.interpolate("got ${{ resp.body }}"), "got hello body");
     }
 
     #[test]

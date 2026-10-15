@@ -489,6 +489,7 @@ pub async fn run_native(
         fs_root: config.fs_root.clone(),
         allow_file_actions: config.allow_file_actions,
         allow_process_actions: config.allow_process_actions,
+        max_response_body_bytes: config.max_response_body_bytes,
         libraries: library_set.clone(),
         library_metrics: library_metrics.clone(),
         run_seed: config.seed,
@@ -866,6 +867,7 @@ struct VuShared {
     fs_root: Option<std::path::PathBuf>,
     allow_file_actions: bool,
     allow_process_actions: bool,
+    max_response_body_bytes: u64,
     /// Validated library bindings + the run's `seed:` — every VU context and
     /// every generator it mints draws from these (RFC 005).
     libraries: Option<Arc<crate::library::LibrarySet>>,
@@ -897,6 +899,7 @@ impl VuShared {
         ctx.http_client_shard = (vu_id as usize - 1) % crate::step::actions::client_shard_count();
         ctx.allow_file_actions = self.allow_file_actions;
         ctx.allow_process_actions = self.allow_process_actions;
+        ctx.max_response_body_bytes = self.max_response_body_bytes;
         ctx.fs_root = self.fs_root.clone();
         ctx.libraries = self.libraries.clone();
         ctx.library_metrics = self.library_metrics.clone();
@@ -1400,6 +1403,7 @@ async fn run_before(
     let mut ctx = Context::new();
     ctx.allow_file_actions = config.allow_file_actions;
     ctx.allow_process_actions = config.allow_process_actions;
+    ctx.max_response_body_bytes = config.max_response_body_bytes;
     ctx.fs_root = config.fs_root.clone();
     ctx.libraries = libraries.clone();
     ctx.library_metrics = library_metrics.clone();
@@ -1500,6 +1504,7 @@ async fn run_after(
     let mut ctx = Context::new();
     ctx.allow_file_actions = config.allow_file_actions;
     ctx.allow_process_actions = config.allow_process_actions;
+    ctx.max_response_body_bytes = config.max_response_body_bytes;
     ctx.fs_root = config.fs_root.clone();
     ctx.libraries = shared.libraries.clone();
     ctx.library_metrics = shared.library_metrics.clone();
@@ -1617,16 +1622,19 @@ async fn execute_step(
         emit(tx, LogSource::from(*tag), text, &ctx.secrets).await;
     }
 
-    // Store output for later interpolation / checks
+    // Store output for later interpolation / checks: one allocation behind
+    // an Arc, shared by the `outputs:` name and `__last__` — the per-step
+    // double deep-clone of the response body is gone.
+    let output_value = Arc::new(output.value);
     if let Some(ref name) = step.outputs {
-        ctx.set(name, output.value.clone());
+        ctx.set_shared(name, Arc::clone(&output_value));
         // A process step becomes killable by its outputs name too.
         if let Some(reg) = &ctx.processes {
             reg.alias(step_name, name);
         }
     }
     // Always store as __last__ for inline checks
-    ctx.set("__last__", output.value.clone());
+    ctx.set_shared("__last__", output_value);
 
     // Inline checks (step.check field)
     if let Some(checks) = &step.check {

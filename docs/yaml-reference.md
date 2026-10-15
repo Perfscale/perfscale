@@ -175,6 +175,7 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `allow_process_actions` | `false` | Let steps spawn/signal OS processes (`std/child_process@v1`, `std/kill_process@v1`). Fail-closed: a step list from an untrusted source cannot touch processes until you opt in |
 | `allow_library_capabilities` | `false` | Let `libraries:` entries carry non-empty `capabilities:` grants. Fail-closed, same pattern as `allow_file_actions` |
 | `seed` | — | Run-level determinism seed: every `${…}` generator and library instance derives its seed as `hash(seed, vu_id, conn_seq)`, so a seeded run reproduces the same generated values. Wall-clock time stays non-deterministic |
+| `max_response_body_bytes` | `16777216` (16 MiB) | Response body cap for `std/http@v1` / `std/graphql@v1`. A larger response fails the step with a clear error (never silently truncated — a truncated body could pass a `check:`). Native engine only |
 | `libraries` | — | Value-generator libraries for `${alias.fn(...)}` tokens — see [Libraries](#libraries-libraries) |
 | `import` | — | Base document to inherit from — see [Composing documents](#composing-documents-import) |
 

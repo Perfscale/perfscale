@@ -162,6 +162,13 @@ pub struct RunConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
 
+    /// Response body cap for HTTP-family steps (`std/http@v1`,
+    /// `std/graphql@v1`), bytes. A larger response fails the step with a
+    /// clear error (never silently truncated — a truncated JSON could pass a
+    /// `check:`). Default 16 MiB, matching the WASM `net` capability cap.
+    #[serde(default = "default_max_response_body_bytes")]
+    pub max_response_body_bytes: u64,
+
     /// Ramping-VU load profile (k6-style): ramp the number of virtual users
     /// linearly to each stage's `target` over its `duration`. Mutually
     /// exclusive with `arrival`; when present it overrides `vus`/`duration`
@@ -289,6 +296,10 @@ fn default_duration() -> String {
     "1m".to_string()
 }
 
+fn default_max_response_body_bytes() -> u64 {
+    crate::step::http::DEFAULT_MAX_RESPONSE_BODY_BYTES
+}
+
 impl Default for RunConfig {
     fn default() -> Self {
         Self {
@@ -298,6 +309,7 @@ impl Default for RunConfig {
             allow_process_actions: false,
             allow_library_capabilities: false,
             seed: None,
+            max_response_body_bytes: default_max_response_body_bytes(),
             stages: Vec::new(),
             arrival: None,
             gpu: None,

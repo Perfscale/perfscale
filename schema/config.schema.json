@@ -539,6 +539,13 @@
         "null"
       ]
     },
+    "max_response_body_bytes": {
+      "default": 16777216,
+      "description": "Response body cap for HTTP-family steps (`std/http@v1`, `std/graphql@v1`), bytes. A larger response fails the step with a clear error (never silently truncated — a truncated JSON could pass a `check:`). Default 16 MiB, matching the WASM `net` capability cap.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "report": {
       "anyOf": [
         {

@@ -85,8 +85,7 @@ use tokio::time::Duration;
 use super::actions::{confine_fs_path, err, ActionOutput, HttpSample, LogTag};
 use super::context::Context;
 use super::http::{
-    client as http_client, error_chain, request_line, timed_exchange, transport_error, BodyKind,
-    ClientPool,
+    client as http_client, error_chain, request_line, timed_exchange, BodyKind, ClientPool,
 };
 use super::ws::{bool_param, u64_param};
 use crate::generate::expand_tokens;
@@ -827,7 +826,7 @@ pub(crate) async fn graphql_action(params: &Value, ctx: &Context, step_name: &st
         req = req.header(k.as_str(), v.as_str());
     }
 
-    match timed_exchange(req, BodyKind::Text).await {
+    match timed_exchange(req, BodyKind::Text, ctx.max_response_body_bytes).await {
         Ok(out) => {
             // Decode the GraphQL payload. A non-JSON body (proxy error page,
             // CDN block) has no data — the step fails on that below.
@@ -906,7 +905,8 @@ pub(crate) async fn graphql_action(params: &Value, ctx: &Context, step_name: &st
             }
         }
         Err((duration_ms, e)) => {
-            let mut out = transport_error(step_name, method, &params.url, &e, duration_ms);
+            let mut out =
+                super::http::exchange_error(step_name, method, &params.url, &e, duration_ms);
             // The introspection sys line, when present, precedes the failure.
             out.logs.splice(0..0, logs);
             out

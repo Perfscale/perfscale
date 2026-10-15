@@ -17,7 +17,11 @@ use crate::step::process::ProcessRegistry;
 /// them by the Connection ID a connect step returned.
 #[derive(Debug, Clone)]
 pub struct Context {
-    pub(crate) vars: HashMap<String, Value>,
+    /// Stored step outputs (`outputs:` names, `__last__`, `vars`, `config`).
+    /// Values are shared, not copied: a step output is stored once behind an
+    /// `Arc` and cloned by reference into `__last__` — the per-step double
+    /// deep-clone of potentially large response bodies is gone.
+    pub(crate) vars: HashMap<String, Arc<Value>>,
     pub(crate) resources: crate::step::resources::Resources,
     /// Master switch for filesystem-touching actions (`std/file-read@v1`,
     /// `std/file-write@v1`, multipart `file` parts). Fail-closed: a fresh
@@ -53,6 +57,10 @@ pub struct Context {
     /// `step::actions`). Seeded by the runner from the VU id so every VU
     /// keeps exactly one warm connection pool; 0 in hand-built contexts.
     pub(crate) http_client_shard: usize,
+    /// Response body cap for HTTP-family steps (`max_response_body_bytes` in
+    /// the run config). Seeded by the runner; hand-built contexts get the
+    /// default.
+    pub(crate) max_response_body_bytes: u64,
     /// Run-scoped registry of resolved `${{ env.NAME }}` values, shared by
     /// every context of the run. Each successful env resolution is recorded
     /// here (see [`Context::resolve_expr`]); the log pipeline masks every
@@ -104,6 +112,7 @@ impl Default for Context {
             run_metrics: None,
             webrtc: None,
             http_client_shard: 0,
+            max_response_body_bytes: crate::step::http::DEFAULT_MAX_RESPONSE_BODY_BYTES,
             secrets: SecretRegistry::new(),
             libraries: None,
             shared_lib_instances: Default::default(),
@@ -124,6 +133,13 @@ impl Context {
 
     /// Store a step's output under `name`.
     pub fn set(&mut self, name: &str, value: Value) {
+        self.vars.insert(name.to_string(), Arc::new(value));
+    }
+
+    /// Store an already-shared value — the runner's step fold uses this so
+    /// `outputs:` and `__last__` share one allocation instead of two
+    /// deep clones.
+    pub(crate) fn set_shared(&mut self, name: &str, value: Arc<Value>) {
         self.vars.insert(name.to_string(), value);
     }
 
@@ -395,7 +411,7 @@ impl Context {
         }
         let mut segments = expr.split('.');
         let root = segments.next().unwrap_or("");
-        let Some(mut current) = self.vars.get(root) else {
+        let Some(mut current) = self.vars.get(root).map(|v| &**v) else {
             return Ok(String::new());
         };
         for segment in segments {
