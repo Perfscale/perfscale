@@ -12,6 +12,45 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+## Performance: metrics contention, WASM instance reuse, lossy logging
+
+- The run metrics store is now sharded per worker thread instead of one
+  global mutex: at 16 writer threads the aggregate record rate is ~8x higher
+  than before (~15M → ~120M ops/s in the contended bench). Summary, `[stats]`,
+  snapshots, and thresholds read a merged view — output formats are
+  unchanged.
+- WASM library instances are now created once per VU instead of once per
+  step: a step using `${alias.fn(...)}` tokens no longer pays
+  store/instantiation/`init()` per message (up to ~20x on token-heavy
+  steps). Instance state now lives for the VU's lifetime — see the new
+  "Instance lifecycle" section in the libraries guide.
+- Per-step log lines no longer stall VUs when the log consumer (a pipe, a
+  slow terminal) is slow: they go through a lossy channel, and dropped lines
+  are counted in `engine_log_lines_dropped` with a warning at run end.
+  Summaries and errors are still delivered reliably.
+
+## Correctness: response body cap, WS buffer cap
+
+- Native HTTP/GraphQL steps now fail with a clear error when a response body
+  exceeds `max_response_body_bytes` (default 16 MiB, per config) instead of
+  buffering it whole; binary bodies no longer double-allocate. Step outputs
+  are shared by reference — no more double deep-clone per step.
+- `std/ws-recv@v1` / `std/ws@v1` until-rules cap the buffered messages at
+  `with: { max_buffered: N }` (default 10 000) and fail with a diagnostic
+  instead of growing memory unbounded against a chatty server.
+
+## Engine self-metrics + arrival-profile honesty
+
+- New optional `engine_metrics:` config block records the engine's own
+  overhead: `engine_scheduler_lag_ms` (tokio scheduling delay) and
+  `engine_log_channel_depth_max`. Off by default.
+- The arrival-rate profile now measures what latency percentiles used to
+  hide: `engine_arrival_queue_wait_ms` (scheduled → actual start) and
+  `engine_arrival_iteration_ms` (end-to-end iteration from the scheduled
+  start), plus the existing `dropped_iterations` counter. `http_req_*` stay
+  pure server time. See "Arrival-profile latency and coordinated omission"
+  in the metrics guide.
+
 ## Metrics registry + `perfscale metrics`
 
 - Steps now declare their metrics in typed **families** (name, kind, unit,
