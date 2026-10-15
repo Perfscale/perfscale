@@ -559,6 +559,10 @@ pub struct WasmLibraryProvider {
     /// WIT ABI major the component was built against (1 or 2) — picks the
     /// bindings used at instantiation.
     wit_major: u8,
+    /// The component's self-declared `"pure": true` from `info()`: never
+    /// touches fs/clock/net, so its calls make no tokio-blocking WASI
+    /// hostcalls and may run inline on a current-thread runtime.
+    pure: bool,
 }
 
 impl WasmLibraryProvider {
@@ -728,6 +732,7 @@ impl WasmLibraryProvider {
             fs_root,
             grants: grants.clone(),
             wit_major,
+            pure: false,
         };
 
         // `info()` once at load, BEFORE grant enforcement: populates
@@ -789,6 +794,7 @@ impl WasmLibraryProvider {
             );
         }
 
+        provider.pure = info.pure;
         provider.id = format!("{}@v{}", info.name, info.version);
         provider.name = info.name;
         provider.functions = info.functions;
@@ -1047,6 +1053,7 @@ impl LibraryProvider for WasmLibraryProvider {
             instance: Some(instance),
             args_buf: Vec::new(),
             id: Arc::from(self.id.as_str()),
+            pure: self.pure,
         }))
     }
 
@@ -1065,6 +1072,9 @@ impl LibraryProvider for WasmLibraryProvider {
 struct WasmLibraryInstance {
     /// `None` only while a call is in flight on the blocking thread.
     store: Option<Store<HostState>>,
+    /// From the component's `info()`: pure guests make no blocking WASI
+    /// hostcalls and may run inline on a current-thread runtime.
+    pure: bool,
     /// The bindgen handles are not `Clone`, so the call path moves the whole
     /// handle to the blocking thread and back (see `call`).
     instance: Option<Instantiated>,
@@ -1129,10 +1139,32 @@ impl LibraryInstance for WasmLibraryInstance {
             self.args_buf = args_buf;
             return result;
         }
-        // Single-threaded runtime: `block_in_place` is unavailable, so the
-        // guest call hops to the blocking pool (see `off_runtime`): the
-        // store, the instance handle and the args buffer move over and back.
-        // One hop per call — microseconds against even a trivial WASM call.
+        // Single-threaded runtime. `block_in_place` is unavailable there,
+        // and `LibraryInstance::call` is a sync trait — the executor thread
+        // is busy for the whole guest call no matter where the guest runs.
+        // Pure guests make no blocking WASI hostcalls, so nothing can panic
+        // on the runtime thread: run inline and skip the hop entirely.
+        if self.pure {
+            let args_json = std::str::from_utf8(&args_buf).expect("JSON is UTF-8");
+            let store = self.store.as_mut().expect("store present between calls");
+            let instance = self.instance.as_ref().expect("instance present");
+            let result = call_guest(
+                store,
+                instance,
+                &self.id,
+                ctx,
+                ctx.settings_json.to_string(),
+                func,
+                args_json,
+            );
+            self.args_buf = args_buf;
+            return result;
+        }
+        // Capability guests: their sync WASI hostcalls (`in_tokio`) block on
+        // a tokio Handle, which panics on a runtime thread — so the call
+        // hops to the blocking pool (see `off_runtime`): the store, the
+        // instance handle and the args buffer move over and back. One hop
+        // per call — microseconds against even a trivial WASM call.
         // `settings_json` is copied exactly once here; the blocking thread
         // hands the owned String straight to the guest context (no second
         // copy).
