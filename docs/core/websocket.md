@@ -87,7 +87,12 @@ Five steps share the connection:
   `repeat` + `interval_ms` stream N messages from one template.
 - [`std/ws-recv@v1`](actions.md#stdws-recvv1) — reads until a **stopping
   rule**: `until_contains` (substring), `until_json` (JSON-subset match), or
-  plain `count`. Not reaching it within `timeout` fails the step.
+  plain `count`. Not reaching it within `timeout` fails the step. Messages
+  buffered while waiting for the match are capped at `max_buffered`
+  (default 10000, override per step); hitting the cap fails the step with a
+  diagnostic — silently dropping buffered messages would hide a missed
+  match. `std/ws@v1` sessions accept the same `max_buffered` for their
+  per-message reply waits.
 - [`std/ws-ping@v1`](actions.md#stdws-pingv1) — transport ping→pong; RTT in
   the step's `duration_ms`.
 - [`std/ws-close@v1`](actions.md#stdws-closev1) — graceful close handshake.

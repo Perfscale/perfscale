@@ -391,15 +391,25 @@ struct RecvOutcome {
     error: Option<String>,
 }
 
+/// Default cap on messages buffered while an `until` rule waits for its
+/// match (`ws-recv`, per-reply reads in `ws`). Override per step with
+/// `max_buffered`. Hitting the cap FAILS the rule with a diagnostic —
+/// the user is waiting for a specific message, and silently dropping
+/// buffered ones would hide a missed match.
+pub const DEFAULT_MAX_BUFFERED_MESSAGES: u64 = 10_000;
+
 /// Read from `stream` until `until` is satisfied or `deadline` passes.
 /// `pending` (messages a prior `ws-ping` buffered) is consumed first;
-/// `sent_at` anchors the Message RTT measurement.
+/// `sent_at` anchors the Message RTT measurement. Buffering is capped at
+/// `max_buffered` messages — past it the read fails with a diagnostic
+/// error instead of growing memory without bound.
 async fn read_until(
     stream: &mut WsStream,
     pending: &mut std::collections::VecDeque<Value>,
     until: &Until,
     deadline: Instant,
     sent_at: Option<Instant>,
+    max_buffered: u64,
 ) -> RecvOutcome {
     let mut messages = Vec::new();
     let out = |messages: Vec<Value>, satisfied: bool, rtt_ms, closed, error| RecvOutcome {
@@ -425,6 +435,15 @@ async fn read_until(
         }
         if messages.len() as u64 >= target {
             return out(messages, true, None, false, None);
+        }
+        if messages.len() as u64 >= max_buffered {
+            return out(
+                messages,
+                false,
+                None,
+                false,
+                Some(buffer_overflow_msg(max_buffered)),
+            );
         }
     }
 
@@ -455,9 +474,25 @@ async fn read_until(
                 if messages.len() as u64 >= target {
                     return out(messages, true, None, false, None);
                 }
+                if messages.len() as u64 >= max_buffered {
+                    return out(
+                        messages,
+                        false,
+                        None,
+                        false,
+                        Some(buffer_overflow_msg(max_buffered)),
+                    );
+                }
             }
         }
     }
+}
+
+/// The cap-breach diagnostic: names the knob and the likeliest cause.
+fn buffer_overflow_msg(max_buffered: u64) -> String {
+    format!(
+        "buffered {max_buffered} messages without the until rule matching (max_buffered) — is the peer actually sending the expected message?"
+    )
 }
 
 /// Newline-join the text form of received messages, for `body_contains`.
@@ -765,12 +800,24 @@ pub(crate) async fn ws_recv_action(params: &Value, ctx: &Context, step_name: &st
         .get("timeout")
         .map(|v| u64_param(v, 10_000))
         .unwrap_or(10_000);
+    let max_buffered = params
+        .get("max_buffered")
+        .map(|v| u64_param(v, DEFAULT_MAX_BUFFERED_MESSAGES))
+        .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGES);
 
     let t0 = Instant::now();
     let deadline = t0 + Duration::from_millis(timeout_ms);
     let sent_at = conn.last_send.take();
     let mut pending = std::mem::take(&mut conn.pending);
-    let outcome = read_until(&mut conn.stream, &mut pending, &until, deadline, sent_at).await;
+    let outcome = read_until(
+        &mut conn.stream,
+        &mut pending,
+        &until,
+        deadline,
+        sent_at,
+        max_buffered,
+    )
+    .await;
     conn.pending = pending;
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
@@ -1020,6 +1067,12 @@ pub(crate) async fn ws_session_action(
         Some(Value::Array(a)) => a.clone(),
         Some(_) => return err(step_name, "'messages' must be an array"),
     };
+    // Cap on messages buffered per until-rule read (the session's reply
+    // waits) — and thereby on `received` in the step output.
+    let max_buffered = params
+        .get("max_buffered")
+        .map(|v| u64_param(v, DEFAULT_MAX_BUFFERED_MESSAGES))
+        .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGES);
     let generator = match ctx.new_generator() {
         Ok(g) => g,
         Err(msg) => return err(step_name, &msg),
@@ -1028,7 +1081,7 @@ pub(crate) async fn ws_session_action(
     let t0 = Instant::now();
     let deadline = t0 + Duration::from_millis(timeout_ms);
 
-    let session = run_session(&profile, &entries, deadline, generator).await;
+    let session = run_session(&profile, &entries, deadline, generator, max_buffered).await;
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     match session {
@@ -1096,6 +1149,7 @@ async fn run_session(
     entries: &[Value],
     deadline: Instant,
     mut generator: Gen,
+    max_buffered: u64,
 ) -> Result<SessionOutcome, String> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     let (mut stream, subprotocol) = tokio::time::timeout(remaining, ws_handshake(profile))
@@ -1167,7 +1221,15 @@ async fn run_session(
                 }
             };
             let sent_at = Some(Instant::now());
-            let read = read_until(&mut stream, &mut pending, &until, deadline, sent_at).await;
+            let read = read_until(
+                &mut stream,
+                &mut pending,
+                &until,
+                deadline,
+                sent_at,
+                max_buffered,
+            )
+            .await;
             outcome.received.extend(read.messages);
             if let Some(rtt) = read.rtt_ms {
                 outcome.rtts.push(rtt);
@@ -1332,6 +1394,78 @@ mod tests {
         assert!(out.value["body"].as_str().unwrap().contains("echo:hello"));
         // send→match RTT was measured and reported for aggregation.
         assert!(out.value["metrics"]["ws_msg_rtt"][0].as_f64().unwrap() > 0.0);
+    }
+
+    /// Server that floods `n` unsolicited text frames, then keeps the
+    /// connection open (a close would end the read before the cap shows).
+    async fn flood_server(frames: Vec<String>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let frames = frames.clone();
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                    for f in frames {
+                        if ws.send(Message::Text(f.into())).await.is_err() {
+                            return;
+                        }
+                    }
+                    while let Some(Ok(_)) = ws.next().await {}
+                });
+            }
+        });
+        format!("ws://{addr}")
+    }
+
+    /// The until-rule buffer is capped: flooding past `max_buffered` without
+    /// a match fails the step with a diagnostic naming the knob.
+    #[tokio::test]
+    async fn recv_buffer_cap_fails_the_rule_with_diagnostic() {
+        let url = flood_server((0..50).map(|i| format!("noise-{i}")).collect()).await;
+        let ctx = Context::new();
+        let id = connect_id(&ctx, &url).await;
+
+        let out = execute_action(
+            "std/ws-recv@v1",
+            &json!({
+                "id": id,
+                "until_contains": "never-appears",
+                "max_buffered": 20,
+                "timeout": 5000,
+            }),
+            &ctx,
+            "recv",
+        )
+        .await;
+
+        assert!(!out.success, "cap breach must fail the step");
+        let logs = format!("{:?}", out.logs);
+        assert!(logs.contains("max_buffered"), "{logs}");
+        assert_eq!(out.value["count"], 20, "the cap bounds the output too");
+        assert_eq!(out.value["matched"], false);
+    }
+
+    /// A match before the cap behaves exactly as without one.
+    #[tokio::test]
+    async fn recv_under_cap_matches_normally() {
+        let mut frames: Vec<String> = (0..9).map(|i| format!("noise-{i}")).collect();
+        frames.push("the-needle".into());
+        let url = flood_server(frames).await;
+        let ctx = Context::new();
+        let id = connect_id(&ctx, &url).await;
+
+        let out = execute_action(
+            "std/ws-recv@v1",
+            &json!({ "id": id, "until_contains": "needle", "max_buffered": 20 }),
+            &ctx,
+            "recv",
+        )
+        .await;
+
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(out.value["matched"], true);
+        assert_eq!(out.value["count"], 10);
     }
 
     #[tokio::test]
