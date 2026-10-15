@@ -992,15 +992,22 @@ if [[ "$HAS_JMETER_DB" == 1 ]]; then
         <boolProp name="autocommit">true</boolProp>
         <stringProp name="checkQuery">SELECT 1</stringProp>
         <stringProp name="connectionAge">5000</stringProp>
+        <stringProp name="connectionProperties"></stringProp>
         <stringProp name="dataSource">pg</stringProp>
         <stringProp name="dbUrl">jdbc:postgresql://@DBHOST@:@DBPORT@/@DBNAME@</stringProp>
         <stringProp name="driver">org.postgresql.Driver</stringProp>
+        <stringProp name="initQuery"></stringProp>
         <boolProp name="keepAlive">true</boolProp>
         <stringProp name="password">@DBPASS@</stringProp>
         <stringProp name="poolMax">@VUS@</stringProp>
+        <stringProp name="poolPreparedStatements"></stringProp>
+        <boolProp name="preinit">false</boolProp>
         <stringProp name="timeout">10000</stringProp>
         <stringProp name="transactionIsolation">DEFAULT</stringProp>
-        <boolProp name="trim">true</boolProp>
+        <!-- string, millis between idle-eviction runs; keepAlive=true parses
+             it numerically — a missing/empty trimInterval kills the pool
+             setup with NumberFormatException. -->
+        <stringProp name="trimInterval">60000</stringProp>
         <stringProp name="username">@DBUSER@</stringProp>
       </JDBCDataSource>
       <hashTree/>
@@ -1458,7 +1465,10 @@ if has_suite boundary; then
   b_dur_s="${BOUNDARY_DURATION%s}"
   b_out="$WORKDIR/boundary-out.$$"
   b_last_rung="${BOUNDARY_LADDER##* }"
-  section "1% error boundary (ladder: $(echo "$BOUNDARY_LADDER" | tr ' ' '→') VUs, ${BOUNDARY_DURATION} per rung)"
+  # tr is byte-oriented and would mangle a multibyte separator — keep this
+  # rendering ASCII via sed.
+  b_ladder_pretty="$(echo "$BOUNDARY_LADDER" | sed 's/ /, /g')"
+  section "1% error boundary (ladder: ${b_ladder_pretty} VUs, ${BOUNDARY_DURATION} per rung)"
   {
     echo "| Engine | Boundary | Time | RPS at boundary |"
     echo "|---|---:|---:|---:|"
