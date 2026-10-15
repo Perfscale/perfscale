@@ -34,8 +34,12 @@ wrapping overhead — not the underlying tool.
 | `saturation` | Approximate max RPS per engine at high VUs (default 256) |
 | `yaml` | What does each native-engine feature cost? (GET baseline vs `--quiet` vs +check vs POST body vs multi-step interpolation) |
 | `ws` | WebSocket message throughput and RTT: same-connection echo round-trips against `serve`'s `/ws` endpoint (`perfscale (yaml)`, `k6 (native)`, `perfscale (k6)` — locust has no built-in WebSocket support and is skipped) |
-| `boundary` | Where does the engine break? Ramps 0→`BOUNDARY_MAX_VUS` over `BOUNDARY_DURATION` and reports the VU level / time / RPS where the cumulative error rate first reaches `BOUNDARY_ERR_PCT` percent (default 1%) |
+| `boundary` | Where does the engine break? Climbs a ladder of VU ceilings (`BOUNDARY_LADDER`, default `5000 15000 30000`): each rung ramps 0→ceiling over `BOUNDARY_DURATION`; the boundary is the VU level / time / RPS where the cumulative error rate first reaches `BOUNDARY_ERR_PCT` percent (default 1%) — or the rung where the process dies (OOM/crash counts as the boundary). An engine that crossed stops climbing |
 | `tls` | The TLS tax: same workload against `perfscale serve --tls` (self-signed HTTPS, verification skipped) |
+| `library` | WASM value-generator cost: per-run compile (cold) vs burn-cache deserialize vs the `@std/random` builtin |
+| `grpc` | `std/grpc@v1` unary echo against the repo's `grpc_echo_server` example |
+| `graphql` | `std/graphql@v1` query against the repo's `graphql_server` example |
+| `db` | SQL: cold connect+query vs warm persistent pool vs transactions (`std/db-*@v1`, PostgreSQL + in-process SQLite), plus the warm shape from locust (psycopg2) and JMeter (JDBC) when their drivers are installed |
 
 JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
 console summary has no percentiles, so it stays out of the `throughput`
@@ -50,11 +54,24 @@ The `boundary` suite detects the crossing differently per engine: k6 aborts
 itself via an `abortOnFail` threshold (the peak-VU progress line is the
 boundary), locust is read from its `--csv-full-history` Aggregated rows,
 jmeter from accumulated `summary +` deltas (run with
-`-Jsummariser.interval=2`), and the native engine from its periodic
-`[stats]` lines — which is why the native boundary row runs without
-`--quiet` and includes the per-request logging cost. Wrapped locust/jmeter
-rows are omitted: the wrapper is a pass-through, the boundary is an engine
-property.
+`-Jsummariser.interval=2`, heap raised via `BOUNDARY_JMETER_HEAP`), and the
+native engine from its periodic `[stats]` lines — which is why the native
+boundary row runs without `--quiet` and includes the per-request logging
+cost. A non-zero engine exit without a detected crossing (OOM, crash) is
+recorded as the boundary at that rung with a "process died" note. Wrapped
+locust/jmeter rows are omitted: the wrapper is a pass-through, the boundary
+is an engine property. `BOUNDARY_MAX_VUS`, when set, replaces the ladder with
+a single rung (backwards-compatible override).
+
+The `db` suite separates the cold path (`db`, `db-params`: connect + one
+query per iteration, connection dropped at iteration end) from the warm path
+(`db-warm`: one persistent pool per iteration, `DB_WARM_QUERIES` queries,
+`db-close`; `db-warm-tx`: `DB_TX_CYCLES` × begin+query+commit) and adds an
+in-process SQLite floor (`db-sqlite`, `db-sqlite-warm`, no server needed).
+The locust row (`pipx inject locust psycopg2-binary`) and the JMeter row
+(PostgreSQL JDBC jar in JMeter's `lib/`, `BENCH_PG_JDBC_JAR` to point
+elsewhere) repeat the warm shape. There is deliberately no k6 row: k6 has no
+SQL module without a custom `xk6-sql` build.
 
 Micro-benchmarks for the native engine's hot paths (YAML parse, `${{ ... }}`
 interpolation, metrics recording / percentile summary, `RingBuf` process-output
@@ -112,8 +129,14 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `SCALING_VUS` / `SCALING_DURATION` | `10 50 200` / `10s` | VU sweep points / per-point length |
 | `SAT_VUS` / `SAT_DURATION` | `256` / `15s` | Saturation VUs / run length |
 | `YAML_DURATION` / `TLS_DURATION` | `10s` / `10s` | Per-scenario length in those suites |
+| `LIB_DURATION` / `GRPC_DURATION` / `GQL_DURATION` | `10s` each | Per-scenario length in the library / grpc / graphql suites |
 | `WS_DURATION` / `WS_ROUNDS` | `10s` / `10` | ws-suite run length / echo round-trips per connection |
-| `BOUNDARY_DURATION` / `BOUNDARY_MAX_VUS` / `BOUNDARY_ERR_PCT` | `30s` / `2000` / `1` | boundary-suite ramp length / ramp target / error-rate threshold in percent |
+| `BOUNDARY_DURATION` / `BOUNDARY_LADDER` / `BOUNDARY_ERR_PCT` | `30s` / `5000 15000 30000` / `1` | boundary-suite per-rung ramp length / VU ceilings / error-rate threshold in percent |
+| `BOUNDARY_MAX_VUS` | unset | Single-rung override for `BOUNDARY_LADDER` (legacy spelling) |
+| `BOUNDARY_JMETER_HEAP` | `-Xms512m -Xmx4g` | JMeter heap on the high-VU boundary rungs |
+| `DB_DURATION` / `DB_WARM_QUERIES` / `DB_TX_CYCLES` | `10s` / `10` / `5` | db-suite per-scenario length / queries per warm iteration / tx cycles per iteration |
+| `BENCH_PG_DSN` | `postgres://postgres:perfscale@127.0.0.1:5432/postgres` | PostgreSQL DSN for the db suite |
+| `BENCH_PG_JDBC_JAR` | autodetected from JMeter's `lib/` | PostgreSQL JDBC driver jar for the JMeter db row |
 | `PORT` / `TLS_PORT` | `18999` / `18998` | Ports for the throwaway serve targets |
 | `OUTPUT` | `bench-report.md` | Markdown report path |
 | `RESULTS` | `bench-results.json` | Machine-readable results (regression tracking input) |
