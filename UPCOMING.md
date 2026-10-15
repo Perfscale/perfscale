@@ -12,6 +12,15 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+## `perfscale self-update`: reliable downloads on slow networks
+
+- Self-update no longer fails 44 MiB downloads on slow links with a cryptic
+  "error decoding response body": the total 120 s timeout is gone (connect
+  10 s + 60 s per-read stall limit instead), dropped connections are retried
+  up to 3 times with backoff, a terminal shows a live `x.x/43.9 MiB`
+  progress line, and failures explain themselves ("network stalled" /
+  "connection dropped mid-download (received 21.4/43.9 MiB)").
+
 ## `perfscale self-update`: interactive by default
 
 - `perfscale self-update` now asks for confirmation before downloading and

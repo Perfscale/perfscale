@@ -379,6 +379,13 @@ stdout stays machine-parseable. When stdin is not a TTY (CI, pipes) and
 `--non-interactive` is not passed, the command fails with a hint instead of
 hanging on a prompt nobody can answer. `--check` never asks anything.
 
+Downloads are built for slow links: no total time budget (a 44 MiB asset on
+a slow connection legitimately takes minutes), a 60 s per-read stall limit
+instead, up to 3 attempts with backoff on dropped connections, and a live
+`x.x/43.9 MiB` progress line on a terminal. Mid-download failures say what
+happened ("connection dropped mid-download") instead of reqwest's raw
+"error decoding response body".
+
 | Flag | Description |
 |---|---|
 | `--check` | Report whether an update exists without installing. Exit codes: `0` up to date, `10` update available — scriptable in cron/CI |
