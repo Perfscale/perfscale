@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>perfscale serve</title>
+<!--__DOCS_DATA__-->
 <style>
   :root {
     --bg: #ffffff; --fg: #1a1d21; --muted: #6b7280; --card: #f6f7f9;
@@ -42,14 +43,54 @@
   pre { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
     padding: 14px; overflow-x: auto; font-size: 12.5px; margin: 0 0 12px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #tabs { display: flex; gap: 4px; margin-left: auto; }
+  #tabs a { padding: 4px 12px; border-radius: 8px; border: 1px solid var(--border);
+    color: var(--muted); text-decoration: none; font-size: 13px; }
+  #tabs a.active { color: var(--fg); background: var(--card); border-color: var(--accent); }
+  #lang { display: flex; gap: 4px; }
+  #lang button { padding: 4px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: none; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
+  #lang button.active { color: var(--fg); background: var(--card); border-color: var(--accent); }
+  [hidden] { display: none !important; }
+  #docs { display: flex; gap: 20px; align-items: flex-start; }
+  #docs-nav { flex: 0 0 220px; position: sticky; top: 24px; }
+  #docs-nav .group { font-size: 12px; color: var(--muted); font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em; margin: 14px 0 4px; }
+  #docs-nav .group:first-child { margin-top: 0; }
+  #docs-nav a { display: block; padding: 3px 8px; border-radius: 6px; color: var(--fg);
+    text-decoration: none; font-size: 13px; }
+  #docs-nav a.active { background: var(--card); color: var(--accent); }
+  #docs-content { flex: 1; min-width: 0; max-width: 860px; }
+  #docs-content h1 { font-size: 22px; margin: 0 0 12px; }
+  #docs-content h2 { color: var(--fg); font-size: 17px; margin: 24px 0 8px; }
+  #docs-content h3 { font-size: 15px; margin: 20px 0 6px; }
+  #docs-content a { color: var(--accent); }
+  #docs-content code { background: var(--card); border: 1px solid var(--border);
+    border-radius: 6px; padding: 1px 5px; font-size: 12.5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #docs-content pre code { background: none; border: none; padding: 0; }
+  #docs-content table { border-collapse: collapse; margin: 0 0 12px; font-size: 13px; }
+  #docs-content th, #docs-content td { border: 1px solid var(--border);
+    padding: 6px 10px; text-align: left; }
+  #docs-content th { background: var(--card); }
+  #docs-content img { max-width: 100%; border: 1px solid var(--border); border-radius: 10px; }
 </style>
 </head>
 <body>
 <header>
   <h1>perfscale serve</h1>
   <span id="status"><span class="dot"></span><span id="status-text">connecting…</span></span>
+  <nav id="tabs">
+    <a href="#/" id="tab-dashboard">Dashboard</a>
+    <a href="#/docs" id="tab-docs">Docs</a>
+  </nav>
+  <div id="lang" hidden>
+    <button id="lang-en" type="button">EN</button>
+    <button id="lang-ru" type="button">RU</button>
+  </div>
 </header>
 
+<div id="view-dashboard">
 <div id="empty">No metrics yet — point a run at this server:
   <code>perfscale run -f test.yaml -c config.yaml --report http://&lt;this-host&gt;:&lt;port&gt;</code>
   with <code>report.during_run: true</code> for live series.
@@ -58,6 +99,14 @@
 
 <h2 id="summaries-title" hidden>Run summaries</h2>
 <div id="summaries"></div>
+</div>
+
+<div id="view-docs" hidden>
+  <div id="docs">
+    <nav id="docs-nav"></nav>
+    <article id="docs-content"></article>
+  </div>
+</div>
 
 <script>
 (function () {
@@ -220,6 +269,93 @@
     });
   });
   poll();
+})();
+</script>
+
+<script>
+// Docs tab: hash-routed viewer over window.PERFSCALE_DOCS (the markdown from
+// docs/ + docs/ru/ pre-rendered to HTML at build time; see serve_docs.rs).
+(function () {
+  "use strict";
+  var PAGES = window.PERFSCALE_DOCS || [];
+  var bySlug = {};
+  PAGES.forEach(function (p) { bySlug[p.slug] = p; });
+
+  var viewDashboard = document.getElementById("view-dashboard");
+  var viewDocs = document.getElementById("view-docs");
+  var nav = document.getElementById("docs-nav");
+  var content = document.getElementById("docs-content");
+  var tabDashboard = document.getElementById("tab-dashboard");
+  var tabDocs = document.getElementById("tab-docs");
+  var langSwitch = document.getElementById("lang");
+  var lang = (navigator.language || "").toLowerCase().indexOf("ru") === 0 ? "ru" : "en";
+
+  var GROUPS = [
+    ["top", "Overview"],
+    ["cli", "CLI"],
+    ["core", "Core"]
+  ];
+
+  function buildNav() {
+    nav.innerHTML = "";
+    GROUPS.forEach(function (g) {
+      var pages = PAGES.filter(function (p) { return p.group === g[0]; });
+      if (!pages.length) return;
+      var title = document.createElement("div");
+      title.className = "group";
+      title.textContent = g[1];
+      nav.appendChild(title);
+      pages.forEach(function (p) {
+        var a = document.createElement("a");
+        a.href = "#/docs/" + p.slug;
+        a.textContent = p.title;
+        a.dataset.slug = p.slug;
+        nav.appendChild(a);
+      });
+    });
+  }
+
+  function renderLangButtons() {
+    document.getElementById("lang-en").className = lang === "en" ? "active" : "";
+    document.getElementById("lang-ru").className = lang === "ru" ? "active" : "";
+  }
+
+  function renderPage(slug) {
+    var page = bySlug[slug] || PAGES[0];
+    if (!page) {
+      content.innerHTML = "<p>No embedded documentation.</p>";
+      return;
+    }
+    var html = (lang === "ru" && page.html_ru) ? page.html_ru : page.html_en;
+    content.innerHTML = html;
+    Array.prototype.forEach.call(nav.querySelectorAll("a"), function (a) {
+      a.className = a.dataset.slug === page.slug ? "active" : "";
+    });
+    window.scrollTo(0, 0);
+  }
+
+  function route() {
+    var m = /^#\/docs(?:\/(.+))?$/.exec(location.hash);
+    var isDocs = m !== null;
+    viewDashboard.hidden = isDocs;
+    viewDocs.hidden = !isDocs;
+    langSwitch.hidden = !isDocs;
+    tabDashboard.className = isDocs ? "" : "active";
+    tabDocs.className = isDocs ? "active" : "";
+    if (isDocs) renderPage(m[1] || (PAGES[0] && PAGES[0].slug));
+  }
+
+  document.getElementById("lang-en").addEventListener("click", function () {
+    lang = "en"; renderLangButtons(); route();
+  });
+  document.getElementById("lang-ru").addEventListener("click", function () {
+    lang = "ru"; renderLangButtons(); route();
+  });
+
+  buildNav();
+  renderLangButtons();
+  window.addEventListener("hashchange", route);
+  route();
 })();
 </script>
 </body>

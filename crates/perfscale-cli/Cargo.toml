@@ -52,3 +52,6 @@ http-body-util = "0.1"
 serial_test = { version = "3", features = ["file_locks"] }
 tokio-tungstenite = "0.30"
 futures-util = { version = "0.3.32", default-features = false, features = ["sink"] }
+# Renders docs/ markdown for the serve dashboard's embedded Docs tab; test-only,
+# the CLI binary carries no markdown machinery (see commands/serve_docs.rs).
+pulldown-cmark = "0.13"

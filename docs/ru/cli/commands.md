@@ -148,6 +148,12 @@ error: jmeter not found in PATH — install from https://jmeter.apache.org/downl
 Страница — один самодостаточный HTML-файл: без CDN и шага сборки — и опрашивает
 `GET /api/v1/state` каждые 2 секунды.
 
+На этой же странице встроена вся документация: вкладка **Docs** рендерит
+markdown из `docs/` (английский и русский, переключатель EN/RU, по умолчанию —
+язык браузера) полностью офлайн. Встроенная копия генерируется из документации
+при сборке; после правок markdown контрибьюторы регенерируют её командой
+`PERFSCALE_UPDATE_DOCS=1 cargo test -p perfscale-cli serve_docs`.
+
 ```bash
 # терминал 1 — дашборд обслуживается на /
 perfscale serve

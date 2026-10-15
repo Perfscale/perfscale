@@ -148,6 +148,13 @@ value and a sparkline; finished runs stack up as summary blocks below. The
 page is a single self-contained HTML file — no CDN, no build step — and polls
 `GET /api/v1/state` every 2 seconds.
 
+The same page also embeds this documentation: the **Docs** tab renders all
+markdown from `docs/` (English and Russian, EN/RU switcher, defaults to the
+browser language) fully offline. The embedded copy is generated from the docs
+at build time; contributors regenerate it with
+`PERFSCALE_UPDATE_DOCS=1 cargo test -p perfscale-cli serve_docs` after editing
+the markdown.
+
 ```bash
 # terminal 1 — the dashboard is served on /
 perfscale serve
