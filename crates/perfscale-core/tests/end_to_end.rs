@@ -1398,3 +1398,111 @@ steps:
     server.verify().await;
     std::env::remove_var(VAR);
 }
+
+/// Per-context WASM instance sharing (share_per_context): a seeded run with
+/// several VUs reuses one instance per VU, and two runs still produce the
+/// exact same token sequence — the seeds flow per call, not per instance.
+/// Memoization stays message-scoped: `token(order)` twice in one body yields
+/// one value; the next message mints a fresh one.
+#[cfg(feature = "wasm-libs")]
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn shared_wasm_instances_keep_seeded_runs_reproducible() {
+    let Some(component) = hello_component() else {
+        return;
+    };
+
+    async fn run_tokens(component: &std::path::Path, vus: u32) -> Vec<String> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1..)
+            .mount(&server)
+            .await;
+        let test_yaml = format!(
+            r#"
+steps:
+  - name: token
+    use: std/http@v1
+    with:
+      method: POST
+      url: {0}/token
+      body: "${{hello.token(order)}}|${{hello.token(order)}}"
+"#,
+            server.uri()
+        );
+        let test = yaml::parse_test_file(&test_yaml).expect("test yaml parses");
+        let config = RunConfig {
+            vus,
+            duration: "300ms".into(),
+            seed: Some(7),
+            ..Default::default()
+        };
+        let libraries = vec![perfscale_core::library::LibraryRef {
+            use_: component.to_string_lossy().into_owned(),
+            sha256: None,
+            r#as: Some("hello".into()),
+            capabilities: Some(vec![]),
+            with: None,
+            secret: None,
+            allow: None,
+            deny: None,
+            log: None,
+        }];
+        let rx = runner::execute(ExecutionPlan::NativeSteps {
+            test,
+            before: Vec::new(),
+            after: Vec::new(),
+            variables: serde_json::Map::new(),
+            shared_variables: serde_json::Map::new(),
+            libraries,
+            config: Box::new(config),
+            quiet: false,
+            metrics_tx: None,
+        })
+        .await
+        .unwrap();
+        let _lines = collect(rx).await;
+        server.verify().await;
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+            .collect()
+    }
+
+    // Multi-VU: per-VU instance caches in parallel — memo and messaging
+    // invariants hold under concurrency.
+    let multi = run_tokens(&component, 4).await;
+    assert!(multi.len() > 4, "several iterations ran: {}", multi.len());
+    for body in &multi {
+        let (a, b) = body.split_once('|').expect("body shape");
+        assert_eq!(a, b, "memo within one message: {body}");
+    }
+    assert!(
+        multi.iter().collect::<std::collections::HashSet<_>>().len() > 1,
+        "distinct tokens across messages: {multi:?}"
+    );
+
+    // Single-VU: the token stream is one deterministic sequence, so two
+    // seeded runs must agree where both ran.
+    let first = run_tokens(&component, 1).await;
+    let second = run_tokens(&component, 1).await;
+    assert!(first.len() > 4, "several iterations ran: {}", first.len());
+    // Seeded run → identical sequence, shared instances notwithstanding.
+    // Iteration counts differ (timing) — the sequence must be identical
+    // where both ran (same convention as the burn-cache test).
+    let (short, long) = if first.len() <= second.len() {
+        (&first, &second)
+    } else {
+        (&second, &first)
+    };
+    assert_eq!(
+        &long[..short.len()],
+        short.as_slice(),
+        "two seeded runs must mint the same token sequence"
+    );
+}

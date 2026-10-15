@@ -216,8 +216,11 @@ pub enum Capability {
 /// The context every library call receives (RFC 005 "Call context").
 #[derive(Debug, Clone, Copy)]
 pub struct CallCtx<'a> {
-    /// Same counter as `${seq}` — bumped per message send. Memoization
-    /// scopes to it: same `key` within one `message_seq` → same value.
+    /// `${seq}` bumped per message send, plus a per-generator base
+    /// (`conn_seq << 32`) when the run wires it — unique per message within
+    /// a context even when library instances are shared across generators
+    /// ([`LibraryProvider::share_per_context`]). Memoization scopes to it:
+    /// same `key` within one `message_seq` → same value.
     pub message_seq: u64,
     /// VU loop iteration (0 where the engine has not wired it yet).
     pub iteration_seq: u64,
@@ -268,9 +271,9 @@ pub struct FunctionInfo {
     pub secret: bool,
 }
 
-/// A library as declared — mints instances. One provider per run; instances
-/// are per generator owner (per VU, per live connection), parked alongside
-/// the `Gen` they serve.
+/// A library as declared — mints instances. Instances are per generator
+/// owner, or per context (VU) when the provider opts into
+/// [`LibraryProvider::share_per_context`].
 pub trait LibraryProvider: Send + Sync {
     /// Canonical id, e.g. `"@std/random@v1"`.
     fn id(&self) -> &str;
@@ -284,6 +287,27 @@ pub trait LibraryProvider: Send + Sync {
         config: Option<serde_json::Value>,
         seed: u64,
     ) -> Result<Box<dyn LibraryInstance>, String>;
+
+    /// Instance lifecycle opt-in: when `true`, the context caches ONE
+    /// instance per alias and shares it across every generator the context
+    /// mints (every message, every connection of that VU), instead of
+    /// re-instantiating per generator. For expensive instances (a WASM
+    /// component: `Store::new` + WASI + `init()` per mint) this removes the
+    /// per-step instantiation churn.
+    ///
+    /// Contract for opting in:
+    /// - All per-message randomness must come from the per-call
+    ///   [`CallCtx::seed`] / [`CallCtx::message_seq`], not from instance
+    ///   state frozen at `instantiate` — an instance seeded once at
+    ///   creation (like the built-in `@std/random@v1`) would change its
+    ///   value sequence when shared, so such providers must NOT opt in.
+    /// - `init()` runs once per instance (per context) instead of once per
+    ///   message — instance state persists across messages of the VU.
+    ///
+    /// Default `false`: per-generator instances, the historical lifecycle.
+    fn share_per_context(&self) -> bool {
+        false
+    }
 }
 
 /// One live library instance. Arguments and results map to payload strings:

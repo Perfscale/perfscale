@@ -61,8 +61,16 @@ pub struct Context {
     pub(crate) secrets: SecretRegistry,
     /// Validated `libraries:` bindings (RFC 005), shared by every context of
     /// the run; each generator built by [`Context::new_generator`] mints its
-    /// own instances from these. `None` when no libraries are declared.
+    /// own instances from these — or reuses this context's cached instance
+    /// for providers opting into
+    /// [`crate::library::LibraryProvider::share_per_context`]. `None` when no
+    /// libraries are declared.
     pub(crate) libraries: Option<Arc<crate::library::LibrarySet>>,
+    /// Per-context (per-VU) cache of shared library instances, one per alias
+    /// of a `share_per_context` provider. Behind `Arc` so a cloned context
+    /// (same VU identity) shares it; the inner mutex is uncontended — a VU
+    /// runs its steps sequentially.
+    pub(crate) shared_lib_instances: Arc<std::sync::Mutex<Vec<crate::generate::SharedLibEntry>>>,
     /// Run-scoped per-library metrics recorder (RFC 005), shared by every
     /// generator of the run. `None` when no libraries are declared.
     pub(crate) library_metrics: Option<Arc<crate::library::LibraryMetrics>>,
@@ -98,6 +106,7 @@ impl Default for Context {
             http_client_shard: 0,
             secrets: SecretRegistry::new(),
             libraries: None,
+            shared_lib_instances: Default::default(),
             library_metrics: None,
             run_seed: None,
             settings_json: Arc::from("{}"),
@@ -216,10 +225,13 @@ impl Context {
 
     /// A fresh `${…}` generator for a new connection or one-shot action.
     /// Seeded deterministically as `hash(run_seed, vu_id, conn_seq)` when the
-    /// config sets `seed:`, randomly otherwise; every declared library is
-    /// attached as a fresh instance behind its alias (one instance per
-    /// generator owner — RFC 005 instance lifecycle). Fails only when a
-    /// library rejects its `with:` config at instantiation.
+    /// config sets `seed:`, randomly otherwise. Libraries whose providers opt
+    /// into [`crate::library::LibraryProvider::share_per_context`] (WASM —
+    /// instantiation is expensive) attach this context's cached instance,
+    /// created on first use and living until the context (VU) ends; every
+    /// other library mints a fresh instance per generator (the historical
+    /// lifecycle, RFC 005). Fails only when a library rejects its `with:`
+    /// config at instantiation.
     pub fn new_generator(&self) -> Result<crate::generate::Gen, String> {
         let conn_seq = self
             .gen_counter
@@ -236,18 +248,52 @@ impl Context {
         if let Some(metrics) = &self.library_metrics {
             gen = gen.with_library_metrics(Arc::clone(metrics));
         }
+        // Shared instances persist across generators: the memo base keeps
+        // `CallCtx.message_seq` unique per message so per-message
+        // memoization still never leaks.
+        gen.set_memo_base(conn_seq << 32);
         if let Some(set) = &self.libraries {
             for lib in &set.libraries {
-                let instance = lib
-                    .provider
-                    .instantiate(lib.config.clone(), seed)
-                    .map_err(|e| format!("library '{}' ({}): {e}", lib.alias, lib.provider.id()))?;
-                gen.attach_library(
-                    lib.alias.clone(),
-                    instance,
-                    lib.rules.clone(),
-                    lib.provider.functions().to_vec(),
-                );
+                if lib.provider.share_per_context() {
+                    let mut cache = self.shared_lib_instances.lock().unwrap();
+                    let entry = match cache.iter().find(|e| e.alias == lib.alias) {
+                        Some(e) => e,
+                        None => {
+                            let instance = lib
+                                .provider
+                                .instantiate(lib.config.clone(), seed)
+                                .map_err(|e| {
+                                    format!("library '{}' ({}): {e}", lib.alias, lib.provider.id())
+                                })?;
+                            cache.push(crate::generate::SharedLibEntry {
+                                alias: lib.alias.clone(),
+                                rules: lib.rules.clone(),
+                                functions: lib.provider.functions().to_vec(),
+                                instance: Arc::new(std::sync::Mutex::new(instance)),
+                            });
+                            cache.last().expect("just pushed")
+                        }
+                    };
+                    gen.attach_shared_library(
+                        entry.alias.clone(),
+                        Arc::clone(&entry.instance),
+                        entry.rules.clone(),
+                        entry.functions.clone(),
+                    );
+                } else {
+                    let instance =
+                        lib.provider
+                            .instantiate(lib.config.clone(), seed)
+                            .map_err(|e| {
+                                format!("library '{}' ({}): {e}", lib.alias, lib.provider.id())
+                            })?;
+                    gen.attach_library(
+                        lib.alias.clone(),
+                        instance,
+                        lib.rules.clone(),
+                        lib.provider.functions().to_vec(),
+                    );
+                }
             }
         }
         Ok(gen)
@@ -759,5 +805,144 @@ mod tests {
         let bare = Context::new();
         let err = bare.call_library("${random.int(1,2)}", &[]).unwrap_err();
         assert!(err.contains("no libraries are declared"), "{err}");
+    }
+
+    // -----------------------------------------------------------------
+    // Shared (per-context) library instances
+    // -----------------------------------------------------------------
+
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    /// Provider that counts instantiations; its instances record every
+    /// `message_seq` they see, so tests can observe instance reuse and
+    /// memo-scope uniqueness.
+    struct CountingProvider {
+        share: bool,
+        instantiated: Arc<AtomicUsize>,
+        seen_seqs: Arc<std::sync::Mutex<Vec<u64>>>,
+    }
+
+    impl crate::library::LibraryProvider for CountingProvider {
+        fn id(&self) -> &str {
+            "test/counting@v1"
+        }
+        fn functions(&self) -> &[crate::library::FunctionInfo] {
+            &[crate::library::FunctionInfo {
+                name: "ping",
+                description: "test",
+                secret: false,
+            }]
+        }
+        fn instantiate(
+            &self,
+            _config: Option<Value>,
+            _seed: u64,
+        ) -> Result<Box<dyn crate::library::LibraryInstance>, String> {
+            self.instantiated.fetch_add(1, AtomicOrdering::Relaxed);
+            Ok(Box::new(CountingInstance {
+                seen: Arc::clone(&self.seen_seqs),
+            }))
+        }
+        fn share_per_context(&self) -> bool {
+            self.share
+        }
+    }
+
+    struct CountingInstance {
+        seen: Arc<std::sync::Mutex<Vec<u64>>>,
+    }
+
+    impl crate::library::LibraryInstance for CountingInstance {
+        fn call(
+            &mut self,
+            ctx: &crate::library::CallCtx<'_>,
+            _func: &str,
+            _args: &[Value],
+        ) -> Result<String, String> {
+            self.seen.lock().unwrap().push(ctx.message_seq);
+            Ok("pong".into())
+        }
+    }
+
+    fn ctx_with_counting_library(
+        share: bool,
+    ) -> (Context, Arc<AtomicUsize>, Arc<std::sync::Mutex<Vec<u64>>>) {
+        let instantiated = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut ctx = Context::new();
+        ctx.libraries = Some(Arc::new(crate::library::LibrarySet {
+            libraries: vec![crate::library::ResolvedLibrary {
+                alias: "c".into(),
+                provider: Arc::new(CountingProvider {
+                    share,
+                    instantiated: Arc::clone(&instantiated),
+                    seen_seqs: Arc::clone(&seen),
+                }),
+                config: None,
+                rules: Default::default(),
+            }],
+        }));
+        (ctx, instantiated, seen)
+    }
+
+    /// A share_per_context provider is instantiated once per context no
+    /// matter how many generators (messages) the context mints — and every
+    /// message still gets a distinct `message_seq` (memo isolation), with
+    /// both tokens of one message sharing it.
+    #[test]
+    fn shared_provider_instantiates_once_per_context() {
+        let (ctx, instantiated, seen) = ctx_with_counting_library(true);
+        for _ in 0..3 {
+            let mut g = ctx.new_generator().unwrap();
+            g.begin_message();
+            // Two tokens in ONE message → one message_seq; next generator →
+            // a different one.
+            g.expand("${c.ping()};${c.ping()}").unwrap();
+        }
+        assert_eq!(
+            instantiated.load(AtomicOrdering::Relaxed),
+            1,
+            "shared instance minted once per context"
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 6);
+        assert_eq!(seen[0], seen[1], "one message, one message_seq");
+        assert_ne!(seen[0], seen[2], "next message, new message_seq");
+        assert_ne!(seen[2], seen[4], "third message, new message_seq");
+    }
+
+    /// Default lifecycle unchanged: a non-sharing provider mints a fresh
+    /// instance per generator.
+    #[test]
+    fn non_shared_provider_instantiates_per_generator() {
+        let (ctx, instantiated, _seen) = ctx_with_counting_library(false);
+        for _ in 0..3 {
+            let mut g = ctx.new_generator().unwrap();
+            g.begin_message();
+            g.expand("${c.ping()}").unwrap();
+        }
+        assert_eq!(instantiated.load(AtomicOrdering::Relaxed), 3);
+    }
+
+    /// Seeded derivation is untouched by sharing: two contexts with the same
+    /// run seed produce the same per-generator seeds, which is what makes
+    /// seeded runs reproducible.
+    #[test]
+    fn shared_instances_keep_seeded_derivation() {
+        let expand = || {
+            let (ctx, ..) = ctx_with_counting_library(true);
+            // `run_seed` + `vu_id` are what base_context seeds per VU.
+            let mut ctx = ctx;
+            ctx.run_seed = Some(42);
+            ctx.vu_id = 3;
+            (0..3)
+                .map(|_| {
+                    let mut g = ctx.new_generator().unwrap();
+                    g.begin_message();
+                    g.expand("${rand(1000,9999)}").unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(expand(), expand(), "same seed → same values");
     }
 }

@@ -9,6 +9,11 @@
 //! - `wasm_call_current_thread_hop` — from a single-threaded runtime, where
 //!   the call must hop through the blocking pool.
 //! - `std_random_call` — the native built-in, the no-WASM floor.
+//! - `wasm_generator_mint_per_message` — the per-step cost of a token-bearing
+//!   step: minting the message generator off a VU context. With per-context
+//!   (per-VU) instance sharing only the first mint instantiates the WASM
+//!   component; the audit's per-step `Store::new`+instantiate+`init()` churn
+//!   is what this guards against regressing into.
 //!
 //! The fixture component is the SDK `hello` example, built once per bench
 //! process (skipped with an eprintln when wasm32-wasip2 is not installed).
@@ -165,11 +170,32 @@ fn bench_std_random_call(c: &mut Criterion) {
     });
 }
 
+fn bench_generator_mint_per_message(c: &mut Criterion) {
+    let Some(path) = fixture_hello() else {
+        return;
+    };
+    let resolved = validate_libraries(&[lib_ref(path)], false, None).unwrap();
+    let set = std::sync::Arc::new(perfscale_core::library::LibrarySet {
+        libraries: resolved,
+    });
+    let mut ctx = perfscale_core::step::context::Context::new();
+    ctx.set_libraries(set);
+    c.bench_function("wasm_generator_mint_per_message", |b| {
+        b.iter(|| {
+            let mut gen = ctx.new_generator().unwrap();
+            gen.begin_message();
+            gen.expand(std::hint::black_box("${hello.greet(world)}"))
+                .unwrap()
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_wasm_call_inline,
     bench_wasm_call_blocking_hop,
     bench_wasm_call_current_thread_hop,
-    bench_std_random_call
+    bench_std_random_call,
+    bench_generator_mint_per_message
 );
 criterion_main!(benches);

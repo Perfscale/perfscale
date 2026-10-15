@@ -1049,6 +1049,16 @@ impl LibraryProvider for WasmLibraryProvider {
             id: Arc::from(self.id.as_str()),
         }))
     }
+
+    /// WASM instances are expensive to mint (`Store::new` + WASI linker +
+    /// instantiation + `init()`), so one instance per context (VU) is cached
+    /// and shared across every generator the VU mints — per-message/connection
+    /// instantiation churn disappears. Safe because all per-call inputs
+    /// (seed, message_seq) arrive via [`CallCtx`] on every call; nothing a
+    /// guest needs per message is frozen at instantiate time.
+    fn share_per_context(&self) -> bool {
+        true
+    }
 }
 
 /// One live WASM library instance (per generator owner).

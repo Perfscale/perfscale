@@ -62,6 +62,9 @@
 pub struct Gen {
     seq: u64,
     rng: u64,
+    /// Per-generator base folded into [`crate::library::CallCtx::message_seq`]
+    /// (see [`Gen::set_memo_base`]). 0 in hand-built generators.
+    memo_base: u64,
     /// `${alias.fn(...)}` resolvers: alias → library instance + its call
     /// policy and function metadata (RFC 005). Built-in tokens match first;
     /// libraries are only consulted after a built-in miss on a token
@@ -90,9 +93,36 @@ pub struct Gen {
 /// metadata (for `FunctionInfo.secret`).
 struct AttachedLibrary {
     alias: String,
-    instance: Box<dyn crate::library::LibraryInstance>,
+    instance: SharedInstance,
     rules: crate::library::LibraryRules,
     functions: Vec<crate::library::FunctionInfo>,
+}
+
+/// A live library instance behind a shared handle. Per-generator instances
+/// (the default lifecycle) hold a unique `Arc`; providers opting into
+/// [`crate::library::LibraryProvider::share_per_context`] hand every
+/// generator of the context a clone of one cached `Arc`. The mutex is
+/// uncontended — a VU runs its steps sequentially — it exists for `Send` +
+/// shared ownership, not for concurrency.
+pub(crate) type SharedInstance =
+    std::sync::Arc<std::sync::Mutex<Box<dyn crate::library::LibraryInstance>>>;
+
+/// One context-cached shared library instance (see
+/// [`crate::library::LibraryProvider::share_per_context`]): the alias key,
+/// the entry's call policy/function metadata snapshot, and the instance.
+pub(crate) struct SharedLibEntry {
+    pub alias: String,
+    pub rules: crate::library::LibraryRules,
+    pub functions: Vec<crate::library::FunctionInfo>,
+    pub instance: SharedInstance,
+}
+
+impl std::fmt::Debug for SharedLibEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedLibEntry")
+            .field("alias", &self.alias)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Gen {
@@ -101,6 +131,7 @@ impl Gen {
         Gen {
             seq: 0,
             rng: seed | 1,
+            memo_base: 0,
             libraries: Vec::new(),
             seed,
             vu_id: 0,
@@ -153,12 +184,40 @@ impl Gen {
         rules: crate::library::LibraryRules,
         functions: Vec<crate::library::FunctionInfo>,
     ) {
+        self.attach_shared_library(
+            alias,
+            std::sync::Arc::new(std::sync::Mutex::new(instance)),
+            rules,
+            functions,
+        );
+    }
+
+    /// Bind a shared (context-cached) instance — same as
+    /// [`Gen::attach_library`] but the instance outlives this generator.
+    pub(crate) fn attach_shared_library(
+        &mut self,
+        alias: impl Into<String>,
+        instance: SharedInstance,
+        rules: crate::library::LibraryRules,
+        functions: Vec<crate::library::FunctionInfo>,
+    ) {
         self.libraries.push(AttachedLibrary {
             alias: alias.into(),
             instance,
             rules,
             functions,
         });
+    }
+
+    /// Fold a per-generator base into [`crate::library::CallCtx::message_seq`]
+    /// (`memo_base + seq`). With context-shared instances the generator is
+    /// fresh per message while the instance (and its memo cache) persists —
+    /// the base keeps message_seq unique per message, so memoization still
+    /// never leaks across messages. Called by `Context::new_generator` with
+    /// `conn_seq << 32`; a single generator would need >4 billion messages
+    /// to collide with the next generator's range.
+    pub(crate) fn set_memo_base(&mut self, base: u64) {
+        self.memo_base = base;
     }
 
     /// Advance to the next message: bumps the `${seq}` counter so every
@@ -375,7 +434,7 @@ impl Gen {
         args: Vec<serde_json::Value>,
     ) -> Result<String, String> {
         let call_ctx = crate::library::CallCtx {
-            message_seq: self.seq,
+            message_seq: self.memo_base + self.seq,
             iteration_seq: self.iteration_seq,
             vu_id: self.vu_id,
             seed: self.seed,
@@ -396,11 +455,11 @@ impl Gen {
         let result = match &self.library_metrics {
             Some(recorder) => {
                 let started = std::time::Instant::now();
-                let result = entry.instance.call(&call_ctx, func, &args);
+                let result = entry.instance.lock().unwrap().call(&call_ctx, func, &args);
                 recorder.record(alias, started.elapsed(), result.is_ok());
                 result
             }
-            None => entry.instance.call(&call_ctx, func, &args),
+            None => entry.instance.lock().unwrap().call(&call_ctx, func, &args),
         }
         .map_err(|e| format!("{display}: {e}"))?;
 

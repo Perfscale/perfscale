@@ -57,8 +57,26 @@ Token semantics in short:
 - Any function's optional trailing `key` argument **memoizes** the result
   within one message: two `${random.uuid4(order)}` in one message yield one
   id; the next message generates a fresh one.
-- `seed: 42` in the config makes a run reproducible — every library instance
-  derives its seed as `hash(seed, vu_id, conn_seq)`.
+- `seed: 42` in the config makes a run reproducible — every library call
+  carries a per-message seed derived as `hash(seed, vu_id, conn_seq)`, so
+  two seeded runs mint the same values.
+
+### Instance lifecycle
+
+WASM instances are expensive to create (`Store::new` + WASI wiring +
+`init()`), so the engine keeps **one instance per library per VU**, reused
+by every message and connection that VU runs — not one per step. `init()`
+therefore runs once per VU, and instance state persists across that VU's
+messages; per-message isolation (memo keys) still holds because every
+message carries a distinct `message_seq`. Memory: a fresh store is lazy —
+measured ~0.5 MiB RSS per instance for a small component (500 VUs ≈
+250 MB total engine RSS; the 64 MiB limit is a cap, not an allocation), so
+even 1000 VUs with a WASM library stay in the hundreds of MB — but a
+component that eagerly allocates its linear memory multiplies that. The
+built-in `@std/random@v1` is *not* shared: its PRNG is seeded per instance
+(`hash(config.seed, vu_id, conn_seq)`), and sharing would change the value
+sequence — it stays per-generator.
+
 - A failed call (guest error, trap, timeout) fails the step with the cause
   recorded — a load test never sends wrong data and reports green.
 
