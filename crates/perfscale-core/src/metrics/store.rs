@@ -145,8 +145,12 @@ impl Metrics {
     /// use it directly instead of building a throwaway JSON object per tick.
     pub(crate) fn record_hist_sample(&mut self, name: &str, ms: f64) {
         let h = self.hists.entry(name.to_string()).or_insert_with(|| {
-            hdrhistogram::Histogram::new_with_bounds(HIST_LOW_MICROS, HIST_HIGH_MICROS, HIST_SIGFIGS)
-                .expect("static histogram bounds are valid")
+            hdrhistogram::Histogram::new_with_bounds(
+                HIST_LOW_MICROS,
+                HIST_HIGH_MICROS,
+                HIST_SIGFIGS,
+            )
+            .expect("static histogram bounds are valid")
         });
         let micros = (ms * 1000.0).round() as u64;
         let _ = h.record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));

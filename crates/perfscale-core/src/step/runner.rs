@@ -2539,7 +2539,10 @@ mod tests {
             .find_map(|t| t.strip_prefix("avg=")?.strip_suffix("ms"))
             .and_then(|v| v.parse().ok())
             .unwrap_or_else(|| panic!("avg in {line:?}"));
-        assert!(avg > 20.0, "saturation must show up as queue wait: {line:?}");
+        assert!(
+            avg > 20.0,
+            "saturation must show up as queue wait: {line:?}"
+        );
         // The iteration latency is at least the step duration plus the wait.
         let iter_line = lines
             .iter()
@@ -2551,7 +2554,10 @@ mod tests {
             .find_map(|t| t.strip_prefix("min=")?.strip_suffix("ms"))
             .and_then(|v| v.parse().ok())
             .unwrap();
-        assert!(min >= 200.0, "iteration latency includes the body: {iter_line:?}");
+        assert!(
+            min >= 200.0,
+            "iteration latency includes the body: {iter_line:?}"
+        );
     }
 
     /// Broken load profiles fail fast with a clear error, before any VU runs.

@@ -173,7 +173,7 @@ fn bench_metrics_contended(c: &mut Criterion) {
     let mut group = c.benchmark_group("metrics_record_contended");
     for threads in [1usize, 4, 16] {
         group.throughput(Throughput::Elements(
-            (threads * FOLDS_PER_THREAD * 3) as u64
+            (threads * FOLDS_PER_THREAD * 3) as u64,
         ));
         group.bench_function(format!("threads={threads}"), |b| {
             b.iter_batched(
@@ -191,10 +191,8 @@ fn bench_metrics_contended(c: &mut Criterion) {
                                     status: 200,
                                     failed: false,
                                 };
-                                let counters = json!({ "bench_msgs": 1.0 })
-                                    .as_object()
-                                    .unwrap()
-                                    .clone();
+                                let counters =
+                                    json!({ "bench_msgs": 1.0 }).as_object().unwrap().clone();
                                 bar.wait();
                                 for i in 0..FOLDS_PER_THREAD {
                                     let mut g = m.lock().unwrap();
@@ -233,7 +231,7 @@ fn bench_metrics_sharded_contended(c: &mut Criterion) {
     let mut group = c.benchmark_group("metrics_record_sharded_contended");
     for threads in [1usize, 4, 16] {
         group.throughput(Throughput::Elements(
-            (threads * FOLDS_PER_THREAD * 3) as u64
+            (threads * FOLDS_PER_THREAD * 3) as u64,
         ));
         group.bench_function(format!("threads={threads}"), |b| {
             b.iter_batched(
@@ -250,10 +248,8 @@ fn bench_metrics_sharded_contended(c: &mut Criterion) {
                                     status: 200,
                                     failed: false,
                                 };
-                                let counters = json!({ "bench_msgs": 1.0 })
-                                    .as_object()
-                                    .unwrap()
-                                    .clone();
+                                let counters =
+                                    json!({ "bench_msgs": 1.0 }).as_object().unwrap().clone();
                                 bar.wait();
                                 for i in 0..FOLDS_PER_THREAD {
                                     m.record(&sample);

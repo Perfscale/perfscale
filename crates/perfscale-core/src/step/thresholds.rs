@@ -1015,9 +1015,7 @@ mod tests {
 
     use crate::metrics::ShardedMetrics;
 
-    fn ctx_with_metrics(
-        m: crate::step::runner::Metrics,
-    ) -> (Context, Arc<ShardedMetrics>) {
+    fn ctx_with_metrics(m: crate::step::runner::Metrics) -> (Context, Arc<ShardedMetrics>) {
         let shared = Arc::new(ShardedMetrics::from_metrics(m));
         let mut ctx = Context::new();
         ctx.run_metrics = Some(Arc::clone(&shared));

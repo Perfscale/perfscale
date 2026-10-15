@@ -157,7 +157,9 @@ mod tests {
         });
         for name in [SCHEDULER_LAG_METRIC, LOG_CHANNEL_DEPTH_METRIC] {
             assert!(
-                catalog().iter().any(|(family, def)| *family == "engine" && def.name == name),
+                catalog()
+                    .iter()
+                    .any(|(family, def)| *family == "engine" && def.name == name),
                 "{name} must be declared in the engine family"
             );
         }

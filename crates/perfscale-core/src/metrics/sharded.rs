@@ -68,7 +68,9 @@ impl ShardedMetrics {
     /// A store with exactly `n` shards (tests pin small counts).
     pub fn with_shards(n: usize) -> Self {
         Self {
-            shards: (0..n.max(1)).map(|_| Mutex::new(Metrics::default())).collect(),
+            shards: (0..n.max(1))
+                .map(|_| Mutex::new(Metrics::default()))
+                .collect(),
         }
     }
 
@@ -174,9 +176,11 @@ mod tests {
         let m = ShardedMetrics::with_shards(4);
         for i in 0..100u64 {
             m.record(&sample(1.0 + i as f64 * 0.01, i % 10 == 0));
-            m.add_counters(serde_json::json!({ "msgs": 2.0, "batch_ms": [i as f64] })
-                .as_object()
-                .unwrap());
+            m.add_counters(
+                serde_json::json!({ "msgs": 2.0, "batch_ms": [i as f64] })
+                    .as_object()
+                    .unwrap(),
+            );
             m.record_rate("op_failed", i % 4 == 0);
         }
         let v = m.merged();
@@ -261,6 +265,9 @@ mod tests {
             .iter()
             .filter(|s| s.lock().unwrap().total > 0)
             .count();
-        assert!(used > 1, "4 threads over 8 shards should spread, used={used}");
+        assert!(
+            used > 1,
+            "4 threads over 8 shards should spread, used={used}"
+        );
     }
 }
