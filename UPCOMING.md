@@ -12,6 +12,12 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+## `perfscale serve`: embedded docs
+
+- The serve dashboard gains a **Docs tab**: the full OSS documentation
+  (English and Russian, switchable) ships inside the binary and renders
+  offline — no CDN, no build step. The embedded copy is drift-checked in CI.
+
 ## Performance: metrics contention, WASM instance reuse, lossy logging
 
 - The run metrics store is now sharded per worker thread instead of one
