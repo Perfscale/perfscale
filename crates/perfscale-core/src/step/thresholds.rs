@@ -616,14 +616,15 @@ pub(crate) fn thresholds_action(params: &Value, ctx: &Context, step_name: &str) 
     };
 
     let result = {
-        let mut m = metrics.lock().unwrap();
-        let snapshot = m.metric_snapshot();
+        // Read over the merged view (all shards), then record the outcome
+        // back into this thread's shard.
+        let snapshot = metrics.merged().metric_snapshot();
         let result = evaluate(params, &snapshot);
         match &result {
-            Ok(summary) => m.record_threshold_result(summary.clone()),
+            Ok(summary) => metrics.record_threshold_result(summary.clone()),
             // A config error is hard: the gate must never silently pass, so
             // it lands in the run summary (and the exit code) as a failure.
-            Err(e) => m.record_threshold_result(ThresholdsSummary {
+            Err(e) => metrics.record_threshold_result(ThresholdsSummary {
                 status: "fail".to_string(),
                 message: truncate_message(&format!("config error: {e}")),
                 violations: Vec::new(),
@@ -1010,12 +1011,14 @@ mod tests {
     // The action (metrics handle through the context)
     // -----------------------------------------------------------------
 
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+
+    use crate::metrics::ShardedMetrics;
 
     fn ctx_with_metrics(
         m: crate::step::runner::Metrics,
-    ) -> (Context, Arc<Mutex<crate::step::runner::Metrics>>) {
-        let shared = Arc::new(Mutex::new(m));
+    ) -> (Context, Arc<ShardedMetrics>) {
+        let shared = Arc::new(ShardedMetrics::from_metrics(m));
         let mut ctx = Context::new();
         ctx.run_metrics = Some(Arc::clone(&shared));
         (ctx, shared)
@@ -1068,7 +1071,7 @@ mod tests {
         assert_eq!(out.value["status"], "fail");
         assert!(!out.success);
 
-        let combined = shared.lock().unwrap().thresholds_summary().unwrap();
+        let combined = shared.merged().thresholds_summary().unwrap();
         assert_eq!(combined.status, "fail", "worst of pass/warn/fail wins");
         assert_eq!(
             combined.violations.len(),
@@ -1093,7 +1096,7 @@ mod tests {
             out.logs
         );
 
-        let summary = shared.lock().unwrap().thresholds_summary().unwrap();
+        let summary = shared.merged().thresholds_summary().unwrap();
         assert_eq!(
             summary.status, "fail",
             "a broken gate must not silently pass"

@@ -15,7 +15,7 @@
 //!   its own rendering after the generic fallback lines.
 
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use super::store::Metrics;
 
@@ -62,7 +62,7 @@ pub struct MetricDef {
 /// start of the VU phase: the run's shared metrics handle (record into it
 /// like any step would) and the soft-stop flag to poll.
 pub struct SamplerContext {
-    pub metrics: Arc<Mutex<Metrics>>,
+    pub metrics: Arc<super::ShardedMetrics>,
     pub stop: Arc<AtomicBool>,
 }
 

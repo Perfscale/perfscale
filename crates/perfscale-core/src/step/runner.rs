@@ -36,9 +36,10 @@
 //!
 //! # Metrics and summary
 //!
-//! Every step's timing and failure folds into the shared [`Metrics`] —
-//! fixed-size HDR histograms, not per-request samples — which is summarised
-//! at the end in a k6-compatible text format so downstream parsers
+//! Every step's timing and failure folds into the shared, internally
+//! sharded [`ShardedMetrics`] store — fixed-size HDR histograms, not
+//! per-request samples — which readers merge on demand and summarise at
+//! the end in a k6-compatible text format so downstream parsers
 //! (dashboards, `perfscale serve`) work the same for all three engines.
 //! The first SIGINT/SIGTERM asks the VU loop to stop (it notices between
 //! steps) and the run still proceeds through `after:` and the summary; a
@@ -78,8 +79,8 @@ impl From<LogTag> for LogSource {
 
 // The store lives in the metrics module (RFC 010); re-exported so the
 // historical `step::runner::Metrics` path keeps working (benches, contexts,
-// thresholds).
-pub use crate::metrics::Metrics;
+// thresholds). The run shares the sharded wrapper across VUs.
+pub use crate::metrics::{Metrics, ShardedMetrics};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -374,8 +375,9 @@ pub async fn run_native(
 
     // Created up front (not after setup) so `after:` thresholds steps get a
     // metrics handle on every exit path — including a failed `before`, where
-    // it is simply empty.
-    let metrics = Arc::new(Mutex::new(Metrics::default()));
+    // it is simply empty. Internally sharded: every VU's step fold lands on
+    // its worker thread's home shard, and readers merge on demand.
+    let metrics = Arc::new(ShardedMetrics::default());
 
     // First SIGINT/SIGTERM flips this flag (soft stop); a second one exits
     // the process outright. The handler task is aborted when the run ends.
@@ -523,7 +525,7 @@ pub async fn run_native(
                     .unwrap_or(0);
                 let iters = iter_count.load(Ordering::Relaxed);
                 let line = {
-                    let m = metrics.lock().unwrap();
+                    let m = metrics.merged();
                     let total = m.total_requests();
                     let mut line =
                         m.stats_line(ts_ms, total - prev_total, INTERVAL_SECS as f64, iters);
@@ -684,7 +686,7 @@ pub async fn run_native(
     let wall_secs = started.elapsed().as_secs_f64();
     let total_iters = iter_count.load(Ordering::Relaxed);
     let (lines, thresholds) = {
-        let m = metrics.lock().unwrap();
+        let m = metrics.merged();
         let lines = match summary_shape {
             SummaryShape::Fixed(vus) => m.summary_lines(wall_secs, total_iters, vus),
             SummaryShape::Observed((last, min_vus, max_vus)) => {
@@ -780,7 +782,7 @@ pub async fn run_native(
 /// until its first request completes, and without the gauges the shipper
 /// would flatten those snapshots to nothing.
 fn spawn_metrics_stream(
-    metrics: Arc<Mutex<Metrics>>,
+    metrics: Arc<ShardedMetrics>,
     tx: mpsc::Sender<MetricSnapshot>,
     interval: Duration,
     gpu: Option<Arc<Mutex<Vec<crate::gpu::GpuSample>>>>,
@@ -811,7 +813,7 @@ fn spawn_metrics_stream(
                 .unwrap_or_default();
             let snap = MetricSnapshot {
                 ts_ms,
-                metrics: metrics.lock().unwrap().metric_snapshot(),
+                metrics: metrics.merged().metric_snapshot(),
                 gpu: gpu_samples,
                 iterations_completed: progress.iterations.load(Ordering::Relaxed),
                 vus: progress.vus(),
@@ -857,7 +859,7 @@ impl StreamProgress {
 /// per spawn.
 struct VuShared {
     steps: Arc<Vec<Step>>,
-    metrics: Arc<Mutex<Metrics>>,
+    metrics: Arc<ShardedMetrics>,
     iter_count: Arc<AtomicU64>,
     config_seed: Arc<Value>,
     vars: Arc<Value>,
@@ -1248,7 +1250,7 @@ async fn supervise_arrival(
     // erroring on an unknown metric (same convention as `db_errors`).
     let mut obj = Map::new();
     obj.insert("dropped_iterations".to_string(), Value::from(dropped));
-    shared.metrics.lock().unwrap().add_counters(&obj);
+    shared.metrics.add_counters(&obj);
     sampler.observed()
 }
 
@@ -1423,7 +1425,7 @@ async fn run_before(
 /// run's secret registry (masking for teardown log lines).
 struct AfterShared {
     registry: Arc<ProcessRegistry>,
-    metrics: Arc<Mutex<Metrics>>,
+    metrics: Arc<ShardedMetrics>,
     secrets: SecretRegistry,
     libraries: Option<Arc<crate::library::LibrarySet>>,
     library_metrics: Option<Arc<crate::library::LibraryMetrics>>,
@@ -1526,7 +1528,7 @@ async fn execute_step(
     step: &Step,
     ctx: &mut Context,
     tx: &mpsc::Sender<LogLine>,
-    metrics: &Arc<Mutex<Metrics>>,
+    metrics: &Arc<ShardedMetrics>,
     quiet: bool,
     _vu_id: u32,
 ) {
@@ -1544,33 +1546,32 @@ async fn execute_step(
         // still folds as today, so a buggy step degrades its own metric
         // instead of failing the run. Unknown names pass through silently.
         let mut warnings = Vec::new();
-        {
-            let mut m = metrics.lock().unwrap();
-            if let Some(ref sample) = output.http_sample {
-                m.record(sample);
-            }
-            if let Some(obj) = output.value.get("metrics").and_then(|v| v.as_object()) {
-                for (name, v) in obj {
-                    if let Some(w) = crate::metrics::kind_mismatch_warning(name, v.is_array()) {
-                        warnings.push(w);
-                    }
+        // Every write lands on this worker thread's home shard — no run-wide
+        // lock. Three calls, three uncontended locks.
+        if let Some(ref sample) = output.http_sample {
+            metrics.record(sample);
+        }
+        if let Some(obj) = output.value.get("metrics").and_then(|v| v.as_object()) {
+            for (name, v) in obj {
+                if let Some(w) = crate::metrics::kind_mismatch_warning(name, v.is_array()) {
+                    warnings.push(w);
                 }
-                m.add_counters(obj);
-                // Failure sampling: one 0/1 sample per invocation for every
-                // family-duration metric the invocation emitted, so
-                // `std/thresholds@v1` can compute `rate` = failed/total
-                // invocations. `db_query_duration` → `db_query_failed`,
-                // `ws_msg_rtt` → `ws_msg_failed`, matching the HTTP family's
-                // native `http_req_failed`.
-                let failed = !output.success;
-                for (name, v) in obj {
-                    if v.is_array() {
-                        let family = name
-                            .strip_suffix("_duration")
-                            .or_else(|| name.strip_suffix("_rtt"))
-                            .unwrap_or(name);
-                        m.record_rate(&format!("{family}_failed"), failed);
-                    }
+            }
+            metrics.add_counters(obj);
+            // Failure sampling: one 0/1 sample per invocation for every
+            // family-duration metric the invocation emitted, so
+            // `std/thresholds@v1` can compute `rate` = failed/total
+            // invocations. `db_query_duration` → `db_query_failed`,
+            // `ws_msg_rtt` → `ws_msg_failed`, matching the HTTP family's
+            // native `http_req_failed`.
+            let failed = !output.success;
+            for (name, v) in obj {
+                if v.is_array() {
+                    let family = name
+                        .strip_suffix("_duration")
+                        .or_else(|| name.strip_suffix("_rtt"))
+                        .unwrap_or(name);
+                    metrics.record_rate(&format!("{family}_failed"), failed);
                 }
             }
         }

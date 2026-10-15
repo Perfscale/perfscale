@@ -3,6 +3,8 @@
 //! - [`store`]: [`Metrics`], the per-run accumulator every step folds into
 //!   (HDR histograms, counters, failure rates) and the k6-compatible
 //!   summary/`[stats]` rendering.
+//! - sharded: [`ShardedMetrics`], the internally sharded wrapper the
+//!   runner actually shares across VUs; readers merge the shards on demand.
 //! - [`registry`]: [`MetricKind`], [`MetricDef`], the [`MetricsFamily`]
 //!   trait, and the process-global registry ([`register_family`],
 //!   [`catalog`]). Core seeds the built-in `http` and `llm` families;
@@ -22,12 +24,14 @@
 mod builtin;
 pub(crate) mod engine;
 mod registry;
+mod sharded;
 mod store;
 
 pub use engine::EngineMetricsConfig;
 pub use registry::{
     catalog, register_family, MetricDef, MetricKind, MetricsFamily, SamplerContext,
 };
+pub use sharded::ShardedMetrics;
 pub use store::Metrics;
 
 pub(crate) use registry::{families, kind_mismatch_warning};

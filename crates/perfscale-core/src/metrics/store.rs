@@ -158,6 +158,48 @@ impl Metrics {
         self.gauges.insert(name.to_string(), value);
     }
 
+    /// Fold another store's contents into this one — the per-shard merge
+    /// behind [`super::sharded::ShardedMetrics::merged`]. Exact, not
+    /// approximate: the histograms share bounds and significant figures, so
+    /// HDR `add` sums identical bucket layouts; counters/rates sum; gauges
+    /// take the max (the gauges in use are peak readings like
+    /// `engine_log_channel_depth_max`); threshold outcomes concatenate.
+    pub(crate) fn merge_from(&mut self, other: &Metrics) {
+        self.durations_micros
+            .add(&other.durations_micros)
+            .expect("all run histograms share the same bounds");
+        self.failures += other.failures;
+        self.total += other.total;
+        for (name, v) in &other.counters {
+            *self.counters.entry(name.clone()).or_insert(0.0) += v;
+        }
+        for (name, h) in &other.hists {
+            self.hists
+                .entry(name.clone())
+                .or_insert_with(|| {
+                    hdrhistogram::Histogram::new_with_bounds(
+                        HIST_LOW_MICROS,
+                        HIST_HIGH_MICROS,
+                        HIST_SIGFIGS,
+                    )
+                    .expect("static histogram bounds are valid")
+                })
+                .add(h)
+                .expect("all run histograms share the same bounds");
+        }
+        for (name, (total, failed)) in &other.rates {
+            let e = self.rates.entry(name.clone()).or_insert((0, 0));
+            e.0 += total;
+            e.1 += failed;
+        }
+        for (name, v) in &other.gauges {
+            let e = self.gauges.entry(name.clone()).or_insert(f64::MIN);
+            *e = e.max(*v);
+        }
+        self.threshold_results
+            .extend(other.threshold_results.iter().cloned());
+    }
+
     /// Store the outcome of a `std/thresholds@v1` step for the run summary.
     pub fn record_threshold_result(&mut self, result: crate::step::thresholds::ThresholdsSummary) {
         self.threshold_results.push(result);

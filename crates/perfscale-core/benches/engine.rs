@@ -29,7 +29,7 @@ use perfscale_core::step::actions::HttpSample;
 use perfscale_core::step::context::Context;
 use perfscale_core::step::process::{RingBuf, WaitUntil};
 use perfscale_core::step::pubsub::{self, PubSubParams, SubscribeSpec};
-use perfscale_core::step::runner::Metrics;
+use perfscale_core::step::runner::{Metrics, ShardedMetrics};
 use perfscale_core::step::shared_variable::{self, SharedVarOp};
 use perfscale_core::yaml;
 
@@ -201,6 +201,64 @@ fn bench_metrics_contended(c: &mut Criterion) {
                                     g.record(&sample);
                                     g.add_counters(&counters);
                                     g.record_rate("bench_op_failed", i % 100 == 0);
+                                }
+                            })
+                        })
+                        .collect();
+                    (barrier, handles, metrics)
+                },
+                |(barrier, handles, metrics)| {
+                    barrier.wait();
+                    for h in handles {
+                        h.join().unwrap();
+                    }
+                    metrics
+                },
+                BatchSize::LargeInput,
+            )
+        });
+    }
+    group.finish();
+}
+
+/// Same contention shape as `metrics_record_contended`, but writing through
+/// the sharded store the runner now uses: every OS thread folds into its
+/// home shard, so the numbers should scale with threads instead of
+/// collapsing on one mutex.
+fn bench_metrics_sharded_contended(c: &mut Criterion) {
+    use std::sync::{Arc, Barrier};
+
+    const FOLDS_PER_THREAD: usize = 1_000;
+
+    let mut group = c.benchmark_group("metrics_record_sharded_contended");
+    for threads in [1usize, 4, 16] {
+        group.throughput(Throughput::Elements(
+            (threads * FOLDS_PER_THREAD * 3) as u64
+        ));
+        group.bench_function(format!("threads={threads}"), |b| {
+            b.iter_batched(
+                || {
+                    let metrics = Arc::new(ShardedMetrics::default());
+                    let barrier = Arc::new(Barrier::new(threads + 1));
+                    let handles: Vec<_> = (0..threads)
+                        .map(|_| {
+                            let m = Arc::clone(&metrics);
+                            let bar = Arc::clone(&barrier);
+                            std::thread::spawn(move || {
+                                let sample = HttpSample {
+                                    duration_ms: 1.234,
+                                    status: 200,
+                                    failed: false,
+                                };
+                                let counters = json!({ "bench_msgs": 1.0 })
+                                    .as_object()
+                                    .unwrap()
+                                    .clone();
+                                bar.wait();
+                                for i in 0..FOLDS_PER_THREAD {
+                                    m.record(&sample);
+                                    m.add_counters(&counters);
+                                    m.record_rate("bench_op_failed", i % 100 == 0);
                                 }
                             })
                         })
@@ -475,6 +533,7 @@ criterion_group!(
     bench_interpolate,
     bench_metrics,
     bench_metrics_contended,
+    bench_metrics_sharded_contended,
     bench_ring_buf,
     bench_wait_until,
     bench_shared_variable,

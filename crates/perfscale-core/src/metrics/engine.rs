@@ -22,13 +22,13 @@
 //! internals should not pay for it (nor see `engine_*` lines in the
 //! summary). Nothing is spawned unless `enabled: true`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::store::Metrics;
+use super::sharded::ShardedMetrics;
 use crate::runner::LogLine;
 
 /// Name of the scheduler-lag histogram in the store / summary.
@@ -77,7 +77,7 @@ impl Default for EngineMetricsConfig {
 /// aborted next to the `[stats]` reporter when the VU phase ends.
 pub(crate) fn start(
     config: Option<&EngineMetricsConfig>,
-    metrics: Arc<Mutex<Metrics>>,
+    metrics: Arc<ShardedMetrics>,
     log_tx: tokio::sync::mpsc::Sender<LogLine>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let config = config.filter(|c| c.enabled)?;
@@ -97,9 +97,9 @@ pub(crate) fn start(
             // Pending lines = hand-out capacity the channel no longer has.
             let depth = log_tx.max_capacity() - log_tx.capacity();
             max_depth = max_depth.max(depth);
-            let mut m = metrics.lock().unwrap();
-            m.record_hist_sample(SCHEDULER_LAG_METRIC, lag_ms);
-            m.set_gauge(LOG_CHANNEL_DEPTH_METRIC, max_depth as f64);
+            // Writes land on the probe thread's home shard like any writer's.
+            metrics.record_hist_sample(SCHEDULER_LAG_METRIC, lag_ms);
+            metrics.set_gauge(LOG_CHANNEL_DEPTH_METRIC, max_depth as f64);
         }
     }))
 }
@@ -115,7 +115,7 @@ mod tests {
     fn probe_is_off_unless_enabled() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let metrics = Arc::new(Mutex::new(Metrics::default()));
+            let metrics = Arc::new(ShardedMetrics::with_shards(4));
             let (tx, _rx) = tokio::sync::mpsc::channel(4);
             assert!(start(None, Arc::clone(&metrics), tx.clone()).is_none());
             let disabled = EngineMetricsConfig::default();
@@ -130,7 +130,7 @@ mod tests {
     fn enabled_probe_records_engine_metrics() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let metrics = Arc::new(Mutex::new(Metrics::default()));
+            let metrics = Arc::new(ShardedMetrics::with_shards(4));
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
             let config = EngineMetricsConfig {
                 enabled: true,
@@ -139,7 +139,7 @@ mod tests {
             let probe = start(Some(&config), Arc::clone(&metrics), tx).expect("spawns");
             tokio::time::sleep(Duration::from_millis(55)).await;
             probe.abort();
-            let m = metrics.lock().unwrap();
+            let m = metrics.merged();
             let lag = m.hists.get(SCHEDULER_LAG_METRIC).expect("lag histogram");
             assert!(lag.len() >= 2, "expected several ticks, got {}", lag.len());
             assert_eq!(
@@ -161,7 +161,7 @@ mod tests {
     fn probe_observes_channel_depth() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let metrics = Arc::new(Mutex::new(Metrics::default()));
+            let metrics = Arc::new(ShardedMetrics::with_shards(4));
             let (tx, mut rx) = tokio::sync::mpsc::channel(8);
             // Park 3 lines in the channel before the probe starts.
             for _ in 0..3 {
@@ -180,8 +180,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(35)).await;
             probe.abort();
             let depth = metrics
-                .lock()
-                .unwrap()
+                .merged()
                 .gauges
                 .get(LOG_CHANNEL_DEPTH_METRIC)
                 .copied()

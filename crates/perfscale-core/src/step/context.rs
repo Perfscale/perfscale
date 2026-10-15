@@ -44,7 +44,7 @@ pub struct Context {
     /// can record background-sampled metrics, and `std/thresholds@v1` can
     /// evaluate gates over everything the run collected. `None` in contexts
     /// built by hand (unit tests).
-    pub(crate) run_metrics: Option<std::sync::Arc<std::sync::Mutex<crate::step::runner::Metrics>>>,
+    pub(crate) run_metrics: Option<std::sync::Arc<crate::metrics::ShardedMetrics>>,
     /// WebRTC media-plane configuration (RFC 007) mapped from the run's
     /// `webrtc:` block, consumed by the pro `pro/webrtc-*` actions. `None`
     /// when the run does not declare it.
@@ -156,11 +156,9 @@ impl Context {
     /// Shared run-metrics accumulator of the run this context belongs to
     /// (`None` in hand-built contexts). Pro action families use it for
     /// background-sampled metrics that outlive a single step (e.g. periodic
-    /// WebRTC getStats sampling) — the same `Metrics` the runner folds
+    /// WebRTC getStats sampling) — the same sharded store the runner folds
     /// step-emitted `value["metrics"]` counters/histograms into.
-    pub fn run_metrics(
-        &self,
-    ) -> Option<&std::sync::Arc<std::sync::Mutex<crate::step::runner::Metrics>>> {
+    pub fn run_metrics(&self) -> Option<&std::sync::Arc<crate::metrics::ShardedMetrics>> {
         self.run_metrics.as_ref()
     }
 
@@ -176,10 +174,7 @@ impl Context {
     /// a real run). Public but hidden: a test seam for downstream crates that
     /// need to observe background-sampled metrics without a full run.
     #[doc(hidden)]
-    pub fn set_run_metrics(
-        &mut self,
-        metrics: std::sync::Arc<std::sync::Mutex<crate::step::runner::Metrics>>,
-    ) {
+    pub fn set_run_metrics(&mut self, metrics: std::sync::Arc<crate::metrics::ShardedMetrics>) {
         self.run_metrics = Some(metrics);
     }
 
