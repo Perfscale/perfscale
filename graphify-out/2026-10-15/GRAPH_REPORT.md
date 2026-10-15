@@ -1,16 +1,16 @@
 # Graph Report - perfscale  (2026-10-15)
 
 ## Corpus Check
-- 173 files · ~420,350 words
+- 173 files · ~420,503 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 5531 nodes · 12477 edges · 247 communities (225 shown, 22 thin omitted)
+- 5531 nodes · 12477 edges · 246 communities (225 shown, 21 thin omitted)
 - Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 378 edges (avg confidence: 0.81)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `4740043d`
+- Built from commit: `557c9363`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -257,7 +257,6 @@
 - [[_COMMUNITY_Community 243|Community 243]]
 - [[_COMMUNITY_Community 244|Community 244]]
 - [[_COMMUNITY_Community 245|Community 245]]
-- [[_COMMUNITY_Community 246|Community 246]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `execute_action()` - 240 edges
@@ -310,11 +309,11 @@
 - **Observer-contributed LLM metrics flowing into the run metrics pipeline** — step_llm_llm_action, step_llm_collect_observer_metrics, step_llm_llmmetricsobserver, step_runner_add_counters [INFERRED 0.85]
 - **Registry-based downstream (pro) extension seam pattern shared by GPU collectors and LLM observers** — src_gpu_register_gpu_collector, src_gpu_gpucollector, step_llm_register_llm_metrics_observer, step_llm_llmmetricsobserver [INFERRED 0.75]
 
-## Communities (247 total, 22 thin omitted)
+## Communities (246 total, 21 thin omitted)
 
 ### Community 0 - "Core Runtime Primitives"
-Cohesion: 0.10
-Nodes (58): AtomicU64, AtomicU64, after_can_kill_a_process_by_its_outputs_name(), after_runs_even_when_before_fails(), after_steps_run_after_load_with_config_and_vars(), arrival(), arrival_beyond_max_vus_drops_and_counts_iterations(), arrival_dropped_iterations_gate_passes_when_nothing_dropped() (+50 more)
+Cohesion: 0.08
+Nodes (67): AtomicU64, Arc, AtomicU64, Metrics, after_can_kill_a_process_by_its_outputs_name(), after_runs_even_when_before_fails(), after_steps_run_after_load_with_config_and_vars(), arrival() (+59 more)
 
 ### Community 1 - "Dynamic Messages & Codecs"
 Cohesion: 0.05
@@ -421,8 +420,8 @@ Cohesion: 0.34
 Nodes (20): Map, Option, String, Value, Vec, lint::lint, LintIssue, schema_issues (+12 more)
 
 ### Community 27 - "Runner Spawning"
-Cohesion: 0.12
-Nodes (32): Child, Default, Error, Option, Path, PathBuf, Result, RunConfig (+24 more)
+Cohesion: 0.11
+Nodes (34): k6-compatible summary format, Child, Default, Error, Option, Path, PathBuf, Result (+26 more)
 
 ### Community 28 - "Step Context Utilities"
 Cohesion: 0.15
@@ -797,8 +796,8 @@ Cohesion: 0.18
 Nodes (12): Cow, Option, Self, DbDriver, ErrorKind, classify(), classify_db_error(), DbConnRef (+4 more)
 
 ### Community 141 - "Community 141"
-Cohesion: 0.13
-Nodes (15): description, type, LibraryRef, additionalProperties, description, properties, required, type (+7 more)
+Cohesion: 0.15
+Nodes (13): description, type, properties, as, secret, sha256, use, description (+5 more)
 
 ### Community 142 - "Community 142"
 Cohesion: 0.19
@@ -926,7 +925,7 @@ Nodes (18): cmd_parse(), parse_db_text(), parse_grpc_text(), parse_locust_csv(),
 
 ### Community 175 - "Community 175"
 Cohesion: 0.12
-Nodes (43): Arc, AtomicBool, Arc, AtomicBool, Context, From, Instant, JoinHandle (+35 more)
+Nodes (42): Arc, AtomicBool, AtomicBool, Context, From, Instant, JoinHandle, LibraryMetrics (+34 more)
 
 ### Community 176 - "Community 176"
 Cohesion: 0.17
@@ -1013,8 +1012,8 @@ Cohesion: 0.20
 Nodes (9): GPU-инференс (только локально), Бенчмарки, Запуск в CI (канонический), Как читать `IO ops` (`in` / `out`), Как читать числа, Локальный запуск, Методология, Наборы тестов (suites) (+1 more)
 
 ### Community 197 - "Community 197"
-Cohesion: 0.07
-Nodes (39): BTreeMap, BTreeMap, Default, Duration, GpuSample, Histogram, HttpSample, MetricAgg (+31 more)
+Cohesion: 0.09
+Nodes (31): BTreeMap, BTreeMap, Default, Duration, GpuSample, Histogram, HttpSample, MetricAgg (+23 more)
 
 ### Community 198 - "Community 198"
 Cohesion: 0.22
@@ -1125,8 +1124,8 @@ Cohesion: 0.20
 Nodes (10): String, burn_after_help(), install_after_help(), lint_after_help(), man_after_help(), run_after_help(), schema_after_help(), self_update_after_help() (+2 more)
 
 ### Community 227 - "Community 227"
-Cohesion: 0.18
-Nodes (12): description, items, type, $ref, capabilities, steps, use, items (+4 more)
+Cohesion: 0.17
+Nodes (13): description, items, type, $ref, description, items, type, capabilities (+5 more)
 
 ### Community 228 - "Community 228"
 Cohesion: 0.33
@@ -1193,8 +1192,8 @@ Cohesion: 0.53
 Nodes (6): Engine availability errors, Exit code semantics, Output streams, `perfscale run`, Summary export, `perfscale run`
 
 ### Community 245 - "Community 245"
-Cohesion: 0.50
-Nodes (4): description, items, type, libraries
+Cohesion: 0.40
+Nodes (5): LibraryRef, additionalProperties, description, required, type
 
 ## Ambiguous Edges - Review These
 - `run_native()` → `perfscale-core crate root`  [AMBIGUOUS]
@@ -1203,7 +1202,7 @@ Nodes (4): description, items, type, libraries
 ## Knowledge Gaps
 - **1447 isolated node(s):** `PreToolUse`, `run.sh script`, `Commands`, `CacheAction`, `CacheAction` (+1442 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **22 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **21 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_

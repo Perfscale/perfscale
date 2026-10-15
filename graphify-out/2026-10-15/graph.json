@@ -12682,7 +12682,7 @@
       "label": "net_refuses_a_host_outside_the_allowlist()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L1963",
+      "source_location": "L1988",
       "id": "library_wasm_net_refuses_a_host_outside_the_allowlist",
       "community": 77,
       "norm_label": "net_refuses_a_host_outside_the_allowlist()"
@@ -12691,7 +12691,7 @@
       "label": "net_import_without_grant_is_a_hard_load_error()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L1989",
+      "source_location": "L2014",
       "id": "library_wasm_net_import_without_grant_is_a_hard_load_error",
       "community": 77,
       "norm_label": "net_import_without_grant_is_a_hard_load_error()"
@@ -12700,7 +12700,7 @@
       "label": "entries()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L2002",
+      "source_location": "L2027",
       "id": "library_wasm_entries",
       "community": 240,
       "norm_label": "entries()"
@@ -12709,7 +12709,7 @@
       "label": "net_allowlist_exact_hosts_and_default_ports()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L2007",
+      "source_location": "L2032",
       "id": "library_wasm_net_allowlist_exact_hosts_and_default_ports",
       "community": 240,
       "norm_label": "net_allowlist_exact_hosts_and_default_ports()"
@@ -12718,7 +12718,7 @@
       "label": "net_allowlist_port_pinning()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L2020",
+      "source_location": "L2045",
       "id": "library_wasm_net_allowlist_port_pinning",
       "community": 240,
       "norm_label": "net_allowlist_port_pinning()"
@@ -12727,7 +12727,7 @@
       "label": "net_allowlist_suffix_wildcards()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L2028",
+      "source_location": "L2053",
       "id": "library_wasm_net_allowlist_suffix_wildcards",
       "community": 240,
       "norm_label": "net_allowlist_suffix_wildcards()"
@@ -12736,7 +12736,7 @@
       "label": "net_allowlist_rejects_malformed_entries()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L2043",
+      "source_location": "L2068",
       "id": "library_wasm_net_allowlist_rejects_malformed_entries",
       "community": 77,
       "norm_label": "net_allowlist_rejects_malformed_entries()"
@@ -12745,7 +12745,7 @@
       "label": "grants_require_the_global_gate()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L2060",
+      "source_location": "L2085",
       "id": "library_wasm_grants_require_the_global_gate",
       "community": 77,
       "norm_label": "grants_require_the_global_gate()"
@@ -12754,7 +12754,7 @@
       "label": "infinite_loop_trips_the_fuel_budget()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L2069",
+      "source_location": "L2094",
       "id": "library_wasm_infinite_loop_trips_the_fuel_budget",
       "community": 77,
       "norm_label": "infinite_loop_trips_the_fuel_budget()"
@@ -12763,7 +12763,7 @@
       "label": "burned_load_matches_fresh_compile()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L2091",
+      "source_location": "L2116",
       "id": "library_wasm_burned_load_matches_fresh_compile",
       "community": 77,
       "norm_label": "burned_load_matches_fresh_compile()"
@@ -12772,7 +12772,7 @@
       "label": "load_probes_the_burn_cache()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L2119",
+      "source_location": "L2144",
       "id": "library_wasm_load_probes_the_burn_cache",
       "community": 77,
       "norm_label": "load_probes_the_burn_cache()"
@@ -12781,7 +12781,7 @@
       "label": "forged_burn_artifact_is_ignored()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L2153",
+      "source_location": "L2178",
       "id": "library_wasm_forged_burn_artifact_is_ignored",
       "community": 77,
       "norm_label": "forged_burn_artifact_is_ignored()"
@@ -12790,7 +12790,7 @@
       "label": "grant_wider_than_imports_loads()",
       "file_type": "code",
       "source_file": "crates/perfscale-core/src/library/wasm.rs",
-      "source_location": "L2186",
+      "source_location": "L2211",
       "id": "library_wasm_grant_wider_than_imports_loads",
       "community": 77,
       "norm_label": "grant_wider_than_imports_loads()"
@@ -26526,7 +26526,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L186",
       "id": "crates_perfscale_core_src_step_runner_rs_arc",
-      "community": 175,
+      "community": 0,
       "norm_label": "arc"
     },
     {
@@ -26634,7 +26634,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L858",
       "id": "step_runner_streamprogress",
-      "community": 197,
+      "community": 0,
       "norm_label": "streamprogress"
     },
     {
@@ -27759,7 +27759,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L4351",
       "id": "step_runner_golden_http_metrics",
-      "community": 197,
+      "community": 0,
       "norm_label": "golden_http_metrics()"
     },
     {
@@ -27768,7 +27768,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L4351",
       "id": "crates_perfscale_core_src_step_runner_rs_metrics",
-      "community": 197,
+      "community": 0,
       "norm_label": "metrics"
     },
     {
@@ -27777,7 +27777,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L4366",
       "id": "step_runner_golden_llm_metrics",
-      "community": 197,
+      "community": 0,
       "norm_label": "golden_llm_metrics()"
     },
     {
@@ -27786,7 +27786,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L4392",
       "id": "step_runner_golden_summary_http_run",
-      "community": 197,
+      "community": 0,
       "norm_label": "golden_summary_http_run()"
     },
     {
@@ -27795,7 +27795,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L4407",
       "id": "step_runner_golden_summary_llm_run",
-      "community": 197,
+      "community": 0,
       "norm_label": "golden_summary_llm_run()"
     },
     {
@@ -27804,7 +27804,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L4426",
       "id": "step_runner_golden_stats_line_http_run",
-      "community": 197,
+      "community": 0,
       "norm_label": "golden_stats_line_http_run()"
     },
     {
@@ -27813,7 +27813,7 @@
       "source_file": "crates/perfscale-core/src/step/runner.rs",
       "source_location": "L4435",
       "id": "step_runner_golden_stats_line_llm_run",
-      "community": 197,
+      "community": 0,
       "norm_label": "golden_stats_line_llm_run()"
     },
     {
@@ -36254,7 +36254,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L71",
       "id": "schema_test_schema_definitions_libraryref",
-      "community": 141,
+      "community": 245,
       "norm_label": "libraryref"
     },
     {
@@ -36263,7 +36263,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L72",
       "id": "schema_test_schema_libraryref_additionalproperties",
-      "community": 141,
+      "community": 245,
       "norm_label": "additionalproperties"
     },
     {
@@ -36272,7 +36272,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L73",
       "id": "schema_test_schema_libraryref_description",
-      "community": 141,
+      "community": 245,
       "norm_label": "description"
     },
     {
@@ -36533,7 +36533,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L136",
       "id": "schema_test_schema_properties_use",
-      "community": 227,
+      "community": 141,
       "norm_label": "use"
     },
     {
@@ -36542,7 +36542,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L137",
       "id": "schema_test_schema_use_description",
-      "community": 227,
+      "community": 141,
       "norm_label": "description"
     },
     {
@@ -36551,7 +36551,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L138",
       "id": "schema_test_schema_use_type",
-      "community": 227,
+      "community": 141,
       "norm_label": "type"
     },
     {
@@ -36578,7 +36578,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L144",
       "id": "schema_test_schema_libraryref_required",
-      "community": 141,
+      "community": 245,
       "norm_label": "required"
     },
     {
@@ -36587,7 +36587,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L147",
       "id": "schema_test_schema_libraryref_type",
-      "community": 141,
+      "community": 245,
       "norm_label": "type"
     },
     {
@@ -36848,7 +36848,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L224",
       "id": "schema_test_schema_properties_libraries",
-      "community": 245,
+      "community": 227,
       "norm_label": "libraries"
     },
     {
@@ -36857,7 +36857,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L225",
       "id": "schema_test_schema_libraries_description",
-      "community": 245,
+      "community": 227,
       "norm_label": "description"
     },
     {
@@ -36866,7 +36866,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L226",
       "id": "schema_test_schema_libraries_items",
-      "community": 245,
+      "community": 227,
       "norm_label": "items"
     },
     {
@@ -36875,7 +36875,7 @@
       "source_file": "schema/test.schema.json",
       "source_location": "L229",
       "id": "schema_test_schema_libraries_type",
-      "community": 245,
+      "community": 227,
       "norm_label": "type"
     },
     {
@@ -48632,7 +48632,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 246,
+      "community": 27,
       "norm_label": "metrics::summary_lines",
       "id": "step_runner_summary_lines"
     },
@@ -48840,7 +48840,7 @@
       "captured_at": null,
       "author": null,
       "contributor": null,
-      "community": 246,
+      "community": 27,
       "norm_label": "k6-compatible summary format",
       "id": "concept_k6_compatible_summary"
     },
@@ -183199,5 +183199,5 @@
       "source_file": "crates/perfscale-core/src/gpu.rs"
     }
   ],
-  "built_at_commit": "4740043d630abaaccbc09225d45cdd4f2ded04f3"
+  "built_at_commit": "557c9363ca08b80bbba340ac19735a9aea585fa0"
 }

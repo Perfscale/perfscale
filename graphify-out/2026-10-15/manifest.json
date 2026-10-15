@@ -725,8 +725,8 @@
     "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-core/src/library/wasm.rs": {
-    "mtime": 1792075789.9433565,
-    "ast_hash": "8648d37a461890fa1975c6abecd7a310",
+    "mtime": 1792077847.696753,
+    "ast_hash": "90e7af422a26679a000495a5ae7cec6d",
     "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-library-sdk/examples/fsreader/src/lib.rs": {
