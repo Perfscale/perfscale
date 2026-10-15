@@ -139,6 +139,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.XK6_GO_VERSION }}
+          # No go.mod in this repo — setup-go's dependency cache would only
+          # warn ("Dependencies file not found: go.sum").
+          cache: false
 
       - name: Cache k6+xk6-sql binary
         id: k6sql-cache
@@ -152,6 +155,9 @@ jobs:
         run: |
           mkdir -p .gobin
           GOBIN="$PWD/.gobin" go install "go.k6.io/xk6/cmd/xk6@v${XK6_VERSION}"
+          # xk6 build does not create the output's parent directories, and
+          # this step runs before cargo build — target/ may not exist yet.
+          mkdir -p target/xk6-sql
           ./.gobin/xk6 build "v${XK6_K6_VERSION}" \
             --with "github.com/grafana/xk6-sql@v${XK6_SQL_VERSION}" \
             --with "github.com/grafana/xk6-sql-driver-postgres@v${XK6_SQL_PG_VERSION}" \
