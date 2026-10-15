@@ -607,3 +607,31 @@ fn lint_anchors_relative_library_paths_to_the_declaring_file() {
             sub.display()
         )));
 }
+
+#[test]
+fn cache_clean_dry_run_prints_and_removes_nothing() {
+    // A cache dir with one entry, redirected via PERFSCALE_CACHE_DIR.
+    let cache = tempfile::tempdir().unwrap();
+    let libs = cache.path().join("libraries");
+    std::fs::create_dir_all(&libs).unwrap();
+    let artifact = libs.join("deadbeef.wasm");
+    std::fs::write(&artifact, vec![0u8; 2048]).unwrap();
+
+    cmd()
+        .env("PERFSCALE_CACHE_DIR", cache.path())
+        .args(["cache", "clean", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("would free"))
+        .stdout(predicate::str::contains("libraries: 1 entries"));
+    assert!(artifact.exists(), "dry-run removes nothing");
+
+    cmd()
+        .env("PERFSCALE_CACHE_DIR", cache.path())
+        .args(["cache", "clean"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("freed"));
+    assert!(!artifact.exists(), "clean removes the entry");
+    assert!(libs.exists(), "the area directory itself stays");
+}

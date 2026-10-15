@@ -82,6 +82,28 @@ pub enum Commands {
     /// Update perfscale to the latest release for this platform.
     #[command(name = "self-update")]
     SelfUpdate(SelfUpdateArgs),
+    /// Manage the local import/library cache (~/.cache/perfscale).
+    Cache(CacheArgs),
+}
+
+#[derive(Args)]
+pub struct CacheArgs {
+    #[command(subcommand)]
+    pub action: CacheAction,
+}
+
+#[derive(Subcommand)]
+pub enum CacheAction {
+    /// Remove cached imports and library artifacts (they re-fetch on demand
+    /// from the pinned perfscale.lock digests). `--dry-run` only measures.
+    Clean(CacheCleanArgs),
+}
+
+#[derive(Args)]
+pub struct CacheCleanArgs {
+    /// Show what would be freed without removing anything.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 fn schema_after_help() -> String {

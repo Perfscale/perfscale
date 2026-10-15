@@ -10,6 +10,7 @@ perfscale schema       Print the JSON Schema for test or config YAML files
 perfscale metrics      List every metric the registered families declare
 perfscale man          Print the bundled man page (or install it for `man perfscale`)
 perfscale self-update  Update perfscale to the latest release for this platform
+perfscale cache        Manage the local import/library cache (~/.cache/perfscale)
 ```
 
 ## `perfscale run`
@@ -425,6 +426,22 @@ offline.
 | `PERFSCALE_NO_UPDATE_CHECK=1` | Disable the passive check and hint entirely |
 | `PERFSCALE_UPDATE_API_BASE` | Override the release API host (default `https://api.github.com`) — for mirrors/proxies |
 | `PERFSCALE_UPDATE_DOWNLOAD_BASE` | Override the asset download host (default `https://github.com`) |
+
+## `perfscale cache`
+
+The import/library cache (`~/.cache/perfscale`, overridable with
+`PERFSCALE_CACHE_DIR`) grows without bound: every fetched remote import and
+every compiled WASM artifact is content-addressed and kept forever. Clean it
+explicitly:
+
+```sh
+perfscale cache clean              # remove all cached imports + library artifacts
+perfscale cache clean --dry-run    # only show what would be freed
+```
+
+Eviction is always safe — everything in the cache is re-fetchable: the next
+`perfscale install` or `run` rebuilds what a pinned `perfscale.lock`
+references (at the cost of one refetch/recompile).
 
 ## Environment variables
 

@@ -10,6 +10,7 @@ perfscale schema       Print the JSON Schema for test or config YAML files
 perfscale metrics      List every metric the registered families declare
 perfscale man          Print the bundled man page (or install it for `man perfscale`)
 perfscale self-update  Update perfscale to the latest release for this platform
+perfscale cache        Manage the local import/library cache (~/.cache/perfscale)
 ```
 
 ## `perfscale run`
@@ -422,6 +423,22 @@ perfscale v0.2.0 is available (you have 0.1.0) — run `perfscale self-update`
 | `PERFSCALE_NO_UPDATE_CHECK=1` | Полностью отключить пассивную проверку и подсказку |
 | `PERFSCALE_UPDATE_API_BASE` | Переопределить хост API релизов (по умолчанию `https://api.github.com`) — для зеркал/прокси |
 | `PERFSCALE_UPDATE_DOWNLOAD_BASE` | Переопределить хост загрузки артефактов (по умолчанию `https://github.com`) |
+
+## `perfscale cache`
+
+Кэш импортов/библиотек (`~/.cache/perfscale`, переопределяется через
+`PERFSCALE_CACHE_DIR`) растёт бесконечно: каждый скачанный удалённый импорт и
+каждый скомпилированный WASM-артефакт адресуются по содержимому и хранятся
+вечно. Чистится явно:
+
+```sh
+perfscale cache clean              # удалить все кэшированные импорты и артефакты библиотек
+perfscale cache clean --dry-run    # только показать, сколько освободится
+```
+
+Удаление всегда безопасно — всё в кэше перекачиваемо: следующий
+`perfscale install` или `run` пересоберёт то, на что ссылается закреплённый
+`perfscale.lock` (ценой одной повторной загрузки/компиляции).
 
 ## Переменные окружения
 

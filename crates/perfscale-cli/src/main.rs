@@ -28,6 +28,9 @@ async fn main() {
         Commands::Schema(args) => commands::schema::run(args).await,
         Commands::Man(args) => commands::man::run(args).await,
         Commands::SelfUpdate(args) => commands::self_update::self_update(args).await,
+        Commands::Cache(args) => match args.action {
+            crate::cli::CacheAction::Clean(clean) => commands::cache::run(clean).await,
+        },
     };
 
     if notify_updates {

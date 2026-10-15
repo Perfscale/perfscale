@@ -1110,6 +1110,88 @@ fn write_meta(path: &Path, kind: &str, sha: &str) {
 // Tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Cache sweeping (`perfscale cache clean`)
+// ---------------------------------------------------------------------------
+
+/// What a cache sweep found (and removed, unless dry-run): entry counts and
+/// bytes per top-level cache area.
+#[derive(Debug, Default, Clone)]
+pub struct CacheSweep {
+    /// `(area, entries, bytes)` per cache area (`imports`, `libraries`).
+    pub areas: Vec<(String, usize, u64)>,
+}
+
+impl CacheSweep {
+    pub fn total_bytes(&self) -> u64 {
+        self.areas.iter().map(|(_, _, b)| b).sum()
+    }
+
+    pub fn total_entries(&self) -> usize {
+        self.areas.iter().map(|(_, n, _)| n).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total_entries() == 0
+    }
+}
+
+/// Remove every cached entry under `<cache>/imports` and
+/// `<cache>/libraries` (or only measure, with `dry_run`). Everything there
+/// is content-addressed and re-fetchable: the next `perfscale install`/`run`
+/// rebuilds it from the pinned `perfscale.lock` digests, so eviction is
+/// always safe — the cost is one refetch/recompile. The area directories
+/// themselves stay in place.
+pub fn sweep_cache(cache_dir: Option<PathBuf>, dry_run: bool) -> Result<CacheSweep, String> {
+    let root = cache_dir.unwrap_or_else(default_cache_dir);
+    let mut sweep = CacheSweep::default();
+    for area in ["imports", "libraries"] {
+        let dir = root.join(area);
+        let mut entries = 0usize;
+        let mut bytes = 0u64;
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("cannot read {}: {e}", dir.display())),
+        };
+        for entry in rd {
+            let entry = entry.map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
+            let path = entry.path();
+            bytes += entry_size(&path)?;
+            entries += 1;
+            if !dry_run {
+                let removed = if path.is_dir() {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                };
+                removed.map_err(|e| format!("cannot remove {}: {e}", path.display()))?;
+            }
+        }
+        sweep.areas.push((area.to_string(), entries, bytes));
+    }
+    Ok(sweep)
+}
+
+/// Recursive size of one cache entry (a file or a directory tree).
+fn entry_size(path: &Path) -> Result<u64, String> {
+    let meta =
+        std::fs::metadata(path).map_err(|e| format!("cannot stat {}: {e}", path.display()))?;
+    if meta.is_file() {
+        return Ok(meta.len());
+    }
+    let mut total = 0u64;
+    if meta.is_dir() {
+        let rd =
+            std::fs::read_dir(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        for entry in rd {
+            let entry = entry.map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            total += entry_size(&entry.path())?;
+        }
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1121,6 +1203,42 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// `cache clean` measures and removes both cache areas; dry-run measures
+    /// without touching anything. The area directories themselves stay.
+    #[test]
+    fn sweep_cache_measures_then_removes() {
+        let root = tmpdir("sweep");
+        // imports/<hash>/ tree and libraries/<sha>.{wasm,cwasm} files.
+        let clone = root.join("imports").join("abc123");
+        fs::create_dir_all(clone.join("src")).unwrap();
+        fs::write(clone.join("src/lib.rs"), vec![0u8; 1000]).unwrap();
+        fs::write(clone.join("Cargo.toml"), vec![0u8; 200]).unwrap();
+        fs::create_dir_all(root.join("libraries")).unwrap();
+        fs::write(root.join("libraries/deadbeef.wasm"), vec![0u8; 5000]).unwrap();
+        fs::write(root.join("libraries/deadbeef.cwasm"), vec![0u8; 9000]).unwrap();
+
+        // Dry-run: sizes reported, nothing removed.
+        let sweep = sweep_cache(Some(root.clone()), true).unwrap();
+        // Top-level entries: one import clone dir + two library files.
+        assert_eq!(sweep.total_entries(), 3, "{sweep:?}");
+        assert_eq!(sweep.total_bytes(), 1000 + 200 + 5000 + 9000);
+        assert!(clone.join("src/lib.rs").exists(), "dry-run removes nothing");
+
+        // Real sweep: entries gone, area dirs stay.
+        let sweep = sweep_cache(Some(root.clone()), false).unwrap();
+        assert_eq!(sweep.total_entries(), 3);
+        assert!(root.join("imports").exists());
+        assert!(root.join("libraries").exists());
+        assert_eq!(fs::read_dir(root.join("imports")).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(root.join("libraries")).unwrap().count(), 0);
+
+        // Sweeping an empty/absent cache is a no-op, not an error.
+        let sweep = sweep_cache(Some(root.clone()), false).unwrap();
+        assert!(sweep.is_empty());
+        let sweep = sweep_cache(Some(root.join("does-not-exist")), false).unwrap();
+        assert!(sweep.is_empty());
     }
 
     #[test]

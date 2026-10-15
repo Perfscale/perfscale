@@ -1,4 +1,5 @@
 pub mod burn;
+pub mod cache;
 pub mod install;
 pub mod lint;
 pub mod man;
