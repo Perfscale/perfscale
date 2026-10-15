@@ -6,6 +6,8 @@
 //! - `${{ ... }}` interpolation — paid on every step of every iteration.
 //! - Metrics recording and summary (percentile sort) — recording is per
 //!   request under a mutex; the summary sorts the full sample vector once.
+//!   The contended group shares one `Arc<Mutex<Metrics>>` across 1/4/16 OS
+//!   threads — the shape every VU hammers during a run.
 //! - `RingBuf` capture — paid per output line of every managed child process
 //!   (`std/child_process@v1`).
 //! - `waitUntil` matcher evaluation — polled against the captured buffers
@@ -20,7 +22,7 @@
 //!
 //! Run with `cargo bench -p perfscale-core`.
 
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use serde_json::{json, Map};
 
 use perfscale_core::step::actions::HttpSample;
@@ -153,6 +155,70 @@ fn bench_metrics(c: &mut Criterion) {
     c.bench_function("metrics_summary_100k", |b| {
         b.iter(|| filled.summary_lines(std::hint::black_box(30.0), 100_000, 10))
     });
+}
+
+/// The production contention shape: every VU locks the one shared
+/// `Arc<Mutex<Metrics>>` once per step and folds a histogram record + custom
+/// counters + a failure-rate sample (`step::runner`'s step fold). Threads are
+/// spawned and parked on a barrier in the (untimed) setup; the timed region
+/// is release-to-join, so the numbers show ops/sec degrading as OS threads —
+/// not tokio tasks — pile onto the mutex.
+fn bench_metrics_contended(c: &mut Criterion) {
+    use std::sync::{Arc, Barrier, Mutex};
+
+    /// Step folds per thread per timed iteration — each fold is one lock
+    /// acquisition wrapping record + add_counters + record_rate.
+    const FOLDS_PER_THREAD: usize = 1_000;
+
+    let mut group = c.benchmark_group("metrics_record_contended");
+    for threads in [1usize, 4, 16] {
+        group.throughput(Throughput::Elements(
+            (threads * FOLDS_PER_THREAD * 3) as u64
+        ));
+        group.bench_function(format!("threads={threads}"), |b| {
+            b.iter_batched(
+                || {
+                    let metrics = Arc::new(Mutex::new(Metrics::default()));
+                    // +1: the timed region itself waits on the barrier.
+                    let barrier = Arc::new(Barrier::new(threads + 1));
+                    let handles: Vec<_> = (0..threads)
+                        .map(|_| {
+                            let m = Arc::clone(&metrics);
+                            let bar = Arc::clone(&barrier);
+                            std::thread::spawn(move || {
+                                let sample = HttpSample {
+                                    duration_ms: 1.234,
+                                    status: 200,
+                                    failed: false,
+                                };
+                                let counters = json!({ "bench_msgs": 1.0 })
+                                    .as_object()
+                                    .unwrap()
+                                    .clone();
+                                bar.wait();
+                                for i in 0..FOLDS_PER_THREAD {
+                                    let mut g = m.lock().unwrap();
+                                    g.record(&sample);
+                                    g.add_counters(&counters);
+                                    g.record_rate("bench_op_failed", i % 100 == 0);
+                                }
+                            })
+                        })
+                        .collect();
+                    (barrier, handles, metrics)
+                },
+                |(barrier, handles, metrics)| {
+                    barrier.wait();
+                    for h in handles {
+                        h.join().unwrap();
+                    }
+                    metrics
+                },
+                BatchSize::LargeInput,
+            )
+        });
+    }
+    group.finish();
 }
 
 /// Access-log-shaped line, typical of a managed web server's stdout.
@@ -408,6 +474,7 @@ criterion_group!(
     bench_yaml_parse,
     bench_interpolate,
     bench_metrics,
+    bench_metrics_contended,
     bench_ring_buf,
     bench_wait_until,
     bench_shared_variable,
