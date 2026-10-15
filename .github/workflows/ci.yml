@@ -60,3 +60,24 @@ jobs:
           rustup component add llvm-tools-preview
           cargo install cargo-llvm-cov --locked
           cargo llvm-cov --all-features --workspace --summary-only
+
+  # The serve dashboard (crates/perfscale-cli/ui) is committed as a prebuilt
+  # single-file HTML because the release workflow has no Node — this job
+  # rebuilds it from source and fails if the committed file is stale.
+  serve-ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/perfscale-cli/ui
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: crates/perfscale-cli/ui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - name: Rebuild and compare the committed serve_ui.html
+        run: pnpm check-built

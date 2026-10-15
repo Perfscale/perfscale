@@ -130,7 +130,7 @@ Endpoints:
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | Built-in dashboard (absent with `--no-ui`): live time-series of during-run snapshots plus the last run summaries. Self-contained — no CDN, no build step; polls `/api/v1/state` |
+| `GET` | `/` | Built-in dashboard (absent with `--no-ui`): live time-series of during-run snapshots plus the last run summaries. Self-contained — no CDN; polls `/api/v1/state` |
 | `GET` | `/health` | Returns `ok` |
 | `POST` | `/api/v1/metrics` | Accepts the end-of-run summary `{"lines": ["...", ...]}` or a during-run snapshot `{"samples": [...], "seq": N}` (`report.during_run`), prints it, and keeps it in memory for the dashboard |
 | `GET` | `/api/v1/state` | Recent snapshot batches and the last run summaries as JSON — what the dashboard polls. Kept in memory only: the last 2000 snapshot batches and 20 summaries |
@@ -145,9 +145,18 @@ The dashboard is on by default — start `perfscale serve` and open
 ![perfscale serve dashboard: live metric cards with sparklines above the last run summary](../images/serve-dashboard.png)
 
 Every series from `report.during_run` snapshots becomes a card with the latest
-value and a sparkline; finished runs stack up as summary blocks below. The
-page is a single self-contained HTML file — no CDN, no build step — and polls
-`GET /api/v1/state` every 2 seconds.
+value and a sparkline; finished runs stack up as summary blocks below. A
+sortable, filterable table lists all series, and metric cards/rows link into
+the relevant embedded docs pages. The page polls `GET /api/v1/state` every 2
+seconds and has a dark/light theme toggle (defaults to the OS preference).
+
+The page is a single self-contained HTML file — no CDN. Its sources are a
+React + TypeScript + Tailwind + shadcn/ui app in `crates/perfscale-cli/ui/`,
+built with Vite into the committed `src/commands/serve_ui.html` that the CLI
+embeds via `include_str!`, so the Rust build itself needs no Node. To change
+the dashboard: edit the app, run `pnpm install && pnpm build` in
+`crates/perfscale-cli/ui/`, and commit the regenerated `serve_ui.html` — CI
+verifies it is fresh (`pnpm check-built`).
 
 The same page also embeds this documentation: the **Docs** tab renders all
 markdown from `docs/` (English and Russian, EN/RU switcher, defaults to the
