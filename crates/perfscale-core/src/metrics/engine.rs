@@ -35,6 +35,13 @@ use crate::runner::LogLine;
 pub(crate) const SCHEDULER_LAG_METRIC: &str = "engine_scheduler_lag_ms";
 /// Name of the log-channel depth gauge in the store / summary.
 pub(crate) const LOG_CHANNEL_DEPTH_METRIC: &str = "engine_log_channel_depth_max";
+/// Arrival-profile coordinated-omission metrics, recorded by the dispatch
+/// workers for every served permit: the scheduled→actual start delay, and
+/// the full iteration latency measured against the *scheduled* start
+/// (queue wait + body) — the CO-corrected counterpart of the per-request
+/// `http_req_duration`, which deliberately stays pure server time.
+pub(crate) const ARRIVAL_QUEUE_WAIT_METRIC: &str = "engine_arrival_queue_wait_ms";
+pub(crate) const ARRIVAL_ITERATION_METRIC: &str = "engine_arrival_iteration_ms";
 
 /// Engine self-observability for a run (`engine_metrics:` next to
 /// `vus`/`duration`).

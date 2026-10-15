@@ -35,6 +35,29 @@ says nothing about target latency would poison the shared percentiles:
 Note the asymmetry: gRPC assertion failures go to `grpc_req_failed` (a custom
 counter, driven by `expect_status`), **not** to `http_req_failed`.
 
+## Arrival-profile latency and coordinated omission (`engine_arrival_*`)
+
+Request metrics measure **server time**: the clock starts when the request
+goes out (`http_req_duration` is deliberately pure response latency). In the
+arrival-rate profile (open model) the engine additionally knows when each
+iteration was *supposed* to start, so it records the hidden half of the
+story:
+
+| Metric | Kind | What it measures |
+|---|---|---|
+| `engine_arrival_queue_wait_ms` | histogram | Scheduled→actual iteration start delay — the queueing classic latency metrics omit (coordinated omission) |
+| `engine_arrival_iteration_ms` | histogram | Queue wait + iteration body, measured from the *scheduled* start — the CO-corrected end-to-end latency of an arrival iteration |
+| `dropped_iterations` | counter | Permits no worker could serve (pool saturated at `arrival.max_vus`) — always emitted, even at 0, so `count==0` gates resolve on clean runs |
+
+Under saturation `http_req_duration` keeps looking healthy — only requests
+that actually started are measured — while `engine_arrival_queue_wait_ms`
+grows and `dropped_iterations` climbs. Judge an overloaded arrival run by
+all three together: percentiles alone under-report what users experienced.
+
+These are engine metrics: always recorded on arrival-rate runs (two
+histogram writes per iteration), registered in the built-in `engine` family,
+visible to `std/thresholds@v1` like any other metric.
+
 ## Final summary
 
 Printed at the end of every run, k6-compatible so downstream parsers

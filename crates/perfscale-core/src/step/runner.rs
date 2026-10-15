@@ -1016,7 +1016,7 @@ fn spawn_vu(
 fn spawn_arrival_worker(
     vu_id: u32,
     shared: &VuShared,
-    permits: Arc<tokio::sync::Mutex<mpsc::Receiver<()>>>,
+    permits: Arc<tokio::sync::Mutex<mpsc::Receiver<Instant>>>,
     deadline: Instant,
 ) -> tokio::task::JoinHandle<()> {
     let mut ctx = shared.base_context(vu_id);
@@ -1033,12 +1033,27 @@ fn spawn_arrival_worker(
             active.fetch_add(1, Ordering::SeqCst);
         }
         loop {
-            if permits.lock().await.recv().await.is_none() {
+            let Some(scheduled_at) = ({
+                let mut rx = permits.lock().await;
+                rx.recv().await
+            }) else {
                 break; // dispatcher finished — channel closed
-            }
+            };
             if Instant::now() >= deadline || stop.load(Ordering::Relaxed) {
                 break;
             }
+            // Coordinated-omission tracking: the dispatcher knew when this
+            // iteration was supposed to start; record how late it actually
+            // did. `http_req_duration` deliberately stays pure server time —
+            // under saturation the queue wait is where the missing latency
+            // hides.
+            metrics.record_hist_sample(
+                crate::metrics::engine::ARRIVAL_QUEUE_WAIT_METRIC,
+                Instant::now()
+                    .saturating_duration_since(scheduled_at)
+                    .as_secs_f64()
+                    * 1000.0,
+            );
             iter_count.fetch_add(1, Ordering::Relaxed);
             ctx.iteration_seq += 1;
             for step in steps.iter() {
@@ -1047,6 +1062,13 @@ fn spawn_arrival_worker(
                     break;
                 }
             }
+            // CO-corrected iteration latency: queue wait + body, measured
+            // against the scheduled start — the honest end-to-end latency
+            // of an arrival-profile iteration.
+            metrics.record_hist_sample(
+                crate::metrics::engine::ARRIVAL_ITERATION_METRIC,
+                scheduled_at.elapsed().as_secs_f64() * 1000.0,
+            );
             ctx.resources.drain();
         }
         if let Some(active) = &active_vus {
@@ -1177,8 +1199,10 @@ async fn supervise_arrival(
     .await;
 
     // Permits queue in a 1-deep channel: a full channel means every worker is
-    // mid-iteration, which is exactly the grow-or-drop signal.
-    let (permit_tx, permit_rx) = mpsc::channel::<()>(1);
+    // mid-iteration, which is exactly the grow-or-drop signal. Each permit
+    // carries its scheduled start instant, so the worker can measure the
+    // scheduled→actual delay (coordinated omission, see the engine family).
+    let (permit_tx, permit_rx) = mpsc::channel::<Instant>(1);
     let permit_rx = Arc::new(tokio::sync::Mutex::new(permit_rx));
     let mut workers = Vec::new();
     let mut next_vu_id = 1u32;
@@ -1209,18 +1233,23 @@ async fn supervise_arrival(
             break;
         }
         sampler.sample();
-        workers.retain(|h| !h.is_finished());
         // Pool not saturated yet → grow instead of dropping the permit.
-        let mut permit = permit_tx.try_send(());
-        if permit.is_err() && workers.len() < max_vus as usize {
-            workers.push(spawn_arrival_worker(
-                next_vu_id,
-                shared,
-                Arc::clone(&permit_rx),
-                deadline,
-            ));
-            next_vu_id += 1;
-            permit = permit_tx.try_send(());
+        let mut permit = permit_tx.try_send(at);
+        if permit.is_err() {
+            // Reap finished workers only on the contention path (O(pool) per
+            // permit is real cost at high arrival rates; the pool size only
+            // matters here, when we must decide between grow and drop).
+            workers.retain(|h| !h.is_finished());
+            if workers.len() < max_vus as usize {
+                workers.push(spawn_arrival_worker(
+                    next_vu_id,
+                    shared,
+                    Arc::clone(&permit_rx),
+                    deadline,
+                ));
+                next_vu_id += 1;
+                permit = permit_tx.try_send(at);
+            }
         }
         if permit.is_err() {
             dropped += 1;
@@ -2465,6 +2494,64 @@ mod tests {
             lines.iter().any(|l| l.text.contains("dropped iteration")),
             "throttled drop warning: {lines:?}"
         );
+    }
+
+    /// Coordinated-omission tracking: every served arrival permit records
+    /// its scheduled→actual delay and the full from-scheduled iteration
+    /// latency — one sample per iteration in each histogram.
+    #[tokio::test]
+    async fn arrival_records_queue_wait_and_iteration_latency() {
+        let config = arrival(4, &[("300ms", 20.0)]);
+        let lines = run_and_collect(vec![sleep_step(10)], config, false).await;
+        let iters = iteration_count(&lines);
+        for name in [
+            "engine_arrival_queue_wait_ms",
+            "engine_arrival_iteration_ms",
+        ] {
+            let line = lines
+                .iter()
+                .find(|l| l.text.starts_with(name))
+                .unwrap_or_else(|| panic!("{name} in summary: {lines:?}"));
+            assert!(
+                line.text.contains(&format!("count={iters}")),
+                "one {name} sample per iteration ({iters}): {line:?}"
+            );
+        }
+    }
+
+    /// Under saturation the queue wait shows the delay the server-side
+    /// latency cannot: two workers on 200ms steps at 30 it/s — permits wait
+    /// roughly one iteration each while the request path itself is instant.
+    #[tokio::test]
+    async fn arrival_queue_wait_grows_under_saturation() {
+        let config = arrival(2, &[("500ms", 30.0)]);
+        let lines = run_and_collect(vec![sleep_step(200)], config, false).await;
+        let line = lines
+            .iter()
+            .find(|l| l.text.starts_with("engine_arrival_queue_wait_ms"))
+            .unwrap_or_else(|| panic!("queue wait in summary: {lines:?}"));
+        // avg=XX.XXms — with 15 wanted iterations over 500ms and a ~200ms
+        // service time on 2 workers, the mean wait is on the order of the
+        // step duration, not the sub-millisecond pickup of an idle pool.
+        let avg: f64 = line
+            .text
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix("avg=")?.strip_suffix("ms"))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("avg in {line:?}"));
+        assert!(avg > 20.0, "saturation must show up as queue wait: {line:?}");
+        // The iteration latency is at least the step duration plus the wait.
+        let iter_line = lines
+            .iter()
+            .find(|l| l.text.starts_with("engine_arrival_iteration_ms"))
+            .unwrap();
+        let min: f64 = iter_line
+            .text
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix("min=")?.strip_suffix("ms"))
+            .and_then(|v| v.parse().ok())
+            .unwrap();
+        assert!(min >= 200.0, "iteration latency includes the body: {iter_line:?}");
     }
 
     /// Broken load profiles fail fast with a clear error, before any VU runs.

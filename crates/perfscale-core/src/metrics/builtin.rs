@@ -164,6 +164,24 @@ impl MetricsFamily for EngineFamily {
                 unit: "lines",
                 description: "Peak pending lines in the bounded run-log channel",
             },
+            MetricDef {
+                name: "engine_arrival_queue_wait_ms",
+                kind: MetricKind::Histogram,
+                unit: "ms",
+                description: "Arrival profile: scheduled-to-actual iteration start delay (coordinated omission)",
+            },
+            MetricDef {
+                name: "engine_arrival_iteration_ms",
+                kind: MetricKind::Histogram,
+                unit: "ms",
+                description: "Arrival profile: queue wait + iteration body, measured from the scheduled start",
+            },
+            MetricDef {
+                name: "dropped_iterations",
+                kind: MetricKind::Counter,
+                unit: "count",
+                description: "Arrival permits no worker could serve (pool saturated at arrival.max_vus)",
+            },
         ]
     }
 }
