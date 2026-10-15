@@ -260,6 +260,12 @@ def _boundary_out(crossed, vus, secs, rps):
     }
 
 
+# Minimum cumulative sample count before a locust/jmeter history row may
+# declare a crossing — a single failure inside a tiny first-interval sample
+# must not read as a 1%+ error rate.
+MIN_BOUNDARY_SAMPLES = 500
+
+
 def boundary_native(path, max_vus, duration_s, err_pct):
     """Native engine's periodic `[stats] ts=.. rps=.. err_pct=.. .. vus=N`
     lines (one every 5s; err_pct is cumulative, vus= only on staged runs)."""
@@ -319,7 +325,12 @@ def boundary_locust(path, max_vus, duration_s, err_pct):
     for r in rows:
         total = int(r.get("Total Request Count") or 0)
         failed = int(r.get("Total Failure Count") or 0)
-        if total and failed / total * 100 >= err_pct:
+        # Min-sample floor: a 1s history row at ramp start may hold a handful
+        # of requests, where a single stray failure (e.g. one reset connection
+        # right after the previous engine's ramp) reads as 2-100% errors and
+        # reports a nonsense boundary like "1 VU". A genuinely breaking engine
+        # crosses the floor within a second of ramping.
+        if total >= MIN_BOUNDARY_SAMPLES and failed / total * 100 >= err_pct:
             return _boundary_out(
                 1,
                 int(r.get("User Count") or 0),
@@ -345,7 +356,10 @@ def boundary_jmeter(path, max_vus, duration_s, err_pct):
                 continue
             total += int(m.group(1))
             errors += int(m.group(6))
-            if total and errors / total * 100 >= err_pct:
+            # Same min-sample floor as the locust parser: the first 2s
+            # interval holds too few samples for a cumulative rate to be
+            # meaningful.
+            if total >= MIN_BOUNDARY_SAMPLES and errors / total * 100 >= err_pct:
                 secs = int(m.group(2)) * 3600 + int(m.group(3)) * 60 + int(m.group(4))
                 vus = max_vus * min(secs, duration_s) / duration_s
                 return _boundary_out(1, vus, secs, float(m.group(5)))

@@ -641,7 +641,10 @@ class RampToBoundary(LoadTestShape):
         if run_time >= DURATION_S + 5:
             return None
         vus = max(1, min(MAX_VUS, int(MAX_VUS * run_time / DURATION_S)))
-        return (vus, max(10, MAX_VUS // 10))
+        # Spawn rate scales with the rung: finish hatching by ramp end
+        # (MAX_VUS // DURATION_S) instead of a fixed fraction, so high rungs
+        # actually reach their target VU count.
+        return (vus, max(10, MAX_VUS // DURATION_S))
 EOF
 
 # Boundary JMeter plan: threads ramp over the whole BENCH duration and the
