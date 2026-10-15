@@ -29,3 +29,26 @@ Release notes for the next release, written as features land.
   `--non-interactive`; without it, a non-terminal stdin fails with a hint
   instead of hanging on a prompt nobody can answer. `--check` stays
   read-only and never asks.
+
+## `perfscale cache clean`: reclaim the import/library cache
+
+- The import/library cache (`~/.cache/perfscale`, overridable with
+  `PERFSCALE_CACHE_DIR`) grew without bound — every fetched import and
+  compiled WASM library stayed forever. `perfscale cache clean` sweeps it,
+  printing the reclaimed size; `--dry-run` shows what would go. Everything
+  is content-addressed and re-downloadable from a pinned `perfscale.lock`,
+  so cleaning is always safe — worst case the next run re-fetches.
+
+## Bounded HTTP connection pools
+
+- Idle keep-alive connections are now capped (64 per host per client shard)
+  and expire after 60 s idle instead of living for the whole run. High-VU
+  runs against many hosts no longer hold thousands of idle sockets open on
+  the target; warm connections survive any iteration cadence under a minute.
+
+## Pure WASM libraries run inline
+
+- Libraries that declare `"pure": true` (no capability hostcalls) now execute
+  inline on current-thread runtimes instead of hopping to the blocking pool —
+  no thread handoff, no channel wait. Capability libraries keep the hop
+  (their sync hostcalls need it); multi-thread runtimes are unchanged.
