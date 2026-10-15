@@ -34,6 +34,24 @@ use super::ws::{bool_param, u64_param};
 // Client pools
 // ---------------------------------------------------------------------------
 
+/// Build a client with bounded idle pools. Uncapped idle pools (reqwest's
+/// default) mean VUs × shards × hosts lingering sockets for the whole run;
+/// under high VU counts against several hosts that is thousands of idle
+/// connections the target has to keep open.
+///
+/// The numbers keep keep-alive useful for a load tool: 60s idle timeout —
+/// any iteration cadence below a minute keeps its warm connection (a slower
+/// cadence doesn't care about keep-alive anyway); 64 idle per host per
+/// shard — enough for a burst within one shard, far below VU×host fan-out.
+fn build_client(insecure: bool) -> reqwest::Client {
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(64)
+        .pool_idle_timeout(Duration::from_secs(60))
+        .danger_accept_invalid_certs(insecure)
+        .build()
+        .expect("client construction cannot fail")
+}
+
 /// HTTP client shards: a fixed set of `reqwest::Client`s, one per available
 /// CPU (capped at 16). Each VU is pinned to one shard via
 /// [`Context::http_client_shard`], so connection pooling / keep-alive across
@@ -50,7 +68,7 @@ pub(crate) fn shared_client(shard: usize) -> &'static reqwest::Client {
     static CLIENTS: OnceLock<Vec<reqwest::Client>> = OnceLock::new();
     let clients = CLIENTS.get_or_init(|| {
         (0..client_shard_count())
-            .map(|_| reqwest::Client::new())
+            .map(|_| build_client(false))
             .collect()
     });
     &clients[shard % clients.len()]
@@ -63,12 +81,7 @@ pub(crate) fn shared_insecure_client(shard: usize) -> &'static reqwest::Client {
     static CLIENTS: OnceLock<Vec<reqwest::Client>> = OnceLock::new();
     let clients = CLIENTS.get_or_init(|| {
         (0..client_shard_count())
-            .map(|_| {
-                reqwest::Client::builder()
-                    .danger_accept_invalid_certs(true)
-                    .build()
-                    .expect("insecure client construction cannot fail")
-            })
+            .map(|_| build_client(true))
             .collect()
     });
     &clients[shard % clients.len()]
@@ -118,16 +131,11 @@ pub fn client(pool: ClientPool, insecure: bool, shard: usize) -> &'static reqwes
         (ClientPool::PerVu, true) => shared_insecure_client(shard),
         (ClientPool::Shared, false) => {
             static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-            CLIENT.get_or_init(reqwest::Client::new)
+            CLIENT.get_or_init(|| build_client(false))
         }
         (ClientPool::Shared, true) => {
             static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-            CLIENT.get_or_init(|| {
-                reqwest::Client::builder()
-                    .danger_accept_invalid_certs(true)
-                    .build()
-                    .expect("insecure client construction cannot fail")
-            })
+            CLIENT.get_or_init(|| build_client(true))
         }
     }
 }
