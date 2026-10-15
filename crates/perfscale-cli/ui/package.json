@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "React dashboard for `perfscale serve` — built to a single self-contained HTML file embedded into the CLI via include_str!",
+  "description": "React dashboard for `perfscale serve` \u2014 built to a single self-contained HTML file embedded into the CLI via include_str!",
   "scripts": {
     "dev": "vite",
     "build": "vite build && cp dist/index.html ../src/commands/serve_ui.html",
@@ -30,5 +30,6 @@
     "vite": "^5.4.11",
     "vite-plugin-singlefile": "^2.0.3",
     "vitest": "^2.1.8"
-  }
+  },
+  "packageManager": "pnpm@10.11.0"
 }
