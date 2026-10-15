@@ -361,15 +361,29 @@ to the executable, then renamed) — a failed update never leaves a broken
 binary behind.
 
 ```sh
-perfscale self-update              # update to the latest release
-perfscale self-update --check      # only check; exit 10 = update available
-perfscale self-update --force      # reinstall even if already up to date
+perfscale self-update                       # update to the latest release (asks first)
+perfscale self-update --check               # only check; exit 10 = update available
+perfscale self-update --force               # reinstall even if already up to date
+perfscale self-update --non-interactive     # no confirmation prompt (scripts, CI)
 ```
+
+Before downloading anything, the command asks on the terminal:
+
+```text
+Update perfscale 0.24.0 → 0.25.0? [Y/n]
+```
+
+Enter (empty answer) or `y`/`yes` proceeds; `n`/`no` cancels with exit code
+0 (a declined update is not an error). The prompt goes to **stderr**, so
+stdout stays machine-parseable. When stdin is not a TTY (CI, pipes) and
+`--non-interactive` is not passed, the command fails with a hint instead of
+hanging on a prompt nobody can answer. `--check` never asks anything.
 
 | Flag | Description |
 |---|---|
 | `--check` | Report whether an update exists without installing. Exit codes: `0` up to date, `10` update available — scriptable in cron/CI |
 | `--force` | Reinstall the latest release even when versions match |
+| `--non-interactive` | Skip the confirmation prompt — for scripts and CI |
 
 ### npm installs
 

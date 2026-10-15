@@ -175,9 +175,13 @@ below.
 Download the release asset for this platform from GitHub Releases, verify
 its sha256 against the release's
 .IR sha256sums.txt ,
-and atomically replace the current executable.
+and atomically replace the current executable. Asks for confirmation on a
+terminal before downloading (empty answer or y/yes proceeds; n/no cancels
+with exit code 0); with stdin not a TTY it refuses unless
+.B \-\-non\-interactive
+is given (scripts, CI).
 .B \-\-check
-only checks (exit code 10 when an update exists);
+only checks (exit code 10 when an update exists) and never prompts;
 .B \-\-force
 reinstalls even when up to date.
 .SH RUN OPTIONS

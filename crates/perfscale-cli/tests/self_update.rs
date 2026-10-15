@@ -138,7 +138,7 @@ async fn self_update_replaces_binary_and_verifies_checksum() {
     let cache = tempfile::tempdir().unwrap();
 
     update_cmd(&bin, &server, &cache)
-        .arg("self-update")
+        .args(["self-update", "--non-interactive"])
         .assert()
         .success()
         .stdout(predicate::str::contains("updated perfscale"))
@@ -226,12 +226,39 @@ async fn self_update_force_reinstalls_same_version() {
     let cache = tempfile::tempdir().unwrap();
 
     update_cmd(&bin, &server, &cache)
-        .args(["self-update", "--force"])
+        .args(["self-update", "--force", "--non-interactive"])
         .assert()
         .success()
         .stdout(predicate::str::contains("updated perfscale"));
 
     assert_eq!(std::fs::read(&bin).unwrap(), fake);
+}
+
+/// Interactive by default: with stdin not a TTY (CI, pipes) and no
+/// --non-interactive, the command refuses before downloading anything — a
+/// hanging prompt in CI is worse than a refused run.
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn self_update_without_tty_requires_non_interactive() {
+    let server = MockServer::start().await;
+    mock_release(&server, "v99.0.0", b"must never be installed").await;
+
+    let bin = shared_binary();
+    let original = std::fs::read(&bin).unwrap();
+    let cache = tempfile::tempdir().unwrap();
+
+    update_cmd(&bin, &server, &cache)
+        .arg("self-update")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a terminal"))
+        .stderr(predicate::str::contains("--non-interactive"));
+
+    assert_eq!(
+        std::fs::read(&bin).unwrap(),
+        original,
+        "binary must be untouched"
+    );
 }
 
 #[tokio::test]
@@ -270,7 +297,7 @@ async fn self_update_rejects_corrupted_download() {
     let cache = tempfile::tempdir().unwrap();
 
     update_cmd(&bin, &server, &cache)
-        .arg("self-update")
+        .args(["self-update", "--non-interactive"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("checksum"));

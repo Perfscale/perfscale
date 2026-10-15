@@ -357,15 +357,30 @@ export MANPATH="$HOME/.local/share/man:$MANPATH"
 после себя сломанный бинарник.
 
 ```sh
-perfscale self-update              # update to the latest release
-perfscale self-update --check      # only check; exit 10 = update available
-perfscale self-update --force      # reinstall even if already up to date
+perfscale self-update                       # обновиться до последнего релиза (спросит подтверждение)
+perfscale self-update --check               # только проверить; exit 10 = обновление доступно
+perfscale self-update --force               # переустановить, даже если уже актуально
+perfscale self-update --non-interactive     # без вопроса-подтверждения (скрипты, CI)
 ```
+
+Перед загрузкой команда спрашивает подтверждение в терминале:
+
+```text
+Update perfscale 0.24.0 → 0.25.0? [Y/n]
+```
+
+Enter (пустой ответ) или `y`/`yes` продолжают; `n`/`no` отменяют с кодом
+выхода 0 (отказ от обновления — не ошибка). Вопрос выводится в **stderr**,
+поэтому stdout остаётся машиночитаемым. Когда stdin — не TTY (CI, пайпы) и
+`--non-interactive` не передан, команда завершается ошибкой с подсказкой
+вместо висящего вопроса, на который некому ответить. `--check` ничего не
+спрашивает.
 
 | Флаг | Описание |
 |---|---|
 | `--check` | Сообщить, есть ли обновление, не устанавливая его. Коды выхода: `0` — актуально, `10` — обновление доступно; удобно для скриптов в cron/CI |
 | `--force` | Переустановить последний релиз, даже если версии совпадают |
+| `--non-interactive` | Пропустить вопрос-подтверждение — для скриптов и CI |
 
 ### Установки через npm
 

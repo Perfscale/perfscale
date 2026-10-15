@@ -110,8 +110,8 @@
     "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-core/src/step/context.rs": {
-    "mtime": 1792055549.8598464,
-    "ast_hash": "4948edf28ffb7d208744c842442768da",
+    "mtime": 1792057750.4502301,
+    "ast_hash": "cf6f8a935cd8bcc9b3dd6876de1728b5",
     "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-core/src/step/mod.rs": {
@@ -120,8 +120,8 @@
     "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-core/src/step/runner.rs": {
-    "mtime": 1792056572.5886014,
-    "ast_hash": "39546091fe6048abf0637b3699a1ea5d",
+    "mtime": 1792057777.2140315,
+    "ast_hash": "fd7fd37f8e6bad3edb00b38827f8a087",
     "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-core/src/yaml.rs": {
@@ -670,8 +670,8 @@
     "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-core/src/log_mask.rs": {
-    "mtime": 1789060210.5685582,
-    "ast_hash": "102cf7e9479a7ff67013a4bed3287b1a",
+    "mtime": 1792058054.4619932,
+    "ast_hash": "3893798061bef52ec9493c2cbc5e6bdc",
     "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-cli/src/commands/burn.rs": {
@@ -980,13 +980,13 @@
     "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-core/src/metrics/registry.rs": {
-    "mtime": 1792050562.0375564,
-    "ast_hash": "89ded6527eb84b9103461171740b4633",
+    "mtime": 1792058054.462744,
+    "ast_hash": "1f08644455bf8789fb119d36909a9f4b",
     "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/crates/perfscale-core/src/metrics/store.rs": {
-    "mtime": 1792054495.279173,
-    "ast_hash": "be042d8912727c73b8d503f17f3f1877",
+    "mtime": 1792058281.4002078,
+    "ast_hash": "045cc762f51774677b75658517f3d626",
     "semantic_hash": ""
   },
   "/Users/vitaliharadkou/Documents/git/perfscale-org/perfscale/rfcs/010-metrics-module.md": {

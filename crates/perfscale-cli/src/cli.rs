@@ -149,9 +149,12 @@ fn self_update_after_help() -> String {
          sha256 against the release's sha256sums.txt, and atomically replaces the current\n\
          executable.\n\n\
          Examples:\n  \
-         perfscale self-update              update to the latest release\n  \
-         perfscale self-update --check      only check; exit 10 if an update exists\n  \
-         perfscale self-update --force      reinstall even if already up to date\n\n\
+         perfscale self-update                       update to the latest release (asks first)\n  \
+         perfscale self-update --check               only check; exit 10 if an update exists\n  \
+         perfscale self-update --force               reinstall even if already up to date\n  \
+         perfscale self-update --non-interactive     no confirmation prompt (scripts, CI)\n\n\
+         Before downloading, the command asks for confirmation on a terminal; with stdin\n\
+         not a TTY the prompt is skipped only under --non-interactive.\n\n\
          The passive \"update available\" hint printed by other commands checks at most\n\
          once per 24h, only in interactive terminals, and can be disabled with\n\
          PERFSCALE_NO_UPDATE_CHECK=1.\n\n\
@@ -169,6 +172,10 @@ pub struct SelfUpdateArgs {
     /// Reinstall the latest release even if this binary is already up to date.
     #[arg(long, conflicts_with = "check")]
     pub force: bool,
+
+    /// Download and install without the confirmation prompt (scripts, CI).
+    #[arg(long)]
+    pub non_interactive: bool,
 }
 
 #[derive(Args)]

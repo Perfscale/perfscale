@@ -72,6 +72,19 @@ pub async fn self_update(args: SelfUpdateArgs) -> Result<(), CliError> {
         .docs("getting-started.md#install")
     })?;
 
+    // Confirm before anything is downloaded. Interactive by default; scripts
+    // and CI pass --non-interactive.
+    match confirm_update(&latest, args.non_interactive)? {
+        UpdateConfirmation::Proceed => {}
+        UpdateConfirmation::Declined => {
+            println!(
+                "update cancelled — perfscale {} unchanged",
+                update::CURRENT_VERSION
+            );
+            return Ok(());
+        }
+    }
+
     eprintln!("[self-update] downloading {artifact} {latest}...");
     let binary = download(&update::asset_url(&latest, artifact)).await?;
 
@@ -90,6 +103,92 @@ pub async fn self_update(args: SelfUpdateArgs) -> Result<(), CliError> {
         exe.display()
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Confirmation prompt
+// ---------------------------------------------------------------------------
+
+/// The outcome of the pre-download confirmation gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateConfirmation {
+    Proceed,
+    Declined,
+}
+
+/// The user's answer to the prompt, mapped to a decision. Empty input (just
+/// Enter) is the default "yes"; `n`/`no` (any case) declines; EOF (`None`)
+/// declines — a terminal that went away must not install anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnswerDecision {
+    Yes,
+    No,
+    Invalid,
+}
+
+fn answer_decision(answer: Option<&str>) -> AnswerDecision {
+    match answer.map(str::trim) {
+        None => AnswerDecision::No,
+        Some("") => AnswerDecision::Yes,
+        Some(a) if a.eq_ignore_ascii_case("y") || a.eq_ignore_ascii_case("yes") => {
+            AnswerDecision::Yes
+        }
+        Some(a) if a.eq_ignore_ascii_case("n") || a.eq_ignore_ascii_case("no") => {
+            AnswerDecision::No
+        }
+        Some(_) => AnswerDecision::Invalid,
+    }
+}
+
+/// Gate the download on a confirmation. Pure decision, stdin reading lives
+/// in [`confirm_update`]: `--non-interactive` short-circuits (scripts, CI);
+/// without it a non-TTY stdin is an error — a prompt nobody can answer would
+/// hang a CI job, which is worse than a refused run.
+fn confirmation_gate(non_interactive: bool, stdin_is_tty: bool) -> Result<bool, CliError> {
+    if non_interactive {
+        return Ok(false);
+    }
+    if !stdin_is_tty {
+        return Err(CliError::new(
+            "self-update asks for confirmation before replacing the binary, but stdin is not a terminal",
+        )
+        .hint("re-run with --non-interactive in scripts/CI")
+        .docs("cli/commands.md#perfscale-self-update"));
+    }
+    Ok(true)
+}
+
+/// One line of user input — the only stdin read in the flow, kept behind the
+/// decision functions so they stay unit-testable.
+fn read_answer() -> Option<String> {
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(0) | Err(_) => None, // EOF or read error
+        Ok(_) => Some(line),
+    }
+}
+
+/// Ask before downloading and replacing the binary: `Update perfscale
+/// <current> → <latest>? [Y/n]` on stderr (stdout stays machine-parseable),
+/// answer from stdin. Declining is a normal exit-0 outcome, not an error.
+fn confirm_update(latest: &str, non_interactive: bool) -> Result<UpdateConfirmation, CliError> {
+    use std::io::IsTerminal;
+    if !confirmation_gate(non_interactive, std::io::stdin().is_terminal())? {
+        return Ok(UpdateConfirmation::Proceed);
+    }
+    loop {
+        eprint!(
+            "Update perfscale {} → {latest}? [Y/n] ",
+            update::CURRENT_VERSION
+        );
+        match answer_decision(read_answer().as_deref()) {
+            AnswerDecision::Yes => return Ok(UpdateConfirmation::Proceed),
+            AnswerDecision::No => return Ok(UpdateConfirmation::Declined),
+            AnswerDecision::Invalid => {
+                eprintln!("please answer y or n");
+            }
+        }
+    }
 }
 
 async fn download(url: &str) -> Result<Vec<u8>, CliError> {
@@ -203,6 +302,34 @@ fn staged_path(exe: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmation_gate_skips_prompt_only_when_allowed() {
+        // --non-interactive: never prompts, TTY or not.
+        assert!(!confirmation_gate(true, true).unwrap());
+        assert!(!confirmation_gate(true, false).unwrap());
+        // Interactive + TTY: prompt.
+        assert!(confirmation_gate(false, true).unwrap());
+        // Interactive without a TTY: a clean error, not a hanging prompt.
+        let err = confirmation_gate(false, false).unwrap_err();
+        let rendered = err.to_string();
+        assert!(rendered.contains("not a terminal"), "{rendered}");
+        assert!(rendered.contains("--non-interactive"), "{rendered}");
+    }
+
+    #[test]
+    fn answer_decision_maps_answers() {
+        assert_eq!(answer_decision(Some("")), AnswerDecision::Yes);
+        assert_eq!(answer_decision(Some("  ")), AnswerDecision::Yes);
+        assert_eq!(answer_decision(Some("y")), AnswerDecision::Yes);
+        assert_eq!(answer_decision(Some("YES\n")), AnswerDecision::Yes);
+        assert_eq!(answer_decision(Some("n")), AnswerDecision::No);
+        assert_eq!(answer_decision(Some("No")), AnswerDecision::No);
+        assert_eq!(answer_decision(Some("NO\n")), AnswerDecision::No);
+        // EOF (Ctrl-D): decline, never install.
+        assert_eq!(answer_decision(None), AnswerDecision::No);
+        assert_eq!(answer_decision(Some("maybe")), AnswerDecision::Invalid);
+    }
 
     #[test]
     fn staged_path_is_next_to_exe() {
