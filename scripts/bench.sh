@@ -39,9 +39,13 @@ set -euo pipefail
 #                 grpc_echo_server example (reflection on, plaintext).
 #   graphql     – native `std/graphql@v1` query against the repo's
 #                 graphql_server example (introspection on).
-#   db          – native `std/db-connect@v1` + `std/db-query@v1` against a
-#                 PostgreSQL at BENCH_PG_DSN (CI: service container; locally:
-#                 skipped unless the DSN's host:port answers).
+#   db          – SQL suite: native `std/db-*@v1` scenarios against PostgreSQL
+#                 at BENCH_PG_DSN (cold connect+query per iteration, warm
+#                 persistent pool, transactions) plus an in-process SQLite
+#                 baseline, and the same warm SELECT 1 shape from locust
+#                 (psycopg2) and JMeter (JDBC) when their drivers are
+#                 installed. k6 is omitted on purpose: it has no SQL module
+#                 without a custom xk6-sql build.
 #
 # No llm/pubsub suites: the engine's LLM and pubsub (nats) drivers need
 # backing services that don't fit a bench CI job cleanly (an LLM endpoint
@@ -93,6 +97,10 @@ LIB_RUNS="${LIB_RUNS:-5}"
 GRPC_DURATION="${GRPC_DURATION:-10s}"
 GQL_DURATION="${GQL_DURATION:-10s}"
 DB_DURATION="${DB_DURATION:-10s}"
+# Warm db scenarios: queries per iteration after one persistent connect, and
+# tx cycles (begin+query+commit) per iteration.
+DB_WARM_QUERIES="${DB_WARM_QUERIES:-10}"
+DB_TX_CYCLES="${DB_TX_CYCLES:-5}"
 BENCH_PG_DSN="${BENCH_PG_DSN:-postgres://postgres:perfscale@127.0.0.1:5432/postgres}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -256,14 +264,51 @@ fi
 
 # db suite target: a PostgreSQL the caller provides (CI service container;
 # BENCH_PG_DSN). Probed by host:port from the DSN — no engine changes.
+# The DSN parts are also parsed out for the competitor scenarios (locust's
+# psycopg2 connect string, JMeter's JDBC URL/credentials).
 DB_HOSTPORT="${BENCH_PG_DSN##*@}"   # strip userinfo
 DB_HOSTPORT="${DB_HOSTPORT%%/*}"    # strip /database
+DB_USERINFO="${BENCH_PG_DSN#*://}"; DB_USERINFO="${DB_USERINFO%%@*}"
+DB_USER="${DB_USERINFO%%:*}"; DB_PASS="${DB_USERINFO#*:}"
+DB_NAME="${BENCH_PG_DSN##*/}"
 HAS_DB=0
+HAS_LOCUST_DB=0
+HAS_JMETER_DB=0
 if has_suite db; then
   if wait_for_port "${DB_HOSTPORT%%:*}" "${DB_HOSTPORT##*:}"; then
     HAS_DB=1
   else
     echo "skipping db suite: no PostgreSQL at $DB_HOSTPORT (BENCH_PG_DSN)" >&2
+  fi
+fi
+
+if [[ "$HAS_DB" == 1 && "$HAS_LOCUST" == 1 ]]; then
+  # psycopg2 must be importable from locust's own interpreter (pipx inject
+  # locust psycopg2-binary) — probe the shebang interpreter, then python3 as
+  # a fallback for pip-installed locust.
+  locust_bin="$(command -v locust)"
+  locust_py="$(head -1 "$locust_bin" 2>/dev/null | sed -n 's/^#!//p' | awk '{print $1}')"
+  if [[ -n "$locust_py" && -x "$locust_py" ]] \
+    && "$locust_py" -c 'import psycopg2' >/dev/null 2>&1; then
+    HAS_LOCUST_DB=1
+  elif python3 -c 'import psycopg2' >/dev/null 2>&1; then
+    HAS_LOCUST_DB=1
+  else
+    echo "skipping locust db scenario: psycopg2 not in locust's env (pipx inject locust psycopg2-binary)" >&2
+  fi
+fi
+
+if [[ "$HAS_DB" == 1 && "$HAS_JMETER" == 1 ]]; then
+  # JMeter's JDBC sampler needs the PostgreSQL JDBC driver on its lib path.
+  PG_JDBC_JAR="${BENCH_PG_JDBC_JAR:-}"
+  if [[ -z "$PG_JDBC_JAR" ]]; then
+    jmeter_home="$(cd "$(dirname "$(command -v jmeter)")/.." 2>/dev/null && pwd)"
+    PG_JDBC_JAR="$(ls "$jmeter_home"/lib/postgresql-*.jar 2>/dev/null | head -1 || true)"
+  fi
+  if [[ -n "$PG_JDBC_JAR" && -f "$PG_JDBC_JAR" ]]; then
+    HAS_JMETER_DB=1
+  else
+    echo "skipping jmeter db scenario: no postgresql JDBC jar in JMeter's lib/ (BENCH_PG_JDBC_JAR)" >&2
   fi
 fi
 
@@ -696,8 +741,19 @@ steps:
 EOF
 fi
 
-# db suite: connect + query per iteration (the connection drops at iteration
-# end), SELECT 1 vs a query with a \${}-expanded bind parameter.
+# db suite, perfscale native scenarios:
+#   db / db-params  – cold path: connect + query per iteration (the
+#                     connection drops at iteration end), SELECT 1 vs a query
+#                     with a ${}-expanded bind parameter.
+#   db-warm         – warm path: one persistent-mode connect per iteration
+#                     (a real pool, pool_size 1), then DB_WARM_QUERIES queries
+#                     on the parked connection, then db-close.
+#   db-warm-tx      – warm path with DB_TX_CYCLES × (tx-begin, query, commit).
+#   db-sqlite       – cold SQLite: connect + SELECT 1 per iteration against
+#                     :memory: (pool_size 1 — the default; a second pooled
+#                     connection would be a different database).
+#   db-sqlite-warm  – warm SQLite: the db-warm shape with no server at all —
+#                     the pure in-process cost floor of the engine's db path.
 if [[ "$HAS_DB" == 1 ]]; then
   cat >"$WORKDIR/yaml-db.yaml" <<EOF
 steps:
@@ -729,6 +785,225 @@ steps:
       id: "\${{ conn.id }}"
       query: "SELECT \$1::int AS n"
       params: [ "\${rand(1,1000)}" ]
+EOF
+  {
+    cat <<EOF
+steps:
+  - name: connect (persistent pool)
+    use: std/db-connect@v1
+    with:
+      driver: postgres
+      dsn: "$BENCH_PG_DSN"
+      tls: false
+    outputs: conn
+EOF
+    for i in $(seq 1 "$DB_WARM_QUERIES"); do
+      cat <<EOF
+  - name: warm query $i
+    use: std/db-query@v1
+    with:
+      id: "\${{ conn.id }}"
+      query: "SELECT 1"
+EOF
+    done
+    cat <<EOF
+  - name: close
+    use: std/db-close@v1
+    with:
+      id: "\${{ conn.id }}"
+EOF
+  } >"$WORKDIR/yaml-db-warm.yaml"
+  {
+    cat <<EOF
+steps:
+  - name: connect (persistent pool)
+    use: std/db-connect@v1
+    with:
+      driver: postgres
+      dsn: "$BENCH_PG_DSN"
+      tls: false
+    outputs: conn
+EOF
+    for i in $(seq 1 "$DB_TX_CYCLES"); do
+      cat <<EOF
+  - name: tx $i begin
+    use: std/db-tx-begin@v1
+    with:
+      id: "\${{ conn.id }}"
+  - name: tx $i query
+    use: std/db-query@v1
+    with:
+      id: "\${{ conn.id }}"
+      query: "SELECT 1"
+  - name: tx $i commit
+    use: std/db-tx-commit@v1
+    with:
+      id: "\${{ conn.id }}"
+EOF
+    done
+    cat <<EOF
+  - name: close
+    use: std/db-close@v1
+    with:
+      id: "\${{ conn.id }}"
+EOF
+  } >"$WORKDIR/yaml-db-warm-tx.yaml"
+fi
+
+# SQLite scenarios need no server — they are generated whenever the db suite
+# is selected, so the in-process cost floor is measurable even without a
+# PostgreSQL at hand.
+if has_suite db; then
+  cat >"$WORKDIR/yaml-db-sqlite.yaml" <<EOF
+steps:
+  - name: connect
+    use: std/db-connect@v1
+    with:
+      driver: sqlite
+      dsn: "sqlite::memory:"
+    outputs: conn
+  - name: select one
+    use: std/db-query@v1
+    with:
+      id: "\${{ conn.id }}"
+      query: "SELECT 1"
+EOF
+  {
+    cat <<EOF
+steps:
+  - name: connect (persistent pool)
+    use: std/db-connect@v1
+    with:
+      driver: sqlite
+      dsn: "sqlite::memory:"
+    outputs: conn
+EOF
+    for i in $(seq 1 "$DB_WARM_QUERIES"); do
+      cat <<EOF
+  - name: warm query $i
+    use: std/db-query@v1
+    with:
+      id: "\${{ conn.id }}"
+      query: "SELECT 1"
+EOF
+    done
+    cat <<EOF
+  - name: close
+    use: std/db-close@v1
+    with:
+      id: "\${{ conn.id }}"
+EOF
+  } >"$WORKDIR/yaml-db-sqlite-warm.yaml"
+fi
+
+# locust db scenario: one psycopg2 connection per simulated user (on_start),
+# then SELECT 1 in a tight loop — the same warm shape as db-warm.
+if [[ "$HAS_LOCUST_DB" == 1 ]]; then
+  cat >"$WORKDIR/locustfile_db.py" <<'EOF'
+import os
+import time
+
+import psycopg2
+from locust import User, task, constant
+
+DSN = os.environ["BENCH_PG_DSN"]
+
+
+class PgUser(User):
+    wait_time = constant(0)
+
+    def on_start(self):
+        self.pg = psycopg2.connect(DSN)
+        self.pg.autocommit = True
+
+    def on_stop(self):
+        self.pg.close()
+
+    @task
+    def select_one(self):
+        t0 = time.perf_counter()
+        try:
+            with self.pg.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        except Exception as e:
+            self.environment.events.request.fire(
+                request_type="SQL",
+                name="SELECT 1",
+                response_time=(time.perf_counter() - t0) * 1000,
+                response_length=0,
+                exception=e,
+            )
+            # Reconnect once — a dropped connection must not pin the user.
+            try:
+                self.pg.close()
+            except Exception:
+                pass
+            self.pg = psycopg2.connect(DSN)
+            self.pg.autocommit = True
+            return
+        self.environment.events.request.fire(
+            request_type="SQL",
+            name="SELECT 1",
+            response_time=(time.perf_counter() - t0) * 1000,
+            response_length=0,
+        )
+EOF
+fi
+
+# JMeter db plan: one JDBC Connection Configuration (pool sized to the
+# thread count) + one JDBC Request running SELECT 1 per loop. The DSN parts
+# are baked in at materialization time.
+if [[ "$HAS_JMETER_DB" == 1 ]]; then
+  cat >"$WORKDIR/plan-db-template.jmx" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="db" enabled="true">
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+      <JDBCDataSource guiclass="TestBeanGUI" testclass="JDBCDataSource" testname="pg pool" enabled="true">
+        <boolProp name="autocommit">true</boolProp>
+        <stringProp name="checkQuery">SELECT 1</stringProp>
+        <stringProp name="connectionAge">5000</stringProp>
+        <stringProp name="dataSource">pg</stringProp>
+        <stringProp name="dbUrl">jdbc:postgresql://@DBHOST@:@DBPORT@/@DBNAME@</stringProp>
+        <stringProp name="driver">org.postgresql.Driver</stringProp>
+        <boolProp name="keepAlive">true</boolProp>
+        <stringProp name="password">@DBPASS@</stringProp>
+        <stringProp name="poolMax">@VUS@</stringProp>
+        <stringProp name="timeout">10000</stringProp>
+        <stringProp name="transactionIsolation">DEFAULT</stringProp>
+        <boolProp name="trim">true</boolProp>
+        <stringProp name="username">@DBUSER@</stringProp>
+      </JDBCDataSource>
+      <hashTree/>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="db" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">@VUS@</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">1</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">@SECS@</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true">
+          <boolProp name="LoopController.continue_forever">true</boolProp>
+          <stringProp name="LoopController.loops">-1</stringProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <JDBCSampler guiclass="TestBeanGUI" testclass="JDBCSampler" testname="SELECT 1" enabled="true">
+          <stringProp name="dataSource">pg</stringProp>
+          <stringProp name="query">SELECT 1</stringProp>
+          <stringProp name="queryType">Select Statement</stringProp>
+          <stringProp name="resultVariable"></stringProp>
+          <stringProp name="variableNames"></stringProp>
+        </JDBCSampler>
+        <hashTree/>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
 EOF
 fi
 
@@ -1380,27 +1655,88 @@ fi
 
 # --- db ----------------------------------------------------------------------
 
-if has_suite db && [[ "$HAS_DB" == 1 ]]; then
+if has_suite db; then
   echo "suite: db" >&2
-  section "PostgreSQL query (${VUS} VUs, ${DB_DURATION} per scenario)"
+  section "SQL queries (${VUS} VUs, ${DB_DURATION} per scenario)"
   {
     echo "| Scenario | Queries | QPS | p95 ms | Err | CPU per query | Peak RSS |"
     echo "|---|---:|---:|---:|---:|---:|---|"
   } >>"$OUTPUT"
-  for sc in db db-params; do
-    echo "  $sc" >&2
-    measure "$sc" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-$sc.yaml")" db-text
-    json_row db.json "$sc"
-    echo "| $sc | $requests | $rps | $p95_ms | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
-  done
+
+  # db_row $1 label, $2 command, $3 parse kind, $4 queries per unit (a warm
+  # iteration runs several query steps; the summary's iteration rate is
+  # scaled up to a query rate), $5 parse file (optional)
+  db_row() {
+    local label="$1" cmd="$2" kind="$3" mult="${4:-1}" parse_file="${5:-}"
+    echo "  $label" >&2
+    measure "$label" "$cmd" "$kind" "$parse_file"
+    if [[ "$parse_ok" != 1 ]]; then
+      echo "| $label | — | — | — | — | — | — |" >>"$OUTPUT"
+      return
+    fi
+    if [[ "$mult" != 1 ]]; then
+      requests=$((requests * mult))
+      rps=$(awk "BEGIN{printf \"%.2f\", $rps*$mult}")
+    fi
+    json_row db.json "$label"
+    echo "| $label | $requests | $rps | $p95_ms | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
+  }
+
+  # SQLite in-process baseline: no server needed, so these rows run even
+  # without a PostgreSQL at BENCH_PG_DSN.
+  db_row "db-sqlite" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-sqlite.yaml")" db-text
+  db_row "db-sqlite-warm (x$DB_WARM_QUERIES)" \
+    "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-sqlite-warm.yaml")" \
+    db-text "$DB_WARM_QUERIES"
+
+  if [[ "$HAS_DB" == 1 ]]; then
+    db_row "db" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db.yaml")" db-text
+    db_row "db-params" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-params.yaml")" db-text
+    db_row "db-warm (x$DB_WARM_QUERIES)" \
+      "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm.yaml")" \
+      db-text "$DB_WARM_QUERIES"
+    db_row "db-warm-tx (x$DB_TX_CYCLES)" \
+      "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm-tx.yaml")" \
+      db-text "$DB_TX_CYCLES"
+
+    if [[ "$HAS_LOCUST_DB" == 1 ]]; then
+      # Plain User (no HTTP client): --host is unused but locust requires it.
+      db_row "locust (psycopg2, warm)" \
+        "env BENCH_PG_DSN='$BENCH_PG_DSN' locust -f $WORKDIR/locustfile_db.py --headless -u $VUS -r $VUS -t $DB_DURATION --host http://127.0.0.1 --only-summary --csv $WORKDIR/loc-db" \
+        locust-csv 1 "$WORKDIR/loc-db_stats.csv"
+    fi
+
+    if [[ "$HAS_JMETER_DB" == 1 ]]; then
+      db_secs="${DB_DURATION%s}"
+      sed -e "s/@VUS@/$VUS/" -e "s/@SECS@/$db_secs/" \
+        -e "s|@DBHOST@|${DB_HOSTPORT%%:*}|" -e "s/@DBPORT@/${DB_HOSTPORT##*:}/" \
+        -e "s/@DBNAME@/$DB_NAME/" -e "s/@DBUSER@/$DB_USER/" -e "s/@DBPASS@/$DB_PASS/" \
+        "$WORKDIR/plan-db-template.jmx" >"$WORKDIR/plan-db.jmx"
+      db_row "jmeter (JDBC, warm pool)" \
+        "cd $WORKDIR && jmeter -n -t $WORKDIR/plan-db.jmx" jmeter-summary
+    fi
+  fi
+
   {
     echo
-    echo "_Target: PostgreSQL at \`BENCH_PG_DSN\` (CI service container). Every"
-    echo "iteration is \`std/db-connect@v1\` + one \`std/db-query@v1\`, so the"
-    echo "numbers include connect + pool setup — the shape of serverless/short-"
-    echo "lived workloads, not of a warm long-lived pool. db = \`SELECT 1\`;"
-    echo "db-params = \`SELECT \$1::int\` with a \`\${rand(1,1000)}\` bind"
-    echo "parameter expanded per execution._"
+    echo "_Targets: PostgreSQL at \`BENCH_PG_DSN\` (CI service container) and"
+    echo "in-process SQLite (\`sqlite::memory:\`, pool_size 1 — the default; a"
+    echo "second pooled connection would be a different database). The perfscale"
+    echo "rows all use \`std/db-*@v1\`: **db** = cold connect + \`SELECT 1\` per"
+    echo "iteration (the connection drops at iteration end — the serverless/"
+    echo "short-lived shape); **db-params** = the same with a"
+    echo "\`\${rand(1,1000)}\` bind parameter; **db-warm** = one persistent-mode"
+    echo "connect per iteration, then ${DB_WARM_QUERIES} queries on the parked pool,"
+    echo "then \`db-close\` (Queries/QPS count queries, not iterations);"
+    echo "**db-warm-tx** = ${DB_TX_CYCLES} × \`tx-begin + SELECT 1 + commit\` per"
+    echo "iteration (its p95 mixes begin/query/commit samples). The competitor rows"
+    echo "repeat the warm shape: locust connects once per user with psycopg2 and"
+    echo "loops \`SELECT 1\` (needs \`pipx inject locust psycopg2-binary\`); JMeter"
+    echo "uses a JDBC connection pool + \`SELECT 1\` sampler (needs the PostgreSQL"
+    echo "JDBC jar in JMeter's \`lib/\`; its console summary has no percentiles, so"
+    echo "its p95 cell is empty and avg/min/max are console aggregates). No k6 row:"
+    echo "k6 has no SQL module without a custom \`xk6-sql\` binary, which a pinned,"
+    echo "reproducible CI install cannot supply._"
   } >>"$OUTPUT"
 fi
 

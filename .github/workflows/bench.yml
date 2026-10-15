@@ -32,6 +32,10 @@ permissions:
 
 env:
   JMETER_VERSION: "5.6.3"
+  # PostgreSQL JDBC driver for JMeter's db-suite scenario (pinned + sha256).
+  PGJDBC_VERSION: "42.7.4"
+  PGJDBC_SHA256: "188976721ead8e8627eb6d8389d500dccc0c9bebd885268a3047180274a6031e"
+  PSYCOPG2_VERSION: "2.9.10"
 
 jobs:
   bench:
@@ -69,7 +73,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends k6
 
       - name: Install locust
-        run: pipx install locust
+        # psycopg2-binary powers the db-suite locust scenario (warm SELECT 1
+        # loop). Pinned: bench numbers must stay comparable between runs.
+        run: |
+          pipx install locust
+          pipx inject locust "psycopg2-binary==${PSYCOPG2_VERSION}"
 
       - name: Install JRE (for JMeter)
         run: sudo apt-get install -y --no-install-recommends openjdk-17-jre-headless
@@ -92,6 +100,26 @@ jobs:
 
       - name: JMeter on PATH
         run: echo "/opt/apache-jmeter-${JMETER_VERSION}/bin" >> "$GITHUB_PATH"
+
+      # PostgreSQL JDBC driver for the db-suite JMeter scenario. Pinned
+      # version + sha256-verified; cached separately from the JMeter install.
+      - name: Cache PostgreSQL JDBC driver
+        id: pgjdbc-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/jdbc/postgresql-${{ env.PGJDBC_VERSION }}.jar
+          key: pgjdbc-${{ env.PGJDBC_VERSION }}-${{ env.PGJDBC_SHA256 }}
+
+      - name: Install PostgreSQL JDBC driver
+        run: |
+          jar="/opt/jdbc/postgresql-${PGJDBC_VERSION}.jar"
+          if [ "${{ steps.pgjdbc-cache.outputs.cache-hit }}" != "true" ]; then
+            sudo mkdir -p /opt/jdbc
+            curl -fsSL "https://repo1.maven.org/maven2/org/postgresql/postgresql/${PGJDBC_VERSION}/postgresql-${PGJDBC_VERSION}.jar" \
+              | sudo tee "$jar" >/dev/null
+          fi
+          echo "${PGJDBC_SHA256}  $jar" | sha256sum -c -
+          sudo cp "$jar" "/opt/apache-jmeter-${JMETER_VERSION}/lib/"
 
       # Prebuilt binary (seconds) instead of `cargo install` compiling from
       # source (minutes). Pinned: bench numbers must stay comparable between
@@ -127,6 +155,8 @@ jobs:
             echo "| k6 | $(k6 version 2>/dev/null || echo 'not installed') |"
             echo "| locust | $(locust --version 2>/dev/null || echo 'not installed') |"
             echo "| jmeter | ${JMETER_VERSION} |"
+            echo "| pgjdbc | ${PGJDBC_VERSION} |"
+            echo "| psycopg2 | ${PSYCOPG2_VERSION} |"
             echo "| java | $(java -version 2>&1 | head -n1) |"
             echo "| hyperfine | $(hyperfine --version) |"
             echo

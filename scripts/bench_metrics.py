@@ -3,7 +3,7 @@
 
 Subcommands:
   parse <kind> <file>            kind: text | locust-csv | ws-text |
-                                 grpc-text | db-text
+                                 grpc-text | db-text | jmeter-summary
                                  prints shell-evalable `key=value` lines
   append <json> <label> [k=v..]  append a row object to a JSON array file
   boundary <kind> <file> <max-vus> <duration-s> <err-pct>
@@ -156,6 +156,28 @@ def parse_db_text(content):
     return out
 
 
+def parse_jmeter_summary(content):
+    """Parse JMeter's non-GUI console summary: the last cumulative
+    `summary =` line carries the totals (samples, rate, Avg/Min/Max in ms,
+    errors). No percentiles exist in this output (that is why JMeter stays
+    out of the throughput suite) — p50/p90/p95/p99 stay 0."""
+    out = zeroed()
+    matches = re.findall(
+        r"summary =\s+(\d+) in .*?=\s*([\d.]+)/s\s+Avg:\s*(\d+)\s+Min:\s*(\d+)\s+Max:\s*(\d+)\s+Err:\s*(\d+) \(([\d.]+)%\)",
+        content,
+    )
+    if matches:
+        total, rate, avg, min_ms, max_ms, _err, err_pct = matches[-1]
+        out["requests"] = int(total)
+        out["rps"] = float(rate)
+        out["avg_ms"] = float(avg)
+        out["min_ms"] = float(min_ms)
+        out["max_ms"] = float(max_ms)
+        out["err_pct"] = float(err_pct)
+    out["parse_ok"] = 1 if out["requests"] else 0
+    return out
+
+
 def parse_locust_csv(path):
     """Parse the `Aggregated` row of locust's `--csv` stats output —
     the same source perfscale's locust runner reads."""
@@ -203,6 +225,9 @@ def cmd_parse(kind, path):
         elif kind == "db-text":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_db_text(f.read())
+        elif kind == "jmeter-summary":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics = parse_jmeter_summary(f.read())
         else:
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_text(f.read())
