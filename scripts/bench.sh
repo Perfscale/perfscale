@@ -1537,19 +1537,30 @@ if has_suite boundary; then
   boundary_ladder() {
     local label="$1" kind="$2" builder="$3"
     local rung crossed boundary_vus boundary_s boundary_rps rc parse_file
+    local achieved_vus=0 achieved_rps=0 achieved_p95_ms=0 cpu_total
     for rung in $BOUNDARY_LADDER; do
       echo "  $label @ $rung VUs" >&2
       boundary_settle
-      rc=0
-      bash -c "$("$builder" "$rung")" >"$b_out" 2>&1 || rc=$?
+      run_timed "$b_out" "$("$builder" "$rung")"
+      rc=$T_RC
       parse_file="$b_out"
       [[ "$kind" == locust ]] && parse_file="$WORKDIR/b-loc-${rung}_stats_history.csv"
       eval "$($METRICS boundary "$kind" "$parse_file" "$rung" "$b_dur_s" "$BOUNDARY_ERR_PCT")"
+      eval "$($METRICS toprung "$kind" "$parse_file")"
+      cpu_total=$(awk "BEGIN{printf \"%.1fs\", ${T_USER_S:-0}+${T_SYS_S:-0}}")
+      # Render-only cells: 0 means "engine reports no such metric" (JMeter's
+      # console has no live thread count and no percentiles) — the JSON rows
+      # keep the numeric zeros.
+      b_vus="$achieved_vus"; [[ "$b_vus" == 0 || "$b_vus" == 0.0 ]] && b_vus="—"
+      b_p95="$achieved_p95_ms"; [[ "$b_p95" == 0 || "$b_p95" == 0.0 ]] && b_p95="—"
       if [[ "$crossed" == 1 ]]; then
         $METRICS append "$RESULTS_D/boundary.json" "$label" \
           crossed=1 boundary_vus="$boundary_vus" boundary_s="$boundary_s" \
-          boundary_rps="$boundary_rps" rung="$rung"
-        echo "| $label | ${boundary_vus} VUs | ${boundary_s}s | $boundary_rps |" >>"$OUTPUT"
+          boundary_rps="$boundary_rps" rung="$rung" \
+          achieved_vus="$achieved_vus" achieved_rps="$achieved_rps" \
+          achieved_p95_ms="$achieved_p95_ms" \
+          rss_mib="$T_RSS_MIB" user_s="${T_USER_S:-0}" sys_s="${T_SYS_S:-0}"
+        echo "| $label | ${boundary_vus} VUs @ ${boundary_s}s | $b_vus | $achieved_rps | $b_p95 | $T_RSS | $cpu_total |" >>"$OUTPUT"
         return
       fi
       if [[ "$rc" != 0 ]]; then
@@ -1557,14 +1568,20 @@ if has_suite boundary; then
         # the boundary (the engine could not finish the ramp).
         $METRICS append "$RESULTS_D/boundary.json" "$label" \
           crossed=1 boundary_vus="$rung" boundary_s=0 boundary_rps=0 \
-          rung="$rung" note="process died (exit $rc)"
-        echo "| $label | ≈${rung} VUs (process died, exit $rc) | — | — |" >>"$OUTPUT"
+          rung="$rung" note="process died (exit $rc)" \
+          achieved_vus="$achieved_vus" achieved_rps="$achieved_rps" \
+          achieved_p95_ms="$achieved_p95_ms" \
+          rss_mib="$T_RSS_MIB" user_s="${T_USER_S:-0}" sys_s="${T_SYS_S:-0}"
+        echo "| $label | ≈${rung} VUs (process died, exit $rc) | $b_vus | $achieved_rps | $b_p95 | $T_RSS | $cpu_total |" >>"$OUTPUT"
         return
       fi
     done
     $METRICS append "$RESULTS_D/boundary.json" "$label" \
-      crossed=0 boundary_vus=0 boundary_s=0 boundary_rps=0 rung="$b_last_rung"
-    echo "| $label | >${b_last_rung} VUs (never crossed) | — | — |" >>"$OUTPUT"
+      crossed=0 boundary_vus=0 boundary_s=0 boundary_rps=0 rung="$b_last_rung" \
+      achieved_vus="$achieved_vus" achieved_rps="$achieved_rps" \
+      achieved_p95_ms="$achieved_p95_ms" \
+      rss_mib="$T_RSS_MIB" user_s="${T_USER_S:-0}" sys_s="${T_SYS_S:-0}"
+    echo "| $label | >${b_last_rung} VUs (never crossed) | $b_vus | $achieved_rps | $b_p95 | $T_RSS | $cpu_total |" >>"$OUTPUT"
   }
 
   [[ "$HAS_K6" == 1 ]] && boundary_ladder "k6 (native)" k6 b_cmd_k6_native
@@ -1592,7 +1609,17 @@ if has_suite boundary; then
     echo "rows are omitted: the wrapper is a pass-through, the boundary is an"
     echo "engine property. The \`perfscale (yaml)\` row runs without \`--quiet\`"
     echo "(quiet suppresses \`[stats]\`), so it includes the per-request logging"
-    echo "cost. Between runs the suite probes the target with 50 fresh"
+    echo "cost. The achieved columns describe the last rung the engine ran"
+    echo "(the top one, or the one it crossed/died on): \`Achieved VUs\` is the"
+    echo "load actually spawned (k6 progress lines, locust User Count, the"
+    echo "native summary's \`vus\` peak — JMeter's console reports no thread"
+    echo "count, so its cell is \`—\`); \`Achieved RPS\` is the whole-run"
+    echo "average for k6/JMeter/native and the end-of-ramp rate for locust;"
+    echo "p95 is \`—\` for JMeter (no percentiles in the console summary)."
+    echo "Peak RSS / CPU come from \`/usr/bin/time\` on the same run —"
+    echo "\`never crossed\` does not mean"
+    echo "free, and these columns say what the top rung actually cost. Between"
+    echo "runs the suite probes the target with 50 fresh"
     echo "connections and waits out any loopback TIME_WAIT drain left by the"
     echo "previous engine — a boundary must be the engine's, not the machine's"
     echo "exhausted ephemeral ports (the workflow also widens"

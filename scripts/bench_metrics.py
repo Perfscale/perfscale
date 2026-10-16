@@ -10,6 +10,8 @@ Subcommands:
                                  kind: native | k6 | locust | jmeter —
                                  where the ramp run first hit the error-rate
                                  threshold; prints crossed/boundary_* k=v
+  toprung <kind> <file>          achieved-load metrics (vus/rps/p95) from one
+                                 boundary rung's output, same kinds
   setobj <json> [k=v..]          merge keys into a JSON object file
   embed <json> <key> <file>      store a parsed JSON file under a key
   merge <dir> <out>              combine <dir>/*.json into one object keyed
@@ -382,6 +384,123 @@ def cmd_boundary(kind, path, max_vus, duration_s, err_pct):
         print(f"{k}={v}")
 
 
+# ---------------------------------------------------------------------------
+# toprung: achieved-load metrics from one boundary rung's output, reported
+# for the top completed rung of the ladder. Every parser prints the same
+# shape: achieved_vus (actually spawned, 0 = unknown), achieved_rps,
+# achieved_p95_ms (0 = the engine reports no percentiles — JMeter's console
+# summary). RPS semantics differ per engine by what its summary offers:
+# whole-run average (k6, JMeter, native) or end-of-ramp rate (locust).
+# ---------------------------------------------------------------------------
+
+
+def _toprung_out(vus, rps, p95_ms):
+    return {
+        "achieved_vus": round(vus),
+        "achieved_rps": round(rps, 2),
+        "achieved_p95_ms": round(p95_ms, 2),
+    }
+
+
+def toprung_k6(path):
+    """k6 text summary of a non-quiet ramping-vus run: achieved VUs from the
+    peak `running (Ts), N/MAX VUs` progress line, RPS from the `iterations`
+    counter (whole-run average), p95 from `http_req_duration`."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    progress = re.findall(r"running \((?:(\d+)m)?([\d.]+)s\), (\d+)/(\d+) VUs", content)
+    vus = max((int(m[2]) for m in progress), default=0)
+    m_it = re.search(r"iterations[.\s]*:\s*\d+\s+([\d.]+)/s", content)
+    rps = float(m_it.group(1)) if m_it else 0
+    m_dur = re.search(r"http_req_duration[.\s]*:(.*)", content)
+    p95 = 0.0
+    if m_dur:
+        stats = {}
+        _trend_stats(stats, m_dur.group(1))
+        p95 = stats.get("p95_ms", 0)
+    return _toprung_out(vus, rps, p95)
+
+
+def toprung_locust(path):
+    """locust `--csv-full-history` stats_history: achieved VUs = peak User
+    Count, RPS = end-of-ramp Requests/s (rate at the peak VU level), p95 from
+    the last Aggregated row's 95% column."""
+    import csv
+
+    with open(path, encoding="utf-8", errors="replace", newline="") as f:
+        rows = [r for r in csv.DictReader(f) if r.get("Name") == "Aggregated"]
+    if not rows:
+        return _toprung_out(0, 0, 0)
+    vus = max(int(r.get("User Count") or 0) for r in rows)
+    rps = float(rows[-1].get("Requests/s") or 0)
+
+    def p95_of(r):
+        try:
+            return float(r.get("95%") or 0)
+        except ValueError:  # early rows may carry "N/A"
+            return 0.0
+
+    p95 = p95_of(rows[-1])
+    if p95 == 0:
+        p95 = next((p for p in (p95_of(r) for r in reversed(rows)) if p > 0), 0.0)
+    return _toprung_out(vus, rps, p95)
+
+
+def toprung_jmeter(path):
+    """jmeter non-GUI console: the final cumulative `summary =` line carries
+    the whole-run average rate. The console has neither live thread counts
+    nor percentiles — achieved_vus and p95 stay 0 (rendered as '—')."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    matches = re.findall(r"summary =\s+\d+ in .*?=\s*([\d.]+)/s", content)
+    rps = float(matches[-1]) if matches else 0
+    return _toprung_out(0, rps, 0)
+
+
+def toprung_native(path):
+    """Native staged run: achieved VUs from the end-of-run summary's
+    `vus...: N min=.. max=..` peak (the periodic `[stats]` lines are useless
+    here — the final one is emitted after the VUs have drained and reads
+    vus=0), RPS = whole-run average from the `iterations` counter, p95 from
+    `http_req_duration`."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    vus = 0
+    m_vus = re.search(r"^vus[.\s]*:\s*\d+\s+min=\d+\s+max=(\d+)", content, re.M)
+    if m_vus:
+        vus = int(m_vus.group(1))
+    else:  # fallback: peak of the periodic [stats] lines
+        for line in content.splitlines():
+            m = re.match(r"\[stats\] .*vus=(\d+)", line)
+            if m:
+                vus = max(vus, int(m.group(1)))
+    m_it = re.search(r"iterations[.\s]*:\s*\d+\s+([\d.]+)/s", content)
+    rps = float(m_it.group(1)) if m_it else 0
+    m_dur = re.search(r"http_req_duration[.\s]*:(.*)", content)
+    p95 = 0.0
+    if m_dur:
+        stats = {}
+        _trend_stats(stats, m_dur.group(1))
+        p95 = stats.get("p95_ms", 0)
+    return _toprung_out(vus, rps, p95)
+
+
+def cmd_toprung(kind, path):
+    parsers = {
+        "native": toprung_native,
+        "k6": toprung_k6,
+        "locust": toprung_locust,
+        "jmeter": toprung_jmeter,
+    }
+    try:
+        metrics = parsers[kind](path)
+    except (OSError, ValueError, KeyError) as e:
+        print(f"bench_metrics: toprung: {e}", file=sys.stderr)
+        metrics = _toprung_out(0, 0, 0)
+    for k, v in metrics.items():
+        print(f"{k}={v}")
+
+
 def coerce(raw):
     # Only plain decimal literals become numbers: float() would also accept
     # scientific notation, turning a digit-leading git SHA like "6963e24"
@@ -548,6 +667,8 @@ def main():
         cmd_criterion(sys.argv[2], sys.argv[3], sys.argv[4])
     elif cmd == "boundary":
         cmd_boundary(sys.argv[2], sys.argv[3], *sys.argv[4:7])
+    elif cmd == "toprung":
+        cmd_toprung(sys.argv[2], sys.argv[3])
     else:
         sys.exit(f"bench_metrics: unknown subcommand '{cmd}'")
 

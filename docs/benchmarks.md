@@ -34,7 +34,7 @@ wrapping overhead — not the underlying tool.
 | `saturation` | Approximate max RPS per engine at high VUs (default 256) |
 | `yaml` | What does each native-engine feature cost? (GET baseline vs `--quiet` vs +check vs POST body vs multi-step interpolation) |
 | `ws` | WebSocket message throughput and RTT: same-connection echo round-trips against `serve`'s `/ws` endpoint (`perfscale (yaml)`, `k6 (native)`, `perfscale (k6)` — locust has no built-in WebSocket support and is skipped) |
-| `boundary` | Where does the engine break? Climbs a ladder of VU ceilings (`BOUNDARY_LADDER`, default `5000 15000 30000`): each rung ramps 0→ceiling over `BOUNDARY_DURATION`; the boundary is the VU level / time / RPS where the cumulative error rate first reaches `BOUNDARY_ERR_PCT` percent (default 1%) — or the rung where the process dies (OOM/crash counts as the boundary). An engine that crossed stops climbing |
+| `boundary` | Where does the engine break? Climbs a ladder of VU ceilings (`BOUNDARY_LADDER`, default `5000 15000 30000`): each rung ramps 0→ceiling over `BOUNDARY_DURATION`; the boundary is the VU level / time / RPS where the cumulative error rate first reaches `BOUNDARY_ERR_PCT` percent (default 1%) — or the rung where the process dies (OOM/crash counts as the boundary). An engine that crossed stops climbing. The table also reports the **achieved load** on the last rung the engine ran: actually spawned VUs, RPS, p95, peak RSS and CPU — so `never crossed` is priced, not just asserted |
 | `tls` | The TLS tax: same workload against `perfscale serve --tls` (self-signed HTTPS, verification skipped) |
 | `library` | WASM value-generator cost: per-run compile (cold) vs burn-cache deserialize vs the `@std/random` builtin |
 | `grpc` | `std/grpc@v1` unary echo against the repo's `grpc_echo_server` example |
@@ -65,7 +65,14 @@ a single rung (backwards-compatible override). Between runs the suite probes
 the target with 50 fresh connections and waits out any loopback TIME_WAIT
 drain left by the previous engine (the CI runner also gets a widened
 `ip_local_port_range` + `tcp_tw_reuse`) — a boundary must be the engine's,
-not the machine's exhausted ephemeral ports.
+not the machine's exhausted ephemeral ports. On the last rung an engine ran
+(top of the ladder, or the rung it crossed/died on) the report adds achieved
+columns: actually spawned VUs (k6 progress lines, locust User Count, the
+native summary's `vus` peak — JMeter's console reports no thread count),
+RPS (whole-run average for k6/JMeter/native, end-of-ramp rate for locust),
+p95 (JMeter has none in the console summary), plus peak RSS and CPU from
+`/usr/bin/time` — "never crossed" does not mean free, and these columns say
+what the top rung actually cost.
 
 The `db` suite separates the cold path (`perfscale (cold)`,
 `perfscale (cold, params)`: connect + one
