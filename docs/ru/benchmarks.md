@@ -68,11 +68,14 @@ loopback рассосутся TIME_WAIT-сокеты предыдущего дв
 расширяется `ip_local_port_range` и включается `tcp_tw_reuse`) — граница
 должна быть границей движка, а не исчерпанных эфемерных портов машины.
 
-Набор `db` разделяет холодный путь (`db`, `db-params`: connect + один запрос
-на итерацию, соединение закрывается в конце итерации) и тёплый (`db-warm`:
+Набор `db` разделяет холодный путь (`perfscale (cold)`,
+`perfscale (cold, params)`: connect + один запрос
+на итерацию, соединение закрывается в конце итерации) и тёплый
+(`perfscale (warm pool, …)`:
 один постоянный пул на итерацию, `DB_WARM_QUERIES` запросов, `db-close`;
-`db-warm-tx`: `DB_TX_CYCLES` × begin+query+commit) и добавляет in-process
-SQLite-«пол» (`db-sqlite`, `db-sqlite-warm`, сервер не нужен). Строка locust
+`perfscale (warm tx, …)`: `DB_TX_CYCLES` × begin+query+commit) и добавляет
+in-process
+SQLite-«пол» (`perfscale (sqlite, …)`, сервер не нужен). Строка locust
 (`pipx inject locust psycopg2-binary`) и строка JMeter (PostgreSQL JDBC jar в
 `lib/` JMeter, переменная `BENCH_PG_JDBC_JAR` для другого пути) и строка k6
 повторяют тёплую форму. Строка `k6 (xk6-sql)` — это **не стоковый k6**: в

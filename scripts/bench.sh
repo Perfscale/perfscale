@@ -1098,14 +1098,15 @@ else
 fi
 
 # Run $3 (a shell command string) with stdout to $1 and `/usr/bin/time`
-# stats parsed into T_* globals.
-T_WALL="?" T_USER="?" T_SYS="?" T_USER_S=0 T_SYS_S=0 T_RSS="?" T_RSS_MIB=0 T_IO="?"
+# stats parsed into T_* globals. T_RC carries the command's exit code.
+T_WALL="?" T_USER="?" T_SYS="?" T_USER_S=0 T_SYS_S=0 T_RSS="?" T_RSS_MIB=0 T_IO="?" T_RC=0
 run_timed() {
   local out="$1" tf="$WORKDIR/time.$$" cmd="$2"
+  T_RC=0
   # `grep | awk || true`: with pipefail a missing stat line would otherwise
   # abort the whole bench via set -e; a "?" cell is better than no report.
   if [[ "$TIME_STYLE" == "gnu" ]]; then
-    /usr/bin/time -v bash -c "$cmd" >"$out" 2>"$tf" || true
+    /usr/bin/time -v bash -c "$cmd" >"$out" 2>"$tf" || T_RC=$?
     T_WALL=$(grep 'Elapsed (wall clock)' "$tf" | awk -F': ' '{print $2}' || true)
     T_USER_S=$(grep -m1 'User time' "$tf" | awk -F': ' '{print $2}' || true)
     T_SYS_S=$(grep -m1 'System time' "$tf" | awk -F': ' '{print $2}' || true)
@@ -1116,7 +1117,7 @@ run_timed() {
     io_out=$(grep 'File system outputs' "$tf" | awk -F': ' '{print $2}' || true)
     T_IO="${io_in:-0} in / ${io_out:-0} out"
   elif [[ "$TIME_STYLE" == "bsd" ]]; then
-    /usr/bin/time -l bash -c "$cmd" >"$out" 2>"$tf" || true
+    /usr/bin/time -l bash -c "$cmd" >"$out" 2>"$tf" || T_RC=$?
     T_WALL=$(grep ' real' "$tf" | awk '{print $1"s"}' || true)
     T_USER_S=$(grep ' real' "$tf" | awk '{print $3}' || true)
     T_SYS_S=$(grep ' real' "$tf" | awk '{print $5}' || true)
@@ -1127,7 +1128,7 @@ run_timed() {
     io_out=$(grep 'block output operations' "$tf" | awk '{print $1}' || true)
     T_IO="${io_in:-0} in / ${io_out:-0} out"
   else
-    bash -c "$cmd" >"$out" 2>/dev/null || true
+    bash -c "$cmd" >"$out" 2>/dev/null || T_RC=$?
     T_USER_S=0 T_SYS_S=0 T_RSS_MIB=0 T_WALL="?" T_IO="?"
   fi
   T_USER="${T_USER_S:-0}s"
@@ -1470,8 +1471,8 @@ if has_suite boundary; then
   b_ladder_pretty="$(echo "$BOUNDARY_LADDER" | sed 's/ /, /g')"
   section "1% error boundary (ladder: ${b_ladder_pretty} VUs, ${BOUNDARY_DURATION} per rung)"
   {
-    echo "| Engine | Boundary | Time | RPS at boundary |"
-    echo "|---|---:|---:|---:|"
+    echo "| Engine | Boundary | Achieved VUs | Achieved RPS | p95 ms | Peak RSS | CPU (u+s) |"
+    echo "|---|---|---:|---:|---:|---:|---|"
   } >>"$OUTPUT"
 
   # Native-engine staged-ramp config for one ladder rung. Prints the path.
@@ -1795,18 +1796,18 @@ if has_suite db; then
 
   # SQLite in-process baseline: no server needed, so these rows run even
   # without a PostgreSQL at BENCH_PG_DSN.
-  db_row "db-sqlite" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-sqlite.yaml")" db-text
-  db_row "db-sqlite-warm (x$DB_WARM_QUERIES)" \
+  db_row "perfscale (sqlite, cold)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-sqlite.yaml")" db-text
+  db_row "perfscale (sqlite, warm x$DB_WARM_QUERIES)" \
     "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-sqlite-warm.yaml")" \
     db-text "$DB_WARM_QUERIES"
 
   if [[ "$HAS_DB" == 1 ]]; then
-    db_row "db" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db.yaml")" db-text
-    db_row "db-params" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-params.yaml")" db-text
-    db_row "db-warm (x$DB_WARM_QUERIES)" \
+    db_row "perfscale (cold)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db.yaml")" db-text
+    db_row "perfscale (cold, params)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-params.yaml")" db-text
+    db_row "perfscale (warm pool, x$DB_WARM_QUERIES)" \
       "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm.yaml")" \
       db-text "$DB_WARM_QUERIES"
-    db_row "db-warm-tx (x$DB_TX_CYCLES)" \
+    db_row "perfscale (warm tx, x$DB_TX_CYCLES)" \
       "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm-tx.yaml")" \
       db-text "$DB_TX_CYCLES"
 
@@ -1839,14 +1840,14 @@ if has_suite db; then
     echo
     echo "_Targets: PostgreSQL at \`BENCH_PG_DSN\` (CI service container) and"
     echo "in-process SQLite (\`sqlite::memory:\`, pool_size 1 — the default; a"
-    echo "second pooled connection would be a different database). The perfscale"
-    echo "rows all use \`std/db-*@v1\`: **db** = cold connect + \`SELECT 1\` per"
-    echo "iteration (the connection drops at iteration end — the serverless/"
-    echo "short-lived shape); **db-params** = the same with a"
-    echo "\`\${rand(1,1000)}\` bind parameter; **db-warm** = one persistent-mode"
+    echo "second pooled connection would be a different database). The"
+    echo "\`perfscale (...)\` rows all use \`std/db-*@v1\`: **cold** = connect +"
+    echo "\`SELECT 1\` per iteration (the connection drops at iteration end —"
+    echo "the serverless/short-lived shape); **cold, params** = the same with a"
+    echo "\`\${rand(1,1000)}\` bind parameter; **warm pool** = one persistent-mode"
     echo "connect per iteration, then ${DB_WARM_QUERIES} queries on the parked pool,"
     echo "then \`db-close\` (Queries/QPS count queries, not iterations);"
-    echo "**db-warm-tx** = ${DB_TX_CYCLES} × \`tx-begin + SELECT 1 + commit\` per"
+    echo "**warm tx** = ${DB_TX_CYCLES} × \`tx-begin + SELECT 1 + commit\` per"
     echo "iteration (its p95 mixes begin/query/commit samples). The competitor rows"
     echo "repeat the warm shape: locust connects once per user with psycopg2 and"
     echo "loops \`SELECT 1\` (needs \`pipx inject locust psycopg2-binary\`); JMeter"

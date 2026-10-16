@@ -67,11 +67,14 @@ drain left by the previous engine (the CI runner also gets a widened
 `ip_local_port_range` + `tcp_tw_reuse`) — a boundary must be the engine's,
 not the machine's exhausted ephemeral ports.
 
-The `db` suite separates the cold path (`db`, `db-params`: connect + one
+The `db` suite separates the cold path (`perfscale (cold)`,
+`perfscale (cold, params)`: connect + one
 query per iteration, connection dropped at iteration end) from the warm path
-(`db-warm`: one persistent pool per iteration, `DB_WARM_QUERIES` queries,
-`db-close`; `db-warm-tx`: `DB_TX_CYCLES` × begin+query+commit) and adds an
-in-process SQLite floor (`db-sqlite`, `db-sqlite-warm`, no server needed).
+(`perfscale (warm pool, …)`: one persistent pool per iteration,
+`DB_WARM_QUERIES` queries,
+`db-close`; `perfscale (warm tx, …)`: `DB_TX_CYCLES` × begin+query+commit) and
+adds an
+in-process SQLite floor (`perfscale (sqlite, …)`, no server needed).
 The locust row (`pipx inject locust psycopg2-binary`), the JMeter row
 (PostgreSQL JDBC jar in JMeter's `lib/`, `BENCH_PG_JDBC_JAR` to point
 elsewhere), and the k6 row repeat the warm shape. The `k6 (xk6-sql)` row is
