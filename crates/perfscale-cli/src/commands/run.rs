@@ -126,7 +126,7 @@ fn build_export(
 
     SummaryExport {
         meta: ExportMeta {
-            perfscale_version: env!("CARGO_PKG_VERSION").to_string(),
+            perfscale_version: crate::version::VERSION.to_string(),
             engine: engine.to_string(),
             vus,
             duration,
@@ -828,7 +828,7 @@ mod tests {
         let export = build_export("native", Some(10), Some("30s".into()), &lines);
         assert_eq!(export.meta.engine, "native");
         assert_eq!(export.meta.vus, Some(10));
-        assert_eq!(export.meta.perfscale_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(export.meta.perfscale_version, crate::version::VERSION);
         assert!(export.meta.timestamp.ends_with('Z'));
         let s = export.summary.expect("summary parsed");
         assert_eq!(s.total_requests, 120);

@@ -175,9 +175,10 @@ async fn self_update_check_exits_10_when_update_available() {
 #[file_serial(heavy_io)]
 async fn self_update_check_exits_0_when_up_to_date() {
     let server = MockServer::start().await;
-    // Latest == the version we just built.
-    let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
-    mock_release(&server, &current_tag, b"irrelevant").await;
+    // A tag older than any real build: never counts as newer. (Mocking the
+    // current version itself no longer works for dev builds — by design a
+    // `-next.N` pre-release counts as older than the same stable release.)
+    mock_release(&server, "v0.0.0", b"irrelevant").await;
 
     let bin = shared_binary();
     let cache = tempfile::tempdir().unwrap();
@@ -193,8 +194,8 @@ async fn self_update_check_exits_0_when_up_to_date() {
 #[file_serial(heavy_io)]
 async fn self_update_noop_when_already_latest_without_force() {
     let server = MockServer::start().await;
-    let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
-    mock_release(&server, &current_tag, b"must never be installed").await;
+    // v0.0.0 is never newer than the running binary (see above).
+    mock_release(&server, "v0.0.0", b"must never be installed").await;
 
     let bin = shared_binary();
     let original = std::fs::read(&bin).unwrap();
@@ -217,9 +218,9 @@ async fn self_update_noop_when_already_latest_without_force() {
 #[file_serial(heavy_io)]
 async fn self_update_force_reinstalls_same_version() {
     let server = MockServer::start().await;
-    let current_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    // --force reinstalls regardless of version comparison; any tag works.
     let fake = b"reinstalled same version";
-    mock_release(&server, &current_tag, fake).await;
+    mock_release(&server, "v0.0.0", fake).await;
 
     let dir = tempfile::tempdir().unwrap();
     let bin = binary_copy(&dir);

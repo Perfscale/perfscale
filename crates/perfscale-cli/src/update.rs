@@ -14,7 +14,10 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 pub const REPO: &str = "Perfscale/perfscale";
-pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The running binary's version. Dev builds carry a `-next.N+g<sha>`
+/// pre-release suffix (see `crate::version`), which `is_newer` treats as
+/// older than the plain release of the same core version.
+pub const CURRENT_VERSION: &str = crate::version::VERSION;
 
 /// How long a cached "latest version" answer stays fresh.
 pub const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -70,11 +73,20 @@ pub async fn fetch_latest_tag(timeout: Duration) -> Result<String, String> {
 // Version comparison
 // ---------------------------------------------------------------------------
 
-/// Numeric component-wise comparison of `"0.2.1"`-style versions.
-/// A leading `v` is ignored. Missing components count as 0.
+/// Semver-flavored comparison of `"0.2.1"`-style versions. A leading `v` and
+/// build metadata (`+...`) are ignored; missing components count as 0. When
+/// the numeric cores are equal, a pre-release (`0.25.0-next.7`) counts as
+/// *older* than the plain release — so a dev build made after the v0.25.0
+/// tag still sees v0.25.0 as an upgrade.
 pub fn is_newer(candidate: &str, current: &str) -> bool {
-    let parse = |v: &str| -> Vec<u64> {
-        v.trim_start_matches('v')
+    let parse = |v: &str| -> (Vec<u64>, bool) {
+        let v = v.trim_start_matches('v');
+        let v = v.split('+').next().unwrap_or(v);
+        let (core, pre_release) = match v.split_once('-') {
+            Some((core, _)) => (core, true),
+            None => (v, false),
+        };
+        let nums = core
             .split('.')
             .map(|c| {
                 c.chars()
@@ -83,9 +95,11 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
                     .parse()
                     .unwrap_or(0)
             })
-            .collect()
+            .collect();
+        (nums, pre_release)
     };
-    let (a, b) = (parse(candidate), parse(current));
+    let (a, a_pre) = parse(candidate);
+    let (b, b_pre) = parse(current);
     let len = a.len().max(b.len());
     for i in 0..len {
         let (x, y) = (
@@ -96,7 +110,8 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
             return x > y;
         }
     }
-    false
+    // Equal numeric cores: a stable release supersedes a pre-release.
+    b_pre && !a_pre
 }
 
 // ---------------------------------------------------------------------------
@@ -284,8 +299,20 @@ mod tests {
     fn is_newer_handles_missing_components_and_suffixes() {
         assert!(is_newer("0.2", "0.1.9"));
         assert!(!is_newer("0.1", "0.1.0"));
-        // Pre-release suffixes: numeric prefix wins, suffix ignored.
+        // A higher numeric core wins even with a pre-release suffix.
         assert!(is_newer("0.2.0-rc1", "0.1.0"));
+    }
+
+    #[test]
+    fn is_newer_treats_pre_release_as_older_than_stable() {
+        // Dev builds (`-next.N+g<sha>`) sort below the release they follow:
+        // `self-update` on a dev build offers the stable release.
+        assert!(is_newer("v0.25.0", "0.25.0-next.28+g520b478"));
+        assert!(is_newer("v0.25.0", "0.25.0-next+unknown"));
+        assert!(!is_newer("0.25.0-next.28+g520b478", "0.25.0"));
+        assert!(!is_newer("0.25.0-next.7", "0.25.0-next.28"));
+        // Build metadata never affects ordering.
+        assert!(!is_newer("v0.25.0", "0.25.0"));
     }
 
     #[test]

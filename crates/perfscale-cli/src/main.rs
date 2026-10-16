@@ -2,6 +2,9 @@ mod cli;
 mod commands;
 mod error;
 mod update;
+mod version;
+#[cfg(test)]
+mod version_format;
 
 use clap::Parser;
 

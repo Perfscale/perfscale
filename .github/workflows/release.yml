@@ -45,6 +45,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history: build.rs runs `git describe --tags` to stamp the
+          # version — with the default shallow fetch the tag is invisible and
+          # the release binary would get a dev `-next+unknown` suffix.
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:

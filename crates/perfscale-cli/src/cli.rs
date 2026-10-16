@@ -52,7 +52,9 @@ fn serve_after_help() -> String {
 #[derive(Parser)]
 #[command(
     name = "perfscale",
-    version,
+    // Not `crate_version!()`: dev builds carry a `-next.N+g<sha>` stamp so a
+    // local build is distinguishable from the release it follows.
+    version = crate::version::VERSION,
     about = "Run k6, locust, JMeter, or native load tests from one CLI",
     after_help = top_level_after_help()
 )]
