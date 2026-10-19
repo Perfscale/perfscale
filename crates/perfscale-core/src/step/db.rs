@@ -562,6 +562,9 @@ where
 ///
 /// `row_fn` / `rows_affected_fn` are per-driver because their traits
 /// (`Row`, `QueryResult`) are not object-safe across drivers.
+// executor + sql + params + per-driver fns + behaviour flags — bundling them
+// into an opts struct would just reshuffle the same list across 10 call sites.
+#[allow(clippy::too_many_arguments)]
 async fn run_query<'c, E, DB>(
     executor: E,
     sql: &'c str,
