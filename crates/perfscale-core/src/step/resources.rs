@@ -20,7 +20,10 @@
 //! iteration, dropping whatever a scenario left open — an abrupt TCP drop, no
 //! Close handshake (use `std/ws-close@v1` for a graceful shutdown). A Live
 //! Connection therefore never outlives its iteration, and ids never leak
-//! across iterations or VUs.
+//! across iterations or VUs. **Exception:** `std/db-connect@v1` with
+//! `scope: vu` parks its pool past the iteration drain (see
+//! [`Resources::drain`] / [`Resources::drain_vu`]) — the connection lives for
+//! the whole VU lifetime and is dropped when the VU exits.
 //!
 //! Steps within a VU run strictly sequentially, so the registry hands a
 //! connection out by *removing* it (`take`) and expects it back (`put_back`)
@@ -198,6 +201,18 @@ pub(crate) struct DbConn {
     /// this connection run inside BEGIN/COMMIT to pin the backend. Set on
     /// the first pooler-split error; never set for direct connections.
     pub wrap_tx: bool,
+    /// `scope: vu` on the connect step: the connection survives the
+    /// iteration-end drain and lives until the VU exits (see
+    /// [`Resources::drain`]). Default (`scope: iteration`) drains with the
+    /// iteration like every other live connection.
+    pub vu_scoped: bool,
+    /// Hash of the full connect config (driver, dsn, tls, mode, pool_size,
+    /// prepared) — the reuse key for `scope: vu`: a later `db-connect` in the
+    /// same VU with an identical config reuses this connection instead of
+    /// opening a fresh one. 0 on iteration-scoped connections (never reused).
+    /// A hash, not the DSN: the registry never holds the secret in
+    /// plaintext beyond the connect options themselves.
+    pub fingerprint: u64,
 }
 
 impl Connection for DbConn {
@@ -320,6 +335,13 @@ impl Resources {
         self.db.take(id)
     }
 
+    /// The id of the first parked DB connection matching `pred` (read-only —
+    /// the handle stays parked). Used by `std/db-connect@v1` with
+    /// `scope: vu` to reuse the VU's existing connection.
+    pub(crate) fn find_db(&self, pred: impl Fn(&DbConn) -> bool) -> Option<String> {
+        self.db.find_id(pred)
+    }
+
     /// Return a DB connection taken with [`take_db`](Self::take_db).
     pub(crate) fn put_back_db(&self, id: &str, conn: DbConn) {
         self.db.put_back(id, conn);
@@ -340,9 +362,23 @@ impl Resources {
     /// dropping their request sender and receiver. DB pools close with their
     /// last handle; a parked transaction rolls back as it drops. Extension
     /// families (pro/*) are drained with the same abrupt-drop semantics.
+    ///
+    /// Exception: DB connections parked with `scope: vu` survive — the
+    /// runner calls [`drain_vu`](Self::drain_vu) when the VU exits.
     pub(crate) fn drain(&self) -> usize {
         // The reflection pool cache intentionally survives: it is not
         // connection state.
+        self.ws.drain()
+            + self.grpc.drain()
+            + self.grpc_streams.drain()
+            + self.db.drain_matching(|c| !c.vu_scoped)
+            + self.extras.drain()
+    }
+
+    /// VU-end drain: everything [`drain`](Self::drain) drops PLUS the
+    /// `scope: vu` DB connections. Called once when a VU task exits, never
+    /// per iteration.
+    pub(crate) fn drain_vu(&self) -> usize {
         self.ws.drain()
             + self.grpc.drain()
             + self.grpc_streams.drain()
@@ -525,6 +561,8 @@ mod tests {
             ))),
             tx: None,
             wrap_tx: false,
+            vu_scoped: false,
+            fingerprint: 0,
         }
     }
 
@@ -551,6 +589,30 @@ mod tests {
         assert_eq!(res.drain(), 2);
         assert_eq!(res.drain(), 0, "second drain finds nothing");
         assert!(res.take_db("db-1").is_none());
+    }
+
+    /// `scope: vu` connections skip the iteration-end drain; the VU-end
+    /// drain takes everything.
+    #[test]
+    fn db_vu_scoped_survives_drain_until_drain_vu() {
+        let res = Resources::default();
+        res.insert_db(sqlite_profile_conn());
+        let mut vu = sqlite_profile_conn();
+        vu.vu_scoped = true;
+        vu.fingerprint = 7;
+        res.insert_db(vu);
+
+        assert_eq!(res.drain(), 1, "only the iteration-scoped conn dropped");
+        assert!(res.take_db("db-1").is_none());
+        assert!(res.find_db(|c| c.vu_scoped).is_some(), "vu conn parked");
+        assert_eq!(
+            res.find_db(|c| c.fingerprint == 7).as_deref(),
+            Some("db-2"),
+            "reuse lookup finds the vu conn"
+        );
+
+        assert_eq!(res.drain_vu(), 1, "VU end drops the vu-scoped conn");
+        assert!(res.take_db("db-2").is_none());
     }
 
     // -----------------------------------------------------------------

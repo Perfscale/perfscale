@@ -1026,8 +1026,13 @@ fn spawn_vu(
             // A Live Connection never outlives its iteration: whatever a
             // scenario left open is dropped here (abrupt TCP drop, no
             // Close handshake — `std/ws-close@v1` is the graceful path).
+            // Exception: `std/db-connect@v1` with `scope: vu` survives this
+            // drain; the final `drain_vu` below drops it when the VU exits.
             ctx.resources.drain();
         }
+        // VU exit: drop `scope: vu` DB connections (and anything else still
+        // parked — the per-iteration drain normally left nothing).
+        ctx.resources.drain_vu();
         if let Some(active) = &active_vus {
             active.fetch_sub(1, Ordering::SeqCst);
         }
@@ -1096,6 +1101,9 @@ fn spawn_arrival_worker(
             );
             ctx.resources.drain();
         }
+        // Worker exit (arrival workers are VUs): drop `scope: vu` DB
+        // connections parked past the per-iteration drains.
+        ctx.resources.drain_vu();
         if let Some(active) = &active_vus {
             active.fetch_sub(1, Ordering::SeqCst);
         }

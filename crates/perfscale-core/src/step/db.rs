@@ -16,7 +16,15 @@
 //! sequentially, so one connection is all a scenario can drive) and parks it
 //! under a Connection ID (`db-1`, …); later steps address it via
 //! `id: "${{ conn.id }}"`. Whatever a scenario leaves open is dropped at
-//! iteration end.
+//! iteration end — unless the connect step sets **`scope: vu`** (default
+//! `iteration`): then the connection survives the iteration-end drain and
+//! lives until the VU exits (the runner drains it when the VU task exits).
+//! Because the step list re-runs every iteration, a `scope: vu` connect with
+//! an identical config (driver/dsn/tls/mode/pool_size/prepared, compared by
+//! hash — the DSN is never stored for comparison) **reuses** the parked
+//! connection and returns the same id instead of opening a new one: one warm
+//! connection per VU, the k6/locust shape. `db-close` releases the id early;
+//! the next connect then opens a fresh one.
 //!
 //! In **`per-query`** mode the connect step only parses and stores the
 //! connect config — no connection is opened. Every `db-query` then opens a
@@ -167,7 +175,7 @@ const DEFAULT_POOL_SIZE: u64 = 1;
 // ---------------------------------------------------------------------------
 
 /// TLS policy for `db-connect` (`tls` parameter). Ignored for sqlite.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum TlsMode {
     /// Full certificate + hostname verification (the default).
     Verify,
@@ -200,6 +208,10 @@ struct ConnectParams {
     /// `prepared: true` — cache named statements on the parked connection
     /// (see the module doc's poolers section). No effect in per-query mode.
     prepared: bool,
+    /// `scope: vu` — the connection survives iteration end and lives until
+    /// the VU exits. Default (`scope: iteration`) keeps the historical
+    /// drain-at-iteration-end behavior.
+    vu_scoped: bool,
     timeout_ms: u64,
     pool_size: u64,
 }
@@ -243,12 +255,19 @@ fn parse_connect_params(params: &Value) -> Result<ConnectParams, String> {
         .unwrap_or(DEFAULT_POOL_SIZE)
         .clamp(1, 1024);
     let prepared = params.get("prepared").map(bool_param).unwrap_or(false);
+    let vu_scoped = match params.get("scope") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(s)) if s == "iteration" => false,
+        Some(Value::String(s)) if s == "vu" => true,
+        Some(_) => return Err("'scope' must be iteration or vu".into()),
+    };
     Ok(ConnectParams {
         driver,
         dsn,
         tls,
         per_query,
         prepared,
+        vu_scoped,
         timeout_ms,
         pool_size,
     })
@@ -918,7 +937,8 @@ fn take_conn<'a>(params: &'a Value, ctx: &Context) -> Result<(&'a str, DbConn), 
         .ok_or("'id' is required (the output of std/db-connect@v1)")?;
     let conn = ctx.resources.take_db(id).ok_or(format!(
         "unknown connection id '{id}' — not connected in this iteration, already closed, \
-         or opened in `before:` setup (connections do not cross into VU iterations)"
+         or opened in `before:` setup (connections do not cross into VU iterations \
+         unless connected with `scope: vu`)"
     ))?;
     Ok((id, conn))
 }
@@ -976,6 +996,10 @@ fn error_metrics(class: &str) -> serde_json::Map<String, Value> {
 //                 without verification (Require/Required)
 //   mode        – persistent | per-query, default persistent (see the
 //                 module doc's Modes section)
+//   scope       – iteration | vu, default iteration; `vu` keeps the
+//                 connection parked past iteration end, until the VU exits
+//                 (drained by the runner, or released early by db-close); a
+//                 later identical `db-connect` in the same VU reuses it
 //   prepared    – bool, default false; cache named statements on the parked
 //                 connection (persistent(true) — repeat queries skip the
 //                 Parse round trip). INCOMPATIBLE with transaction-mode
@@ -985,7 +1009,7 @@ fn error_metrics(class: &str) -> serde_json::Map<String, Value> {
 //
 // Output:
 //   { "id": "db-1", "driver": "postgres", "mode": "persistent",
-//     "prepared": false,
+//     "prepared": false, "scope": "iteration",
 //     "connected": true, "duration_ms": <f64>,
 //     "metrics": { "db_connect_duration": [<f64>] } }
 //
@@ -993,6 +1017,23 @@ fn error_metrics(class: &str) -> serde_json::Map<String, Value> {
 // connect step stores the config and each db-query pays connect + query.
 // A failed connect emits no duration sample, but it does count in
 // `db_errors` (usually class `connection`).
+
+/// The `scope: vu` reuse key: everything that makes one connection
+/// config distinct. 0 for `scope: iteration` — those never reuse.
+fn connect_fingerprint(cp: &ConnectParams) -> u64 {
+    use std::hash::{Hash, Hasher as _};
+    if !cp.vu_scoped {
+        return 0;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cp.driver.as_str().hash(&mut h);
+    cp.dsn.hash(&mut h);
+    cp.tls.hash(&mut h);
+    cp.per_query.hash(&mut h);
+    cp.prepared.hash(&mut h);
+    cp.pool_size.hash(&mut h);
+    h.finish()
+}
 
 pub(crate) async fn db_connect_action(
     params: &Value,
@@ -1003,6 +1044,41 @@ pub(crate) async fn db_connect_action(
         Ok(p) => p,
         Err(msg) => return err(step_name, &msg),
     };
+
+    // `scope: vu` reuse: the same VU connecting again with an identical
+    // config gets the already-parked connection — the k6/locust shape of one
+    // warm connection per VU, expressed in a per-iteration step list. The
+    // fingerprint is a hash; the DSN itself is never stored for comparison.
+    let fingerprint = connect_fingerprint(&cp);
+    if fingerprint != 0 {
+        if let Some(id) = ctx
+            .resources
+            .find_db(|c| c.vu_scoped && c.fingerprint == fingerprint)
+        {
+            return ActionOutput {
+                value: json!({
+                    "id": id,
+                    "driver": cp.driver.as_str(),
+                    "mode": if cp.per_query { "per-query" } else { "persistent" },
+                    "prepared": cp.prepared,
+                    "scope": "vu",
+                    "connected": !cp.per_query,
+                    "reused": true,
+                    "duration_ms": 0.0,
+                    "metrics": { "db_connect_duration": [0.0], "db_errors": 0 },
+                }),
+                logs: vec![(
+                    LogTag::Out,
+                    format!(
+                        "{} connect → {id} (scope: vu, reusing the VU's parked connection)",
+                        cp.driver.as_str()
+                    ),
+                )],
+                success: true,
+                http_sample: None,
+            };
+        }
+    }
 
     let t0 = Instant::now();
     let outcome =
@@ -1064,6 +1140,8 @@ pub(crate) async fn db_connect_action(
         state,
         tx: None,
         wrap_tx: false,
+        vu_scoped: cp.vu_scoped,
+        fingerprint,
     });
 
     ActionOutput {
@@ -1072,6 +1150,7 @@ pub(crate) async fn db_connect_action(
             "driver": cp.driver.as_str(),
             "mode": if cp.per_query { "per-query" } else { "persistent" },
             "prepared": cp.prepared,
+            "scope": if cp.vu_scoped { "vu" } else { "iteration" },
             "connected": !cp.per_query,
             "duration_ms": duration_ms,
             "metrics": { "db_connect_duration": [duration_ms], "db_errors": 0 },
@@ -1200,6 +1279,7 @@ pub async fn probe_db(driver: &str, dsn: &str, tls: &str, timeout_ms: u64) -> Re
         tls,
         per_query: false,
         prepared: false,
+        vu_scoped: false,
         timeout_ms,
         pool_size: 1,
     };
@@ -1781,7 +1861,8 @@ pub(crate) async fn db_tx_rollback_action(
 //
 // Closes the pool (per-query profiles simply drop — there is nothing to
 // close) and releases the id. An open transaction rolls back as it drops.
-// Connections left open are closed implicitly at iteration end.
+// Works on both scopes; connections left open are closed implicitly at
+// iteration end (`scope: iteration`) or when the VU exits (`scope: vu`).
 
 pub(crate) async fn db_close_action(
     params: &Value,
@@ -3935,5 +4016,134 @@ mod tests {
             "no placeholder outside `query` → no clone"
         );
         assert_eq!(out["query"], "SELECT '${{ literal }}'");
+    }
+
+    // -----------------------------------------------------------------
+    // scope: vu — connections that outlive the iteration
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn connect_params_scope_defaults_and_validates() {
+        let cp = parse_connect_params(&json!({
+            "driver": "sqlite",
+            "dsn": "sqlite::memory:",
+        }))
+        .unwrap();
+        assert!(!cp.vu_scoped, "scope defaults to iteration");
+
+        for scope in ["iteration", "vu"] {
+            let cp = parse_connect_params(&json!({
+                "driver": "sqlite",
+                "dsn": "sqlite::memory:",
+                "scope": scope,
+            }))
+            .unwrap();
+            assert_eq!(cp.vu_scoped, scope == "vu");
+        }
+
+        let bad = parse_connect_params(&json!({
+            "driver": "sqlite",
+            "dsn": "sqlite::memory:",
+            "scope": "forever",
+        }));
+        assert!(bad.err().unwrap().contains("'scope' must be"));
+    }
+
+    /// scope: vu survives the iteration-end drain (a write from "iteration 1"
+    /// is visible in "iteration 2" on the same in-memory database); the
+    /// default scope drains as before. An identical vu-scoped connect reuses
+    /// the parked connection instead of opening a new one.
+    #[tokio::test]
+    async fn sqlite_scope_vu_survives_drain_and_reuses() {
+        let ctx = Context::new();
+        let out = run(
+            &ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "sqlite", "dsn": "sqlite::memory:", "scope": "vu" }),
+        )
+        .await;
+        assert!(out.success, "connect: {:?}", out.logs);
+        assert_eq!(out.value["scope"], "vu");
+        let id = out.value["id"].as_str().unwrap().to_string();
+
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "CREATE TABLE k (n INTEGER)" }),
+        )
+        .await;
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "INSERT INTO k VALUES (42)" }),
+        )
+        .await;
+
+        // Iteration end: the default drain skips vu-scoped connections.
+        assert_eq!(ctx.resources.drain(), 0, "nothing iteration-scoped parked");
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT n FROM k" }),
+        )
+        .await;
+        assert!(out.success, "query after drain: {:?}", out.logs);
+        assert_eq!(
+            out.value["data"][0]["n"], 42,
+            "iteration-1 write visible in iteration 2"
+        );
+
+        // A repeat connect with an identical config reuses the parked
+        // connection (same id, no new pool — same in-memory database).
+        let out = run(
+            &ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "sqlite", "dsn": "sqlite::memory:", "scope": "vu" }),
+        )
+        .await;
+        assert!(out.success);
+        assert_eq!(out.value["id"], id, "identical config reuses");
+        assert_eq!(out.value["reused"], true);
+
+        // A different scope/config does NOT reuse.
+        let out = run(
+            &ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "sqlite", "dsn": "sqlite::memory:" }),
+        )
+        .await;
+        let id2 = out.value["id"].as_str().unwrap().to_string();
+        assert_ne!(id2, id);
+        assert!(out.value.get("reused").is_none());
+        // The default-scoped connection drains at iteration end — and its
+        // in-memory database goes with it.
+        assert_eq!(ctx.resources.drain(), 1);
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id2, "query": "SELECT 1" }),
+        )
+        .await;
+        assert!(!out.success, "iteration-scoped id is gone after drain");
+        // …while the vu-scoped one is still alive.
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT count(*) AS c FROM k" }),
+        )
+        .await;
+        assert!(out.success);
+
+        // db-close releases a vu-scoped id early; VU end drops the rest.
+        let out = run(&ctx, "std/db-close@v1", json!({ "id": id })).await;
+        assert!(out.success, "close vu-scoped: {:?}", out.logs);
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT 1" }),
+        )
+        .await;
+        assert!(!out.success, "closed vu-scoped id is gone");
+        assert_eq!(ctx.resources.drain_vu(), 0, "nothing left at VU end");
     }
 }

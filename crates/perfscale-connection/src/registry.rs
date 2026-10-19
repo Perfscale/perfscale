@@ -128,9 +128,36 @@ impl<C: Connection> ConnectionRegistry<C> {
         n
     }
 
+    /// Drop only the parked connections matching `keep_out` — the scoped
+    /// variant of [`drain`](Self::drain). Used for iteration-end cleanup when
+    /// a family allows some handles to outlive an iteration (e.g. a DB
+    /// connection parked with `scope: vu`): those stay parked, everything
+    /// else drops with the usual abrupt semantics. The id counter is not
+    /// reset either way.
+    pub fn drain_matching(&self, drop_if: impl Fn(&C) -> bool) -> usize {
+        let mut inner = self.inner.lock().unwrap();
+        let before = inner.conns.len();
+        inner.conns.retain(|_, c| !drop_if(c));
+        before - inner.conns.len()
+    }
+
     /// Number of connections currently parked.
     pub fn len(&self) -> usize {
         self.inner.lock().unwrap().conns.len()
+    }
+
+    /// The id of the first parked connection matching `pred`, if any.
+    /// Read-only: the handle stays parked. Lets a connect step reuse an
+    /// existing long-lived handle (e.g. a `scope: vu` DB connection) instead
+    /// of opening a fresh one every iteration.
+    pub fn find_id(&self, pred: impl Fn(&C) -> bool) -> Option<String> {
+        self.inner
+            .lock()
+            .unwrap()
+            .conns
+            .iter()
+            .find(|(_, c)| pred(c))
+            .map(|(id, _)| id.clone())
     }
 
     /// Whether no connections are currently parked.
