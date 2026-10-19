@@ -41,8 +41,10 @@ set -euo pipefail
 #                 graphql_server example (introspection on).
 #   db          – SQL suite: native `std/db-*@v1` scenarios against PostgreSQL
 #                 at BENCH_PG_DSN (cold connect+query per iteration, warm
-#                 persistent pool, transactions) plus an in-process SQLite
-#                 baseline, and the same warm SELECT 1 shape from locust
+#                 VU-scoped connections — one per VU, reused across iterations
+#                 — plus transactions and a prepared+store_rows:false tuned
+#                 row) plus an in-process SQLite baseline, and the same warm
+#                 SELECT 1 shape from locust
 #                 (psycopg2), JMeter (JDBC) and k6 — the k6 row needs a
 #                 custom binary with the xk6-sql extension (K6_SQL_BIN;
 #                 built by the bench workflow), stock k6 has no SQL module.
@@ -768,10 +770,17 @@ fi
 #   db / db-params  – cold path: connect + query per iteration (the
 #                     connection drops at iteration end), SELECT 1 vs a query
 #                     with a ${}-expanded bind parameter.
-#   db-warm         – warm path: one persistent-mode connect per iteration
-#                     (a real pool, pool_size 1), then DB_WARM_QUERIES queries
-#                     on the parked connection, then db-close.
-#   db-warm-tx      – warm path with DB_TX_CYCLES × (tx-begin, query, commit).
+#   db-warm         – warm path: one scope:vu connection per VU — the
+#                     per-iteration db-connect finds the parked connection
+#                     (identical config ⇒ "reused", ~0ms) — then
+#                     DB_WARM_QUERIES queries; no db-close (the VU-scoped
+#                     connection drains when the VU exits). The same
+#                     connect-once shape as the locust/k6 competitor rows.
+#   db-warm-tuned   – the engine's ceiling: scope:vu + prepared:true connect
+#                     (repeat queries skip the Parse round trip) and
+#                     store_rows:false queries (no row materialization).
+#   db-warm-tx      – warm path with DB_TX_CYCLES × (tx-begin, query, commit)
+#                     on the same VU-scoped connection.
 #   db-sqlite       – cold SQLite: connect + SELECT 1 per iteration against
 #                     :memory: (pool_size 1 — the default; a second pooled
 #                     connection would be a different database).
@@ -812,12 +821,13 @@ EOF
   {
     cat <<EOF
 steps:
-  - name: connect (persistent pool)
+  - name: connect (vu-scoped)
     use: std/db-connect@v1
     with:
       driver: postgres
       dsn: "$BENCH_PG_DSN"
       tls: false
+      scope: vu
     outputs: conn
 EOF
     for i in $(seq 1 "$DB_WARM_QUERIES"); do
@@ -829,22 +839,41 @@ EOF
       query: "SELECT 1"
 EOF
     done
-    cat <<EOF
-  - name: close
-    use: std/db-close@v1
-    with:
-      id: "\${{ conn.id }}"
-EOF
   } >"$WORKDIR/yaml-db-warm.yaml"
   {
     cat <<EOF
 steps:
-  - name: connect (persistent pool)
+  - name: connect (vu-scoped, prepared)
     use: std/db-connect@v1
     with:
       driver: postgres
       dsn: "$BENCH_PG_DSN"
       tls: false
+      scope: vu
+      prepared: true
+    outputs: conn
+EOF
+    for i in $(seq 1 "$DB_WARM_QUERIES"); do
+      cat <<EOF
+  - name: warm tuned query $i
+    use: std/db-query@v1
+    with:
+      id: "\${{ conn.id }}"
+      query: "SELECT 1"
+      store_rows: false
+EOF
+    done
+  } >"$WORKDIR/yaml-db-warm-tuned.yaml"
+  {
+    cat <<EOF
+steps:
+  - name: connect (vu-scoped)
+    use: std/db-connect@v1
+    with:
+      driver: postgres
+      dsn: "$BENCH_PG_DSN"
+      tls: false
+      scope: vu
     outputs: conn
 EOF
     for i in $(seq 1 "$DB_TX_CYCLES"); do
@@ -864,12 +893,6 @@ EOF
       id: "\${{ conn.id }}"
 EOF
     done
-    cat <<EOF
-  - name: close
-    use: std/db-close@v1
-    with:
-      id: "\${{ conn.id }}"
-EOF
   } >"$WORKDIR/yaml-db-warm-tx.yaml"
 fi
 
@@ -894,11 +917,12 @@ EOF
   {
     cat <<EOF
 steps:
-  - name: connect (persistent pool)
+  - name: connect (vu-scoped)
     use: std/db-connect@v1
     with:
       driver: sqlite
       dsn: "sqlite::memory:"
+      scope: vu
     outputs: conn
 EOF
     for i in $(seq 1 "$DB_WARM_QUERIES"); do
@@ -910,12 +934,6 @@ EOF
       query: "SELECT 1"
 EOF
     done
-    cat <<EOF
-  - name: close
-    use: std/db-close@v1
-    with:
-      id: "\${{ conn.id }}"
-EOF
   } >"$WORKDIR/yaml-db-sqlite-warm.yaml"
 fi
 
@@ -1833,8 +1851,11 @@ if has_suite db; then
   if [[ "$HAS_DB" == 1 ]]; then
     db_row "perfscale (cold)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db.yaml" --quiet)" db-text
     db_row "perfscale (cold, params)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-params.yaml" --quiet)" db-text
-    db_row "perfscale (warm pool, x$DB_WARM_QUERIES)" \
+    db_row "perfscale (warm vu, x$DB_WARM_QUERIES)" \
       "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm.yaml" --quiet)" \
+      db-text "$DB_WARM_QUERIES"
+    db_row "perfscale (warm vu+prepared, x$DB_WARM_QUERIES)" \
+      "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm-tuned.yaml" --quiet)" \
       db-text "$DB_WARM_QUERIES"
     db_row "perfscale (warm tx, x$DB_TX_CYCLES)" \
       "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm-tx.yaml" --quiet)" \
@@ -1873,11 +1894,18 @@ if has_suite db; then
     echo "\`perfscale (...)\` rows all use \`std/db-*@v1\`: **cold** = connect +"
     echo "\`SELECT 1\` per iteration (the connection drops at iteration end —"
     echo "the serverless/short-lived shape); **cold, params** = the same with a"
-    echo "\`\${rand(1,1000)}\` bind parameter; **warm pool** = one persistent-mode"
-    echo "connect per iteration, then ${DB_WARM_QUERIES} queries on the parked pool,"
-    echo "then \`db-close\` (Queries/QPS count queries, not iterations);"
+    echo "\`\${rand(1,1000)}\` bind parameter; **warm vu** = one \`scope: vu\`"
+    echo "connection per VU (the per-iteration \`db-connect\` reuses the parked"
+    echo "connection — ~0ms, \`\"reused\": true\`), then ${DB_WARM_QUERIES}"
+    echo "queries per iteration; no \`db-close\`, the connection drains when the"
+    echo "VU exits — the same connect-once shape as the locust/k6 rows;"
+    echo "**warm vu+prepared** = the warm vu shape with \`prepared: true\`"
+    echo "(repeat queries skip the Parse round trip) and \`store_rows: false\`"
+    echo "(no row materialization) — the engine's ceiling (Queries/QPS count"
+    echo "queries, not iterations);"
     echo "**warm tx** = ${DB_TX_CYCLES} × \`tx-begin + SELECT 1 + commit\` per"
-    echo "iteration (its p95 mixes begin/query/commit samples). The competitor rows"
+    echo "iteration on the VU-scoped connection (its p95 mixes"
+    echo "begin/query/commit samples). The competitor rows"
     echo "repeat the warm shape: locust connects once per user with psycopg2 and"
     echo "loops \`SELECT 1\` (needs \`pipx inject locust psycopg2-binary\`); JMeter"
     echo "uses a JDBC connection pool + \`SELECT 1\` sampler (needs the PostgreSQL"
@@ -1893,6 +1921,26 @@ fi
 
 # ---------------------------------------------------------------------------
 
+# Run-to-run comparison: keep the previous results file next to $RESULTS so
+# the current run can be diffed against it (bench_compare.py — regression
+# tracking; exit 0 always, noisy shared runners warn rather than fail).
+PREV_RESULTS="${RESULTS%.json}.prev.json"
+if [[ -f "$RESULTS" ]]; then
+  cp "$RESULTS" "$PREV_RESULTS"
+fi
+
 $METRICS merge "$RESULTS_D" "$RESULTS"
 echo "report written to $OUTPUT"
 echo "results written to $RESULTS"
+
+if [[ -f "$PREV_RESULTS" ]]; then
+  delta="$(python3 "$ROOT/scripts/bench_compare.py" "$PREV_RESULTS" "$RESULTS")" || true
+  echo
+  echo "$delta"
+  # Report section with our own heading (the tool prints its own
+  # "## Comparison with previous run" — swap it to keep one section title).
+  {
+    printf '\n## Delta vs previous run\n\n'
+    echo "$delta" | tail -n +3
+  } >>"$OUTPUT"
+fi
