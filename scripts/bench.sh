@@ -1822,20 +1822,22 @@ if has_suite db; then
   }
 
   # SQLite in-process baseline: no server needed, so these rows run even
-  # without a PostgreSQL at BENCH_PG_DSN.
-  db_row "perfscale (sqlite, cold)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-sqlite.yaml")" db-text
+  # without a PostgreSQL at BENCH_PG_DSN. perfscale rows run with --quiet:
+  # the per-step firehose is pure overhead (the k6 db row runs --quiet too),
+  # while the end-of-run summary the db-text parser reads is kept.
+  db_row "perfscale (sqlite, cold)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-sqlite.yaml" --quiet)" db-text
   db_row "perfscale (sqlite, warm x$DB_WARM_QUERIES)" \
-    "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-sqlite-warm.yaml")" \
+    "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-sqlite-warm.yaml" --quiet)" \
     db-text "$DB_WARM_QUERIES"
 
   if [[ "$HAS_DB" == 1 ]]; then
-    db_row "perfscale (cold)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db.yaml")" db-text
-    db_row "perfscale (cold, params)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-params.yaml")" db-text
+    db_row "perfscale (cold)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db.yaml" --quiet)" db-text
+    db_row "perfscale (cold, params)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-params.yaml" --quiet)" db-text
     db_row "perfscale (warm pool, x$DB_WARM_QUERIES)" \
-      "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm.yaml")" \
+      "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm.yaml" --quiet)" \
       db-text "$DB_WARM_QUERIES"
     db_row "perfscale (warm tx, x$DB_TX_CYCLES)" \
-      "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm-tx.yaml")" \
+      "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm-tx.yaml" --quiet)" \
       db-text "$DB_TX_CYCLES"
 
     if [[ "$HAS_LOCUST_DB" == 1 ]]; then
