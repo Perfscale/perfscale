@@ -1848,21 +1848,64 @@ if has_suite db; then
     "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-sqlite-warm.yaml" --quiet)" \
     db-text "$DB_WARM_QUERIES"
 
+  # Before each PostgreSQL-backed row the client must have ephemeral ports
+  # free: the cold rows churn ~1k conn/s and leave thousands of loopback
+  # TIME_WAIT sockets behind, and on macOS (no ip_local_port_range /
+  # tcp_tw_reuse tuning, ~16k ephemeral ports, ~30s TIME_WAIT) the NEXT row
+  # then runs out of ports mid-run — fresh connects fail with EADDRNOTAVAIL.
+  # For a scope:vu row that is fatal to the measurement: the initial per-VU
+  # connect fails, nothing gets parked, and every iteration retries a fresh
+  # connect — silently reverting to the cold shape at ~100% errors. A small
+  # probe (N connects succeed) is too weak here: it passes while thousands
+  # of TIME_WAIT sockets still occupy the range. So settle on the DIRECT
+  # measure — TIME_WAIT sockets against the db port (ss on Linux, netstat on
+  # macOS) — waiting for the count to drain below 1000 (a 10s row at the
+  # observed ~1-1.8k conn/s then fits the ~16k range). Up to ~2 min.
+  db_timewait() {
+    local port="${DB_HOSTPORT##*:}"
+    if command -v ss >/dev/null 2>&1; then
+      ss -tan state time-wait 2>/dev/null | grep -c ":$port" || true
+    elif command -v netstat >/dev/null 2>&1; then
+      netstat -an -p tcp 2>/dev/null | grep TIME_WAIT | grep -c "[.:]$port[ .]" || true
+    else
+      echo 0
+    fi
+  }
+  db_settle() {
+    local try tw
+    for try in $(seq 1 24); do
+      tw=$(db_timewait)
+      if [[ "$tw" -lt 1000 ]]; then
+        [[ "$try" == 1 ]] || echo "  (db target settled after $(( (try - 1) * 5 ))s: $tw TIME_WAIT left against the db port)" >&2
+        return 0
+      fi
+      [[ "$try" == 1 ]] && echo "  $tw TIME_WAIT sockets against the db port — waiting for the drain" >&2
+      sleep 5
+    done
+    echo "warning: still $tw TIME_WAIT sockets against the db port after 120s — the next cold row may hit EADDRNOTAVAIL" >&2
+  }
+
   if [[ "$HAS_DB" == 1 ]]; then
+    db_settle
     db_row "perfscale (cold)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db.yaml" --quiet)" db-text
+    db_settle
     db_row "perfscale (cold, params)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-params.yaml" --quiet)" db-text
+    db_settle
     db_row "perfscale (warm vu, x$DB_WARM_QUERIES)" \
       "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm.yaml" --quiet)" \
       db-text "$DB_WARM_QUERIES"
+    db_settle
     db_row "perfscale (warm vu+prepared, x$DB_WARM_QUERIES)" \
       "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm-tuned.yaml" --quiet)" \
       db-text "$DB_WARM_QUERIES"
+    db_settle
     db_row "perfscale (warm tx, x$DB_TX_CYCLES)" \
       "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm-tx.yaml" --quiet)" \
       db-text "$DB_TX_CYCLES"
 
     if [[ "$HAS_LOCUST_DB" == 1 ]]; then
       # Plain User (no HTTP client): --host is unused but locust requires it.
+      db_settle
       db_row "locust (psycopg2, warm)" \
         "env BENCH_PG_DSN='$BENCH_PG_DSN' locust -f $WORKDIR/locustfile_db.py --headless -u $VUS -r $VUS -t $DB_DURATION --host http://127.0.0.1 --only-summary --csv $WORKDIR/loc-db" \
         locust-csv 1 "$WORKDIR/loc-db_stats.csv"
@@ -1870,6 +1913,7 @@ if has_suite db; then
 
     if [[ "$HAS_K6_SQL" == 1 ]]; then
       # NOT the stock k6: a custom binary with the xk6-sql extension.
+      db_settle
       db_row "k6 (xk6-sql)" \
         "env BENCH_VUS=$VUS BENCH_DURATION=$DB_DURATION BENCH_PG_SQL_DSN='$K6_SQL_DSN' $K6_SQL_BIN run --quiet $WORKDIR/db-k6.js" \
         db-text
@@ -1881,6 +1925,7 @@ if has_suite db; then
         -e "s|@DBHOST@|${DB_HOSTPORT%%:*}|" -e "s/@DBPORT@/${DB_HOSTPORT##*:}/" \
         -e "s/@DBNAME@/$DB_NAME/" -e "s/@DBUSER@/$DB_USER/" -e "s/@DBPASS@/$DB_PASS/" \
         "$WORKDIR/plan-db-template.jmx" >"$WORKDIR/plan-db.jmx"
+      db_settle
       db_row "jmeter (JDBC, warm pool)" \
         "cd $WORKDIR && jmeter -n -t $WORKDIR/plan-db.jmx" jmeter-summary
     fi
@@ -1915,7 +1960,16 @@ if has_suite db; then
     echo "\`xk6-sql\` extension + postgres driver (one connection per VU opened in"
     echo "the init scope, \`SELECT 1\` per iteration; metrics reported in the"
     echo "native engine's \`db_query_duration\`/\`db_errors\` shapes). Its k6 core"
-    echo "version may differ from the stock k6 — see the CI environment summary._"
+    echo "version may differ from the stock k6 — see the CI environment summary."
+    echo "Between PostgreSQL-backed rows the suite waits until the client's"
+    echo "TIME_WAIT sockets against the db port drain below 1000 (read via \`ss\`/"
+    echo "\`netstat\`): the cold rows churn ~1k conn/s, and on macOS — no"
+    echo "\`ip_local_port_range\`/\`tcp_tw_reuse\` tuning, ~16k ephemeral ports,"
+    echo "~30s TIME_WAIT — a row started into a drained-only-partially port range"
+    echo "exhausts it mid-run (EADDRNOTAVAIL shows up as Err in the cold rows;"
+    echo "that ceiling is the machine's, not the engine's). The \`scope: vu\` warm"
+    echo "rows open only VUS connections total, so they are immune once started"
+    echo "clean._"
   } >>"$OUTPUT"
 fi
 
