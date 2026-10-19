@@ -177,6 +177,15 @@ pub(crate) enum DbTx {
     Sqlite(sqlx::Transaction<'static, sqlx::Sqlite>),
 }
 
+/// A pool connection held checked out across autocommit queries — the
+/// per-query pool acquire/release would otherwise dominate a warm query's
+/// wall time (see [`DbConn::held`]).
+pub(crate) enum DbHeld {
+    Pg(sqlx::pool::PoolConnection<sqlx::Postgres>),
+    My(sqlx::pool::PoolConnection<sqlx::MySql>),
+    Sqlite(sqlx::pool::PoolConnection<sqlx::Sqlite>),
+}
+
 /// One parked DB connection (or per-query profile) plus the state that must
 /// survive between steps.
 pub(crate) struct DbConn {
@@ -195,6 +204,13 @@ pub(crate) struct DbConn {
     /// Active transaction (persistent mode only); `std/db-query@v1` runs
     /// inside it while set.
     pub tx: Option<DbTx>,
+    /// The pool connection autocommit queries run on, held checked out of
+    /// the pool between queries (lazily acquired on the first `db-query`,
+    /// returned for `db-tx-begin`, `db-close`, and the pooler-wrapped
+    /// Postgres path). Holding it skips a pool acquire + release per query —
+    /// under load that bookkeeping (semaphore, idle queue, the spawned
+    /// return task) cost more wall time than the query itself.
+    pub held: Option<DbHeld>,
     /// Learned at runtime (Postgres autocommit only): the endpoint is a
     /// transaction-mode pooler (PgBouncer/Supavisor) that splits one
     /// extended-protocol exchange across backends, so autocommit queries on
@@ -560,6 +576,7 @@ mod tests {
                 sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap(),
             ))),
             tx: None,
+            held: None,
             wrap_tx: false,
             vu_scoped: false,
             fingerprint: 0,

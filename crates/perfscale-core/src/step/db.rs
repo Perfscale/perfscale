@@ -15,7 +15,11 @@
 //! pool (`pool_size`, default 1 — steps within a VU run strictly
 //! sequentially, so one connection is all a scenario can drive) and parks it
 //! under a Connection ID (`db-1`, …); later steps address it via
-//! `id: "${{ conn.id }}"`. Whatever a scenario leaves open is dropped at
+//! `id: "${{ conn.id }}"`. Autocommit queries do not pay a pool acquire per
+//! query: the first `db-query` checks one connection out and the parked
+//! `DbConn` holds it until a transaction, a `db-close`, or the Postgres
+//! pooler fallback needs the pool — so a warm query measures the query, not
+//! pool bookkeeping. Whatever a scenario leaves open is dropped at
 //! iteration end — unless the connect step sets **`scope: vu`** (default
 //! `iteration`): then the connection survives the iteration-end drain and
 //! lives until the VU exits (the runner drains it when the VU task exits).
@@ -157,7 +161,7 @@ use tokio::time::Duration;
 
 use super::actions::{err, error_chain, ActionOutput, LogTag};
 use super::context::Context;
-use super::resources::{DbConn, DbDriver, DbPool, DbProfile, DbState, DbTx};
+use super::resources::{DbConn, DbDriver, DbHeld, DbPool, DbProfile, DbState, DbTx};
 use super::ws::{bool_param, u64_param};
 
 /// Default step timeout for every DB action (`timeout_ms`).
@@ -728,18 +732,21 @@ where
     }
 }
 
-/// Autocommit query on a Postgres pool, learning pooler compatibility on
-/// the fly. The returned flag tells the caller to route every later query
-/// on this connection straight to the wrapped path.
+/// Autocommit query on a Postgres pool via the connection the caller holds
+/// checked out of it (`held`, lazily acquired on first use), learning pooler
+/// compatibility on the fly. The returned flag tells the caller to route
+/// every later query on this connection straight to the wrapped path.
 ///
-/// Plain path first — one exchange, no distortion on direct connections. A
-/// pooler split ([`is_pg_pooler_split`], always a pre-execution failure)
-/// retries once inside BEGIN/COMMIT: an open transaction pins the backend,
-/// so Parse and Bind cannot be separated. The retry is invisible in
-/// metrics — the step simply succeeds. A genuine user error (a real
-/// bind-count mismatch is also 08P01) fails the wrapped retry too: it is
-/// reported unchanged and the flag stays off.
-async fn run_pg_pool_autocommit(
+/// Held path first — one exchange on the already-acquired connection, no
+/// per-query pool bookkeeping on direct connections. A pooler split
+/// ([`is_pg_pooler_split`], always a pre-execution failure) returns the held
+/// connection and retries once inside BEGIN/COMMIT: an open transaction pins
+/// the backend, so Parse and Bind cannot be separated. The retry is
+/// invisible in metrics — the step simply succeeds. A genuine user error (a
+/// real bind-count mismatch is also 08P01) fails the wrapped retry too: it
+/// is reported unchanged and the flag stays off.
+async fn run_pg_held_autocommit(
+    held: &mut Option<DbHeld>,
     pool: &sqlx::PgPool,
     wrap_tx: bool,
     sql: &str,
@@ -748,26 +755,46 @@ async fn run_pg_pool_autocommit(
     persistent: bool,
     store_rows: bool,
 ) -> (Result<QueryOutcome, sqlx::Error>, bool) {
-    if !wrap_tx {
-        let plain = run_query(
-            pool,
-            sql,
-            params,
-            max_rows,
-            persistent,
-            store_rows,
-            pg_row_to_json,
-            |r| r.rows_affected(),
-        )
-        .await;
-        match plain {
-            Err(e) if is_pg_pooler_split(&e) => {} // fall through into the wrapped retry
-            other => return (other, false),
+    if wrap_tx {
+        // The wrapped path goes through the pool (the transaction owns the
+        // connection it acquires), so the held one goes back first — with
+        // pool_size 1 `pool.begin()` would otherwise wait on it until the
+        // acquire timeout.
+        drop(held.take());
+        let out = run_pg_wrapped(pool, sql, params, max_rows, persistent, store_rows).await;
+        let learned = out.is_ok();
+        return (out, learned);
+    }
+    if held.is_none() {
+        match pool.acquire().await {
+            Ok(c) => *held = Some(DbHeld::Pg(c)),
+            Err(e) => return (Err(e), false),
         }
     }
-    let out = run_pg_wrapped(pool, sql, params, max_rows, persistent, store_rows).await;
-    let learned = out.is_ok();
-    (out, learned)
+    let conn = match held.as_mut().expect("acquired above") {
+        DbHeld::Pg(c) => c,
+        _ => unreachable!("the held connection matches its pool's driver"),
+    };
+    let plain = run_query(
+        &mut **conn,
+        sql,
+        params,
+        max_rows,
+        persistent,
+        store_rows,
+        pg_row_to_json,
+        |r| r.rows_affected(),
+    )
+    .await;
+    match plain {
+        Err(e) if is_pg_pooler_split(&e) => {
+            drop(held.take());
+            let out = run_pg_wrapped(pool, sql, params, max_rows, persistent, store_rows).await;
+            let learned = out.is_ok();
+            (out, learned)
+        }
+        other => (other, false),
+    }
 }
 
 /// The per-query-mode twin: connect fresh for the plain attempt, and on a
@@ -1142,6 +1169,7 @@ pub(crate) async fn db_connect_action(
         prepared: cp.prepared,
         state,
         tx: None,
+        held: None,
         wrap_tx: false,
         vu_scoped: cp.vu_scoped,
         fingerprint,
@@ -1417,10 +1445,34 @@ pub(crate) async fn db_query_action(
         let sql = spec.sql;
         let binds = spec.binds;
         let max_rows = spec.max_rows;
+        // MySQL/SQLite autocommit queries on a parked pool run on the
+        // connection the `DbConn` holds checked out of it (see the module
+        // doc) — lazily (re)acquired here: on the first query after connect,
+        // after a transaction finished. (Postgres acquires inside
+        // [`run_pg_held_autocommit`], which also owns the pooler fallback.)
+        if conn.tx.is_none() && !wrap_tx && conn.held.is_none() {
+            let held = match &mut conn.state {
+                DbState::Pool(DbPool::My(p)) => Some(p.acquire().await.map(DbHeld::My)),
+                DbState::Pool(DbPool::Sqlite(p)) => Some(p.acquire().await.map(DbHeld::Sqlite)),
+                _ => None,
+            };
+            match held {
+                Some(Ok(c)) => conn.held = Some(c),
+                Some(Err(e)) => return Err(e),
+                None => {}
+            }
+        }
         match (&mut conn.state, conn.tx.as_mut()) {
             (DbState::Pool(DbPool::Pg(pool)), None) => {
-                let (outcome, learned) = run_pg_pool_autocommit(
-                    pool, wrap_tx, sql, binds, max_rows, persistent, store_rows,
+                let (outcome, learned) = run_pg_held_autocommit(
+                    &mut conn.held,
+                    pool,
+                    wrap_tx,
+                    sql,
+                    binds,
+                    max_rows,
+                    persistent,
+                    store_rows,
                 )
                 .await;
                 wrap_tx_learned = learned;
@@ -1439,9 +1491,13 @@ pub(crate) async fn db_query_action(
                 )
                 .await
             }
-            (DbState::Pool(DbPool::My(pool)), None) => {
+            (DbState::Pool(DbPool::My(_)), None) => {
+                let held = match conn.held.as_mut().expect("acquired above") {
+                    DbHeld::My(c) => c,
+                    _ => unreachable!("the held connection matches its pool's driver"),
+                };
                 run_query(
-                    &*pool,
+                    &mut **held,
                     sql,
                     binds,
                     max_rows,
@@ -1465,9 +1521,13 @@ pub(crate) async fn db_query_action(
                 )
                 .await
             }
-            (DbState::Pool(DbPool::Sqlite(pool)), None) => {
+            (DbState::Pool(DbPool::Sqlite(_)), None) => {
+                let held = match conn.held.as_mut().expect("acquired above") {
+                    DbHeld::Sqlite(c) => c,
+                    _ => unreachable!("the held connection matches its pool's driver"),
+                };
                 run_query(
-                    &*pool,
+                    &mut **held,
                     sql,
                     binds,
                     max_rows,
@@ -1700,6 +1760,9 @@ pub(crate) async fn db_tx_begin_action(
     let target = conn.target.clone();
 
     let t0 = Instant::now();
+    // A held connection would starve pool.begin() (pool_size 1) — return
+    // it first; the next autocommit query re-acquires it.
+    drop(conn.held.take());
     let begun = tokio::time::timeout(Duration::from_millis(timeout_ms), async {
         match &conn.state {
             DbState::Pool(DbPool::Pg(pool)) => pool.begin().await.map(DbTx::Pg),
@@ -1884,6 +1947,8 @@ pub(crate) async fn db_close_action(
     // rollback and returns its connection to the pool, which `close()` waits
     // for — awaiting `close()` with the transaction still checked out hangs.
     drop(conn.tx.take());
+    // Same for the held autocommit connection: return it before `close()`.
+    drop(conn.held.take());
     if let DbState::Pool(pool) = &conn.state {
         match pool {
             DbPool::Pg(p) => p.close().await,
@@ -3077,9 +3142,11 @@ mod tests {
         fn unwrap_outcome(r: Result<QueryOutcome, sqlx::Error>) -> QueryOutcome {
             r.unwrap_or_else(|e| panic!("query failed: {e}"))
         }
+        let mut held = None;
 
         // Plain path on a direct server: works, and never learns the wrap.
-        let (out, learned) = run_pg_pool_autocommit(
+        let (out, learned) = run_pg_held_autocommit(
+            &mut held,
             &pool,
             false,
             "DROP TABLE IF EXISTS perfscale_wrap_test",
@@ -3091,7 +3158,9 @@ mod tests {
         .await;
         unwrap_outcome(out);
         assert!(!learned, "direct server must not learn the wrap");
-        let (out, learned) = run_pg_pool_autocommit(
+        assert!(held.is_some(), "the query holds its connection");
+        let (out, learned) = run_pg_held_autocommit(
+            &mut held,
             &pool,
             false,
             "CREATE TABLE perfscale_wrap_test (n INTEGER)",
@@ -3105,7 +3174,8 @@ mod tests {
         assert!(!learned);
 
         // Forced wrap (the state learned on a pooler): insert + read back.
-        let (out, learned) = run_pg_pool_autocommit(
+        let (out, learned) = run_pg_held_autocommit(
+            &mut held,
             &pool,
             true,
             "INSERT INTO perfscale_wrap_test VALUES ($1)",
@@ -3117,7 +3187,8 @@ mod tests {
         .await;
         unwrap_outcome(out);
         assert!(learned);
-        let (out, learned) = run_pg_pool_autocommit(
+        let (out, learned) = run_pg_held_autocommit(
+            &mut held,
             &pool,
             true,
             "SELECT n FROM perfscale_wrap_test",
@@ -3133,7 +3204,8 @@ mod tests {
         assert_eq!(out.data[0]["n"], 1);
 
         // A genuine error still errors when wrapped — and is never learned.
-        let (out, learned) = run_pg_pool_autocommit(
+        let (out, learned) = run_pg_held_autocommit(
+            &mut held,
             &pool,
             true,
             "SELECT * FROM no_such_table",
@@ -3146,7 +3218,8 @@ mod tests {
         assert!(out.is_err());
         assert!(!learned);
 
-        let (out, _) = run_pg_pool_autocommit(
+        let (out, _) = run_pg_held_autocommit(
+            &mut held,
             &pool,
             false,
             "DROP TABLE perfscale_wrap_test",
