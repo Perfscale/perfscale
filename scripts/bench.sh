@@ -43,7 +43,8 @@ set -euo pipefail
 #                 at BENCH_PG_DSN (cold connect+query per iteration, warm
 #                 VU-scoped connections — one per VU, reused across iterations
 #                 — plus transactions and a prepared+store_rows:false tuned
-#                 row) plus an in-process SQLite baseline, and the same warm
+#                 row, with a store_rows:true twin isolating the per-row JSON
+#                 materialization cost) plus an in-process SQLite baseline, and the same warm
 #                 SELECT 1 shape from locust
 #                 (psycopg2), JMeter (JDBC) and k6 — the k6 row needs a
 #                 custom binary with the xk6-sql extension (K6_SQL_BIN;
@@ -779,6 +780,9 @@ fi
 #   db-warm-tuned   – the engine's ceiling: scope:vu + prepared:true connect
 #                     (repeat queries skip the Parse round trip) and
 #                     store_rows:false queries (no row materialization).
+#   db-warm-tuned-rows – db-warm-tuned with store_rows:true: the delta
+#                     against db-warm-tuned isolates the per-row JSON
+#                     materialization cost.
 #   db-warm-tx      – warm path with DB_TX_CYCLES × (tx-begin, query, commit)
 #                     on the same VU-scoped connection.
 #   db-sqlite       – cold SQLite: connect + SELECT 1 per iteration against
@@ -864,6 +868,10 @@ EOF
 EOF
     done
   } >"$WORKDIR/yaml-db-warm-tuned.yaml"
+  # The tuned shape with row materialization back on: the delta against
+  # db-warm-tuned isolates what `store_rows: false` buys.
+  sed 's/      store_rows: false/      store_rows: true/' \
+    "$WORKDIR/yaml-db-warm-tuned.yaml" >"$WORKDIR/yaml-db-warm-tuned-rows.yaml"
   {
     cat <<EOF
 steps:
@@ -1899,6 +1907,10 @@ if has_suite db; then
       "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm-tuned.yaml" --quiet)" \
       db-text "$DB_WARM_QUERIES"
     db_settle
+    db_row "perfscale (warm vu+prepared+rows, x$DB_WARM_QUERIES)" \
+      "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm-tuned-rows.yaml" --quiet)" \
+      db-text "$DB_WARM_QUERIES"
+    db_settle
     db_row "perfscale (warm tx, x$DB_TX_CYCLES)" \
       "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-warm-tx.yaml" --quiet)" \
       db-text "$DB_TX_CYCLES"
@@ -1947,7 +1959,9 @@ if has_suite db; then
     echo "**warm vu+prepared** = the warm vu shape with \`prepared: true\`"
     echo "(repeat queries skip the Parse round trip) and \`store_rows: false\`"
     echo "(no row materialization) — the engine's ceiling (Queries/QPS count"
-    echo "queries, not iterations);"
+    echo "queries, not iterations); **warm vu+prepared+rows** = the same with"
+    echo "\`store_rows: true\`, so the delta between the two rows isolates the"
+    echo "per-row JSON materialization cost;"
     echo "**warm tx** = ${DB_TX_CYCLES} × \`tx-begin + SELECT 1 + commit\` per"
     echo "iteration on the VU-scoped connection (its p95 mixes"
     echo "begin/query/commit samples). The competitor rows"

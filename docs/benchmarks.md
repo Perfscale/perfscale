@@ -82,6 +82,9 @@ per-iteration `db-connect` reuses the parked connection at ~0ms — with
 `DB_WARM_QUERIES` queries per iteration and no `db-close`, the same
 connect-once shape as the competitor rows; `perfscale (warm vu+prepared, …)`
 adds `prepared: true` + `store_rows: false` for the engine's ceiling;
+`perfscale (warm vu+prepared+rows, …)` is the same with `store_rows: true`,
+so the delta between the two tuned rows isolates the per-row JSON
+materialization cost;
 `perfscale (warm tx, …)`: `DB_TX_CYCLES` × begin+query+commit) and
 adds an
 in-process SQLite floor (`perfscale (sqlite, …)`, no server needed).

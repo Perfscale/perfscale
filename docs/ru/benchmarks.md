@@ -85,6 +85,9 @@ JMeter его нет в консольной сводке), плюс пиков�
 запросов на итерацию, без `db-close`, та же форма «один коннект на VU», что
 и у строк конкурентов; `perfscale (warm vu+prepared, …)` добавляет
 `prepared: true` + `store_rows: false` — потолок движка;
+`perfscale (warm vu+prepared+rows, …)` — то же самое с `store_rows: true`,
+так что разница между двумя tuned-строками изолирует стоимость
+JSON-материализации строк;
 `perfscale (warm tx, …)`: `DB_TX_CYCLES` × begin+query+commit) и добавляет
 in-process
 SQLite-«пол» (`perfscale (sqlite, …)`, сервер не нужен). Строка locust
