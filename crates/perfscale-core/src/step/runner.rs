@@ -932,6 +932,7 @@ impl VuShared {
         ctx.processes = Some(Arc::clone(&self.processes));
         ctx.log_tx = Some(self.tx.clone());
         ctx.secrets = self.secrets.clone();
+        ctx.quiet = self.quiet;
         // Per-VU contexts share the run's metrics accumulator so actions can
         // record background-sampled metrics (e.g. periodic WebRTC getStats)
         // that outlive a single step.
@@ -1443,6 +1444,7 @@ async fn run_before(
     ctx.processes = Some(Arc::clone(registry));
     ctx.log_tx = Some(tx.clone());
     ctx.secrets = secrets.clone();
+    ctx.quiet = quiet;
     if !vars.is_null() {
         ctx.set("vars", vars.clone());
     }
@@ -1545,6 +1547,7 @@ async fn run_after(
     ctx.log_tx = Some(tx.clone());
     ctx.run_metrics = Some(Arc::clone(&shared.metrics));
     ctx.secrets = shared.secrets.clone();
+    ctx.quiet = quiet;
     if !vars.is_null() {
         ctx.set("vars", vars.clone());
     }

@@ -1012,6 +1012,18 @@ fn error_metrics(class: &str) -> serde_json::Map<String, Value> {
     m
 }
 
+/// A step's success log line, built lazily: under `--quiet` the runner drops
+/// every non-error line at print time, so formatting it at all is pure waste
+/// — measurable in a warm query loop. Error lines always go through here as
+/// eager `vec![(LogTag::Err, …)]` at their call sites.
+fn out_logs(ctx: &Context, text: impl FnOnce() -> String) -> Vec<(LogTag, String)> {
+    if ctx.quiet {
+        Vec::new()
+    } else {
+        vec![(LogTag::Out, text())]
+    }
+}
+
 // ---------------------------------------------------------------------------
 // std/db-connect@v1
 // ---------------------------------------------------------------------------
@@ -1097,13 +1109,12 @@ pub(crate) async fn db_connect_action(
                     "duration_ms": 0.0,
                     "metrics": { "db_connect_duration": [0.0], "db_errors": 0 },
                 }),
-                logs: vec![(
-                    LogTag::Out,
+                logs: out_logs(ctx, || {
                     format!(
                         "{} connect → {id} (scope: vu, reusing the VU's parked connection)",
                         cp.driver.as_str()
-                    ),
-                )],
+                    )
+                }),
                 success: true,
                 http_sample: None,
             };
@@ -1186,8 +1197,7 @@ pub(crate) async fn db_connect_action(
             "duration_ms": duration_ms,
             "metrics": { "db_connect_duration": [duration_ms], "db_errors": 0 },
         }),
-        logs: vec![(
-            LogTag::Out,
+        logs: out_logs(ctx, || {
             if cp.per_query {
                 format!(
                     "{} connect {target} → {id} (per-query: config stored, connects per query) ({duration_ms:.2}ms)",
@@ -1198,8 +1208,8 @@ pub(crate) async fn db_connect_action(
                     "{} connect {target} → {id} ({duration_ms:.2}ms)",
                     cp.driver.as_str()
                 )
-            },
-        )],
+            }
+        }),
         success: true,
         http_sample: None,
     }
@@ -1620,21 +1630,25 @@ pub(crate) async fn db_query_action(
             // The log shows the headline number; the JSON keeps both raw
             // values. (On SQLite a SELECT's rows_affected is the previous
             // DML's change count — a C API quirk — so mixing both into one
-            // log line would read as nonsense there.)
-            let what = if outcome.rows > 0 {
-                format!("{} rows", outcome.rows)
-            } else if outcome.rows_affected > 0 {
-                format!("{} affected", outcome.rows_affected)
-            } else {
-                "ok".to_string()
-            };
-            let mut log = format!(
-                "{} {target} [{id}] → {what} ({duration_ms:.2}ms)",
-                driver.as_str()
-            );
-            if outcome.truncated {
-                log.push_str(" [truncated at max_rows]");
-            }
+            // log line would read as nonsense there.) Built lazily: under
+            // --quiet the runner would drop this line anyway.
+            let logs = out_logs(ctx, || {
+                let what = if outcome.rows > 0 {
+                    format!("{} rows", outcome.rows)
+                } else if outcome.rows_affected > 0 {
+                    format!("{} affected", outcome.rows_affected)
+                } else {
+                    "ok".to_string()
+                };
+                let mut log = format!(
+                    "{} {target} [{id}] → {what} ({duration_ms:.2}ms)",
+                    driver.as_str()
+                );
+                if outcome.truncated {
+                    log.push_str(" [truncated at max_rows]");
+                }
+                log
+            });
             ActionOutput {
                 value: json!({
                     "rows": outcome.rows,
@@ -1648,7 +1662,7 @@ pub(crate) async fn db_query_action(
                         "db_errors": 0,
                     },
                 }),
-                logs: vec![(LogTag::Out, log)],
+                logs,
                 success: true,
                 http_sample: None,
             }
@@ -1787,13 +1801,12 @@ pub(crate) async fn db_tx_begin_action(
                     "duration_ms": duration_ms,
                     "metrics": { "db_query_duration": [duration_ms], "db_errors": 0 },
                 }),
-                logs: vec![(
-                    LogTag::Out,
+                logs: out_logs(ctx, || {
                     format!(
                         "{} {target} [{id}] → BEGIN ({duration_ms:.2}ms)",
                         driver.as_str()
-                    ),
-                )],
+                    )
+                }),
                 success: true,
                 http_sample: None,
             }
@@ -1868,13 +1881,12 @@ async fn db_tx_finish_action(
             value[if commit { "committed" } else { "rolled_back" }] = Value::Bool(true);
             ActionOutput {
                 value,
-                logs: vec![(
-                    LogTag::Out,
+                logs: out_logs(ctx, || {
                     format!(
                         "{} {target} [{id}] → {verb} ({duration_ms:.2}ms)",
                         driver.as_str()
-                    ),
-                )],
+                    )
+                }),
                 success: true,
                 http_sample: None,
             }
@@ -1966,13 +1978,12 @@ pub(crate) async fn db_close_action(
             "closed": true,
             "duration_ms": duration_ms,
         }),
-        logs: vec![(
-            LogTag::Out,
+        logs: out_logs(ctx, || {
             format!(
                 "{} {target} [{id}] → closed ({duration_ms:.2}ms)",
                 driver.as_str()
-            ),
-        )],
+            )
+        }),
         success: true,
         http_sample: None,
     }

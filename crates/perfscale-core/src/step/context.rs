@@ -107,6 +107,11 @@ pub struct Context {
     /// the step fold would otherwise format! a fresh String per histogram
     /// metric per step.
     pub(crate) rate_names: HashMap<String, String>,
+    /// The run's `--quiet` flag, seeded by the runner. Actions use it to
+    /// skip *formatting* per-step success lines the runner would drop
+    /// anyway (quiet keeps only `LogTag::Err`) — under a busy loop the
+    /// format! itself is the measurable cost.
+    pub(crate) quiet: bool,
 }
 
 impl Default for Context {
@@ -134,6 +139,7 @@ impl Default for Context {
             gen_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             unseeded_gen_base: Arc::new(std::sync::OnceLock::new()),
             rate_names: HashMap::new(),
+            quiet: false,
         }
     }
 }
