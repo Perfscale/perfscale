@@ -1611,7 +1611,7 @@ async fn execute_step(
         // instead of failing the run. Unknown names pass through silently.
         let mut warnings = Vec::new();
         // Every write lands on this worker thread's home shard — no run-wide
-        // lock. Three calls, three uncontended locks.
+        // lock; the custom-metrics fold below takes it once for the step.
         if let Some(ref sample) = output.http_sample {
             metrics.record(sample);
         }
@@ -1621,30 +1621,33 @@ async fn execute_step(
                     warnings.push(w);
                 }
             }
-            metrics.add_counters(obj);
             // Failure sampling: one 0/1 sample per invocation for every
             // family-duration metric the invocation emitted, so
             // `std/thresholds@v1` can compute `rate` = failed/total
             // invocations. `db_query_duration` → `db_query_failed`,
             // `ws_msg_rtt` → `ws_msg_failed`, matching the HTTP family's
-            // native `http_req_failed`.
-            let failed = !output.success;
+            // native `http_req_failed`. The derived `<family>_failed` name is
+            // static per metric — memoized on the context instead of a fresh
+            // format! String per step.
             for (name, v) in obj {
-                if v.is_array() {
-                    // The derived `<family>_failed` name is static per
-                    // metric — memoized on the context instead of a fresh
-                    // format! String per step.
-                    if !ctx.rate_names.contains_key(name) {
-                        let family = name
-                            .strip_suffix("_duration")
-                            .or_else(|| name.strip_suffix("_rtt"))
-                            .unwrap_or(name);
-                        ctx.rate_names
-                            .insert(name.clone(), format!("{family}_failed"));
-                    }
-                    metrics.record_rate(&ctx.rate_names[name], failed);
+                if v.is_array() && !ctx.rate_names.contains_key(name) {
+                    let family = name
+                        .strip_suffix("_duration")
+                        .or_else(|| name.strip_suffix("_rtt"))
+                        .unwrap_or(name);
+                    ctx.rate_names
+                        .insert(name.clone(), format!("{family}_failed"));
                 }
             }
+            // One shard lock for the whole fold (counters, histograms, and
+            // the derived rate samples) — previously one lock per write verb.
+            let failed = !output.success;
+            let rates: Vec<&str> = obj
+                .iter()
+                .filter(|(_, v)| v.is_array())
+                .map(|(name, _)| ctx.rate_names[name].as_str())
+                .collect();
+            metrics.add_counters_and_rates(obj, failed, &rates);
         }
         for warning in warnings {
             emit(tx, LogSource::Stderr, &warning, &ctx.secrets).await;

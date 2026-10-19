@@ -157,6 +157,25 @@ impl Metrics {
         }
     }
 
+    /// The runner's per-step fold: [`add_counters`](Self::add_counters)
+    /// plus, for every histogram (array) metric, one derived failure-rate
+    /// sample (`db_query_duration` → `db_query_failed`). `rates` pairs each
+    /// array metric's name with its memoized rate-metric name (the runner
+    /// caches the derivation per context). Folding both in one call lets the
+    /// sharded wrapper take its lock once per step instead of once per write
+    /// verb.
+    pub fn add_counters_and_rates(
+        &mut self,
+        obj: &Map<String, Value>,
+        failed: bool,
+        rates: &[&str],
+    ) {
+        self.add_counters(obj);
+        for name in rates {
+            self.record_rate(name, failed);
+        }
+    }
+
     /// Record one duration sample (milliseconds) into a named histogram —
     /// the programmatic equivalent of emitting `[ms]` under a step's
     /// `metrics` key. Engine-internal producers (the `engine_metrics:` probe)

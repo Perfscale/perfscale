@@ -116,6 +116,15 @@ impl ShardedMetrics {
         self.home().lock().unwrap().record_rate(name, failed);
     }
 
+    /// The runner's per-step fold under ONE shard lock — see
+    /// [`Metrics::add_counters_and_rates`].
+    pub fn add_counters_and_rates(&self, obj: &Map<String, Value>, failed: bool, rates: &[&str]) {
+        self.home()
+            .lock()
+            .unwrap()
+            .add_counters_and_rates(obj, failed, rates);
+    }
+
     /// One duration sample into a named histogram — see
     /// [`Metrics::record_hist_sample`].
     pub(crate) fn record_hist_sample(&self, name: &str, ms: f64) {
