@@ -1009,10 +1009,13 @@ config (per-query mode), and returns the Connection ID.
 | `dsn` | string | **required** | Driver-native connection string, e.g. `postgres://user:pass@host:5432/db`, `mysql://user:pass@host:3306/db`, `sqlite://data.db?mode=rwc`, `sqlite::memory:`. May use `${{ … }}` interpolation for secrets |
 | `tls` | bool \| string | `true` | `true` verifies certificate + hostname; `false` is plaintext; `"skip-verify"` encrypts without verification. Ignored for sqlite |
 | `mode` | string | `persistent` | `persistent` (pool held across steps) or `per-query` (config only — each query connects fresh) |
+| `scope` | string | `iteration` | `iteration` (dropped at iteration end) or `vu` (kept until the VU exits; an identical later `db-connect` in the same VU reuses the parked connection — one warm connection per VU) |
+| `prepared` | bool | `false` | Cache named statements on the parked connection — repeat queries skip the Parse round trip (PostgreSQL: one RTT instead of two). **Incompatible with transaction-mode poolers** (PgBouncer/Supavisor); no effect in per-query mode |
 | `pool_size` | integer | `1` | Persistent-mode pool size (max 1024) |
 | `timeout_ms` | integer | `30000` | Connect timeout |
 
-**Output**: `{ "id": "db-1", "driver": "postgres", "mode": "persistent", "connected": true, "duration_ms": …, "metrics": … }`.
+**Output**: `{ "id": "db-1", "driver": "postgres", "mode": "persistent", "prepared": false, "scope": "iteration", "connected": true, "duration_ms": …, "metrics": … }`.
+A reused vu-scoped connect also carries `"reused": true`.
 In per-query mode `connected` is `false` — nothing is opened yet. The DSN
 and its password are never logged; log lines use a sanitized
 `host:port/database` label.
@@ -1028,6 +1031,7 @@ default.
 | `query` | string | **required** | SQL with driver-native placeholders (`$1`, `$2`, … for postgres; `?` for mysql/sqlite). **Never interpolated** — a `${{` in the SQL reaches the database verbatim. 64 KiB hard limit (`max_query_bytes`) |
 | `params` | array | `[]` | Positional bind values; each entry *is* interpolated. Strings → text, numbers → i64/f64, booleans → bool, null → typed NULL (text-typed on postgres — cast in SQL, e.g. `$1::int`). Arrays/objects cannot be bound |
 | `max_rows` | integer | `10000` | Hard cap on rows read into memory; extra rows only set `truncated: true` |
+| `store_rows` | bool | `true` | `false` counts rows (`rows`) without materializing them: `data` is empty and no per-row JSON decode runs — for scenarios that never read `data`. `truncated` still reflects `max_rows` |
 | `timeout_ms` | integer | `30000` | Query timeout (per-query mode: connect + query) |
 
 **Output**: `{ "rows": <u64>, "rows_affected": <u64>, "truncated": <bool>, "data": [ … ], "duration_ms": …, "metrics": … }`.
@@ -1049,7 +1053,7 @@ rejected on per-query ids.
 
 Closes the connection and releases its id (`id` parameter). An open
 transaction rolls back as it drops. Connections left open are closed
-implicitly at iteration end.
+implicitly at iteration end — or, with `scope: vu`, when the VU exits.
 
 ### DB connection modes
 
@@ -1065,6 +1069,14 @@ unavailable. `sqlite::memory:` is pointless here (each fresh connection is
 an empty database) — use a file DSN; conversely an in-memory pool must
 stay at `pool_size: 1`.
 
+**Scope** (`scope` on `db-connect`): by default a parked connection is
+dropped at iteration end. With `scope: vu` it survives until the VU exits,
+and an identical `db-connect` later in the same VU reuses it (same
+Connection ID returned, `"reused": true` in the output) instead of opening
+a new one — one warm connection per VU across iterations, the shape
+k6/locust use. `db-close` releases the id early; the next connect then
+opens fresh. Ids never leak across VUs.
+
 ### Connection poolers (PgBouncer, Supabase)
 
 Queries are executed with **unnamed statements**, so transaction-mode
@@ -1076,7 +1088,11 @@ transparently retries inside a transaction (which pins the backend) and the
 connection keeps wrapping from then on; direct connections never pay for
 this. For Supabase: use the pooler DSN (port 6543, IPv4) with
 `tls: "skip-verify"` (their CA chain is not in webpki-roots) or install
-their CA.
+their CA. With `prepared: true` on `db-connect` queries run as cached named
+statements instead — faster on direct connections (no per-query Parse), but
+**incompatible with transaction-mode poolers**: the cached statement
+collides on the shared backend, which is exactly why the default is
+`false`.
 
 ### DB metrics
 
