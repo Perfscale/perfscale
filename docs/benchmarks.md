@@ -39,7 +39,7 @@ wrapping overhead — not the underlying tool.
 | `library` | WASM value-generator cost: per-run compile (cold) vs burn-cache deserialize vs the `@std/random` builtin |
 | `grpc` | `std/grpc@v1` unary echo against the repo's `grpc_echo_server` example |
 | `graphql` | `std/graphql@v1` query against the repo's `graphql_server` example |
-| `db` | SQL: cold connect+query vs warm persistent pool vs transactions (`std/db-*@v1`, PostgreSQL + in-process SQLite), plus the warm shape from locust (psycopg2), JMeter (JDBC) and k6 — the k6 row is a **custom binary** built with the `xk6-sql` extension + postgres driver (stock k6 has no SQL module), used only by this row |
+| `db` | SQL: cold connect+query vs warm VU-scoped connections vs transactions (`std/db-*@v1`, PostgreSQL + in-process SQLite), plus the warm shape from locust (psycopg2), JMeter (JDBC) and k6 — the k6 row is a **custom binary** built with the `xk6-sql` extension + postgres driver (stock k6 has no SQL module), used only by this row |
 
 JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
 console summary has no percentiles, so it stays out of the `throughput`
@@ -77,9 +77,12 @@ what the top rung actually cost.
 The `db` suite separates the cold path (`perfscale (cold)`,
 `perfscale (cold, params)`: connect + one
 query per iteration, connection dropped at iteration end) from the warm path
-(`perfscale (warm pool, …)`: one persistent pool per iteration,
-`DB_WARM_QUERIES` queries,
-`db-close`; `perfscale (warm tx, …)`: `DB_TX_CYCLES` × begin+query+commit) and
+(`perfscale (warm vu, …)`: one `scope: vu` connection per VU — the
+per-iteration `db-connect` reuses the parked connection at ~0ms — with
+`DB_WARM_QUERIES` queries per iteration and no `db-close`, the same
+connect-once shape as the competitor rows; `perfscale (warm vu+prepared, …)`
+adds `prepared: true` + `store_rows: false` for the engine's ceiling;
+`perfscale (warm tx, …)`: `DB_TX_CYCLES` × begin+query+commit) and
 adds an
 in-process SQLite floor (`perfscale (sqlite, …)`, no server needed).
 The locust row (`pipx inject locust psycopg2-binary`), the JMeter row

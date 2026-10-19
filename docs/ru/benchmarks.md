@@ -39,7 +39,7 @@ loopback, поэтому любая разница между строкой `pe
 | `library` | Стоимость WASM-библиотек значений: компиляция на каждый прогон (холодный кэш) против десериализации burn-кэша против встроенной `@std/random` |
 | `grpc` | Унарный вызов `std/grpc@v1` против примера `grpc_echo_server` из репозитория |
 | `graphql` | Запрос `std/graphql@v1` против примера `graphql_server` из репозитория |
-| `db` | SQL: холодный connect+query против тёплого постоянного пула против транзакций (`std/db-*@v1`, PostgreSQL + in-process SQLite), плюс тёплая форма от locust (psycopg2), JMeter (JDBC) и k6 — строка k6 использует **кастомный бинарь**, собранный с расширением `xk6-sql` и postgres-драйвером (в стоковом k6 SQL-модуля нет), и только она его использует |
+| `db` | SQL: холодный connect+query против тёплых VU-scoped соединений против транзакций (`std/db-*@v1`, PostgreSQL + in-process SQLite), плюс тёплая форма от locust (psycopg2), JMeter (JDBC) и k6 — строка k6 использует **кастомный бинарь**, собранный с расширением `xk6-sql` и postgres-драйвером (в стоковом k6 SQL-модуля нет), и только она его использует |
 
 JMeter участвует только в наборах hyperfine (`overhead`/`startup`): его
 консольная сводка в non-GUI режиме не содержит перцентилей, поэтому он не
@@ -79,8 +79,12 @@ JMeter его нет в консольной сводке), плюс пиков�
 Набор `db` разделяет холодный путь (`perfscale (cold)`,
 `perfscale (cold, params)`: connect + один запрос
 на итерацию, соединение закрывается в конце итерации) и тёплый
-(`perfscale (warm pool, …)`:
-один постоянный пул на итерацию, `DB_WARM_QUERIES` запросов, `db-close`;
+(`perfscale (warm vu, …)`:
+одно соединение `scope: vu` на VU — вызов `db-connect` в каждой итерации
+переиспользует припаркованное соединение за ~0 мс — `DB_WARM_QUERIES`
+запросов на итерацию, без `db-close`, та же форма «один коннект на VU», что
+и у строк конкурентов; `perfscale (warm vu+prepared, …)` добавляет
+`prepared: true` + `store_rows: false` — потолок движка;
 `perfscale (warm tx, …)`: `DB_TX_CYCLES` × begin+query+commit) и добавляет
 in-process
 SQLite-«пол» (`perfscale (sqlite, …)`, сервер не нужен). Строка locust
