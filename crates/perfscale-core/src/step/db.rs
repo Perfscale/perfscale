@@ -30,7 +30,7 @@
 //!
 //! # Connection poolers (PgBouncer, Supabase/Supavisor)
 //!
-//! Every statement executes **unnamed** ([`step_query`] sets
+//! By default every statement executes **unnamed** ([`step_query`] sets
 //! `persistent(false)`), so a transaction-mode pooler never trips over a
 //! cached named statement on the shared backend (`prepared statement
 //! "sqlx_s_1" already exists`). sqlx still flushes Parse+Sync and
@@ -43,6 +43,18 @@
 //! for this. For Supabase: use the pooler DSN (port 6543, IPv4) with
 //! `tls: "skip-verify"` (their CA chain is not in webpki-roots) or install
 //! their CA.
+//!
+//! **Opt-in prepared statements:** `std/db-connect@v1` accepts
+//! `prepared: true` (default `false`). The parked connection's queries then
+//! run with `persistent(true)` — sqlx caches the statement on the
+//! connection, so repeat executions skip the Parse round trip (one RTT per
+//! query instead of two on PostgreSQL). This is **incompatible with
+//! transaction-mode poolers** (PgBouncer, Supabase/Supavisor): the cached
+//! named statement collides on the shared backend, which is exactly why the
+//! default stays `false`. Use it with direct connections (or session-mode
+//! poolers) only. In `mode: per-query` the flag is accepted but has no
+//! effect: every query runs on a fresh connection, so there is nothing to
+//! cache a statement on.
 //!
 //! # SQL and bind parameters
 //!
@@ -76,6 +88,12 @@
 //! `rows_affected` follows driver semantics: on SQLite a SELECT reports the
 //! *previous* DML statement's change count (a `sqlite3_changes()` quirk),
 //! so read `rows`/`db_rows` as the headline number.
+//!
+//! With `store_rows: false` on `std/db-query@v1` (default `true`) rows are
+//! still streamed and counted (`rows`), but the JSON materialization is
+//! skipped entirely — `data` is empty and no per-row decode runs. This is
+//! the shape for scenarios that never read `data` (pure throughput probes).
+//! `truncated` still reports whether the result exceeded `max_rows`.
 //!
 //! # Metrics
 //!
@@ -132,7 +150,7 @@ use tokio::time::Duration;
 use super::actions::{err, error_chain, ActionOutput, LogTag};
 use super::context::Context;
 use super::resources::{DbConn, DbDriver, DbPool, DbProfile, DbState, DbTx};
-use super::ws::u64_param;
+use super::ws::{bool_param, u64_param};
 
 /// Default step timeout for every DB action (`timeout_ms`).
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -179,6 +197,9 @@ struct ConnectParams {
     dsn: String,
     tls: TlsMode,
     per_query: bool,
+    /// `prepared: true` — cache named statements on the parked connection
+    /// (see the module doc's poolers section). No effect in per-query mode.
+    prepared: bool,
     timeout_ms: u64,
     pool_size: u64,
 }
@@ -221,11 +242,13 @@ fn parse_connect_params(params: &Value) -> Result<ConnectParams, String> {
         .map(|v| u64_param(v, DEFAULT_POOL_SIZE))
         .unwrap_or(DEFAULT_POOL_SIZE)
         .clamp(1, 1024);
+    let prepared = params.get("prepared").map(bool_param).unwrap_or(false);
     Ok(ConnectParams {
         driver,
         dsn,
         tls,
         per_query,
+        prepared,
         timeout_ms,
         pool_size,
     })
@@ -237,6 +260,9 @@ struct QuerySpec<'a> {
     binds: &'a [Value],
     max_rows: usize,
     timeout_ms: u64,
+    /// `store_rows: false` (default true) — count rows, skip the per-row
+    /// JSON materialization (`data` stays empty).
+    store_rows: bool,
 }
 
 fn parse_query_spec(params: &Value) -> Result<QuerySpec<'_>, String> {
@@ -265,11 +291,13 @@ fn parse_query_spec(params: &Value) -> Result<QuerySpec<'_>, String> {
         .get("timeout_ms")
         .map(|v| u64_param(v, DEFAULT_TIMEOUT_MS))
         .unwrap_or(DEFAULT_TIMEOUT_MS);
+    let store_rows = params.get("store_rows").map(bool_param).unwrap_or(true);
     Ok(QuerySpec {
         sql,
         binds,
         max_rows,
         timeout_ms,
+        store_rows,
     })
 }
 
@@ -485,14 +513,15 @@ struct QueryOutcome {
     data: Vec<Value>,
 }
 
-/// The query one step executes. Statements are always **non-persistent**
-/// (unnamed): behind a transaction-mode pooler (PgBouncer, Supabase's :6543
-/// pooler) the server-side backend changes underneath the client connection,
-/// so a named statement cached per client connection collides on the shared
+/// The pooler-safe query shape: always **non-persistent** (unnamed).
+/// Behind a transaction-mode pooler (PgBouncer, Supabase's :6543 pooler)
+/// the server-side backend changes underneath the client connection, so a
+/// named statement cached per client connection collides on the shared
 /// backend — `prepared statement "sqlx_s_1" already exists` on every query
-/// after the first. Unnamed statements are re-parsed per execution, which
-/// costs a Parse round trip and works everywhere: poolers, direct
-/// connections, and (a no-op conceptually) mysql/sqlite.
+/// after the first. Used by the connectivity probe; `db-query` builds its
+/// own statement with `.persistent(conn.prepared)` in [`run_query`] — the
+/// `prepared: true` opt-in trades this safety for skipping the Parse round
+/// trip (see the module doc).
 fn step_query<'q, DB>(
     sql: &'q str,
 ) -> sqlx::query::Query<'q, DB, <DB as sqlx::Database>::Arguments<'q>>
@@ -506,13 +535,21 @@ where
 /// every executor shape the family uses: a pool reference (persistent
 /// queries), a live transaction, or a fresh connection (per-query mode).
 ///
+/// `persistent` mirrors the owning connection's `prepared` option: `true`
+/// lets sqlx cache the statement on the connection (skip the Parse round
+/// trip on repeat executions); `false` keeps the pooler-safe unnamed
+/// statement (see the module doc). `store_rows: false` counts rows without
+/// materializing them — `row_fn` never runs and `data` stays empty.
+///
 /// `row_fn` / `rows_affected_fn` are per-driver because their traits
 /// (`Row`, `QueryResult`) are not object-safe across drivers.
 async fn run_query<'c, E, DB>(
     executor: E,
     sql: &'c str,
-    params: &[Value],
+    params: &'c [Value],
     max_rows: usize,
+    persistent: bool,
+    store_rows: bool,
     row_fn: fn(&DB::Row) -> Value,
     rows_affected_fn: fn(&DB::QueryResult) -> u64,
 ) -> Result<QueryOutcome, sqlx::Error>
@@ -522,11 +559,12 @@ where
     for<'q> bool: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
     for<'q> i64: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
     for<'q> f64: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
+    for<'q> &'q str: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
     for<'q> String: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
     for<'q> Option<String>: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
     for<'q> <DB as sqlx::Database>::Arguments<'q>: sqlx::IntoArguments<'q, DB>,
 {
-    let mut q = step_query::<DB>(sql);
+    let mut q = sqlx::query::<DB>(sql).persistent(persistent);
     for (i, p) in params.iter().enumerate() {
         q = match p {
             // A typed NULL (text on PostgreSQL — see the module doc).
@@ -547,7 +585,7 @@ where
                     ));
                 }
             }
-            Value::String(s) => q.bind(s.clone()),
+            Value::String(s) => q.bind(s.as_str()),
             _ => {
                 return Err(sqlx::Error::Encode(
                     format!("bind param #{}: arrays and objects cannot be bound", i + 1).into(),
@@ -565,11 +603,16 @@ where
     let mut stream = executor.fetch_many(q);
     let mut rows_affected = 0u64;
     let mut data = Vec::new();
+    let mut counted = 0u64;
     let mut truncated = false;
     while let Some(item) = stream.try_next().await? {
         match item {
             sqlx::Either::Left(result) => rows_affected += rows_affected_fn(&result),
             sqlx::Either::Right(row) => {
+                counted += 1;
+                if !store_rows {
+                    continue;
+                }
                 if data.len() >= max_rows {
                     // The cap is on rows read into memory: this row only
                     // flips the flag, it is not collected.
@@ -580,7 +623,16 @@ where
             }
         }
     }
-    let rows = data.len() as u64;
+    // store_rows=false streams everything and counts; `truncated` still
+    // reports whether the result exceeded `max_rows`.
+    if !store_rows {
+        truncated = counted > max_rows as u64;
+    }
+    let rows = if store_rows {
+        data.len() as u64
+    } else {
+        counted
+    };
     Ok(QueryOutcome {
         rows,
         rows_affected,
@@ -624,14 +676,23 @@ async fn run_pg_wrapped<'c, A>(
     sql: &str,
     params: &[Value],
     max_rows: usize,
+    persistent: bool,
+    store_rows: bool,
 ) -> Result<QueryOutcome, sqlx::Error>
 where
     A: sqlx::Acquire<'c, Database = sqlx::Postgres>,
 {
     let mut tx = acq.begin().await?;
-    let out = run_query(&mut *tx, sql, params, max_rows, pg_row_to_json, |r| {
-        r.rows_affected()
-    })
+    let out = run_query(
+        &mut *tx,
+        sql,
+        params,
+        max_rows,
+        persistent,
+        store_rows,
+        pg_row_to_json,
+        |r| r.rows_affected(),
+    )
     .await;
     match out {
         Ok(o) => {
@@ -662,18 +723,27 @@ async fn run_pg_pool_autocommit(
     sql: &str,
     params: &[Value],
     max_rows: usize,
+    persistent: bool,
+    store_rows: bool,
 ) -> (Result<QueryOutcome, sqlx::Error>, bool) {
     if !wrap_tx {
-        let plain = run_query(pool, sql, params, max_rows, pg_row_to_json, |r| {
-            r.rows_affected()
-        })
+        let plain = run_query(
+            pool,
+            sql,
+            params,
+            max_rows,
+            persistent,
+            store_rows,
+            pg_row_to_json,
+            |r| r.rows_affected(),
+        )
         .await;
         match plain {
             Err(e) if is_pg_pooler_split(&e) => {} // fall through into the wrapped retry
             other => return (other, false),
         }
     }
-    let out = run_pg_wrapped(pool, sql, params, max_rows).await;
+    let out = run_pg_wrapped(pool, sql, params, max_rows, persistent, store_rows).await;
     let learned = out.is_ok();
     (out, learned)
 }
@@ -687,13 +757,22 @@ async fn run_pg_profile_autocommit(
     sql: &str,
     params: &[Value],
     max_rows: usize,
+    persistent: bool,
+    store_rows: bool,
 ) -> (Result<QueryOutcome, sqlx::Error>, bool) {
     if !wrap_tx {
         let plain = match opts.connect().await {
             Ok(mut fresh) => {
-                run_query(&mut fresh, sql, params, max_rows, pg_row_to_json, |r| {
-                    r.rows_affected()
-                })
+                run_query(
+                    &mut fresh,
+                    sql,
+                    params,
+                    max_rows,
+                    persistent,
+                    store_rows,
+                    pg_row_to_json,
+                    |r| r.rows_affected(),
+                )
                 .await
             }
             Err(e) => Err(e),
@@ -704,7 +783,9 @@ async fn run_pg_profile_autocommit(
         }
     }
     let out = match opts.connect().await {
-        Ok(mut fresh) => run_pg_wrapped(&mut fresh, sql, params, max_rows).await,
+        Ok(mut fresh) => {
+            run_pg_wrapped(&mut fresh, sql, params, max_rows, persistent, store_rows).await
+        }
         Err(e) => Err(e),
     };
     let learned = out.is_ok();
@@ -828,7 +909,8 @@ fn sqlite_cell(row: &SqliteRow, idx: usize) -> Value {
 // ---------------------------------------------------------------------------
 
 /// Look up the parked connection for `params.id`, or explain what went wrong.
-fn take_conn(params: &Value, ctx: &Context) -> Result<(String, DbConn), String> {
+/// The returned id borrows the step params — the hot path allocates nothing.
+fn take_conn<'a>(params: &'a Value, ctx: &Context) -> Result<(&'a str, DbConn), String> {
     let id = params
         .get("id")
         .and_then(Value::as_str)
@@ -838,27 +920,37 @@ fn take_conn(params: &Value, ctx: &Context) -> Result<(String, DbConn), String> 
         "unknown connection id '{id}' — not connected in this iteration, already closed, \
          or opened in `before:` setup (connections do not cross into VU iterations)"
     ))?;
-    Ok((id.to_string(), conn))
+    Ok((id, conn))
 }
 
 /// Interpolation for `std/db-query@v1`: every parameter EXCEPT the SQL text
 /// itself. The query is bound, never string-interpolated — a `${{`
 /// sequence in SQL must reach the database verbatim. Strict: a missing
-/// `${{ env.NAME }}` is an error, not a silent empty string.
-pub(crate) fn interpolate_query_params(params: &Value, ctx: &Context) -> Result<Value, String> {
+/// `${{ env.NAME }}` is an error, not a silent empty string. A borrow-only
+/// placeholder scan gates the work: parameter trees without placeholders
+/// (the hot path) are returned by reference, no clone.
+pub(crate) fn interpolate_query_params<'a>(
+    params: &'a Value,
+    ctx: &Context,
+) -> Result<std::borrow::Cow<'a, Value>, String> {
     let Value::Object(map) = params else {
-        return Ok(params.clone());
+        return Ok(std::borrow::Cow::Borrowed(params));
     };
+    // Scan before cloning: only values outside `query` are interpolated, so
+    // a `${{` inside the SQL text alone must NOT trigger the clone.
+    let needs = map
+        .iter()
+        .any(|(k, v)| k != "query" && super::actions::has_placeholder(v));
+    if !needs {
+        return Ok(std::borrow::Cow::Borrowed(params));
+    }
     let mut map = map.clone();
     let raw_query = map.remove("query");
-    let mut value = Value::Object(map);
-    if super::actions::has_placeholder(&value) {
-        value = ctx.try_interpolate_value(&value)?;
-    }
+    let mut value = ctx.try_interpolate_value(&Value::Object(map))?;
     if let (Value::Object(obj), Some(query)) = (&mut value, raw_query) {
         obj.insert("query".to_string(), query);
     }
-    Ok(value)
+    Ok(std::borrow::Cow::Owned(value))
 }
 
 /// The `metrics` object every failing DB step emits: the total counter plus
@@ -884,11 +976,16 @@ fn error_metrics(class: &str) -> serde_json::Map<String, Value> {
 //                 without verification (Require/Required)
 //   mode        – persistent | per-query, default persistent (see the
 //                 module doc's Modes section)
+//   prepared    – bool, default false; cache named statements on the parked
+//                 connection (persistent(true) — repeat queries skip the
+//                 Parse round trip). INCOMPATIBLE with transaction-mode
+//                 poolers (PgBouncer/Supavisor); no effect in per-query mode
 //   pool_size   – persistent mode pool size, default 1 (max 1024)
 //   timeout_ms  – ms for the connect, default 30000
 //
 // Output:
 //   { "id": "db-1", "driver": "postgres", "mode": "persistent",
+//     "prepared": false,
 //     "connected": true, "duration_ms": <f64>,
 //     "metrics": { "db_connect_duration": [<f64>] } }
 //
@@ -961,8 +1058,9 @@ pub(crate) async fn db_connect_action(
 
     let id = ctx.resources.insert_db(DbConn {
         driver: cp.driver,
-        target: target.clone(),
+        target: std::sync::Arc::from(target.as_str()),
         per_query: cp.per_query,
+        prepared: cp.prepared,
         state,
         tx: None,
         wrap_tx: false,
@@ -973,6 +1071,7 @@ pub(crate) async fn db_connect_action(
             "id": id,
             "driver": cp.driver.as_str(),
             "mode": if cp.per_query { "per-query" } else { "persistent" },
+            "prepared": cp.prepared,
             "connected": !cp.per_query,
             "duration_ms": duration_ms,
             "metrics": { "db_connect_duration": [duration_ms], "db_errors": 0 },
@@ -1100,6 +1199,7 @@ pub async fn probe_db(driver: &str, dsn: &str, tls: &str, timeout_ms: u64) -> Re
         dsn: dsn.to_string(),
         tls,
         per_query: false,
+        prepared: false,
         timeout_ms,
         pool_size: 1,
     };
@@ -1167,6 +1267,9 @@ async fn probe_roundtrip(cp: &ConnectParams) -> Result<(), String> {
 //                 numbers/booleans/null bind, arrays/objects are rejected
 //   max_rows    – hard cap on rows read into memory, default 10000; extra
 //                 rows only set `truncated: true`
+//   store_rows  – bool, default true; false counts rows (`rows`) without
+//                 materializing them — `data` is empty, no per-row decode.
+//                 For scenarios that never read `data`
 //   timeout_ms  – ms for the query (per-query mode: connect + query),
 //                 default 30000
 //
@@ -1217,6 +1320,10 @@ pub(crate) async fn db_query_action(
     };
     let driver = conn.driver;
     let target = conn.target.clone();
+    // `prepared` only matters on a parked pool: per-query mode connects
+    // fresh per query, so there is nothing to cache a statement on.
+    let persistent = conn.prepared && !conn.per_query;
+    let store_rows = spec.store_rows;
 
     let t0 = Instant::now();
     // Pooler state learned by earlier queries on this connection (Postgres
@@ -1229,60 +1336,113 @@ pub(crate) async fn db_query_action(
         let max_rows = spec.max_rows;
         match (&mut conn.state, conn.tx.as_mut()) {
             (DbState::Pool(DbPool::Pg(pool)), None) => {
-                let (outcome, learned) =
-                    run_pg_pool_autocommit(pool, wrap_tx, sql, binds, max_rows).await;
+                let (outcome, learned) = run_pg_pool_autocommit(
+                    pool, wrap_tx, sql, binds, max_rows, persistent, store_rows,
+                )
+                .await;
                 wrap_tx_learned = learned;
                 outcome
             }
             (DbState::Pool(DbPool::Pg(_)), Some(DbTx::Pg(tx))) => {
-                run_query(&mut **tx, sql, binds, max_rows, pg_row_to_json, |r| {
-                    r.rows_affected()
-                })
+                run_query(
+                    &mut **tx,
+                    sql,
+                    binds,
+                    max_rows,
+                    persistent,
+                    store_rows,
+                    pg_row_to_json,
+                    |r| r.rows_affected(),
+                )
                 .await
             }
             (DbState::Pool(DbPool::My(pool)), None) => {
-                run_query(&*pool, sql, binds, max_rows, mysql_row_to_json, |r| {
-                    r.rows_affected()
-                })
+                run_query(
+                    &*pool,
+                    sql,
+                    binds,
+                    max_rows,
+                    persistent,
+                    store_rows,
+                    mysql_row_to_json,
+                    |r| r.rows_affected(),
+                )
                 .await
             }
             (DbState::Pool(DbPool::My(_)), Some(DbTx::My(tx))) => {
-                run_query(&mut **tx, sql, binds, max_rows, mysql_row_to_json, |r| {
-                    r.rows_affected()
-                })
+                run_query(
+                    &mut **tx,
+                    sql,
+                    binds,
+                    max_rows,
+                    persistent,
+                    store_rows,
+                    mysql_row_to_json,
+                    |r| r.rows_affected(),
+                )
                 .await
             }
             (DbState::Pool(DbPool::Sqlite(pool)), None) => {
-                run_query(&*pool, sql, binds, max_rows, sqlite_row_to_json, |r| {
-                    r.rows_affected()
-                })
+                run_query(
+                    &*pool,
+                    sql,
+                    binds,
+                    max_rows,
+                    persistent,
+                    store_rows,
+                    sqlite_row_to_json,
+                    |r| r.rows_affected(),
+                )
                 .await
             }
             (DbState::Pool(DbPool::Sqlite(_)), Some(DbTx::Sqlite(tx))) => {
-                run_query(&mut **tx, sql, binds, max_rows, sqlite_row_to_json, |r| {
-                    r.rows_affected()
-                })
+                run_query(
+                    &mut **tx,
+                    sql,
+                    binds,
+                    max_rows,
+                    persistent,
+                    store_rows,
+                    sqlite_row_to_json,
+                    |r| r.rows_affected(),
+                )
                 .await
             }
             (DbState::Profile(profile), None) => match &mut **profile {
                 DbProfile::Pg(opts) => {
-                    let (outcome, learned) =
-                        run_pg_profile_autocommit(opts, wrap_tx, sql, binds, max_rows).await;
+                    let (outcome, learned) = run_pg_profile_autocommit(
+                        opts, wrap_tx, sql, binds, max_rows, persistent, store_rows,
+                    )
+                    .await;
                     wrap_tx_learned = learned;
                     outcome
                 }
                 DbProfile::My(opts) => {
                     let mut fresh = opts.connect().await?;
-                    run_query(&mut fresh, sql, binds, max_rows, mysql_row_to_json, |r| {
-                        r.rows_affected()
-                    })
+                    run_query(
+                        &mut fresh,
+                        sql,
+                        binds,
+                        max_rows,
+                        persistent,
+                        store_rows,
+                        mysql_row_to_json,
+                        |r| r.rows_affected(),
+                    )
                     .await
                 }
                 DbProfile::Sqlite(opts) => {
                     let mut fresh = opts.connect().await?;
-                    run_query(&mut fresh, sql, binds, max_rows, sqlite_row_to_json, |r| {
-                        r.rows_affected()
-                    })
+                    run_query(
+                        &mut fresh,
+                        sql,
+                        binds,
+                        max_rows,
+                        persistent,
+                        store_rows,
+                        sqlite_row_to_json,
+                        |r| r.rows_affected(),
+                    )
                     .await
                 }
             },
@@ -1305,7 +1465,7 @@ pub(crate) async fn db_query_action(
     }
     // Whatever happened, the connection survives a query error — a failed
     // statement no more kills a pool than a failed RPC kills a channel.
-    ctx.resources.put_back_db(&id, conn);
+    ctx.resources.put_back_db(id, conn);
 
     match run {
         Ok(Ok(outcome)) => {
@@ -1359,7 +1519,7 @@ pub(crate) async fn db_query_action(
                 driver,
                 target: &target,
             };
-            db_fail_ref(step_name, fail_conn, &id, class, &detail, duration_ms)
+            db_fail_ref(step_name, fail_conn, id, class, &detail, duration_ms)
         }
         Err(_) => {
             let detail = format!("query TIMEOUT after {duration_ms:.2}ms");
@@ -1367,7 +1527,7 @@ pub(crate) async fn db_query_action(
                 driver,
                 target: &target,
             };
-            db_fail_ref(step_name, fail_conn, &id, "timeout", &detail, duration_ms)
+            db_fail_ref(step_name, fail_conn, id, "timeout", &detail, duration_ms)
         }
     }
 }
@@ -1439,14 +1599,14 @@ pub(crate) async fn db_tx_begin_action(
         Err(msg) => return err(step_name, &msg),
     };
     if conn.per_query {
-        ctx.resources.put_back_db(&id, conn);
+        ctx.resources.put_back_db(id, conn);
         return err(
             step_name,
             &format!("transactions require mode: persistent — '{id}' is a per-query connection"),
         );
     }
     if conn.tx.is_some() {
-        ctx.resources.put_back_db(&id, conn);
+        ctx.resources.put_back_db(id, conn);
         return err(
             step_name,
             &format!("'{id}' already has an open transaction — commit or roll back first"),
@@ -1473,7 +1633,7 @@ pub(crate) async fn db_tx_begin_action(
     match begun {
         Ok(Ok(tx)) => {
             conn.tx = Some(tx);
-            ctx.resources.put_back_db(&id, conn);
+            ctx.resources.put_back_db(id, conn);
             ActionOutput {
                 value: json!({
                     "id": id,
@@ -1499,8 +1659,8 @@ pub(crate) async fn db_tx_begin_action(
                 driver,
                 target: &target,
             };
-            ctx.resources.put_back_db(&id, conn);
-            db_fail_ref(step_name, fail_conn, &id, class, &detail, duration_ms)
+            ctx.resources.put_back_db(id, conn);
+            db_fail_ref(step_name, fail_conn, id, class, &detail, duration_ms)
         }
         Err(_) => {
             let detail = format!("BEGIN TIMEOUT after {duration_ms:.2}ms");
@@ -1508,8 +1668,8 @@ pub(crate) async fn db_tx_begin_action(
                 driver,
                 target: &target,
             };
-            ctx.resources.put_back_db(&id, conn);
-            db_fail_ref(step_name, fail_conn, &id, "timeout", &detail, duration_ms)
+            ctx.resources.put_back_db(id, conn);
+            db_fail_ref(step_name, fail_conn, id, "timeout", &detail, duration_ms)
         }
     }
 }
@@ -1526,7 +1686,7 @@ async fn db_tx_finish_action(
         Err(msg) => return err(step_name, &msg),
     };
     let Some(tx) = conn.tx.take() else {
-        ctx.resources.put_back_db(&id, conn);
+        ctx.resources.put_back_db(id, conn);
         return err(
             step_name,
             &format!("no open transaction on '{id}' — begin one with std/db-tx-begin@v1"),
@@ -1550,7 +1710,7 @@ async fn db_tx_finish_action(
     })
     .await;
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    ctx.resources.put_back_db(&id, conn);
+    ctx.resources.put_back_db(id, conn);
 
     match finished {
         Ok(Ok(())) => {
@@ -1580,7 +1740,7 @@ async fn db_tx_finish_action(
                 driver,
                 target: &target,
             };
-            db_fail_ref(step_name, fail_conn, &id, class, &detail, duration_ms)
+            db_fail_ref(step_name, fail_conn, id, class, &detail, duration_ms)
         }
         Err(_) => {
             let detail = format!("{verb} TIMEOUT after {duration_ms:.2}ms");
@@ -1588,7 +1748,7 @@ async fn db_tx_finish_action(
                 driver,
                 target: &target,
             };
-            db_fail_ref(step_name, fail_conn, &id, "timeout", &detail, duration_ms)
+            db_fail_ref(step_name, fail_conn, id, "timeout", &detail, duration_ms)
         }
     }
 }
@@ -2019,15 +2179,12 @@ mod tests {
         ctx.set("conn", json!({ "id": "db-1" }));
         ctx.set("who", json!("alice"));
 
-        let out = interpolate_query_params(
-            &json!({
-                "id": "${{ conn.id }}",
-                "query": "INSERT INTO t VALUES ('${{ who }}', ?)",
-                "params": ["${{ who }}", 7],
-            }),
-            &ctx,
-        )
-        .unwrap();
+        let params = json!({
+            "id": "${{ conn.id }}",
+            "query": "INSERT INTO t VALUES ('${{ who }}', ?)",
+            "params": ["${{ who }}", 7],
+        });
+        let out = interpolate_query_params(&params, &ctx).unwrap();
         // The SQL text passes through verbatim…
         assert_eq!(out["query"], "INSERT INTO t VALUES ('${{ who }}', ?)");
         // …while every other parameter interpolates as usual.
@@ -2844,6 +3001,8 @@ mod tests {
             "DROP TABLE IF EXISTS perfscale_wrap_test",
             &[],
             10,
+            false,
+            true,
         )
         .await;
         unwrap_outcome(out);
@@ -2854,6 +3013,8 @@ mod tests {
             "CREATE TABLE perfscale_wrap_test (n INTEGER)",
             &[],
             10,
+            false,
+            true,
         )
         .await;
         unwrap_outcome(out);
@@ -2866,25 +3027,51 @@ mod tests {
             "INSERT INTO perfscale_wrap_test VALUES ($1)",
             &[json!(1)],
             10,
+            false,
+            true,
         )
         .await;
         unwrap_outcome(out);
         assert!(learned);
-        let (out, learned) =
-            run_pg_pool_autocommit(&pool, true, "SELECT n FROM perfscale_wrap_test", &[], 10).await;
+        let (out, learned) = run_pg_pool_autocommit(
+            &pool,
+            true,
+            "SELECT n FROM perfscale_wrap_test",
+            &[],
+            10,
+            false,
+            true,
+        )
+        .await;
         assert!(learned);
         let out = unwrap_outcome(out);
         assert_eq!(out.rows, 1);
         assert_eq!(out.data[0]["n"], 1);
 
         // A genuine error still errors when wrapped — and is never learned.
-        let (out, learned) =
-            run_pg_pool_autocommit(&pool, true, "SELECT * FROM no_such_table", &[], 10).await;
+        let (out, learned) = run_pg_pool_autocommit(
+            &pool,
+            true,
+            "SELECT * FROM no_such_table",
+            &[],
+            10,
+            false,
+            true,
+        )
+        .await;
         assert!(out.is_err());
         assert!(!learned);
 
-        let (out, _) =
-            run_pg_pool_autocommit(&pool, false, "DROP TABLE perfscale_wrap_test", &[], 10).await;
+        let (out, _) = run_pg_pool_autocommit(
+            &pool,
+            false,
+            "DROP TABLE perfscale_wrap_test",
+            &[],
+            10,
+            false,
+            true,
+        )
+        .await;
         unwrap_outcome(out);
     }
 
@@ -3602,5 +3789,151 @@ mod tests {
             .expect_err("nothing listens on port 1");
         assert!(!err.is_empty());
         assert!(!err.contains("sup3rs3cret"), "password leaked: {err}");
+    }
+
+    // -----------------------------------------------------------------
+    // prepared / store_rows options
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn connect_params_prepared_defaults_false_and_parses() {
+        let cp = parse_connect_params(&json!({
+            "driver": "postgres",
+            "dsn": "postgres://u:p@db.internal:5432/app",
+        }))
+        .unwrap();
+        assert!(!cp.prepared, "prepared defaults to false");
+
+        for v in [json!(true), json!("true")] {
+            let cp = parse_connect_params(&json!({
+                "driver": "postgres",
+                "dsn": "postgres://u:p@db.internal:5432/app",
+                "prepared": v,
+            }))
+            .unwrap();
+            assert!(cp.prepared, "prepared {v} parses");
+        }
+    }
+
+    #[test]
+    fn query_spec_store_rows_defaults_true_and_parses() {
+        let params = json!({ "query": "SELECT 1" });
+        assert!(
+            parse_query_spec(&params).unwrap().store_rows,
+            "default true"
+        );
+
+        let params = json!({ "query": "SELECT 1", "store_rows": false });
+        assert!(!parse_query_spec(&params).unwrap().store_rows);
+        // Interpolated string form parses too.
+        let params = json!({ "query": "SELECT 1", "store_rows": "false" });
+        assert!(!parse_query_spec(&params).unwrap().store_rows);
+    }
+
+    /// prepared=true runs the full flow on sqlite — the statement-cache path
+    /// must execute correctly, not just parse.
+    #[tokio::test]
+    async fn sqlite_prepared_true_full_flow() {
+        let ctx = Context::new();
+        let out = run(
+            &ctx,
+            "std/db-connect@v1",
+            json!({ "driver": "sqlite", "dsn": "sqlite::memory:", "prepared": true }),
+        )
+        .await;
+        assert!(out.success, "connect: {:?}", out.logs);
+        assert_eq!(out.value["prepared"], true);
+        let id = out.value["id"].as_str().unwrap().to_string();
+
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "CREATE TABLE p (n INTEGER)" }),
+        )
+        .await;
+        // Repeat the same statement — the second execution hits sqlx's
+        // per-connection statement cache.
+        for n in [1, 2] {
+            let out = run(
+                &ctx,
+                "std/db-query@v1",
+                json!({ "id": id, "query": "INSERT INTO p VALUES (?)", "params": [n] }),
+            )
+            .await;
+            assert!(out.success, "insert {n}: {:?}", out.logs);
+        }
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT n FROM p ORDER BY n" }),
+        )
+        .await;
+        assert!(out.success, "select: {:?}", out.logs);
+        assert_eq!(out.value["rows"], 2);
+        assert_eq!(out.value["data"][1]["n"], 2);
+    }
+
+    /// store_rows=false: rows stream and count, but `data` never
+    /// materializes; `truncated` still reflects max_rows.
+    #[tokio::test]
+    async fn sqlite_store_rows_false_counts_without_materializing() {
+        let ctx = Context::new();
+        let id = connect_memory(&ctx).await;
+        run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "CREATE TABLE c (n INTEGER)" }),
+        )
+        .await;
+        for n in 1..=3 {
+            run(
+                &ctx,
+                "std/db-query@v1",
+                json!({ "id": id, "query": "INSERT INTO c VALUES (?)", "params": [n] }),
+            )
+            .await;
+        }
+
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT n FROM c", "store_rows": false }),
+        )
+        .await;
+        assert!(out.success, "count-only select: {:?}", out.logs);
+        assert_eq!(out.value["rows"], 3, "rows still counted");
+        assert_eq!(out.value["data"], json!([]), "data not materialized");
+        assert_eq!(out.value["truncated"], false);
+        assert_eq!(out.value["metrics"]["db_rows"], 3);
+
+        // truncated still reflects the cap even though nothing is stored.
+        let out = run(
+            &ctx,
+            "std/db-query@v1",
+            json!({ "id": id, "query": "SELECT n FROM c", "store_rows": false, "max_rows": 2 }),
+        )
+        .await;
+        assert!(out.success);
+        assert_eq!(out.value["rows"], 3);
+        assert_eq!(out.value["truncated"], true);
+    }
+
+    /// The hot-path gate: placeholder-free params come back borrowed (no
+    /// clone), and a `${{ }}` in the SQL text alone does NOT trigger
+    /// interpolation.
+    #[test]
+    fn interpolate_query_params_borrows_placeholder_free_params() {
+        let ctx = Context::new();
+        let params = json!({
+            "id": "db-1",
+            "query": "SELECT '${{ literal }}'",
+            "params": [1, "two"],
+        });
+        let out = interpolate_query_params(&params, &ctx).unwrap();
+        assert!(
+            matches!(out, std::borrow::Cow::Borrowed(_)),
+            "no placeholder outside `query` → no clone"
+        );
+        assert_eq!(out["query"], "SELECT '${{ literal }}'");
     }
 }

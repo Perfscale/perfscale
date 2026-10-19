@@ -179,10 +179,15 @@ pub(crate) enum DbTx {
 pub(crate) struct DbConn {
     pub driver: DbDriver,
     /// Sanitized `host:port/database` (or sqlite filename) for log lines —
-    /// never the raw DSN, which can carry a password.
-    pub target: String,
+    /// never the raw DSN, which can carry a password. `Arc<str>` so the hot
+    /// query path clones a pointer, not the string.
+    pub target: std::sync::Arc<str>,
     /// True for `mode: per-query` (transactions are rejected on these).
     pub per_query: bool,
+    /// The connect step's `prepared` option: queries on this connection run
+    /// as cached named statements (`persistent(true)`) instead of the
+    /// pooler-safe unnamed default — see the `step::db` module doc.
+    pub prepared: bool,
     pub state: DbState,
     /// Active transaction (persistent mode only); `std/db-query@v1` runs
     /// inside it while set.
@@ -200,7 +205,6 @@ impl Connection for DbConn {
         &self.target
     }
 }
-
 /// What a parked DB id actually holds: a live pool (persistent) or just the
 /// connect config (per-query). The profile is boxed — connect options are
 /// ~350 bytes against a pool's 16.
@@ -515,6 +519,7 @@ mod tests {
             driver: DbDriver::Sqlite,
             target: ":memory:".into(),
             per_query: true,
+            prepared: false,
             state: DbState::Profile(Box::new(DbProfile::Sqlite(
                 sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap(),
             ))),

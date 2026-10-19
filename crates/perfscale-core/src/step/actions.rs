@@ -144,7 +144,7 @@ pub async fn execute_action(
             // db-query interpolates everything EXCEPT the SQL text itself — the
             // query is bound via `params`, never string-interpolated.
             match super::db::interpolate_query_params(params, ctx) {
-                Ok(v) => std::borrow::Cow::Owned(v),
+                Ok(v) => v,
                 Err(msg) => return err(step_name, &msg),
             }
         } else if has_placeholder(params) {

@@ -97,6 +97,12 @@ pub struct Context {
     /// Counts generators minted by this context — the `conn_seq` input of the
     /// per-instance seed derivation.
     gen_counter: Arc<std::sync::atomic::AtomicU64>,
+    /// Random base for unseeded runs (`run_seed: None`): drawn once per
+    /// context (one `Uuid::new_v4`, not one per generator — a getrandom
+    /// syscall per db-query was measurable on the cold-params path) and
+    /// combined with `conn_seq`, so every generator still gets its own
+    /// random stream while seeded runs are untouched.
+    unseeded_gen_base: Arc<std::sync::OnceLock<u64>>,
     /// Derived `<family>_failed` rate-metric names, memoized per context:
     /// the step fold would otherwise format! a fresh String per histogram
     /// metric per step.
@@ -126,6 +132,7 @@ impl Default for Context {
             vu_id: 0,
             iteration_seq: 0,
             gen_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            unseeded_gen_base: Arc::new(std::sync::OnceLock::new()),
             rate_names: HashMap::new(),
         }
     }
@@ -268,7 +275,14 @@ impl Context {
             + 1;
         let seed = match self.run_seed {
             Some(run_seed) => crate::library::derive_seed(run_seed, self.vu_id, conn_seq),
-            None => uuid::Uuid::new_v4().as_u128() as u64,
+            // One random base per context; conn_seq keeps every generator's
+            // stream distinct. (Previously a fresh `Uuid::new_v4` per
+            // generator — a getrandom syscall per query on token-heavy db
+            // scenarios.)
+            None => (*self
+                .unseeded_gen_base
+                .get_or_init(|| uuid::Uuid::new_v4().as_u128() as u64))
+            .wrapping_add(conn_seq),
         };
         let mut gen = crate::generate::Gen::new(seed)
             .with_vu(self.vu_id, self.iteration_seq)
