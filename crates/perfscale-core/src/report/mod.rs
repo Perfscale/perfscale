@@ -16,6 +16,7 @@
 //! spawns no task and no channel traffic exists — the zero-overhead path.
 
 pub mod cpu;
+pub mod html;
 pub mod reporters;
 pub mod stream;
 pub mod v1;

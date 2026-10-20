@@ -25,7 +25,7 @@ Exactly one engine flag is required: `--k6`, `--locust`, `--jmeter`, or `-f`.
 | `-f, --file <FILE>` | `test.yaml` | Run with the built-in native engine (requires `-c`) |
 | `-c, --config <FILE>` | `config.yaml` | Load config: `vus`, `duration`, optional `report.url`. Required with `-f`, optional load hint for `--locust`, ignored by `--k6` and `--jmeter` |
 | `--host <URL>` | base URL | Target host for `--locust` (locust's `--host`) |
-| `--report <SPEC>` | repeatable | Two shapes. `http(s)://URL` — POST the summary (and the report@v1 artifact, when reporters are configured) to a `perfscale serve` instance; overrides `report.url`. `json:PATH` / `junit:PATH` — write an end-of-run `report@v1` report: canonical JSON, or JUnit XML for CI (testcase per step, failures from threshold verdicts). Repeat the flag for several reports from one run |
+| `--report <SPEC>` | repeatable | Two shapes. `http(s)://URL` — POST the summary (and the report@v1 artifact, when reporters are configured) to a `perfscale serve` instance; overrides `report.url`. `json:PATH` / `junit:PATH` / `html:PATH` — write an end-of-run `report@v1` report: canonical JSON, JUnit XML for CI (testcase per step, failures from threshold verdicts), or a self-contained dark-themed HTML page (opens offline, archives as a CI artifact). Repeat the flag for several reports from one run |
 | `--label <KEY=VALUE>` | repeatable | Run label stamped on the report's run identity (`run.labels`), e.g. `--label testid=smoke` |
 | `-q, --quiet` | — | Suppress per-request output; errors and the final metric summary still print. The native engine drops the lines at the source, which also removes their formatting/IO cost under high load |
 | `--summary-export <FILE>` | path, repeatable | After the run, write the parsed metric summary (requests, RPS, latency percentiles, error rate) plus run metadata (engine, VUs, duration, timestamp, perfscale version) to this file. Repeat the flag to write several exports from one run. A `.md`/`.json` extension picks the format per file (default JSON) |
@@ -35,7 +35,7 @@ Exactly one engine flag is required: `--k6`, `--locust`, `--jmeter`, or `-f`.
 
 ### End-of-run reports (`report@v1`)
 
-`--report json:PATH` / `--report junit:PATH` (or the config's
+`--report json:PATH` / `--report junit:PATH` / `--report html:PATH` (or the config's
 `report.reporters` block, see the [YAML reference](../yaml-reference.md#config--c-configyaml))
 write a canonical `report@v1` document after the run: `schemaVersion`, run
 identity (engine-generated `run_id` plus `--label`/`report.labels` labels),

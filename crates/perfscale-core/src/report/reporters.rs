@@ -1,7 +1,8 @@
 //! End-of-run reporter configuration (`report.reporters`, issue #9).
 //!
 //! Reporters use the same `use:`/`with:` shape as steps: `use` names a
-//! built-in renderer (`std/report/json@v1`, `std/report/junit@v1`) or a WASM
+//! built-in renderer (`std/report/json@v1`, `std/report/junit@v1`,
+//! `std/report/html@v1`) or a WASM
 //! reporter component (`wasm:./reporter.wasm`, see `crate::report::wasm` and
 //! `wit/reporter.wit`). For built-ins, `with` picks the destination — a
 //! local file (`path`) or an HTTP push (`url`, with optional `headers` whose
@@ -28,7 +29,8 @@ use crate::metrics::MAX_STORED_STEP_SAMPLES;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReporterConfig {
-    /// Reporter id: `std/report/json@v1` or `std/report/junit@v1`.
+    /// Reporter id: `std/report/json@v1`, `std/report/junit@v1`, or
+    /// `std/report/html@v1`.
     #[serde(rename = "use")]
     pub use_: String,
 
@@ -83,6 +85,7 @@ impl ReporterWith {
 pub enum ReporterKind {
     Json,
     Junit,
+    Html,
 }
 
 /// Map a reporter id to a built-in. Accepts the full id
@@ -91,6 +94,7 @@ pub fn reporter_kind(use_: &str) -> Option<ReporterKind> {
     match use_ {
         "std/report/json@v1" | "json" => Some(ReporterKind::Json),
         "std/report/junit@v1" | "junit" => Some(ReporterKind::Junit),
+        "std/report/html@v1" | "html" => Some(ReporterKind::Html),
         _ => None,
     }
 }
@@ -146,7 +150,7 @@ pub fn validate_reporters(reporters: &[ReporterConfig]) -> Result<(), String> {
         } else {
             if reporter_kind(&r.use_).is_none() {
                 return Err(format!(
-                    "unknown reporter '{}' — built-ins: std/report/json@v1, std/report/junit@v1; or a WASM reporter: wasm:./path/to/reporter.wasm",
+                    "unknown reporter '{}' — built-ins: std/report/json@v1, std/report/junit@v1, std/report/html@v1; or a WASM reporter: wasm:./path/to/reporter.wasm",
                     r.use_
                 ));
             }
@@ -231,18 +235,25 @@ mod tests {
                     ..ReporterWith::default()
                 },
             },
+            ReporterConfig {
+                use_: "std/report/html@v1".into(),
+                with: ReporterWith {
+                    path: Some("out.html".into()),
+                    ..ReporterWith::default()
+                },
+            },
         ];
         assert!(validate_reporters(&ok).is_ok());
 
         let bad_use = vec![ReporterConfig {
-            use_: "html".into(),
+            use_: "xml".into(),
             with: ReporterWith {
-                path: Some("out.html".into()),
+                path: Some("out.xml".into()),
                 ..ReporterWith::default()
             },
         }];
         let err = validate_reporters(&bad_use).unwrap_err();
-        assert!(err.contains("unknown reporter 'html'"), "{err}");
+        assert!(err.contains("unknown reporter 'xml'"), "{err}");
 
         let no_dest = vec![ReporterConfig {
             use_: "std/report/json@v1".into(),

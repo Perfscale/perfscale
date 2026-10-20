@@ -247,8 +247,9 @@ pub struct RunArgs {
     ///   reporters are configured, the `report@v1` artifact) to a
     ///   `perfscale serve` instance. Overrides `report.url` from the config
     ///   file.
-    /// - `json:PATH` / `junit:PATH` — write an end-of-run report file
-    ///   (canonical `report@v1` JSON, or JUnit XML for CI).
+    /// - `json:PATH` / `junit:PATH` / `html:PATH` — write an end-of-run
+    ///   report file (canonical `report@v1` JSON, JUnit XML for CI, or a
+    ///   self-contained dark-themed HTML page).
     #[arg(long, value_name = "SPEC")]
     pub report: Vec<String>,
 

@@ -213,6 +213,47 @@ fn run_with_unreachable_report_url_still_succeeds() {
         .stderr(predicate::str::contains("[report] failed to reach"));
 }
 
+#[test]
+#[file_serial(heavy_io)]
+fn run_with_html_reporter_writes_a_self_contained_file() {
+    let test_file = write_temp(
+        ".yaml",
+        "steps:\n  - use: std/sleep@v1\n    with:\n      ms: 5\n",
+    );
+    let config_file = write_temp(".yaml", "vus: 1\nduration: 1s\n");
+    let out = tempfile::Builder::new().suffix(".html").tempfile().unwrap();
+    // The reporter creates the file; start from a removed path (dropping a
+    // NamedTempFile already deletes it).
+    let out_path = out.path().to_path_buf();
+    drop(out);
+    assert!(!out_path.exists());
+
+    assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args([
+            "run",
+            "-f",
+            test_file.path().to_str().unwrap(),
+            "-c",
+            config_file.path().to_str().unwrap(),
+            "--report",
+            &format!("html:{}", out_path.display()),
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("html report written"));
+
+    let html = std::fs::read_to_string(&out_path).expect("html report written");
+    assert!(html.starts_with("<!DOCTYPE html>"));
+    assert_eq!(html.matches("<html").count(), 1, "one <html> element");
+    // Run identity and the steps section are present…
+    assert!(html.contains("perfscale report"), "{html}");
+    assert!(html.contains("id=\"steps\""), "{html}");
+    // …and nothing external is referenced (offline/archivable artifact).
+    assert!(!html.contains("src=\"http"), "{html}");
+    assert!(!html.contains("href=\"http"), "{html}");
+}
+
 // ---------------------------------------------------------------------------
 // Native engine summary content (what the user actually reads)
 // ---------------------------------------------------------------------------

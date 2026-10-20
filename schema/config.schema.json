@@ -322,7 +322,7 @@
       "description": "One configured end-of-run reporter (`report.reporters[]`).",
       "properties": {
         "use": {
-          "description": "Reporter id: `std/report/json@v1` or `std/report/junit@v1`.",
+          "description": "Reporter id: `std/report/json@v1`, `std/report/junit@v1`, or `std/report/html@v1`.",
           "type": "string"
         },
         "with": {
@@ -344,6 +344,9 @@
       "additionalProperties": false,
       "description": "Reporter parameters. Exactly one of `path` / `url` is required.",
       "properties": {
+        "config": {
+          "description": "WASM reporters only: free-form config handed to the guest's `on-report` verbatim (the `config-json` argument)."
+        },
         "headers": {
           "additionalProperties": {
             "type": "string"
@@ -357,6 +360,13 @@
           "minimum": 0.0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "output": {
+          "description": "WASM reporters only: output directory for the guest's `emit-file` writes. Default `./perfscale-report-<module-stem>`.",
+          "type": [
+            "string",
             "null"
           ]
         },

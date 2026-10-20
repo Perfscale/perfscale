@@ -11,3 +11,8 @@ Release notes for the next release, written as features land.
 - If this file has no entries at tag time, the release falls back to
   auto-generated notes and the workflow prints a warning.
 -->
+
+- Built-in `html` reporter (`std/report/html@v1`, `--report html:report.html`):
+  a single self-contained dark-themed page with the run identity, threshold
+  verdicts, a sortable per-step table with samples sparklines, and metric
+  families — all CSS/JS inlined, opens offline, archives as a CI artifact.

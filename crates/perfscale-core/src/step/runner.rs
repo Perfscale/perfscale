@@ -4652,9 +4652,9 @@ mod tests {
             duration: "200ms".into(),
             report: Some(crate::report::ReportRunConfig {
                 reporters: vec![crate::report::ReporterConfig {
-                    use_: "std/report/html@v1".into(),
+                    use_: "std/report/xml@v1".into(),
                     with: crate::report::ReporterWith {
-                        path: Some("out.html".into()),
+                        path: Some("out.xml".into()),
                         ..crate::report::ReporterWith::default()
                     },
                 }],

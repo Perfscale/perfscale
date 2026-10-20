@@ -1,5 +1,6 @@
-//! The canonical `report@v1` data model and the built-in `json` / `junit`
-//! report renderers (issue #9).
+//! The canonical `report@v1` data model and the built-in `json` / `junit` /
+//! `html` report renderers (issue #9). The HTML renderer lives in
+//! [`crate::report::html`] — the model itself stays markup-free.
 //!
 //! # Contract
 //!

@@ -43,7 +43,7 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
     if !reporters.is_empty() {
         perfscale_core::report::validate_reporters(&reporters).map_err(|msg| {
             CliError::new(format!("invalid report configuration: {msg}"))
-                .hint("reporters are declared in the config's `report.reporters` block or via --report json:PATH / junit:PATH")
+                .hint("reporters are declared in the config's `report.reporters` block or via --report json:PATH / junit:PATH / html:PATH")
                 .docs("yaml-reference.md#config--c-configyaml")
         })?;
     }
@@ -424,8 +424,9 @@ fn resolve_report_url(flag_url: Option<&String>, config: Option<&ConfigFile>) ->
 
 /// Split the repeatable `--report` values into the serve URL and reporter
 /// specs. `http(s)://…` values keep the historical serve-URL meaning (at
-/// most one); `json:PATH` / `junit:PATH` declare an end-of-run reporter.
-/// Anything else is a configuration error — fail fast, before the run.
+/// most one); `json:PATH` / `junit:PATH` / `html:PATH` declare an end-of-run
+/// reporter. Anything else is a configuration error — fail fast, before the
+/// run.
 fn parse_report_flags(
     values: &[String],
 ) -> Result<(Option<String>, Vec<perfscale_core::report::ReporterConfig>), CliError> {
@@ -443,11 +444,11 @@ fn parse_report_flags(
         }
         let (name, path) = v.split_once(':').ok_or_else(|| {
             CliError::new(format!("invalid --report value '{v}'"))
-                .hint("expected an http(s):// URL or a reporter spec like `json:out.json` / `junit:out.xml`")
+                .hint("expected an http(s):// URL or a reporter spec like `json:out.json` / `junit:out.xml` / `html:out.html`")
         })?;
         if perfscale_core::report::reporter_kind(name).is_none() {
             return Err(CliError::new(format!("unknown reporter '{name}'"))
-                .hint("built-in reporters: json, junit (config file: std/report/json@v1, std/report/junit@v1)"));
+                .hint("built-in reporters: json, junit, html (config file: std/report/json@v1, std/report/junit@v1, std/report/html@v1)"));
         }
         if path.is_empty() {
             return Err(
@@ -667,6 +668,7 @@ async fn deliver_reports(
         let body = match perfscale_core::report::reporter_kind(&r.use_) {
             Some(perfscale_core::report::ReporterKind::Json) => doc.to_json(),
             Some(perfscale_core::report::ReporterKind::Junit) => doc.to_junit_xml(),
+            Some(perfscale_core::report::ReporterKind::Html) => doc.to_html(),
             // Validated before the run started.
             None => continue,
         };
@@ -731,6 +733,7 @@ async fn push_report_http(
 ) -> Result<(), String> {
     let content_type = match perfscale_core::report::reporter_kind(&r.use_) {
         Some(perfscale_core::report::ReporterKind::Junit) => "application/xml",
+        Some(perfscale_core::report::ReporterKind::Html) => "text/html; charset=utf-8",
         _ => "application/json",
     };
     let client = reqwest::Client::new();

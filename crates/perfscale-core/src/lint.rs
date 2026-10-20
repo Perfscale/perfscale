@@ -801,7 +801,7 @@ fn lint_reporters(report: &serde_json::Map<String, Value>, issues: &mut Vec<Lint
                 location: loc.clone(),
                 problem: "a reporter entry needs `use:` naming the reporter".into(),
                 suggestion: Some(
-                    "built-ins: std/report/json@v1, std/report/junit@v1; or wasm:./path/to/reporter.wasm"
+                    "built-ins: std/report/json@v1, std/report/junit@v1, std/report/html@v1; or wasm:./path/to/reporter.wasm"
                         .into(),
                 ),
             }),
@@ -812,7 +812,7 @@ fn lint_reporters(report: &serde_json::Map<String, Value>, issues: &mut Vec<Lint
                     location: format!("{loc}/use"),
                     problem: format!("unknown reporter '{u}'"),
                     suggestion: Some(
-                        "built-ins: std/report/json@v1, std/report/junit@v1; or wasm:./path/to/reporter.wasm"
+                        "built-ins: std/report/json@v1, std/report/junit@v1, std/report/html@v1; or wasm:./path/to/reporter.wasm"
                             .into(),
                     ),
                 });
@@ -2525,6 +2525,8 @@ report:
       with: { path: out.json }
     - use: std/report/junit@v1
       with: { url: http://collector:9000/reports, headers: { Authorization: "Bearer ${TOKEN}" }, max_samples: 1000 }
+    - use: std/report/html@v1
+      with: { path: out.html }
 "#;
         assert_eq!(lint(ok, DocKind::Config), vec![]);
 
@@ -2532,14 +2534,14 @@ report:
         let bad = r#"
 report:
   reporters:
-    - use: std/report/html@v1
-      with: { path: out.html }
+    - use: std/report/xml@v1
+      with: { path: out.xml }
 "#;
         let issues = lint(bad, DocKind::Config);
         assert!(
             issues
                 .iter()
-                .any(|i| i.problem.contains("unknown reporter 'std/report/html@v1'")),
+                .any(|i| i.problem.contains("unknown reporter 'std/report/xml@v1'")),
             "{issues:?}"
         );
 
