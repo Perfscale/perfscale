@@ -80,7 +80,11 @@ steps:
 
 Message payloads interpolate like any other step — `${seq}`,
 `${randf(10, 100, 2)}`, `${{ vars.* }}`, outputs of previous steps — so every
-iteration can publish a fresh payload.
+iteration can publish a fresh payload. `${…}` generator tokens also expand in
+`subject` and `subscribe.until_contains`, and one execution is one message:
+the payload and its matcher share one `${seq}` / `${vu}` value, so per-VU
+subjects (`orders.created.${vu}`) and own-message matching
+(`until_contains: "ord-${vu}-${seq}"`) work directly.
 
 ## Consumer with assertions
 
@@ -156,9 +160,17 @@ Every exchange folds into the run summary as custom metrics:
 - `pubsub_msgs_published` — counter (summed over the run); messages
   accepted by the transport. Emitted by every completed exchange, on
   success and on failure (0 for subscribe-only steps). A step that never
-  connected emits no metrics at all.
+  connected emits only `pubsub_errors`.
 - `pubsub_msgs_received` — counter; messages counted toward
   `subscribe.count`. Emitted only when the step has a `subscribe` block.
+- `pubsub_publish_ms` — HDR histogram in ms; the transport's publish-call
+  latency, one sample per published message. For `nats` the final message's
+  sample includes the flush that pushes the batch onto the wire. Emitted
+  whenever at least one message was published.
+- `pubsub_errors` — counter; failed exchanges (connect failure, publish
+  error, subscribe shortfall). Emitted on **every** exchange — 0 on success —
+  so summaries and thresholds always have the error count (the `db_errors`
+  convention).
 - `pubsub_e2e_ms` — HDR histogram in ms (percentiles in the summary); start
   of the publish phase → message consumed, one sample per matched message.
   Emitted only with `subscribe`, and only when at least one message

@@ -260,12 +260,20 @@ of `count` arrived and how many the `until_contains` matcher rejected.
   "received": 1, "duration_ms": 3.21,
   "body": "<joined received payloads>",
   "metrics": { "pubsub_msgs_published": 2, "pubsub_msgs_received": 1,
+               "pubsub_publish_ms": [0.8], "pubsub_errors": 0,
                "pubsub_e2e_ms": [1.2] } }
 ```
 
 `received` / `body` and the `pubsub_msgs_received` / `pubsub_e2e_ms` metrics
 appear only when `subscribe` is given. `pubsub_e2e_ms` holds one sample per
-matched message: start of the publish phase → consumed. `body` is the
+matched message: start of the publish phase → consumed. `pubsub_publish_ms`
+holds one sample per published message — the transport's publish-call
+latency (for `nats` the last message's sample includes the batch flush).
+`pubsub_errors` counts failed exchanges and is emitted on every exchange (0
+on success — the `db_errors` convention). `${…}` generator tokens expand per
+execution in `subject`, `publish`, and `subscribe.until_contains`; one
+execution is one message, so the payload and the matcher share one
+`${seq}` / `${vu}`. `body` is the
 newline-joined matched payloads, so `check: { body_contains: … }` works.
 
 **Examples.** In-memory roundtrip (no broker — both sides in one step):

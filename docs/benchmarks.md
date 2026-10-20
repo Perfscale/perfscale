@@ -40,6 +40,7 @@ wrapping overhead — not the underlying tool.
 | `grpc` | `std/grpc@v1` unary echo against the repo's `grpc_echo_server` example |
 | `graphql` | `std/graphql@v1` query against the repo's `graphql_server` example |
 | `db` | SQL: cold connect+query vs warm VU-scoped connections vs transactions (`std/db-*@v1`, PostgreSQL + in-process SQLite), plus the warm shape from locust (psycopg2), JMeter (JDBC) and k6 — the k6 row is a **custom binary** built with the `xk6-sql` extension + postgres driver (stock k6 has no SQL module), used only by this row |
+| `pubsub` | Pub/sub: publish throughput and pub/sub roundtrip e2e latency (`std/pubsub@v1`) against the in-process `memory` bus (cost floor, no broker) and a NATS broker (`BENCH_NATS_URL`), plus k6 rows via a **custom binary** built with the Pondigo/xk6-nats extension (stock k6 has no NATS module), in warm (connection per VU) and cold (connect per iteration — the fair twin of perfscale's connect-per-exchange nats driver) postures |
 
 JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
 console summary has no percentiles, so it stays out of the `throughput`
@@ -97,6 +98,31 @@ versions pinned, binary cached; `K6_SQL_BIN`, default
 `target/xk6-sql/k6`). Its k6 core version may differ from the stock one — the
 CI environment summary prints both. The custom binary serves only this row;
 every other k6 scenario keeps using the stock binary.
+
+The `pubsub` suite publishes one fixed ~`PUBSUB_PAYLOAD_BYTES` (default 256)
+byte message per iteration. The `memory` rows (`std/pubsub@v1` on the
+in-process broadcast bus) are the engine's cost floor — no broker, like the
+db suite's SQLite rows. The `nats` rows publish to the broker at
+`BENCH_NATS_URL` (default `nats://127.0.0.1:4222`; locally
+`docker run -d -p 4222:4222 nats:2.15-alpine`, in CI a service container) and
+pay connect + publish + flush per iteration — the nats driver's documented
+no-pooling posture, so the connect cost is part of the measurement. The
+`pub/sub e2e` rows subscribe first, publish one marker-tagged message to a
+per-VU subject (`bench.pubsub.vu${vu}`), and wait for exactly that message;
+`e2e p95` is the broker round trip. The `k6 (xk6-nats)` rows are **not stock
+k6**: a custom binary built with the xk6-nats extension (the rongfengliang
+fork of ydarias/xk6-nats — Pondigo/xk6-nats never registers its module and
+cannot be imported at all; the fork pins k6 v1.3.0 on the v1 module path,
+which cannot share a binary with xk6-sql's go.k6.io/k6/v2 core, hence a
+second binary: `K6_NATS_BIN`, default `target/xk6-nats/k6`, built by the
+bench workflow). The **warm** row keeps one connection per VU (init scope,
+the db suite's xk6-sql posture); **cold** connects per iteration — the fair
+twin of the perfscale nats row. There is no k6 roundtrip row: the extension
+invokes its subscribe handler from the nats.go delivery goroutine, racing
+the VU's JS runtime and intermittently panicking the k6 process under load —
+k6 e2e is not measurable with this extension, so e2e latency is native-only.
+k6 latencies are `Date.now()`-grained (1ms), so sub-millisecond publish
+samples read as 0 — compare Msg/s there, and the native rows for latency.
 
 Micro-benchmarks for the native engine's hot paths (YAML parse, `${{ ... }}`
 interpolation, metrics recording / percentile summary, `RingBuf` process-output
@@ -163,6 +189,9 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `BENCH_PG_DSN` | `postgres://postgres:perfscale@127.0.0.1:5432/postgres` | PostgreSQL DSN for the db suite |
 | `BENCH_PG_JDBC_JAR` | autodetected from JMeter's `lib/` | PostgreSQL JDBC driver jar for the JMeter db row |
 | `K6_SQL_BIN` | `target/xk6-sql/k6` | Custom k6 with the xk6-sql extension for the db-suite k6 row (built by the bench workflow) |
+| `PUBSUB_DURATION` / `PUBSUB_PAYLOAD_BYTES` | `10s` / `256` | pubsub-suite per-scenario length / message payload size in bytes |
+| `BENCH_NATS_URL` | `nats://127.0.0.1:4222` | NATS broker URL for the pubsub suite's nats rows |
+| `K6_NATS_BIN` | `target/xk6-nats/k6` | Custom k6 with the xk6-nats extension for the pubsub-suite k6 rows (built by the bench workflow) |
 | `PORT` / `TLS_PORT` | `18999` / `18998` | Ports for the throwaway serve targets |
 | `OUTPUT` | `bench-report.md` | Markdown report path |
 | `RESULTS` | `bench-results.json` | Machine-readable results (regression tracking input) |
