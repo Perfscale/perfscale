@@ -1603,7 +1603,16 @@ async fn execute_step(
     let step_name = step.name.as_deref().unwrap_or(action.as_str());
     let params = step_params(step);
 
+    let step_start = Instant::now();
     let output = execute_action(action, &params, ctx, step_name).await;
+    // Per-step aggregates for the `report@v1` `steps` section (issue #9):
+    // wall duration of the action call plus the failure flag. Kept out of
+    // the k6-compatible summary lines — report-only data.
+    metrics.record_step(
+        step_name,
+        step_start.elapsed().as_secs_f64() * 1000.0,
+        !output.success,
+    );
 
     // Collect HTTP timing and any custom counters the action exposed under the
     // reserved `metrics` key of its output value.

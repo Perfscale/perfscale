@@ -32,6 +32,6 @@ pub use registry::{
     catalog, register_family, MetricDef, MetricKind, MetricsFamily, SamplerContext,
 };
 pub use sharded::ShardedMetrics;
-pub use store::Metrics;
+pub use store::{Metrics, StepAgg, MAX_STORED_STEP_SAMPLES};
 
 pub(crate) use registry::{families, kind_mismatch_warning};

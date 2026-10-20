@@ -26,6 +26,70 @@ const HIST_HIGH_MICROS: u64 = 3_600_000_000;
 /// Two significant digits → quantiles within ≤1% of the true value.
 const HIST_SIGFIGS: u8 = 2;
 
+/// Cap on raw per-step duration samples kept in memory for the `report@v1`
+/// raw-samples option (issue #9). Past the cap recording continues (counts
+/// and histograms stay exact) but samples are dropped and the report marks
+/// the step's sample block `truncated: true`. 100k × 8B ≈ 800KB per step.
+pub const MAX_STORED_STEP_SAMPLES: usize = 100_000;
+
+/// Per-step aggregates for the `report@v1` data model: invocation count,
+/// failure count, a duration histogram (same HDR settings as request
+/// durations), and — for the raw-samples option — the first
+/// [`MAX_STORED_STEP_SAMPLES`] durations in milliseconds.
+#[derive(Debug)]
+pub struct StepAgg {
+    pub count: u64,
+    pub failed: u64,
+    pub durations_micros: hdrhistogram::Histogram<u64>,
+    /// Raw duration samples (ms), capped at [`MAX_STORED_STEP_SAMPLES`].
+    pub samples: Vec<f64>,
+    /// Total samples observed, including those dropped past the cap — the
+    /// report's `truncated` flag is `samples_recorded > samples.len()`.
+    pub samples_recorded: u64,
+}
+
+impl StepAgg {
+    fn new() -> Self {
+        Self {
+            count: 0,
+            failed: 0,
+            durations_micros: hdrhistogram::Histogram::new_with_bounds(
+                HIST_LOW_MICROS,
+                HIST_HIGH_MICROS,
+                HIST_SIGFIGS,
+            )
+            .expect("static histogram bounds are valid"),
+            samples: Vec::new(),
+            samples_recorded: 0,
+        }
+    }
+
+    fn record(&mut self, ms: f64, failed: bool) {
+        self.count += 1;
+        self.failed += failed as u64;
+        let micros = (ms * 1000.0).round() as u64;
+        let _ = self
+            .durations_micros
+            .record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
+        self.samples_recorded += 1;
+        if self.samples.len() < MAX_STORED_STEP_SAMPLES {
+            self.samples.push(ms);
+        }
+    }
+
+    fn merge_from(&mut self, other: &StepAgg) {
+        self.count += other.count;
+        self.failed += other.failed;
+        self.durations_micros
+            .add(&other.durations_micros)
+            .expect("all run histograms share the same bounds");
+        self.samples_recorded += other.samples_recorded;
+        let room = MAX_STORED_STEP_SAMPLES.saturating_sub(self.samples.len());
+        self.samples
+            .extend(other.samples.iter().take(room).copied());
+    }
+}
+
 /// Per-run HTTP metrics accumulator.
 ///
 /// Public only so `benches/` can exercise the hot paths (`record`, quantile
@@ -63,6 +127,10 @@ pub struct Metrics {
     /// Outcomes of `std/thresholds@v1` steps (run in `after:`), combined into
     /// the run summary's `thresholds` field at the end of the run.
     pub(crate) threshold_results: Vec<crate::step::thresholds::ThresholdsSummary>,
+    /// Per-step aggregates (keyed by step name), recorded by the runner for
+    /// every step invocation — the `steps` section of `report@v1`. Not part
+    /// of the k6-compatible summary lines.
+    pub(crate) steps: std::collections::BTreeMap<String, StepAgg>,
 }
 
 impl Default for Metrics {
@@ -81,6 +149,7 @@ impl Default for Metrics {
             rates: std::collections::BTreeMap::new(),
             gauges: std::collections::BTreeMap::new(),
             threshold_results: Vec::new(),
+            steps: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -216,7 +285,9 @@ impl Metrics {
     /// approximate: the histograms share bounds and significant figures, so
     /// HDR `add` sums identical bucket layouts; counters/rates sum; gauges
     /// take the max (the gauges in use are peak readings like
-    /// `engine_log_channel_depth_max`); threshold outcomes concatenate.
+    /// `engine_log_channel_depth_max`); threshold outcomes concatenate;
+    /// per-step aggregates merge field-wise (raw samples fill up to the cap
+    /// in shard order).
     pub(crate) fn merge_from(&mut self, other: &Metrics) {
         self.durations_micros
             .add(&other.durations_micros)
@@ -251,6 +322,29 @@ impl Metrics {
         }
         self.threshold_results
             .extend(other.threshold_results.iter().cloned());
+        for (name, agg) in &other.steps {
+            self.steps
+                .entry(name.clone())
+                .or_insert_with(StepAgg::new)
+                .merge_from(agg);
+        }
+    }
+
+    /// Per-step aggregates keyed by step name, for the `report@v1` builder.
+    pub(crate) fn step_aggs(&self) -> &std::collections::BTreeMap<String, StepAgg> {
+        &self.steps
+    }
+
+    /// Record one step invocation for the `report@v1` per-step section:
+    /// duration (milliseconds) and whether the invocation failed.
+    pub(crate) fn record_step(&mut self, name: &str, ms: f64, failed: bool) {
+        if self.steps.get_mut(name).is_none() {
+            self.steps.insert(name.to_string(), StepAgg::new());
+        }
+        self.steps
+            .get_mut(name)
+            .expect("inserted above")
+            .record(ms, failed);
     }
 
     /// Store the outcome of a `std/thresholds@v1` step for the run summary.

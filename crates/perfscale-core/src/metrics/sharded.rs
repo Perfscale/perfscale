@@ -143,6 +143,12 @@ impl ShardedMetrics {
         self.home().lock().unwrap().record_threshold_result(result);
     }
 
+    /// One step invocation for the `report@v1` per-step section — see
+    /// [`Metrics::record_step`].
+    pub(crate) fn record_step(&self, name: &str, ms: f64, failed: bool) {
+        self.home().lock().unwrap().record_step(name, ms, failed);
+    }
+
     /// Total requests recorded across all shards.
     pub fn total_requests(&self) -> u64 {
         self.shards
