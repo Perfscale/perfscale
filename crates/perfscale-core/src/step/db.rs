@@ -745,6 +745,9 @@ where
 /// invisible in metrics — the step simply succeeds. A genuine user error (a
 /// real bind-count mismatch is also 08P01) fails the wrapped retry too: it
 /// is reported unchanged and the flag stays off.
+// Connection + query knobs travel together through the db family; an opts
+// struct would only reshuffle the same list.
+#[allow(clippy::too_many_arguments)]
 async fn run_pg_held_autocommit(
     held: &mut Option<DbHeld>,
     pool: &sqlx::PgPool,
