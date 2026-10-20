@@ -348,6 +348,19 @@ pub struct ThresholdViolation {
     pub actual: f64,
 }
 
+/// One evaluated expression, pass or fail — the `report@v1` verdicts array is
+/// built from these, so a CI gate can be driven from the report alone (a
+/// passing gate's expressions are just as much a verdict as a violated one).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ThresholdCheck {
+    pub metric: String,
+    /// The expression as written, e.g. `"p95<500"`.
+    pub expr: String,
+    /// The aggregate's actual value.
+    pub actual: f64,
+    pub pass: bool,
+}
+
 /// The outcome of a `std/thresholds@v1` step — also the shape the run
 /// summary JSON gains under `thresholds`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -359,6 +372,11 @@ pub struct ThresholdsSummary {
     pub message: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub violations: Vec<ThresholdViolation>,
+    /// Every evaluated expression with its outcome (pass and fail alike) —
+    /// the source of the `report@v1` verdicts array. Additive to the summary
+    /// line shape: old files without it parse with an empty list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<ThresholdCheck>,
 }
 
 /// Severity of a gate: what `status` becomes when any expression is violated.
@@ -433,6 +451,7 @@ pub fn evaluate(
     }
 
     let mut violations: Vec<(ThresholdViolation, String)> = Vec::new();
+    let mut checks: Vec<ThresholdCheck> = Vec::new();
 
     for (metric, exprs) in entries {
         let expr_strs: Vec<String> = match exprs {
@@ -493,7 +512,14 @@ pub fn evaluate(
             }
 
             let actual = agg.value_of(expr.agg);
-            if !expr.op.holds(actual, expr.value) {
+            let pass = expr.op.holds(actual, expr.value);
+            checks.push(ThresholdCheck {
+                metric: metric.clone(),
+                expr: expr.raw.clone(),
+                actual,
+                pass,
+            });
+            if !pass {
                 let suffix = match (agg.kind, expr.agg) {
                     (MetricKind::Sample, Agg::Count) => "",
                     (MetricKind::Sample, _) => "ms",
@@ -543,6 +569,7 @@ pub fn evaluate(
         status,
         message,
         violations: violations.into_iter().map(|(v, _)| v).collect(),
+        checks,
     })
 }
 
@@ -575,11 +602,13 @@ pub fn combine(mut results: Vec<ThresholdsSummary>) -> Option<ThresholdsSummary>
             .collect::<Vec<_>>()
             .join("; "),
     );
-    let violations = results.into_iter().flat_map(|r| r.violations).collect();
+    let violations = results.iter().flat_map(|r| r.violations.clone()).collect();
+    let checks = results.into_iter().flat_map(|r| r.checks).collect();
     Some(ThresholdsSummary {
         status,
         message,
         violations,
+        checks,
     })
 }
 
@@ -628,6 +657,7 @@ pub(crate) fn thresholds_action(params: &Value, ctx: &Context, step_name: &str) 
                 status: "fail".to_string(),
                 message: truncate_message(&format!("config error: {e}")),
                 violations: Vec::new(),
+                checks: Vec::new(),
             }),
         }
         result
@@ -985,6 +1015,7 @@ mod tests {
             status: status.to_string(),
             message: msg.to_string(),
             violations: vec![],
+            checks: vec![],
         };
         assert!(combine(vec![]).is_none());
         assert_eq!(combine(vec![mk("pass", "a")]).unwrap().status, "pass");

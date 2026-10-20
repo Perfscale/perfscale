@@ -36,6 +36,7 @@
 //! | `publish`    | string \| array | —          | One message, or a list; non-strings are serialized to JSON text; `${…}` generator tokens expand per execution |
 //! | `subscribe`  | object          | —          | `{ count, until_contains, timeout_ms }` — wait for `count` messages (default 1) that each contain `until_contains` (optional), within `timeout_ms` (default 5000) |
 //! | `options`    | object          | —          | Driver-specific tuning, passed through verbatim (ignored by the built-in drivers; pro drivers use it for QoS, consumer groups, auth, …) |
+//! | `scope`      | string          | `"exchange"` | Connection lifetime: `exchange` opens a fresh broker connection per execution (connect cost is part of the measurement); `vu` reuses one connection per VU across executions. Only broker-backed drivers honour it (`memory` is in-process) |
 //!
 //! `${…}` generator tokens expand per execution in `subject`, `publish`, and
 //! `subscribe.until_contains` — one execution is one message, so the payload
@@ -53,10 +54,14 @@
 //!   "received": 1, "duration_ms": 3.21,
 //!   "body": "<joined received payloads, for check: body_contains>",
 //!   "metrics": { "pubsub_msgs_published": 2, "pubsub_msgs_received": 1,
-//!                "pubsub_publish_ms": [0.8], "pubsub_errors": 0,
-//!                "pubsub_e2e_ms": [1.2] } }
+//!                "pubsub_connect_ms": [2.1], "pubsub_publish_ms": [0.8],
+//!                "pubsub_errors": 0, "pubsub_e2e_ms": [1.2] } }
 //! ```
 //!
+//! `pubsub_connect_ms` holds one sample per exchange that actually opened a
+//! broker connection: every `scope: exchange` exchange, and only the first
+//! exchange of each VU under `scope: vu` — keeping the connect cost visible
+//! separately instead of hiding it inside `pubsub_publish_ms`.
 //! `pubsub_publish_ms` holds one sample per published message: the transport's
 //! own publish-call latency (for `nats` the final message's sample includes
 //! the flush that pushes the batch onto the wire). `pubsub_errors` is a
@@ -109,6 +114,26 @@ pub struct PubSubParams {
     /// verbatim. The built-in drivers ignore it; downstream (proprietary)
     /// drivers read their own keys out of it.
     pub options: Map<String, Value>,
+    /// Connection lifetime requested for this step — see [`PubSubScope`].
+    pub scope: PubSubScope,
+}
+
+/// Connection lifetime for a `std/pubsub@v1` step.
+///
+/// - `Exchange` (default): the driver opens a fresh broker connection per
+///   exchange and drops it at the end — the connect cost is part of the
+///   measurement (and visible separately via the `pubsub_connect_ms`
+///   histogram).
+/// - `Vu`: the driver keeps one connection per VU and reuses it across
+///   exchanges (the db family's `scope: vu` posture). Broker-backed drivers
+///   honour it; the in-process `memory` driver has no connection to scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PubSubScope {
+    /// Fresh connection per exchange (default).
+    #[default]
+    Exchange,
+    /// One connection per VU, reused across exchanges.
+    Vu,
 }
 
 /// The `subscribe` object: wait for `count` matching messages.
@@ -170,6 +195,13 @@ impl PubSubParams {
             Some(_) => return Err("'options' must be an object".into()),
         };
 
+        let scope = match params.get("scope") {
+            None | Some(Value::Null) => PubSubScope::Exchange,
+            Some(Value::String(s)) if s == "exchange" => PubSubScope::Exchange,
+            Some(Value::String(s)) if s == "vu" => PubSubScope::Vu,
+            Some(_) => return Err("'scope' must be exchange or vu".into()),
+        };
+
         Ok(PubSubParams {
             driver,
             subject,
@@ -177,6 +209,7 @@ impl PubSubParams {
             publish,
             subscribe,
             options,
+            scope,
         })
     }
 }
@@ -200,6 +233,11 @@ fn message_bytes(v: &Value) -> Vec<u8> {
 pub struct PubSubOutcome {
     /// Messages accepted by the transport.
     pub published: u64,
+    /// Broker connect time (ms) when this exchange opened a connection:
+    /// every `scope: exchange` exchange, and only the first exchange of each
+    /// VU under `scope: vu`. `None` on a cache hit or for transports without
+    /// connections (`memory`).
+    pub connect_ms: Option<f64>,
     /// One sample (ms) per published message: the transport's publish-call
     /// latency. Drivers that flush after a batch fold the flush into the
     /// last message's sample.
@@ -222,6 +260,20 @@ pub struct PubSubOutcome {
 pub type PubSubFuture<'a> =
     Pin<Box<dyn Future<Output = Result<PubSubOutcome, String>> + Send + 'a>>;
 
+/// Execution context handed to [`PubSubDriver::run`] alongside the params.
+/// Public so downstream driver crates can implement the `scope: vu`
+/// connection-reuse posture the same way the built-in drivers do.
+#[derive(Debug, Clone, Copy)]
+pub struct PubSubContext {
+    /// Key identifying the calling VU. When `params.scope` is
+    /// [`PubSubScope::Vu`], a driver may cache one connection per
+    /// `(vu_key, connect config)` and reuse it across exchanges; with the
+    /// default `Exchange` scope the key is irrelevant (nothing may be
+    /// cached). Drivers own their caches — there is no VU-end callback, so a
+    /// cached connection lives until process exit.
+    pub vu_key: u64,
+}
+
 /// A pluggable pub/sub transport supplied by this crate (`memory`, `nats`)
 /// or a downstream one (proprietary Kafka, Redis, …).
 ///
@@ -230,12 +282,19 @@ pub type PubSubFuture<'a> =
 /// `subscribe.timeout_ms` passes. A timeout is NOT an `Err` — return
 /// `Ok(outcome)` with `outcome.matched.len() < count` and let the caller
 /// frame the failure; reserve `Err` for hard failures (connect, publish).
+///
+/// Connection lifetime follows `params.scope` (see [`PubSubScope`]): with
+/// `Exchange` every `run` opens (and reports via
+/// [`PubSubOutcome::connect_ms`]) a fresh connection; with `Vu` a driver
+/// reuses one connection per [`PubSubContext::vu_key`]. Transports without
+/// connections ignore both.
 pub trait PubSubDriver: Send + Sync {
     /// Driver name as used in `with: { driver: "…" }` (e.g. `"memory"`).
     fn name(&self) -> &'static str;
 
-    /// Run one exchange. `params` already has `${{ }}` interpolation applied.
-    fn run<'a>(&'a self, params: &'a PubSubParams) -> PubSubFuture<'a>;
+    /// Run one exchange. `params` already has `${{ }}` interpolation applied;
+    /// `ctx` carries the VU key for `scope: vu` connection reuse.
+    fn run<'a>(&'a self, params: &'a PubSubParams, ctx: &'a PubSubContext) -> PubSubFuture<'a>;
 }
 
 fn driver_registry() -> &'static RwLock<Vec<Arc<dyn PubSubDriver>>> {
@@ -347,7 +406,7 @@ impl PubSubDriver for MemoryDriver {
         "memory"
     }
 
-    fn run<'a>(&'a self, params: &'a PubSubParams) -> PubSubFuture<'a> {
+    fn run<'a>(&'a self, params: &'a PubSubParams, _ctx: &'a PubSubContext) -> PubSubFuture<'a> {
         Box::pin(async move {
             let tx = bus_channel(&params.subject);
             // Receivers BEFORE publishing (the subscribe-first rule). A
