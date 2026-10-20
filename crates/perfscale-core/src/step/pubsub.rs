@@ -1132,7 +1132,9 @@ mod tests {
             let out = execute_action("std/pubsub@v1", &cold, &Context::new(), "exchange").await;
             assert!(out.success, "{:?}", out.logs);
             assert_eq!(
-                out.value["metrics"]["pubsub_connect_ms"].as_array().map(Vec::len),
+                out.value["metrics"]["pubsub_connect_ms"]
+                    .as_array()
+                    .map(Vec::len),
                 Some(1),
                 "scope: exchange connects every time"
             );
