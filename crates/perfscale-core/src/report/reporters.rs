@@ -1,16 +1,21 @@
 //! End-of-run reporter configuration (`report.reporters`, issue #9).
 //!
 //! Reporters use the same `use:`/`with:` shape as steps: `use` names a
-//! built-in renderer (`std/report/json@v1`, `std/report/junit@v1`) and
-//! `with` picks the destination — a local file (`path`) or an HTTP push
-//! (`url`, with optional `headers` whose values may reference environment
-//! variables as `${VAR}`; the references are interpolated host-side and
-//! never logged or embedded into the report).
+//! built-in renderer (`std/report/json@v1`, `std/report/junit@v1`) or a WASM
+//! reporter component (`wasm:./reporter.wasm`, see `crate::report::wasm` and
+//! `wit/reporter.wit`). For built-ins, `with` picks the destination — a
+//! local file (`path`) or an HTTP push (`url`, with optional `headers` whose
+//! values may reference environment variables as `${VAR}`; the references
+//! are interpolated host-side and never logged or embedded into the report).
+//! WASM reporters ignore `path`/`url`: they write through the host's
+//! `emit-file` into `with.output` (default `./perfscale-report-<module>`)
+//! and receive the free-form `with.config` block as their config.
 //!
 //! Configuration errors (unknown reporter, missing destination, a `${VAR}`
-//! reference to an unset variable) are fail-fast: lint flags them and the
-//! run refuses to start ([`validate_reporters`]). Runtime delivery errors
-//! are best-effort — logged and counted, never run-killing.
+//! reference to an unset variable, an unloadable WASM module) are fail-fast:
+//! lint flags them and the run refuses to start ([`validate_reporters`]).
+//! Runtime delivery errors are best-effort — logged and counted, never
+//! run-killing.
 
 use std::collections::BTreeMap;
 
@@ -54,6 +59,16 @@ pub struct ReporterWith {
     /// [`MAX_STORED_STEP_SAMPLES`], `0` disables the samples block).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_samples: Option<usize>,
+
+    /// WASM reporters only: output directory for the guest's `emit-file`
+    /// writes. Default `./perfscale-report-<module-stem>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+
+    /// WASM reporters only: free-form config handed to the guest's
+    /// `on-report` verbatim (the `config-json` argument).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Value>,
 }
 
 impl ReporterWith {
@@ -78,6 +93,12 @@ pub fn reporter_kind(use_: &str) -> Option<ReporterKind> {
         "std/report/junit@v1" | "junit" => Some(ReporterKind::Junit),
         _ => None,
     }
+}
+
+/// The module path of a WASM reporter id (`wasm:./path/to/reporter.wasm`),
+/// or `None` when `use_` does not name a WASM reporter.
+pub fn wasm_reporter_module(use_: &str) -> Option<&str> {
+    use_.strip_prefix("wasm:").filter(|p| !p.is_empty())
 }
 
 /// All `${VAR}` references in `s`, in order of appearance.
@@ -120,25 +141,30 @@ pub fn resolve_env_refs(s: &str) -> Result<String, String> {
 /// location hints.
 pub fn validate_reporters(reporters: &[ReporterConfig]) -> Result<(), String> {
     for r in reporters {
-        let kind = reporter_kind(&r.use_).ok_or_else(|| {
-            format!(
-                "unknown reporter '{}' — built-ins: std/report/json@v1, std/report/junit@v1",
-                r.use_
-            )
-        })?;
-        let _ = kind;
-        match (&r.with.path, &r.with.url) {
-            (Some(_), Some(_)) => {
+        if let Some(module) = wasm_reporter_module(&r.use_) {
+            validate_wasm_reporter(r, module)?;
+        } else {
+            if reporter_kind(&r.use_).is_none() {
                 return Err(format!(
-                    "reporter '{}': `with.path` and `with.url` are mutually exclusive",
+                    "unknown reporter '{}' — built-ins: std/report/json@v1, std/report/junit@v1; or a WASM reporter: wasm:./path/to/reporter.wasm",
+                    r.use_
+                ));
+            }
+            match (&r.with.path, &r.with.url) {
+                (Some(_), Some(_)) => {
+                    return Err(format!(
+                        "reporter '{}': `with.path` and `with.url` are mutually exclusive",
+                        r.use_
+                    ))
+                }
+                (None, None) => {
+                    return Err(format!(
+                    "reporter '{}' needs a destination: `with.path` (file) or `with.url` (HTTP push)",
                     r.use_
                 ))
+                }
+                _ => {}
             }
-            (None, None) => return Err(format!(
-                "reporter '{}' needs a destination: `with.path` (file) or `with.url` (HTTP push)",
-                r.use_
-            )),
-            _ => {}
         }
         for (k, v) in &r.with.headers {
             for var in env_refs(v) {
@@ -152,6 +178,36 @@ pub fn validate_reporters(reporters: &[ReporterConfig]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Fail-fast checks for a `wasm:` reporter: `path`/`url` do not apply (the
+/// guest writes via `emit-file`), and the module must exist, compile and
+/// export the `perfscale:reporter` world before the run starts.
+fn validate_wasm_reporter(r: &ReporterConfig, module: &str) -> Result<(), String> {
+    if r.with.path.is_some() || r.with.url.is_some() {
+        return Err(format!(
+            "reporter '{}': `with.path`/`with.url` do not apply to WASM reporters — the guest writes through emit-file into `with.output`",
+            r.use_
+        ));
+    }
+    wasm_module_check(&r.use_, module)
+}
+
+/// The module exists, compiles and exports the `perfscale:reporter` world.
+/// Without the `wasm-libs` feature a `wasm:` reporter is unsupported.
+#[cfg(feature = "wasm-libs")]
+fn wasm_module_check(use_: &str, module: &str) -> Result<(), String> {
+    crate::report::wasm::WasmReporter::check(std::path::Path::new(module))
+        .map_err(|e| format!("reporter '{use_}': {e}"))
+}
+
+/// The module exists, compiles and exports the `perfscale:reporter` world.
+/// Without the `wasm-libs` feature a `wasm:` reporter is unsupported.
+#[cfg(not(feature = "wasm-libs"))]
+fn wasm_module_check(use_: &str, _module: &str) -> Result<(), String> {
+    Err(format!(
+        "reporter '{use_}': WASM reporters need the `wasm-libs` feature, which this build lacks"
+    ))
 }
 
 #[cfg(test)]
@@ -231,5 +287,50 @@ mod tests {
         }];
         let err = validate_reporters(&r).unwrap_err();
         assert!(err.contains("PERFSCALE_UNSET_VAR_XYZ"), "{err}");
+    }
+
+    #[test]
+    fn wasm_reporter_ids_parse_and_validate_the_module() {
+        assert_eq!(
+            wasm_reporter_module("wasm:./out/r.wasm"),
+            Some("./out/r.wasm")
+        );
+        assert_eq!(wasm_reporter_module("wasm:"), None);
+        assert_eq!(wasm_reporter_module("json"), None);
+
+        // The module must exist, compile and export the reporter world
+        // (builds without `wasm-libs` reject the reporter outright).
+        let r = vec![ReporterConfig {
+            use_: "wasm:/definitely/missing.wasm".into(),
+            with: ReporterWith::default(),
+        }];
+        let err = validate_reporters(&r).unwrap_err();
+        #[cfg(feature = "wasm-libs")]
+        assert!(err.contains("failed to read"), "{err}");
+        #[cfg(not(feature = "wasm-libs"))]
+        assert!(err.contains("wasm-libs"), "{err}");
+
+        // `path`/`url` are built-in destinations; they do not apply to wasm.
+        let r = vec![ReporterConfig {
+            use_: "wasm:./r.wasm".into(),
+            with: ReporterWith {
+                path: Some("out.txt".into()),
+                ..ReporterWith::default()
+            },
+        }];
+        let err = validate_reporters(&r).unwrap_err();
+        assert!(err.contains("do not apply to WASM reporters"), "{err}");
+
+        // A wasm reporter needs no destination and passes the dest check.
+        let r = vec![ReporterConfig {
+            use_: "wasm:./r.wasm".into(),
+            with: ReporterWith {
+                output: Some("out".into()),
+                config: Some(serde_json::json!({"style": "short"})),
+                ..ReporterWith::default()
+            },
+        }];
+        let err = validate_reporters(&r).unwrap_err();
+        assert!(!err.contains("needs a destination"), "{err}");
     }
 }

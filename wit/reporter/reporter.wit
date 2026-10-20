@@ -1,0 +1,54 @@
+// perfscale reporter ABI, version 0.1 (issue #9).
+//
+// Single source of truth for the contract between the engine (host,
+// `crates/perfscale-core/src/report/wasm.rs`) and WASM end-of-run reporters
+// (guests, e.g. written in JS/TS via `@perfscale/library-sdk`'s
+// `defineReporter`). Both sides generate bindings from this file — keep it
+// in sync with `sdk-libraries/ts/wit/reporter.wit` and bump the package
+// version on any change.
+//
+// A reporter runs exactly once per run, after the run completes: the host
+// hands it the canonical `report@v1` document verbatim plus the reporter's
+// own `with:` config, and the guest renders whatever it likes, writing
+// output files exclusively through the `emit-file` host call.
+package perfscale:reporter@0.1.0;
+
+/// The host side of the contract — the only channel a reporter has to the
+/// outside world. Reporters get NO WASI filesystem/network access by
+/// default: every output file goes through `emit-file`, which confines
+/// writes to the reporter's output directory.
+interface host {
+    /// Write `contents` to the file `name` inside the reporter's output
+    /// directory (`with.output`, default `./perfscale-report-<module>`).
+    ///
+    /// `name` must be a relative, traversal-safe path: no absolute paths,
+    /// no `..` components, no drive/prefix syntax. The host creates missing
+    /// parent directories. A violation (or any I/O failure) returns an
+    /// error string to the guest — it is the guest's choice to propagate
+    /// it from `on-report` or ignore it; the host counts a failed
+    /// `on-report` as a reporter error but never fails the run over it.
+    emit-file: func(name: string, contents: string) -> result<_, string>;
+}
+
+interface reporter {
+    /// Called once at end of run.
+    ///
+    /// - `report-json`: the canonical `report@v1` document, serialized
+    ///   exactly as the `std/report/json@v1` built-in renders it.
+    /// - `config-json`: the reporter's `with.config` block (free-form
+    ///   JSON), or `{}` when unset.
+    ///
+    /// Returns a human-readable one-line summary (logged by the host) or an
+    /// error string, which the host logs and counts as a reporter error —
+    /// the run's exit code is never affected.
+    on-report: func(report-json: string, config-json: string) -> result<string, string>;
+}
+
+world perfscale-reporter {
+    import host;
+    export reporter;
+    // Guests built with jco/StarlingMonkey (TS/JS) may still *import*
+    // wasi:filesystem/wasi:clocks as toolchain noise; the host links those
+    // interfaces but attaches no preopens, so actual file access fails at
+    // runtime — `emit-file` is the only way out.
+}

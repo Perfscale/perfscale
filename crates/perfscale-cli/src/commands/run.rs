@@ -28,7 +28,13 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
     let (flag_url, flag_reporters) = parse_report_flags(&args.report)?;
     let labels = parse_labels(&args.label)?;
 
-    let mut plan = resolve_plan(&args, native_test, config.as_ref(), &flag_reporters, &labels)?;
+    let mut plan = resolve_plan(
+        &args,
+        native_test,
+        config.as_ref(),
+        &flag_reporters,
+        &labels,
+    )?;
     let (engine, vus, duration) = plan_meta(&plan);
     let report_url = resolve_report_url(flag_url.as_ref(), config.as_ref());
     let shipper = wire_during_run(&mut plan, report_url.as_ref());
@@ -92,7 +98,14 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
     // document once, deliver per reporter. Runtime delivery errors are
     // best-effort — logged and counted, the run still completes.
     if !reporters.is_empty() {
-        let report = build_report(report_line.as_ref(), engine, vus, duration.clone(), &summary_lines, &labels);
+        let report = build_report(
+            report_line.as_ref(),
+            engine,
+            vus,
+            duration.clone(),
+            &summary_lines,
+            &labels,
+        );
         let errors = deliver_reports(&reporters, &report).await;
         // `perfscale serve` keeps report artifacts: push the document next
         // to the summary lines when a target is connected.
@@ -437,8 +450,10 @@ fn parse_report_flags(
                 .hint("built-in reporters: json, junit (config file: std/report/json@v1, std/report/junit@v1)"));
         }
         if path.is_empty() {
-            return Err(CliError::new(format!("--report {name}: needs a destination path"))
-                .hint("e.g. `--report junit:out.xml`"));
+            return Err(
+                CliError::new(format!("--report {name}: needs a destination path"))
+                    .hint("e.g. `--report junit:out.xml`"),
+            );
         }
         reporters.push(perfscale_core::report::ReporterConfig {
             use_: name.to_string(),
@@ -452,9 +467,7 @@ fn parse_report_flags(
 }
 
 /// Parse `--label KEY=VALUE` values into the report's run labels.
-fn parse_labels(
-    values: &[String],
-) -> Result<serde_json::Map<String, serde_json::Value>, CliError> {
+fn parse_labels(values: &[String]) -> Result<serde_json::Map<String, serde_json::Value>, CliError> {
     let mut out = serde_json::Map::new();
     for v in values {
         let (k, val) = v.split_once('=').ok_or_else(|| {
@@ -575,13 +588,17 @@ fn build_report(
     summary_lines: &[String],
     labels: &serde_json::Map<String, serde_json::Value>,
 ) -> perfscale_core::report::v1::ReportV1 {
-    use perfscale_core::report::v1 as v1;
+    use perfscale_core::report::v1;
 
     if let Some(line) = report_line {
-        if let Ok(report) = serde_json::from_str::<v1::ReportV1>(line.trim_start_matches("report: ")) {
+        if let Ok(report) =
+            serde_json::from_str::<v1::ReportV1>(line.trim_start_matches("report: "))
+        {
             return report;
         }
-        eprintln!("[report] could not parse the engine's report line — falling back to a minimal report");
+        eprintln!(
+            "[report] could not parse the engine's report line — falling back to a minimal report"
+        );
     }
 
     let secs = std::time::SystemTime::now()
@@ -635,6 +652,18 @@ async fn deliver_reports(
     for r in reporters {
         let mut doc = report.clone();
         doc.truncate_samples(r.with.max_samples());
+        // WASM reporters (issue #9): the guest renders and writes via the
+        // host's emit-file — there is no host-side body or destination.
+        if let Some(module) = perfscale_core::report::wasm_reporter_module(&r.use_) {
+            match deliver_wasm_reporter(r, module, &doc).await {
+                Ok(summary) => eprintln!("[report] {}: {summary}", r.use_),
+                Err(e) => {
+                    errors += 1;
+                    eprintln!("[report] reporter {} failed: {e}", r.use_);
+                }
+            }
+            continue;
+        }
         let body = match perfscale_core::report::reporter_kind(&r.use_) {
             Some(perfscale_core::report::ReporterKind::Json) => doc.to_json(),
             Some(perfscale_core::report::ReporterKind::Junit) => doc.to_junit_xml(),
@@ -642,10 +671,11 @@ async fn deliver_reports(
             None => continue,
         };
         let result = if let Some(path) = &r.with.path {
-            std::fs::write(path, &body).map(|_| {
-                eprintln!("[report] {} report written to {path}", r.use_);
-            })
-            .map_err(|e| e.to_string())
+            std::fs::write(path, &body)
+                .map(|_| {
+                    eprintln!("[report] {} report written to {path}", r.use_);
+                })
+                .map_err(|e| e.to_string())
         } else if let Some(url) = &r.with.url {
             push_report_http(r, url, &body).await.map(|_| {
                 eprintln!("[report] {} report pushed to {url}", r.use_);
@@ -659,6 +689,37 @@ async fn deliver_reports(
         }
     }
     errors
+}
+
+/// WASM reporter delivery: load the component, hand it the report@v1
+/// document plus its `with.config`, and let it write through `emit-file`.
+/// The module was already compile-checked by `validate_reporters` before the
+/// run; a guest error here is best-effort (counted, never run-killing).
+async fn deliver_wasm_reporter(
+    r: &perfscale_core::report::ReporterConfig,
+    module: &str,
+    doc: &perfscale_core::report::v1::ReportV1,
+) -> Result<String, String> {
+    let module = module.to_string();
+    let output = r.with.output.clone();
+    let config_json = serde_json::to_string(
+        &r.with
+            .config
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({})),
+    )
+    .map_err(|e| e.to_string())?;
+    let report_json = doc.to_json();
+    // wasmtime is sync; keep the CLI runtime free while the guest renders.
+    tokio::task::spawn_blocking(move || {
+        let reporter = perfscale_core::report::wasm::WasmReporter::load(
+            Path::new(&module),
+            output.as_deref(),
+        )?;
+        reporter.run(&report_json, &config_json)
+    })
+    .await
+    .map_err(|e| format!("reporter task failed to join: {e}"))?
 }
 
 /// HTTP push delivery. `${VAR}` references in header values resolve
@@ -826,7 +887,14 @@ mod tests {
             ..base_args()
         };
         let config = sample_config(None);
-        let plan = resolve_plan(&args, Some(sample_test()), Some(&config), &[], &serde_json::Map::new()).unwrap();
+        let plan = resolve_plan(
+            &args,
+            Some(sample_test()),
+            Some(&config),
+            &[],
+            &serde_json::Map::new(),
+        )
+        .unwrap();
         match plan {
             ExecutionPlan::NativeSteps { config, .. } => assert_eq!(config.vus, 4),
             _ => panic!("expected NativeSteps plan"),
@@ -841,7 +909,14 @@ mod tests {
         };
         let mut config = sample_config(Some("http://localhost:7999"));
         config.report.as_mut().unwrap().during_run = true;
-        let plan = resolve_plan(&args, Some(sample_test()), Some(&config), &[], &serde_json::Map::new()).unwrap();
+        let plan = resolve_plan(
+            &args,
+            Some(sample_test()),
+            Some(&config),
+            &[],
+            &serde_json::Map::new(),
+        )
+        .unwrap();
         match plan {
             ExecutionPlan::NativeSteps {
                 config, metrics_tx, ..
@@ -954,7 +1029,14 @@ mod tests {
             ..base_args()
         };
         let config = sample_config(None);
-        let plan = resolve_plan(&args, Some(sample_test()), Some(&config), &[], &serde_json::Map::new()).unwrap();
+        let plan = resolve_plan(
+            &args,
+            Some(sample_test()),
+            Some(&config),
+            &[],
+            &serde_json::Map::new(),
+        )
+        .unwrap();
         match plan {
             ExecutionPlan::NativeSteps { quiet, .. } => assert!(quiet),
             _ => panic!("expected NativeSteps plan"),

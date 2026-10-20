@@ -159,6 +159,10 @@ report:          # optional — serve forwarding + end-of-run reports
         url: https://collector.example.com/reports   # HTTP push
         headers: { Authorization: "Bearer ${REPORT_TOKEN}" }  # ${VAR} resolved host-side, never logged
         max_samples: 10000    # raw per-step samples to include (default 100000, 0 disables)
+    - use: wasm:./reporters/summary.wasm   # WASM reporter (perfscale:reporter@0.1.0 component)
+      with:
+        output: ./reports      # where the guest's emit-file writes land (default ./perfscale-report-<module>)
+        config: { style: short }  # free-form, handed to the guest verbatim
 
 gpu:             # optional — GPU metrics during the run (native engine)
   enabled: true
@@ -179,7 +183,7 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `report.max_cpu_percent` | `90` | CPU gate: while host CPU% ≥ this, batches are held (no POSTs) and snapshots queued — never dropped — until the gate opens; `0` disables; inert off-Linux |
 | `report.max_pending` | `24` | Soft cap on undelivered batches — crossing it warns, but batches are kept and delivered in order, never dropped mid-run |
 | `report.labels` | — | Run labels (key → value) stamped on the `report@v1` run identity |
-| `report.reporters` | — | End-of-run reporters (`report@v1`): `[{ use, with }]`. Built-ins: `std/report/json@v1` (canonical JSON) and `std/report/junit@v1` (JUnit XML — testsuite = run, testcase per step, failures from threshold verdicts). Destination: exactly one of `with.path` (file) or `with.url` (HTTP push; `with.headers` values may embed `${VAR}` env references, resolved host-side and never logged). `with.max_samples` caps raw per-step samples (default 100000, `0` omits them; a step that recorded more is flagged `truncated: true`). Config errors (unknown reporter, missing destination, unset `${VAR}`) fail at lint/validate before the run; delivery errors are best-effort — logged and counted, the run completes |
+| `report.reporters` | — | End-of-run reporters (`report@v1`): `[{ use, with }]`. Built-ins: `std/report/json@v1` (canonical JSON) and `std/report/junit@v1` (JUnit XML — testsuite = run, testcase per step, failures from threshold verdicts). Destination: exactly one of `with.path` (file) or `with.url` (HTTP push; `with.headers` values may embed `${VAR}` env references, resolved host-side and never logged). `with.max_samples` caps raw per-step samples (default 100000, `0` omits them; a step that recorded more is flagged `truncated: true`). `use: wasm:./path.wasm` loads a WASM reporter component (`perfscale:reporter@0.1.0`, see `wit/reporter/reporter.wit`; relative paths anchor to the declaring file): the guest gets the `report@v1` document plus its `with.config` and writes output only through the host's `emit-file` into `with.output` (path traversal is refused; no WASI fs/net is granted). Config errors (unknown reporter, missing destination, unset `${VAR}`, an unloadable WASM module) fail at lint/validate before the run; delivery errors are best-effort — logged and counted (`engine_report_errors`), the run completes |
 | `gpu` | — | GPU metrics collection — see [GPU metrics](#gpu-metrics-gpu). Native engine only |
 | `engine_metrics` | — | Engine self-observability — see [Engine self-metrics](#engine-self-metrics-engine_metrics). Native engine only |
 | `before` | `[]` | One-time setup steps — see [Setup and variables](#setup-and-variables) |

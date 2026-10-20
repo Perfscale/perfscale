@@ -292,7 +292,8 @@ const REPORT_FIELDS: [&str; 8] = [
     "labels",
 ];
 const REPORTER_FIELDS: [&str; 2] = ["use", "with"];
-const REPORTER_WITH_FIELDS: [&str; 4] = ["path", "url", "headers", "max_samples"];
+const REPORTER_WITH_FIELDS: [&str; 6] =
+    ["path", "url", "headers", "max_samples", "output", "config"];
 const CHECK_FIELDS: [&str; 7] = [
     "on",
     "status",
@@ -746,14 +747,24 @@ fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
     }
 }
 
-/// Fail-fast linting of the config's `report.reporters` block (issue #9):
-/// unknown reporter ids, unknown `with` keys, and a missing destination
+/// Module loadability check for `wasm:` reporters at lint time. Without the
+/// `wasm-libs` feature a WASM reporter is unsupported at all.
+#[cfg(feature = "wasm-libs")]
+fn wasm_reporter_module_check(module: &str) -> Result<(), String> {
+    crate::report::wasm::WasmReporter::check(std::path::Path::new(module))
+}
+
+/// Module loadability check for `wasm:` reporters at lint time. Without the
+/// `wasm-libs` feature a WASM reporter is unsupported at all.
+#[cfg(not(feature = "wasm-libs"))]
+fn wasm_reporter_module_check(_module: &str) -> Result<(), String> {
+    Err("WASM reporters need the `wasm-libs` feature, which this build lacks".into())
+}
+
+/// Fail-fast linting of the config's `report.reporters` block (issue #9):/// unknown reporter ids, unknown `with` keys, and a missing destination
 /// (`path`/`url`) are configuration errors and must surface before the run
 /// starts — same contract as `validate_reporters`, which the run applies.
-fn lint_reporters(
-    report: &serde_json::Map<String, Value>,
-    issues: &mut Vec<LintIssue>,
-) {
+fn lint_reporters(report: &serde_json::Map<String, Value>, issues: &mut Vec<LintIssue>) {
     let Some(reporters) = report.get("reporters") else {
         return;
     };
@@ -773,7 +784,9 @@ fn lint_reporters(
             issues.push(LintIssue {
                 location: loc,
                 problem: "a reporter entry must be an object".into(),
-                suggestion: Some("e.g. `{ use: std/report/json@v1, with: { path: out.json } }`".into()),
+                suggestion: Some(
+                    "e.g. `{ use: std/report/json@v1, with: { path: out.json } }`".into(),
+                ),
             });
             continue;
         };
@@ -782,34 +795,80 @@ fn lint_reporters(
             .get("use")
             .or_else(|| entry.get("uses"))
             .and_then(Value::as_str);
-        match use_ {
-            None => issues.push(LintIssue {
+        let is_wasm = use_.and_then(crate::report::wasm_reporter_module);
+        match (use_, is_wasm) {
+            (None, _) => issues.push(LintIssue {
                 location: loc.clone(),
                 problem: "a reporter entry needs `use:` naming the reporter".into(),
-                suggestion: Some("built-ins: std/report/json@v1, std/report/junit@v1".into()),
+                suggestion: Some(
+                    "built-ins: std/report/json@v1, std/report/junit@v1; or wasm:./path/to/reporter.wasm"
+                        .into(),
+                ),
             }),
-            Some(u) if crate::report::reporter_kind(u).is_none() => issues.push(LintIssue {
-                location: format!("{loc}/use"),
-                problem: format!("unknown reporter '{u}'"),
-                suggestion: Some("built-ins: std/report/json@v1, std/report/junit@v1".into()),
-            }),
+            (Some(u), None)
+                if crate::report::reporter_kind(u).is_none() =>
+            {
+                issues.push(LintIssue {
+                    location: format!("{loc}/use"),
+                    problem: format!("unknown reporter '{u}'"),
+                    suggestion: Some(
+                        "built-ins: std/report/json@v1, std/report/junit@v1; or wasm:./path/to/reporter.wasm"
+                            .into(),
+                    ),
+                });
+            }
             _ => {}
         }
         let with = entry.get("with").and_then(Value::as_object);
+        // WASM reporters deliver through the guest's emit-file; the
+        // destination check is replaced by a module loadability check.
+        if let Some(module) = is_wasm {
+            if let Some(w) = with {
+                unknown_field_issues(w, &REPORTER_WITH_FIELDS, &format!("{loc}/with"), issues);
+                if w.get("path").and_then(Value::as_str).is_some()
+                    || w.get("url").and_then(Value::as_str).is_some()
+                {
+                    issues.push(LintIssue {
+                        location: format!("{loc}/with"),
+                        problem: "`path`/`url` do not apply to WASM reporters — the guest writes through emit-file into `with.output`".into(),
+                        suggestion: None,
+                    });
+                }
+            }
+            // Fail-fast: the module must exist, compile and export the
+            // perfscale:reporter world before the run starts.
+            if let Err(e) = wasm_reporter_module_check(module) {
+                issues.push(LintIssue {
+                    location: format!("{loc}/use"),
+                    problem: e,
+                    suggestion: None,
+                });
+            }
+            continue;
+        }
         match with {
             None => issues.push(LintIssue {
                 location: loc.clone(),
-                problem: "a reporter needs a destination: `with.path` (file) or `with.url` (HTTP push)".into(),
+                problem:
+                    "a reporter needs a destination: `with.path` (file) or `with.url` (HTTP push)"
+                        .into(),
                 suggestion: None,
             }),
             Some(w) => {
                 unknown_field_issues(w, &REPORTER_WITH_FIELDS, &format!("{loc}/with"), issues);
-                let has_path = w.get("path").and_then(Value::as_str).is_some_and(|p| !p.is_empty());
-                let has_url = w.get("url").and_then(Value::as_str).is_some_and(|u| !u.is_empty());
+                let has_path = w
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|p| !p.is_empty());
+                let has_url = w
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|u| !u.is_empty());
                 if has_path == has_url {
                     issues.push(LintIssue {
                         location: format!("{loc}/with"),
-                        problem: "exactly one of `path` (file) or `url` (HTTP push) is required".into(),
+                        problem: "exactly one of `path` (file) or `url` (HTTP push) is required"
+                            .into(),
                         suggestion: None,
                     });
                 }
@@ -2492,7 +2551,9 @@ report:
 "#;
         let issues = lint(nodest, DocKind::Config);
         assert!(
-            issues.iter().any(|i| i.problem.contains("needs a destination")),
+            issues
+                .iter()
+                .any(|i| i.problem.contains("needs a destination")),
             "{issues:?}"
         );
 
@@ -2518,7 +2579,9 @@ report:
 "#;
         let issues = lint(typo, DocKind::Config);
         assert!(
-            issues.iter().any(|i| i.location == "/report/reporters/0/with"),
+            issues
+                .iter()
+                .any(|i| i.location == "/report/reporters/0/with"),
             "{issues:?}"
         );
     }

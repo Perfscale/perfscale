@@ -93,11 +93,11 @@ const SUPPORTED_WIT: &str = "perfscale:library/library@0.1.x and @0.2.x";
 /// execution bound: ~50M fuel is generous for value generation (string
 /// formatting, JSON parsing, small corpora lookups measure in the low
 /// thousands) and traps infinite loops long before they hurt tail latency.
-const PER_CALL_FUEL: u64 = 50_000_000;
+pub(crate) const PER_CALL_FUEL: u64 = 50_000_000;
 
 /// Per-instance linear-memory cap: one instance per (library × generator
 /// owner), so this multiplies — keep it tight (RFC 005 pitfall 5).
-const MEMORY_CAP: usize = 64 << 20; // 64 MiB
+pub(crate) const MEMORY_CAP: usize = 64 << 20; // 64 MiB
 
 /// Per-request wall-clock cap for host-mediated HTTP (the `net` capability).
 /// A guest blocked in a hostcall consumes no fuel, so network time is bounded
@@ -149,12 +149,18 @@ pub(crate) fn engine() -> Result<&'static Engine, String> {
 /// context and hooks are always present (cheap); the `net` boundary is that
 /// the linker only connects `wasi:http` when the grant exists — and the
 /// hooks' allowlist then mediates every request.
-struct HostState {
-    ctx: WasiCtx,
-    http_ctx: WasiHttpCtx,
-    hooks: net_allowlist::NetHooks,
-    table: ResourceTable,
-    limits: StoreLimits,
+///
+/// `reporter_output` is set only when the same state type hosts a WASM
+/// reporter (`crate::report::wasm`): the `perfscale:reporter/host.emit-file`
+/// import writes under that directory. Library instances leave it `None` —
+/// they never link the reporter interface.
+pub(crate) struct HostState {
+    pub(crate) ctx: WasiCtx,
+    pub(crate) http_ctx: WasiHttpCtx,
+    pub(crate) hooks: net_allowlist::NetHooks,
+    pub(crate) table: ResourceTable,
+    pub(crate) limits: StoreLimits,
+    pub(crate) reporter_output: Option<PathBuf>,
 }
 
 impl WasiView for HostState {
@@ -187,7 +193,7 @@ impl wasmtime::component::HasData for HasIo {
 /// The `net` capability: host allowlist matching plus the [`WasiHttpHooks`]
 /// implementation that enforces it (and the timeout/body caps) on every
 /// outgoing request.
-mod net_allowlist {
+pub(crate) mod net_allowlist {
     use super::{NET_BODY_CAP, NET_REQUEST_TIMEOUT};
     use bytes::Bytes;
     use http_body::{Body, Frame, SizeHint};
@@ -203,7 +209,7 @@ mod net_allowlist {
     /// `host` (any port), `host:port` (pinned port), `*.suffix` (any host
     /// under the suffix, any port), `*.suffix:port` (wildcard + pinned port).
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(super) struct AllowEntry {
+    pub(crate) struct AllowEntry {
         /// As written in the YAML (error messages).
         pub(super) raw: String,
         host: HostPattern,
@@ -282,12 +288,12 @@ mod net_allowlist {
     /// opened. Wraps the crate's default hyper-based sender with (a) the
     /// allowlist check and (b) the timeout/body caps of
     /// [`NET_REQUEST_TIMEOUT`]/[`NET_BODY_CAP`].
-    pub(super) struct NetHooks {
+    pub(crate) struct NetHooks {
         allowlist: Vec<AllowEntry>,
     }
 
     impl NetHooks {
-        pub(super) fn new(allowlist: Vec<AllowEntry>) -> Self {
+        pub(crate) fn new(allowlist: Vec<AllowEntry>) -> Self {
             Self { allowlist }
         }
     }
@@ -848,6 +854,7 @@ impl WasmLibraryProvider {
                 .tables(16)
                 .memories(1)
                 .build(),
+            reporter_output: None,
         };
         let mut store = Store::new(engine()?, state);
         store.limiter(|s| &mut s.limits);
@@ -1261,7 +1268,7 @@ fn call_guest(
 /// runtimes (`block_in_place`, where `Handle::block_on` is legal) and uses
 /// the blocking pool otherwise; this scoped thread serves the cold paths
 /// (per-run info probe, per-instance init), where a thread spawn is noise.
-fn off_runtime<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+pub(crate) fn off_runtime<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     if tokio::runtime::Handle::try_current().is_err() {
         return f();
     }
@@ -1295,7 +1302,7 @@ fn check_grants(display: &str, capabilities: Option<&[Capability]>) -> Result<Gr
 /// leaving the interfaces out removes the runtime boundary question
 /// entirely). When linked, [`net_allowlist::NetHooks`] mediates every
 /// request.
-fn build_linker(
+pub(crate) fn build_linker(
     engine: &Engine,
     display: &str,
     net_granted: bool,

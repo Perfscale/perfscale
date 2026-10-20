@@ -25,6 +25,17 @@ Release notes for the next release, written as features land.
   series keep labels and the last value's timestamp). With a serve target
   connected, the artifact is also pushed to `POST /api/v1/report`. Config
   errors fail at lint/validate; delivery errors are best-effort.
+- WASM end-of-run reporters (issue #9): `report.reporters` gains
+  `use: wasm:./reporter.wasm` — a WASI component implementing
+  `perfscale:reporter@0.1.0` (`wit/reporter/reporter.wit`). The guest is
+  invoked once per run with the canonical `report@v1` document and its own
+  `with.config` block, and writes output exclusively through the host's
+  `emit-file` (confined to `with.output`, path traversal refused; no WASI
+  fs/net is granted). Author reporters in JS/TS with
+  `@perfscale/library-sdk`'s `defineReporter` and build them with
+  `perfscale-library-build --kind reporter`. Unloadable modules fail at
+  lint/validate; guest errors at delivery are best-effort
+  (`engine_report_errors`), never run-killing.
 - `std/pubsub@v1`: new `scope` parameter (`exchange` | `vu`, default
   `exchange` — the historical connect-per-exchange posture, unchanged).
   With `scope: vu` a broker driver keeps one connection per VU and reuses it

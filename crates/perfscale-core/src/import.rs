@@ -314,10 +314,12 @@ async fn resolve_parsed(
     match &origin {
         Origin::Local { dir } => {
             anchor_library_paths(&mut value, dir);
+            anchor_reporter_paths(&mut value, dir);
             process_remote_libraries(&mut value, dir, opts)?;
         }
         Origin::Git { repo_root, dir, .. } => {
             anchor_library_paths(&mut value, dir);
+            anchor_reporter_paths(&mut value, dir);
             // The lockfile of a git-imported document lives at the root of
             // the clone — that is "next to the declaring file" from the
             // repository's point of view, and `perfscale install` writes it
@@ -603,6 +605,34 @@ fn anchor_library_paths(value: &mut Value, dir: &Path) {
         let path = Path::new(s);
         if !path.is_absolute() {
             *use_val = Value::String(dir.join(path).to_string_lossy().into_owned());
+        }
+    }
+}
+
+/// Rewrite relative `wasm:` reporter module paths (`report.reporters[].use`,
+/// issue #9) to be anchored at `dir` — the same rule as
+/// [`anchor_library_paths`]. Built-in reporters pass through untouched.
+fn anchor_reporter_paths(value: &mut Value, dir: &Path) {
+    let Some(reporters) = value
+        .get_mut("report")
+        .and_then(|r| r.get_mut("reporters"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for entry in reporters.iter_mut() {
+        let Some(use_val) = entry.get_mut("use") else {
+            continue;
+        };
+        let Some(s) = use_val.as_str() else {
+            continue;
+        };
+        let Some(module) = s.strip_prefix("wasm:") else {
+            continue;
+        };
+        let path = Path::new(module);
+        if !path.is_absolute() {
+            *use_val = Value::String(format!("wasm:{}", dir.join(path).to_string_lossy()));
         }
     }
 }

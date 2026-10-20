@@ -19,6 +19,10 @@ pub mod cpu;
 pub mod reporters;
 pub mod stream;
 pub mod v1;
+/// WASM end-of-run reporters — requires the `wasm-libs` feature (the CLI
+/// enables it unconditionally).
+#[cfg(feature = "wasm-libs")]
+pub mod wasm;
 
 use std::time::Duration;
 
@@ -26,8 +30,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use reporters::{
-    reporter_kind, resolve_env_refs, validate_reporters, ReporterConfig, ReporterKind,
-    ReporterWith,
+    reporter_kind, resolve_env_refs, validate_reporters, wasm_reporter_module, ReporterConfig,
+    ReporterKind, ReporterWith,
 };
 pub use stream::{snapshot_to_samples, DuringRunShipper, MetricSnapshot, Sample};
 
