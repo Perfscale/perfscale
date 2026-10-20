@@ -144,6 +144,9 @@ Pub/Sub — [pubsub.md](pubsub.md):
   subscribe-only steps).
 - `pubsub_msgs_received` — counter; messages counted toward
   `subscribe.count`. Only when the step has a `subscribe` block.
+- `pubsub_connect_ms` — HDR histogram (ms); broker connect time, one sample
+  per exchange that opened a connection (every exchange with
+  `scope: exchange`, the first per VU with `scope: vu`).
 - `pubsub_e2e_ms` — HDR histogram (ms); publish-phase start → message
   consumed, one sample per matched message. Only with `subscribe`, and only
   when at least one message matched (a subscribe wait that matched nothing

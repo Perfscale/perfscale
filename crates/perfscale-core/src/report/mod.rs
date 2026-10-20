@@ -17,6 +17,7 @@
 
 pub mod cpu;
 pub mod stream;
+pub mod v1;
 
 use std::time::Duration;
 

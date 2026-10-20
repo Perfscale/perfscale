@@ -167,6 +167,11 @@ Every exchange folds into the run summary as custom metrics:
   latency, one sample per published message. For `nats` the final message's
   sample includes the flush that pushes the batch onto the wire. Emitted
   whenever at least one message was published.
+- `pubsub_connect_ms` — HDR histogram in ms; broker connect time, one sample
+  per exchange that actually opened a connection: **every** exchange under
+  the default `scope: exchange`, only the **first** exchange of each VU under
+  `scope: vu`. Keeps the connect cost visible separately instead of hiding
+  it inside `pubsub_publish_ms`.
 - `pubsub_errors` — counter; failed exchanges (connect failure, publish
   error, subscribe shortfall). Emitted on **every** exchange — 0 on success —
   so summaries and thresholds always have the error count (the `db_errors`
@@ -198,13 +203,36 @@ Gate a run on them with `std/thresholds@v1`:
 
 ## Connection posture
 
-Every exchange is a full cycle: connect → subscribe → publish → collect →
-drop. Connections are not pooled across steps or VU iterations — under load
-each VU opens a fresh broker connection per iteration (except `memory`,
-which is in-process). That keeps the e2e measurement honest — connect cost is
-included — but brokers see real connection churn; size test rates
+The default is `scope: exchange`: every exchange is a full cycle —
+connect → subscribe → publish → collect → drop. Connections are not pooled
+across steps or VU iterations, so the connect cost is part of the
+measurement (visible separately in `pubsub_connect_ms`). Under load each VU
+opens a fresh broker connection per iteration (except `memory`, which is
+in-process) — brokers see real connection churn; size test rates
 accordingly, and prefer `duration`-bounded runs when pointing at a shared
 staging broker.
+
+`scope: vu` switches a broker driver to the warm posture: one connection per
+VU, reused across the VU's exchanges (the db family's `scope: vu` idea):
+
+```yaml
+steps:
+  - name: produce order events
+    use: std/pubsub@v1
+    with:
+      driver: nats
+      url: nats://nats.internal:4222
+      subject: orders.created
+      scope: vu                # one nats connection per VU, reused
+      publish: '{"id":"ord-${seq}"}'
+```
+
+Only the first exchange of each VU pays the connect (`pubsub_connect_ms`
+samples exactly those exchanges). The cached connection lives until the
+process exits; the `nats` driver reconnects internally if the broker drops
+it. Use `scope: vu` for sustained-throughput measurement (the k6 warm
+posture) and the default `scope: exchange` when the connect cost is what you
+are measuring.
 
 ## Limits
 

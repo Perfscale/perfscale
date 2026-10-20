@@ -245,6 +245,7 @@ drivers, which is how you learn your build lacks them.
 | `publish` | string \| array | — | One message or a list; non-strings are serialized to JSON text |
 | `subscribe` | object | — | `{ count, until_contains, timeout_ms }` — wait for `count` messages (default `1`) that each contain `until_contains` (optional), within `timeout_ms` (default `5000`) |
 | `options` | object | — | Driver-specific tuning passed through verbatim — ignored by the built-in drivers; pro drivers (Kafka, Redis, MQTT) use it for QoS, consumer groups, auth, … |
+| `scope` | string | `exchange` | Connection lifetime: `exchange` opens a fresh broker connection per exchange (connect cost included, see `pubsub_connect_ms`); `vu` keeps one connection per VU and reuses it across exchanges. Broker drivers only; `memory` ignores it |
 
 At least one of `publish` / `subscribe` is required. When both are given the
 subscription is established **first**, so a same-subject roundtrip sees its
@@ -260,13 +261,16 @@ of `count` arrived and how many the `until_contains` matcher rejected.
   "received": 1, "duration_ms": 3.21,
   "body": "<joined received payloads>",
   "metrics": { "pubsub_msgs_published": 2, "pubsub_msgs_received": 1,
-               "pubsub_publish_ms": [0.8], "pubsub_errors": 0,
-               "pubsub_e2e_ms": [1.2] } }
+               "pubsub_connect_ms": [2.1], "pubsub_publish_ms": [0.8],
+               "pubsub_errors": 0, "pubsub_e2e_ms": [1.2] } }
 ```
 
 `received` / `body` and the `pubsub_msgs_received` / `pubsub_e2e_ms` metrics
 appear only when `subscribe` is given. `pubsub_e2e_ms` holds one sample per
-matched message: start of the publish phase → consumed. `pubsub_publish_ms`
+matched message: start of the publish phase → consumed. `pubsub_connect_ms`
+holds one sample per exchange that opened a broker connection — every
+exchange under `scope: exchange`, only the first of each VU under
+`scope: vu`. `pubsub_publish_ms`
 holds one sample per published message — the transport's publish-call
 latency (for `nats` the last message's sample includes the batch flush).
 `pubsub_errors` counts failed exchanges and is emitted on every exchange (0

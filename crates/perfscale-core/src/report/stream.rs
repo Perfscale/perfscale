@@ -129,7 +129,7 @@ fn ts_from_wire<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error>
 
 /// Format epoch milliseconds as `YYYY-MM-DDTHH:MM:SS.sssZ` (UTC) without a
 /// date library — Howard Hinnant's civil-from-days conversion.
-fn epoch_ms_to_rfc3339(ms: i64) -> String {
+pub(crate) fn epoch_ms_to_rfc3339(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
     let millis = ms.rem_euclid(1000);
     let days = secs.div_euclid(86_400);
