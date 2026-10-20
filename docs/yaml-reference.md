@@ -144,9 +144,21 @@ Rules and edge cases:
 vus: 10          # virtual users, default 1
 duration: 5m     # "30s", "500ms", "1.5s", "1m", "5m30s", "1h" — default "1m"
 
-report:          # optional — forward metrics to a perfscale serve instance
+report:          # optional — serve forwarding + end-of-run reports
   url: http://localhost:7999
   during_run: true      # also stream cumulative snapshots while running
+  labels:               # run labels stamped on the report's run identity
+    testid: smoke
+  reporters:            # end-of-run reports (report@v1) — step-style use:/with:
+    - use: std/report/json@v1
+      with: { path: report.json }
+    - use: std/report/junit@v1
+      with: { path: junit.xml }
+    - use: std/report/json@v1
+      with:
+        url: https://collector.example.com/reports   # HTTP push
+        headers: { Authorization: "Bearer ${REPORT_TOKEN}" }  # ${VAR} resolved host-side, never logged
+        max_samples: 10000    # raw per-step samples to include (default 100000, 0 disables)
 
 gpu:             # optional — GPU metrics during the run (native engine)
   enabled: true
@@ -166,6 +178,8 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `report.batch_size` | `500` | Flush a batch once it holds this many samples |
 | `report.max_cpu_percent` | `90` | CPU gate: while host CPU% ≥ this, batches are held (no POSTs) and snapshots queued — never dropped — until the gate opens; `0` disables; inert off-Linux |
 | `report.max_pending` | `24` | Soft cap on undelivered batches — crossing it warns, but batches are kept and delivered in order, never dropped mid-run |
+| `report.labels` | — | Run labels (key → value) stamped on the `report@v1` run identity |
+| `report.reporters` | — | End-of-run reporters (`report@v1`): `[{ use, with }]`. Built-ins: `std/report/json@v1` (canonical JSON) and `std/report/junit@v1` (JUnit XML — testsuite = run, testcase per step, failures from threshold verdicts). Destination: exactly one of `with.path` (file) or `with.url` (HTTP push; `with.headers` values may embed `${VAR}` env references, resolved host-side and never logged). `with.max_samples` caps raw per-step samples (default 100000, `0` omits them; a step that recorded more is flagged `truncated: true`). Config errors (unknown reporter, missing destination, unset `${VAR}`) fail at lint/validate before the run; delivery errors are best-effort — logged and counted, the run completes |
 | `gpu` | — | GPU metrics collection — see [GPU metrics](#gpu-metrics-gpu). Native engine only |
 | `engine_metrics` | — | Engine self-observability — see [Engine self-metrics](#engine-self-metrics-engine_metrics). Native engine only |
 | `before` | `[]` | One-time setup steps — see [Setup and variables](#setup-and-variables) |

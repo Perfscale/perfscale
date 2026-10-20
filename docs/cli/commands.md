@@ -25,12 +25,29 @@ Exactly one engine flag is required: `--k6`, `--locust`, `--jmeter`, or `-f`.
 | `-f, --file <FILE>` | `test.yaml` | Run with the built-in native engine (requires `-c`) |
 | `-c, --config <FILE>` | `config.yaml` | Load config: `vus`, `duration`, optional `report.url`. Required with `-f`, optional load hint for `--locust`, ignored by `--k6` and `--jmeter` |
 | `--host <URL>` | base URL | Target host for `--locust` (locust's `--host`) |
-| `--report <URL>` | base URL | POST the summary to a `perfscale serve` instance after the run; overrides `report.url` from the config file |
+| `--report <SPEC>` | repeatable | Two shapes. `http(s)://URL` — POST the summary (and the report@v1 artifact, when reporters are configured) to a `perfscale serve` instance; overrides `report.url`. `json:PATH` / `junit:PATH` — write an end-of-run `report@v1` report: canonical JSON, or JUnit XML for CI (testcase per step, failures from threshold verdicts). Repeat the flag for several reports from one run |
+| `--label <KEY=VALUE>` | repeatable | Run label stamped on the report's run identity (`run.labels`), e.g. `--label testid=smoke` |
 | `-q, --quiet` | — | Suppress per-request output; errors and the final metric summary still print. The native engine drops the lines at the source, which also removes their formatting/IO cost under high load |
 | `--summary-export <FILE>` | path, repeatable | After the run, write the parsed metric summary (requests, RPS, latency percentiles, error rate) plus run metadata (engine, VUs, duration, timestamp, perfscale version) to this file. Repeat the flag to write several exports from one run. A `.md`/`.json` extension picks the format per file (default JSON) |
 | `--summary-format <json\|md>` | with `--summary-export` | Format for export files without a recognized extension. `md` renders a table for CI job summaries: `--summary-export "$GITHUB_STEP_SUMMARY" --summary-format md` |
 | `--allow-remote-import` | — | Let `import:` in `-f`/`-c` documents fetch over the network (http(s) URLs, git remotes). Fail-closed by default — a document cannot grant itself network access. See [imports](../core/imports.md) |
 | `--refresh-imports` | — | Refetch cached tag/branch git imports instead of trusting the cache (commit-SHA imports are immutable and never refetch) |
+
+### End-of-run reports (`report@v1`)
+
+`--report json:PATH` / `--report junit:PATH` (or the config's
+`report.reporters` block, see the [YAML reference](../yaml-reference.md#config--c-configyaml))
+write a canonical `report@v1` document after the run: `schemaVersion`, run
+identity (engine-generated `run_id` plus `--label`/`report.labels` labels),
+per-step aggregates (count, rate, duration quantiles in seconds, optional
+raw samples capped by `with.max_samples` with a `truncated` flag), threshold
+verdicts (`{ threshold, expression, pass, observed }`), and a
+self-describing metrics section covering every registered family
+(`recorded: false` for silent ones; gauge series carry labels and the last
+value's timestamp). `seq` and top-level `samples` are reserved for future
+streaming. Config errors fail before the run starts; delivery errors are
+best-effort (logged, counted, run completes). With a serve target connected,
+the artifact is also POSTed to `<url>/api/v1/report`.
 
 ### Exit code semantics
 
@@ -132,6 +149,7 @@ Endpoints:
 |---|---|---|
 | `GET` | `/` | Built-in dashboard (absent with `--no-ui`): live time-series of during-run snapshots plus the last run summaries. Self-contained — no CDN; polls `/api/v1/state` |
 | `GET` | `/health` | Returns `ok` |
+| `POST` | `/api/v1/report` | Accepts a `report@v1` artifact (`perfscale run --report json:…`/`junit:…`), kept in memory and surfaced via `/api/v1/state` |
 | `POST` | `/api/v1/metrics` | Accepts the end-of-run summary `{"lines": ["...", ...]}` or a during-run snapshot `{"samples": [...], "seq": N}` (`report.during_run`), prints it, and keeps it in memory for the dashboard |
 | `GET` | `/api/v1/state` | Recent snapshot batches and the last run summaries as JSON — what the dashboard polls. Kept in memory only: the last 2000 snapshot batches and 20 summaries |
 | `GET` | `/ws` | WebSocket echo — every text (and binary) message is echoed back verbatim. A loopback target for WebSocket load tests and the `ws` benchmark suite |

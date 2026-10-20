@@ -148,9 +148,21 @@ steps:
 vus: 10          # виртуальные пользователи, по умолчанию 1
 duration: 5m     # "30s", "500ms", "1.5s", "1m", "5m30s", "1h" — по умолчанию "1m"
 
-report:          # необязательно — пересылка метрик в инстанс perfscale serve
+report:          # необязательно — пересылка в serve + отчёты в конце запуска
   url: http://localhost:7999
   during_run: true      # также стримить накопительные снапшоты во время работы
+  labels:               # метки запуска в идентичности отчёта report@v1
+    testid: smoke
+  reporters:            # отчёты в конце запуска (report@v1) — use:/with: как у шагов
+    - use: std/report/json@v1
+      with: { path: report.json }
+    - use: std/report/junit@v1
+      with: { path: junit.xml }
+    - use: std/report/json@v1
+      with:
+        url: https://collector.example.com/reports   # HTTP push
+        headers: { Authorization: "Bearer ${REPORT_TOKEN}" }  # ${VAR} резолвится на хосте, никогда не логируется
+        max_samples: 10000    # сырые сэмплы по шагам (по умолчанию 100000, 0 отключает)
 
 gpu:             # необязательно — метрики GPU во время запуска (нативный движок)
   enabled: true
@@ -170,6 +182,8 @@ gpu:             # необязательно — метрики GPU во вре
 | `report.batch_size` | `500` | Сбрасывать батч, как только в нём накопится столько сэмплов |
 | `report.max_cpu_percent` | `90` | Порог по CPU: пока загрузка CPU хоста ≥ этого значения, батчи удерживаются (без POST), а снапшоты ставятся в очередь — никогда не теряются — пока порог не откроется; `0` отключает; вне Linux не действует |
 | `report.max_pending` | `24` | Мягкий лимит недоставленных батчей — при превышении выводится предупреждение, но батчи сохраняются и доставляются по порядку, никогда не теряются посреди запуска |
+| `report.labels` | — | Метки запуска (ключ → значение) в идентичности запуска `report@v1` |
+| `report.reporters` | — | Репортеры конца запуска (`report@v1`): `[{ use, with }]`. Встроенные: `std/report/json@v1` (канонический JSON) и `std/report/junit@v1` (JUnit XML — testsuite = запуск, testcase на шаг, failures из вердиктов thresholds). Назначение: ровно одно из `with.path` (файл) или `with.url` (HTTP push; в `with.headers` можно использовать `${VAR}` — резолвятся на хосте, не логируются). `with.max_samples` ограничивает сырые сэмплы по шагам (по умолчанию 100000, `0` отключает; при превышении шаг помечается `truncated: true`). Ошибки конфигурации фейлят lint/validate до старта; ошибки доставки — best-effort, запуск завершается |
 | `gpu` | — | Сбор метрик GPU — см. [Метрики GPU](#gpu-metrics-gpu). Только нативный движок |
 | `engine_metrics` | — | Самонаблюдаемость движка — см. [Собственные метрики движка](#engine-self-metrics-engine_metrics). Только нативный движок |
 | `before` | `[]` | Одноразовые шаги инициализации — см. [Инициализация и переменные](#setup-and-variables) |

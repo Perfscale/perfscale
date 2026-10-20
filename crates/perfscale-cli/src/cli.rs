@@ -562,10 +562,25 @@ mod tests {
 
     #[test]
     fn run_report_flag_parses() {
-        let cli = parse(&["run", "--k6", "a.js", "--report", "http://localhost:7999"]).unwrap();
+        let cli = parse(&[
+            "run",
+            "--k6",
+            "a.js",
+            "--report",
+            "http://localhost:7999",
+            "--report",
+            "junit:out.xml",
+        ])
+        .unwrap();
         match cli.command {
             Commands::Run(args) => {
-                assert_eq!(args.report.as_deref(), Some("http://localhost:7999"))
+                assert_eq!(
+                    args.report,
+                    vec![
+                        "http://localhost:7999".to_string(),
+                        "junit:out.xml".to_string()
+                    ]
+                )
             }
             _ => panic!("expected Run"),
         }

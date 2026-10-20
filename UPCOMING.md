@@ -12,6 +12,19 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- End-of-run reports (`report@v1`, issue #9): repeatable
+  `perfscale run --report json:out.json` / `--report junit:junit.xml` (JUnit
+  XML for CI — testcase per step, failures from threshold verdicts) and a
+  config `report.reporters` block (`use: std/report/json@v1 |
+  std/report/junit@v1`, destination `with.path` or HTTP push via `with.url`
+  with `${VAR}` header references resolved host-side). The report carries a
+  run identity (engine-generated `run_id` + `--label`/`report.labels`),
+  per-step aggregates with optional raw samples (`with.max_samples`,
+  `truncated` flag), threshold verdicts, and every registered metric family
+  with kind/unit/description (`recorded: false` for silent families; gauge
+  series keep labels and the last value's timestamp). With a serve target
+  connected, the artifact is also pushed to `POST /api/v1/report`. Config
+  errors fail at lint/validate; delivery errors are best-effort.
 - `std/pubsub@v1`: new `scope` parameter (`exchange` | `vu`, default
   `exchange` — the historical connect-per-exchange posture, unchanged).
   With `scope: vu` a broker driver keeps one connection per VU and reuses it
