@@ -216,6 +216,18 @@ impl MetricsFamily for PubsubFamily {
                 description: "Messages counted toward the subscribe expectation",
             },
             MetricDef {
+                name: "pubsub_publish_ms",
+                kind: MetricKind::Histogram,
+                unit: "ms",
+                description: "Publish-call latency per message (nats: the batch flush folds into the last sample)",
+            },
+            MetricDef {
+                name: "pubsub_errors",
+                kind: MetricKind::Counter,
+                unit: "count",
+                description: "Failed exchanges (connect/publish errors, subscribe shortfalls); 0 per success",
+            },
+            MetricDef {
                 name: "pubsub_e2e_ms",
                 kind: MetricKind::Histogram,
                 unit: "ms",

@@ -37,6 +37,11 @@
 //! | `subscribe`  | object          | —          | `{ count, until_contains, timeout_ms }` — wait for `count` messages (default 1) that each contain `until_contains` (optional), within `timeout_ms` (default 5000) |
 //! | `options`    | object          | —          | Driver-specific tuning, passed through verbatim (ignored by the built-in drivers; pro drivers use it for QoS, consumer groups, auth, …) |
 //!
+//! `${…}` generator tokens expand per execution in `subject`, `publish`, and
+//! `subscribe.until_contains` — one execution is one message, so the payload
+//! and the matcher share one `${seq}`/`${vu}` value (per-VU subjects and
+//! own-message matching are expressible).
+//!
 //! At least one of `publish` / `subscribe` is required. Publish-only is a
 //! pure producer step (success = all publishes accepted); subscribe-only is a
 //! pure consumer step.
@@ -48,9 +53,15 @@
 //!   "received": 1, "duration_ms": 3.21,
 //!   "body": "<joined received payloads, for check: body_contains>",
 //!   "metrics": { "pubsub_msgs_published": 2, "pubsub_msgs_received": 1,
+//!                "pubsub_publish_ms": [0.8], "pubsub_errors": 0,
 //!                "pubsub_e2e_ms": [1.2] } }
 //! ```
 //!
+//! `pubsub_publish_ms` holds one sample per published message: the transport's
+//! own publish-call latency (for `nats` the final message's sample includes
+//! the flush that pushes the batch onto the wire). `pubsub_errors` is a
+//! counter emitted on every exchange — 0 on success, 1 on failure — so the
+//! run summary always has the error count (the `db_errors` convention).
 //! `received` / `body` / the `pubsub_msgs_received` and `pubsub_e2e_ms`
 //! metrics appear only when `subscribe` is given. `pubsub_e2e_ms` holds one
 //! sample per matched message: start of the publish phase → consumed.
@@ -189,6 +200,10 @@ fn message_bytes(v: &Value) -> Vec<u8> {
 pub struct PubSubOutcome {
     /// Messages accepted by the transport.
     pub published: u64,
+    /// One sample (ms) per published message: the transport's publish-call
+    /// latency. Drivers that flush after a batch fold the flush into the
+    /// last message's sample.
+    pub publish_ms: Vec<f64>,
     /// Messages counted toward `subscribe.count` (each matched
     /// `until_contains`, when set). Newline-joined into `body` by the caller.
     pub matched: Vec<String>,
@@ -342,8 +357,10 @@ impl PubSubDriver for MemoryDriver {
             let anchor = Instant::now();
             let mut outcome = PubSubOutcome::default();
             for msg in &params.publish {
+                let t = Instant::now();
                 tx.send(msg.clone())
                     .map_err(|e| format!("publish '{}': {e}", params.subject))?;
+                outcome.publish_ms.push(t.elapsed().as_secs_f64() * 1000.0);
                 outcome.published += 1;
             }
             if let Some(spec) = &params.subscribe {
@@ -396,16 +413,24 @@ impl PubSubDriver for NatsDriver {
             let anchor = Instant::now();
             let mut outcome = PubSubOutcome::default();
             for msg in &params.publish {
+                let t = Instant::now();
                 client
                     .publish(params.subject.clone(), msg.clone().into())
                     .await
                     .map_err(|e| format!("publish '{}': {e}", params.subject))?;
+                outcome.publish_ms.push(t.elapsed().as_secs_f64() * 1000.0);
                 outcome.published += 1;
             }
             if !params.publish.is_empty() {
                 // Push the queued messages out before waiting, so e2e samples
                 // measure the broker round trip, not client-side buffering.
+                // The flush is part of the publish cost — fold it into the
+                // last message's sample.
+                let t = Instant::now();
                 client.flush().await.map_err(|e| format!("flush: {e}"))?;
+                if let Some(last) = outcome.publish_ms.last_mut() {
+                    *last += t.elapsed().as_secs_f64() * 1000.0;
+                }
             }
 
             if let (Some(spec), Some(subscriber)) = (&params.subscribe, subscriber) {
@@ -422,27 +447,22 @@ impl PubSubDriver for NatsDriver {
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn pubsub_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
-    // `${…}` generator tokens expand per execution in the publish payloads —
-    // one step is one message (see `Context::token_expander`). An expansion
-    // error fails the step before any I/O, like ws/grpc.
-    let expanded_publish = match params.get("publish") {
-        Some(p) if crate::generate::contains_token(p) => {
-            match ctx.token_expander().expand_value(p) {
-                Ok(v) => Some(v),
-                Err(msg) => return err(step_name, &msg),
-            }
-        }
-        _ => None,
-    };
+    // `${…}` generator tokens expand per execution in every string leaf —
+    // subject, publish payloads, subscribe.until_contains — one execution is
+    // one message (see `Context::token_expander`), so the payload and its
+    // matcher share one `${seq}`/`${vu}`. An expansion error fails the step
+    // before any I/O, like ws/grpc.
     let owned;
-    let params = match &expanded_publish {
-        Some(v) => {
-            let mut p = params.clone();
-            p["publish"] = v.clone();
-            owned = p;
-            &owned
+    let params = if crate::generate::contains_token(params) {
+        match ctx.token_expander().expand_value(params) {
+            Ok(v) => {
+                owned = v;
+                &owned
+            }
+            Err(msg) => return err(step_name, &msg),
         }
-        None => params,
+    } else {
+        params
     };
 
     let parsed = match PubSubParams::from_params(params) {
@@ -467,6 +487,7 @@ pub(crate) async fn pubsub_action(params: &Value, step_name: &str, ctx: &Context
                     "subject": parsed.subject,
                     "error": msg,
                     "duration_ms": duration_ms,
+                    "metrics": { "pubsub_errors": 1 },
                 }),
                 logs: vec![(
                     LogTag::Err,
@@ -488,6 +509,9 @@ pub(crate) async fn pubsub_action(params: &Value, step_name: &str, ctx: &Context
         "duration_ms": duration_ms,
     });
     let mut metrics = json!({ "pubsub_msgs_published": outcome.published });
+    if !outcome.publish_ms.is_empty() {
+        metrics["pubsub_publish_ms"] = json!(outcome.publish_ms);
+    }
 
     // A subscribe wait that fell short of `count` fails the step; how many
     // arrived (and how many the matcher rejected) is the actionable part.
@@ -514,6 +538,9 @@ pub(crate) async fn pubsub_action(params: &Value, step_name: &str, ctx: &Context
             failure = Some(why);
         }
     }
+    // The `db_errors` convention: the counter exists on every exchange (0 on
+    // success), so summaries and thresholds always have the error count.
+    metrics["pubsub_errors"] = json!(if failure.is_some() { 1 } else { 0 });
     value["metrics"] = metrics;
     if let Some(why) = &failure {
         value["error"] = json!(why);
@@ -710,6 +737,12 @@ mod tests {
         // Custom metrics ride the reserved `metrics` key.
         assert_eq!(out.value["metrics"]["pubsub_msgs_published"], 2);
         assert_eq!(out.value["metrics"]["pubsub_msgs_received"], 2);
+        assert_eq!(out.value["metrics"]["pubsub_errors"], 0);
+        let pub_ms = out.value["metrics"]["pubsub_publish_ms"]
+            .as_array()
+            .expect("one publish sample per message");
+        assert_eq!(pub_ms.len(), 2);
+        assert!(pub_ms.iter().all(|s| s.as_f64().unwrap() >= 0.0));
         let e2e = out.value["metrics"]["pubsub_e2e_ms"].as_array().unwrap();
         assert_eq!(e2e.len(), 2);
         assert!(e2e.iter().all(|s| s.as_f64().unwrap() >= 0.0));
@@ -771,6 +804,8 @@ mod tests {
         assert!(!out.success);
         let err = out.value["error"].as_str().unwrap();
         assert!(err.contains("0 of 2 message(s) arrived"), "{err}");
+        // A failed exchange counts one pubsub error.
+        assert_eq!(out.value["metrics"]["pubsub_errors"], 1);
         // Failures carry a clear [err] log line.
         assert!(out.logs.iter().any(|(tag, _)| *tag == LogTag::Err));
     }
@@ -807,6 +842,28 @@ mod tests {
         let received = subscriber.await.unwrap();
         assert!(received.success, "{:?}", received.logs);
         assert_eq!(received.value["body"], "hello from another task");
+    }
+
+    #[tokio::test]
+    async fn tokens_expand_in_subject_payload_and_matcher_together() {
+        // One execution = one message: publish and until_contains share one
+        // ${seq}, and the subject expands too — a per-VU subject with an
+        // own-message matcher roundtrips on the expanded subject.
+        let base = unique_subject("expand-all");
+        let out = execute_action(
+            "std/pubsub@v1",
+            &json!({
+                "subject": format!("{base}.vu${{vu}}"),
+                "publish": "mark-${seq} payload",
+                "subscribe": { "count": 1, "until_contains": "mark-${seq}", "timeout_ms": 2000 },
+            }),
+            &Context::new(),
+            "expand-all",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(out.value["subject"], format!("{base}.vu0"));
+        assert_eq!(out.value["received"], 1);
     }
 
     #[tokio::test]
