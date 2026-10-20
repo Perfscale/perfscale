@@ -1168,7 +1168,8 @@ fi
 #             consumed.
 # The memory rows are the in-process cost floor (no broker — the sqlite rows
 # of this suite); the nats rows pay connect + publish + flush per iteration
-# (the nats driver's documented no-pooling posture).
+# under the default `scope: exchange`, and the `scope: vu` twins reuse one
+# connection per VU (the k6 warm posture).
 PS_PAD="$(printf 'x%.0s' $(seq 1 $((PUBSUB_PAYLOAD_BYTES - 16))))"
 if has_suite pubsub; then
   cat >"$WORKDIR/yaml-pubsub-publish-memory.yaml" <<EOF
@@ -1214,6 +1215,34 @@ steps:
       driver: nats
       url: "$BENCH_NATS_URL"
       subject: "bench.pubsub.vu\${vu}"
+      publish: "m:\${vu}-\${seq}:${PS_PAD}"
+      subscribe:
+        count: 1
+        until_contains: "m:\${vu}-\${seq}:"
+        timeout_ms: 5000
+EOF
+  # scope: vu twins — one connection per VU reused across iterations (the
+  # k6 warm posture).
+  cat >"$WORKDIR/yaml-pubsub-publish-nats-vu.yaml" <<EOF
+steps:
+  - name: publish
+    use: std/pubsub@v1
+    with:
+      driver: nats
+      url: "$BENCH_NATS_URL"
+      subject: "bench.pubsub"
+      scope: vu
+      publish: "m:\${vu}-\${seq}:${PS_PAD}"
+EOF
+  cat >"$WORKDIR/yaml-pubsub-e2e-nats-vu.yaml" <<EOF
+steps:
+  - name: pub/sub roundtrip
+    use: std/pubsub@v1
+    with:
+      driver: nats
+      url: "$BENCH_NATS_URL"
+      subject: "bench.pubsub.vu\${vu}"
+      scope: vu
       publish: "m:\${vu}-\${seq}:${PS_PAD}"
       subscribe:
         count: 1
@@ -2233,6 +2262,13 @@ if has_suite pubsub; then
     tw_settle "${NATS_HOSTPORT##*:}" "nats target"
     pubsub_row "perfscale (nats, pub/sub e2e)" \
       "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-e2e-nats.yaml" --quiet)"
+    # scope=vu rows: one connection per VU reused across iterations — the k6
+    # warm posture. They churn no sockets (one connect per VU total), so no
+    # TIME_WAIT settle is needed around them.
+    pubsub_row "perfscale (nats, publish, scope=vu)" \
+      "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-publish-nats-vu.yaml" --quiet)"
+    pubsub_row "perfscale (nats, pub/sub e2e, scope=vu)" \
+      "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-e2e-nats-vu.yaml" --quiet)"
   fi
 
   if [[ "$HAS_K6_NATS" == 1 ]]; then
@@ -2253,10 +2289,10 @@ if has_suite pubsub; then
     echo "per iteration. The \`perfscale (...)\` rows use \`std/pubsub@v1\`:"
     echo "**memory** = the in-process broadcast bus (no broker — the engine's"
     echo "cost floor); **nats** = the async-nats driver against the broker at"
-    echo "\`BENCH_NATS_URL\`, connecting per exchange (the driver's documented"
-    echo "no-pooling posture — connect cost is part of the measurement), so"
-    echo "Msg/s there is connect+publish+flush throughput, and the engine has"
-    echo "no warm-connection mode to compare with the k6 warm row."
+    echo "\`BENCH_NATS_URL\`. Default \`scope: exchange\` connects per iteration"
+    echo "(connect cost is part of the measurement — Msg/s there is"
+    echo "connect+publish+flush throughput); **scope=vu** rows keep one"
+    echo "connection per VU reused across iterations — the k6 warm posture."
     echo "**pub/sub e2e** rows subscribe first, publish one marked message to a"
     echo "per-VU subject, and wait for exactly that message; \`e2e p95\` is the"
     echo "broker round trip (publish → consumed), \`—\` on publish-only rows."
