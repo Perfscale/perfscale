@@ -4680,9 +4680,15 @@ mod tests {
         }
         let outcome = handle.await.unwrap();
         assert!(outcome.config_error.is_some());
-        assert!(texts
-            .iter()
-            .any(|t| t.contains("invalid report configuration")), "{texts:?}");
-        assert!(!texts.iter().any(|t| t.starts_with("Starting 1 VU")), "{texts:?}");
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("invalid report configuration")),
+            "{texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.starts_with("Starting 1 VU")),
+            "{texts:?}"
+        );
     }
 }
