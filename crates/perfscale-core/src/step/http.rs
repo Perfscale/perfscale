@@ -47,6 +47,11 @@ fn build_client(insecure: bool) -> reqwest::Client {
     reqwest::Client::builder()
         .pool_max_idle_per_host(64)
         .pool_idle_timeout(Duration::from_secs(60))
+        // codeql[rust/disabled-certificate-check] — deliberate feature of a
+        // load-testing tool: steps opt in per-request with `insecure: true`
+        // (testing targets with self-signed certs, like k6's
+        // insecureSkipTLSVerify). Insecure clients live in a separate shard
+        // set so verified requests never share a pool with them.
         .danger_accept_invalid_certs(insecure)
         .build()
         .expect("client construction cannot fail")
