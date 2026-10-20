@@ -440,22 +440,61 @@ impl PubSubDriver for MemoryDriver {
 // nats driver — real broker via async-nats (core NATS, no JetStream)
 // ---------------------------------------------------------------------------
 
+/// `scope: vu` connection cache: one NATS client per `(vu_key, url)`, reused
+/// across that VU's exchanges. Process-global (the driver's registry entry is
+/// global, and `Context.resources` is not visible to drivers); a cached
+/// client lives until process exit — bounded by VU count × distinct URLs, so
+/// there is no unbounded growth inside a run. The `async_nats::Client` is a
+/// cheap clone of a shared handle and reconnects internally on drops, so a
+/// stale cached entry still yields a working connection.
+static VU_CLIENTS: LazyLock<Mutex<HashMap<(u64, String), async_nats::Client>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 struct NatsDriver;
+
+impl NatsDriver {
+    /// The client for this exchange plus the connect time (ms) when one was
+    /// actually opened. `scope: exchange` connects fresh every time;
+    /// `scope: vu` reuses the VU's cached client and reports no sample.
+    async fn client_for(
+        params: &PubSubParams,
+        ctx: &PubSubContext,
+    ) -> Result<(async_nats::Client, Option<f64>), String> {
+        let url = params
+            .url
+            .as_deref()
+            .ok_or("'url' is required for the nats driver (e.g. nats://127.0.0.1:4222)")?;
+
+        if params.scope == PubSubScope::Vu {
+            let key = (ctx.vu_key, url.to_string());
+            if let Some(client) = VU_CLIENTS.lock().unwrap().get(&key).cloned() {
+                return Ok((client, None));
+            }
+            let t = Instant::now();
+            let client = async_nats::connect(url)
+                .await
+                .map_err(|e| format!("connect {url}: {e}"))?;
+            let connect_ms = t.elapsed().as_secs_f64() * 1000.0;
+            VU_CLIENTS.lock().unwrap().insert(key, client.clone());
+            return Ok((client, Some(connect_ms)));
+        }
+
+        let t = Instant::now();
+        let client = async_nats::connect(url)
+            .await
+            .map_err(|e| format!("connect {url}: {e}"))?;
+        Ok((client, Some(t.elapsed().as_secs_f64() * 1000.0)))
+    }
+}
 
 impl PubSubDriver for NatsDriver {
     fn name(&self) -> &'static str {
         "nats"
     }
 
-    fn run<'a>(&'a self, params: &'a PubSubParams) -> PubSubFuture<'a> {
+    fn run<'a>(&'a self, params: &'a PubSubParams, ctx: &'a PubSubContext) -> PubSubFuture<'a> {
         Box::pin(async move {
-            let url = params
-                .url
-                .as_deref()
-                .ok_or("'url' is required for the nats driver (e.g. nats://127.0.0.1:4222)")?;
-            let client = async_nats::connect(url)
-                .await
-                .map_err(|e| format!("connect {url}: {e}"))?;
+            let (client, connect_ms) = Self::client_for(params, ctx).await?;
 
             // Subscribe BEFORE publishing, so a same-subject roundtrip sees
             // its own messages.
@@ -470,7 +509,10 @@ impl PubSubDriver for NatsDriver {
             };
 
             let anchor = Instant::now();
-            let mut outcome = PubSubOutcome::default();
+            let mut outcome = PubSubOutcome {
+                connect_ms,
+                ..PubSubOutcome::default()
+            };
             for msg in &params.publish {
                 let t = Instant::now();
                 client
@@ -534,7 +576,10 @@ pub(crate) async fn pubsub_action(params: &Value, step_name: &str, ctx: &Context
     };
 
     let t0 = Instant::now();
-    let result = driver.run(&parsed).await;
+    let driver_ctx = PubSubContext {
+        vu_key: ctx.vu_id(),
+    };
+    let result = driver.run(&parsed, &driver_ctx).await;
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let outcome = match result {
@@ -568,6 +613,9 @@ pub(crate) async fn pubsub_action(params: &Value, step_name: &str, ctx: &Context
         "duration_ms": duration_ms,
     });
     let mut metrics = json!({ "pubsub_msgs_published": outcome.published });
+    if let Some(connect_ms) = outcome.connect_ms {
+        metrics["pubsub_connect_ms"] = json!([connect_ms]);
+    }
     if !outcome.publish_ms.is_empty() {
         metrics["pubsub_publish_ms"] = json!(outcome.publish_ms);
     }
@@ -694,6 +742,37 @@ mod tests {
         assert_eq!(p.options["qos"], json!(1));
         assert_eq!(p.options["group_id"], json!("load"));
         assert_eq!(p.options["nested"], json!({ "a": true }));
+    }
+
+    #[test]
+    fn params_scope_defaults_to_exchange_and_validates() {
+        let p = PubSubParams::from_params(&json!({
+            "subject": "s",
+            "publish": "hi",
+        }))
+        .unwrap();
+        assert_eq!(p.scope, PubSubScope::Exchange, "scope defaults to exchange");
+
+        for (text, want) in [("exchange", PubSubScope::Exchange), ("vu", PubSubScope::Vu)] {
+            let p = PubSubParams::from_params(&json!({
+                "subject": "s",
+                "publish": "hi",
+                "scope": text,
+            }))
+            .unwrap();
+            assert_eq!(p.scope, want);
+        }
+
+        for bad in [json!("forever"), json!(1)] {
+            let err = PubSubParams::from_params(&json!({
+                "subject": "s",
+                "publish": "hi",
+                "scope": bad,
+            }))
+            .err()
+            .unwrap();
+            assert!(err.contains("'scope' must be exchange or vu"), "{err}");
+        }
     }
 
     #[tokio::test]
@@ -1007,6 +1086,57 @@ mod tests {
                 .map(Vec::len),
             Some(2)
         );
+    }
+
+    #[tokio::test]
+    async fn nats_scope_vu_reuses_one_connection_per_vu() {
+        let Some(url) = nats_url().await else {
+            eprintln!("skipping: no NATS broker (set NATS_URL or run one on 127.0.0.1:4222)");
+            return;
+        };
+        let subject = unique_subject("nats.scope-vu");
+        let params = json!({
+            "driver": "nats",
+            "url": url,
+            "subject": subject,
+            "publish": "hi",
+            "scope": "vu",
+        });
+
+        // First exchange of this VU connects (and says so)…
+        let first = execute_action("std/pubsub@v1", &params, &Context::new(), "vu-first").await;
+        assert!(first.success, "{:?}", first.logs);
+        let connect = first.value["metrics"]["pubsub_connect_ms"]
+            .as_array()
+            .expect("first vu-scoped exchange connects");
+        assert_eq!(connect.len(), 1);
+
+        // …later exchanges of the same VU reuse it — no connect sample.
+        for _ in 0..3 {
+            let out = execute_action("std/pubsub@v1", &params, &Context::new(), "vu-reuse").await;
+            assert!(out.success, "{:?}", out.logs);
+            assert!(
+                out.value["metrics"].get("pubsub_connect_ms").is_none(),
+                "reused connection reports no connect sample"
+            );
+        }
+
+        // scope: exchange (default) connects on every exchange.
+        let cold = json!({
+            "driver": "nats",
+            "url": url,
+            "subject": subject,
+            "publish": "hi",
+        });
+        for _ in 0..2 {
+            let out = execute_action("std/pubsub@v1", &cold, &Context::new(), "exchange").await;
+            assert!(out.success, "{:?}", out.logs);
+            assert_eq!(
+                out.value["metrics"]["pubsub_connect_ms"].as_array().map(Vec::len),
+                Some(1),
+                "scope: exchange connects every time"
+            );
+        }
     }
 
     #[tokio::test]

@@ -222,6 +222,12 @@ impl MetricsFamily for PubsubFamily {
                 description: "Publish-call latency per message (nats: the batch flush folds into the last sample)",
             },
             MetricDef {
+                name: "pubsub_connect_ms",
+                kind: MetricKind::Histogram,
+                unit: "ms",
+                description: "Broker connect time per exchange that opened a connection (scope=exchange: every exchange; scope=vu: first exchange of each VU)",
+            },
+            MetricDef {
                 name: "pubsub_errors",
                 kind: MetricKind::Counter,
                 unit: "count",

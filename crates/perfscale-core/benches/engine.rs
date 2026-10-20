@@ -28,7 +28,7 @@ use serde_json::{json, Map};
 use perfscale_core::step::actions::HttpSample;
 use perfscale_core::step::context::Context;
 use perfscale_core::step::process::{RingBuf, WaitUntil};
-use perfscale_core::step::pubsub::{self, PubSubParams, SubscribeSpec};
+use perfscale_core::step::pubsub::{self, PubSubContext, PubSubParams, PubSubScope, SubscribeSpec};
 use perfscale_core::step::runner::{Metrics, ShardedMetrics};
 use perfscale_core::step::shared_variable::{self, SharedVarOp};
 use perfscale_core::yaml;
@@ -466,8 +466,10 @@ fn bench_pubsub(c: &mut Criterion) {
                     publish: messages.clone(),
                     subscribe: None,
                     options: Map::new(),
+                    scope: PubSubScope::Exchange,
                 };
-                let out = driver.run(&params).await.unwrap();
+                let ctx = PubSubContext { vu_key: 0 };
+                let out = driver.run(&params, &ctx).await.unwrap();
                 std::hint::black_box(out.published)
             })
         })
@@ -492,8 +494,10 @@ fn bench_pubsub(c: &mut Criterion) {
                         timeout_ms: 5_000,
                     }),
                     options: Map::new(),
+                    scope: PubSubScope::Exchange,
                 };
-                let out = driver.run(&params).await.unwrap();
+                let ctx = PubSubContext { vu_key: 0 };
+                let out = driver.run(&params, &ctx).await.unwrap();
                 std::hint::black_box((out.published, out.matched.len()))
             })
         })
