@@ -10,3 +10,7 @@ dist/
 
 # GPU bench output
 bench/gpu/results/
+
+# local bench run artifacts
+/bench-report.md
+/bench-results*.json
