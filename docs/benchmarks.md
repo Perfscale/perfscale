@@ -40,7 +40,7 @@ wrapping overhead — not the underlying tool.
 | `grpc` | `std/grpc@v1` unary echo against the repo's `grpc_echo_server` example |
 | `graphql` | `std/graphql@v1` query against the repo's `graphql_server` example |
 | `db` | SQL: cold connect+query vs warm VU-scoped connections vs transactions (`std/db-*@v1`, PostgreSQL + in-process SQLite), plus the warm shape from locust (psycopg2), JMeter (JDBC) and k6 — the k6 row is a **custom binary** built with the `xk6-sql` extension + postgres driver (stock k6 has no SQL module), used only by this row |
-| `pubsub` | Pub/sub: publish throughput and pub/sub roundtrip e2e latency (`std/pubsub@v1`) against the in-process `memory` bus (cost floor, no broker) and a NATS broker (`BENCH_NATS_URL`), plus k6 rows via a **custom binary** built with the Pondigo/xk6-nats extension (stock k6 has no NATS module), in warm (connection per VU) and cold (connect per iteration — the fair twin of perfscale's connect-per-exchange nats driver) postures |
+| `pubsub` | Pub/sub: publish throughput and pub/sub roundtrip e2e latency (`std/pubsub@v1`) against the in-process `memory` bus (cost floor, no broker) and a NATS broker (`BENCH_NATS_URL`) in `scope: exchange` (connect per iteration) and `scope: vu` (one connection per VU) postures, plus k6 rows via a **custom binary** built with the xk6-nats extension (stock k6 has no NATS module), in warm (connection per VU) and cold (connect per iteration — the fair twin of `scope: exchange`) postures |
 
 JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
 console summary has no percentiles, so it stays out of the `throughput`
@@ -105,8 +105,10 @@ in-process broadcast bus) are the engine's cost floor — no broker, like the
 db suite's SQLite rows. The `nats` rows publish to the broker at
 `BENCH_NATS_URL` (default `nats://127.0.0.1:4222`; locally
 `docker run -d -p 4222:4222 nats:2.15-alpine`, in CI a service container) and
-pay connect + publish + flush per iteration — the nats driver's documented
-no-pooling posture, so the connect cost is part of the measurement. The
+pay connect + publish + flush per iteration under the default
+`scope: exchange` (the connect cost is part of the measurement, visible
+separately in `pubsub_connect_ms`); the `scope=vu` twins reuse one
+connection per VU — the k6 warm posture. The
 `pub/sub e2e` rows subscribe first, publish one marker-tagged message to a
 per-VU subject (`bench.pubsub.vu${vu}`), and wait for exactly that message;
 `e2e p95` is the broker round trip. The `k6 (xk6-nats)` rows are **not stock
@@ -117,7 +119,7 @@ which cannot share a binary with xk6-sql's go.k6.io/k6/v2 core, hence a
 second binary: `K6_NATS_BIN`, default `target/xk6-nats/k6`, built by the
 bench workflow). The **warm** row keeps one connection per VU (init scope,
 the db suite's xk6-sql posture); **cold** connects per iteration — the fair
-twin of the perfscale nats row. There is no k6 roundtrip row: the extension
+twin of the perfscale `scope: exchange` nats row. There is no k6 roundtrip row: the extension
 invokes its subscribe handler from the nats.go delivery goroutine, racing
 the VU's JS runtime and intermittently panicking the k6 process under load —
 k6 e2e is not measurable with this extension, so e2e latency is native-only.
