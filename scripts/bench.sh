@@ -49,12 +49,21 @@ set -euo pipefail
 #                 (psycopg2), JMeter (JDBC) and k6 — the k6 row needs a
 #                 custom binary with the xk6-sql extension (K6_SQL_BIN;
 #                 built by the bench workflow), stock k6 has no SQL module.
+#   pubsub      – pub/sub: native `std/pubsub@v1` publish and pub/sub
+#                 roundtrip (e2e latency) against the in-process `memory`
+#                 bus (the engine's cost floor — no broker) and a NATS broker
+#                 at BENCH_NATS_URL, plus k6 rows via a custom binary with
+#                 the xk6-nats extension (ydarias API, rongfengliang fork;
+#                 K6_NATS_BIN, built by the bench workflow) — stock k6 has no
+#                 NATS module. perfscale's
+#                 nats driver connects per exchange (a documented posture:
+#                 connect cost is part of the measurement), so the k6 side
+#                 gets both a warm row (connection per VU) and a cold row
+#                 (connect per iteration, the fair twin).
 #
-# No llm/pubsub suites: the engine's LLM and pubsub (nats) drivers need
-# backing services that don't fit a bench CI job cleanly (an LLM endpoint
-# with meaningful semantics, a NATS/Redis broker); the pubsub `memory`
-# driver measures no real transport. Add them when a self-contained target
-# exists.
+# No llm suite: the engine's LLM driver needs a backing endpoint with
+# meaningful semantics, which doesn't fit a bench CI job cleanly. Add it
+# when a self-contained target exists.
 #
 # JMeter joins only the hyperfine suites (overhead/startup): its non-GUI
 # console summary has no percentiles, so it is not part of the throughput
@@ -74,7 +83,7 @@ PORT="${PORT:-18999}"
 TLS_PORT="${TLS_PORT:-18998}"
 OUTPUT="${OUTPUT:-bench-report.md}"
 RESULTS="${RESULTS:-bench-results.json}"
-SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db}"
+SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub}"
 
 STARTUP_DURATION="${STARTUP_DURATION:-1s}"
 STARTUP_RUNS="${STARTUP_RUNS:-5}"
@@ -110,6 +119,14 @@ BENCH_PG_DSN="${BENCH_PG_DSN:-postgres://postgres:perfscale@127.0.0.1:5432/postg
 # stock binary. Built by the bench workflow (see bench.yml); local runs skip
 # the row when the binary is absent. Resolved after ROOT below.
 K6_SQL_BIN="${K6_SQL_BIN:-}"
+# pubsub suite: fixed-size payload per message and the NATS broker the nats
+# rows publish to. K6_NATS_BIN mirrors K6_SQL_BIN — a custom k6 with the
+# xk6-nats extension, used ONLY by the pubsub suite's k6 rows
+# (resolved after ROOT below; built by the bench workflow).
+PUBSUB_DURATION="${PUBSUB_DURATION:-10s}"
+PUBSUB_PAYLOAD_BYTES="${PUBSUB_PAYLOAD_BYTES:-256}"
+BENCH_NATS_URL="${BENCH_NATS_URL:-nats://127.0.0.1:4222}"
+K6_NATS_BIN="${K6_NATS_BIN:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${PERFSCALE_BIN:-$ROOT/target/release/perfscale}"
@@ -332,6 +349,34 @@ if [[ "$HAS_DB" == 1 ]]; then
     HAS_K6_SQL=1
   else
     echo "skipping k6 (xk6-sql) db scenario: no custom binary at $K6_SQL_BIN (built by the bench workflow)" >&2
+  fi
+fi
+
+# pubsub suite target: a NATS broker at BENCH_NATS_URL (CI service container;
+# locally `docker run -d -p 4222:4222 nats:2.15-alpine`). Probed by host:port
+# from the URL — the same posture as the db suite's BENCH_PG_DSN. The memory
+# rows need no broker and always run when the suite is selected.
+NATS_HOSTPORT="${BENCH_NATS_URL##*://}" # strip scheme
+NATS_HOSTPORT="${NATS_HOSTPORT%%/*}"    # strip any path
+HAS_NATS=0
+if has_suite pubsub; then
+  if wait_for_port "${NATS_HOSTPORT%%:*}" "${NATS_HOSTPORT##*:}"; then
+    HAS_NATS=1
+  else
+    echo "skipping nats pubsub scenarios: no NATS broker at $NATS_HOSTPORT (BENCH_NATS_URL)" >&2
+  fi
+fi
+
+# The k6 pubsub rows need a custom binary with the xk6-nats extension (stock
+# k6 has no NATS module). Same convention as K6_SQL_BIN: default path
+# matches the bench workflow's build, K6_NATS_BIN overrides it.
+HAS_K6_NATS=0
+K6_NATS_BIN="${K6_NATS_BIN:-$ROOT/target/xk6-nats/k6}"
+if [[ "$HAS_NATS" == 1 ]]; then
+  if [[ -x "$K6_NATS_BIN" ]]; then
+    HAS_K6_NATS=1
+  else
+    echo "skipping k6 (xk6-nats) pubsub scenarios: no custom binary at $K6_NATS_BIN (built by the bench workflow)" >&2
   fi
 fi
 
@@ -1111,6 +1156,141 @@ export function teardown() {
 EOF
 fi
 
+# pubsub suite, perfscale native scenarios (std/pubsub@v1):
+#   publish – pure producer: one ~PUBSUB_PAYLOAD_BYTES message per iteration
+#             (success = the transport accepted the publish).
+#   e2e     – same-subject roundtrip: the step subscribes FIRST, publishes
+#             one message, and waits for exactly that message — the payload
+#             carries a `m:${vu}-${seq}:` marker and until_contains matches
+#             it back (one execution = one message, so both leaves share one
+#             ${seq}); the per-VU subject keeps VUs from consuming each
+#             other's messages. pubsub_e2e_ms = publish-phase start →
+#             consumed.
+# The memory rows are the in-process cost floor (no broker — the sqlite rows
+# of this suite); the nats rows pay connect + publish + flush per iteration
+# (the nats driver's documented no-pooling posture).
+PS_PAD="$(printf 'x%.0s' $(seq 1 $((PUBSUB_PAYLOAD_BYTES - 16))))"
+if has_suite pubsub; then
+  cat >"$WORKDIR/yaml-pubsub-publish-memory.yaml" <<EOF
+steps:
+  - name: publish
+    use: std/pubsub@v1
+    with:
+      driver: memory
+      subject: "bench.pubsub"
+      publish: "m:\${vu}-\${seq}:${PS_PAD}"
+EOF
+  cat >"$WORKDIR/yaml-pubsub-e2e-memory.yaml" <<EOF
+steps:
+  - name: pub/sub roundtrip
+    use: std/pubsub@v1
+    with:
+      driver: memory
+      subject: "bench.pubsub.vu\${vu}"
+      publish: "m:\${vu}-\${seq}:${PS_PAD}"
+      subscribe:
+        count: 1
+        until_contains: "m:\${vu}-\${seq}:"
+        timeout_ms: 5000
+EOF
+fi
+
+if [[ "$HAS_NATS" == 1 ]]; then
+  cat >"$WORKDIR/yaml-pubsub-publish-nats.yaml" <<EOF
+steps:
+  - name: publish
+    use: std/pubsub@v1
+    with:
+      driver: nats
+      url: "$BENCH_NATS_URL"
+      subject: "bench.pubsub"
+      publish: "m:\${vu}-\${seq}:${PS_PAD}"
+EOF
+  cat >"$WORKDIR/yaml-pubsub-e2e-nats.yaml" <<EOF
+steps:
+  - name: pub/sub roundtrip
+    use: std/pubsub@v1
+    with:
+      driver: nats
+      url: "$BENCH_NATS_URL"
+      subject: "bench.pubsub.vu\${vu}"
+      publish: "m:\${vu}-\${seq}:${PS_PAD}"
+      subscribe:
+        count: 1
+        until_contains: "m:\${vu}-\${seq}:"
+        timeout_ms: 5000
+EOF
+fi
+
+# k6 pubsub scenario (custom xk6-nats binary — the rongfengliang fork of
+# ydarias/xk6-nats, the only community extension that actually registers its
+# module on a current k6 core; Pondigo/xk6-nats never calls
+# modules.Register and cannot be imported at all). Publish-only: the
+# extension's subscribe handler is invoked from the nats.go delivery
+# goroutine, racing the VU's sobek runtime — under load that intermittently
+# panics the whole k6 process, so a k6 pub/sub roundtrip row is not
+# measurable with this extension (e2e latency is native-only, honestly).
+# Metrics mirror the native engine's names (pubsub_msgs_published Counter,
+# pubsub_publish_ms Trend, pubsub_errors Counter) so bench_metrics.py's
+# pubsub-text parser reads it unchanged. BENCH_PUBSUB_CONN=warm opens one
+# connection per VU in the init scope (the db suite's xk6-sql posture);
+# =cold connects per iteration — the fair twin of perfscale's nats driver,
+# which connects per exchange by design.
+if [[ "$HAS_K6_NATS" == 1 ]]; then
+  cat >"$WORKDIR/pubsub-k6.js" <<'EOF'
+import { Nats } from 'k6/x/nats';
+import { Counter, Trend } from 'k6/metrics';
+
+const CONN = __ENV.BENCH_PUBSUB_CONN || 'warm'; // warm | cold
+const NATS_URL = __ENV.BENCH_NATS_URL || 'nats://127.0.0.1:4222';
+const SUBJECT = 'bench.pubsub';
+const PAD = __ENV.BENCH_PUBSUB_PAD || '';
+
+const published = new Counter('pubsub_msgs_published');
+const pubMs = new Trend('pubsub_publish_ms', true);
+const errors = new Counter('pubsub_errors');
+
+export const options = {
+  vus: Number(__ENV.BENCH_VUS || 1),
+  duration: __ENV.BENCH_DURATION || '10s',
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(50)', 'p(90)', 'p(95)', 'p(99)'],
+};
+
+// xk6-nats throws (not returns) on connect failure; the init scope is
+// per-VU, so a warm connection here is the db-suite xk6-sql posture.
+const conn = CONN === 'warm' ? new Nats({ servers: [NATS_URL] }) : null;
+
+export default function () {
+  let c = conn;
+  if (CONN === 'cold') {
+    try {
+      c = new Nats({ servers: [NATS_URL] });
+    } catch (e) {
+      errors.add(1);
+      return;
+    }
+  }
+  try {
+    const t0 = Date.now();
+    c.publish(SUBJECT, `m:${__VU}-${__ITER}:${PAD}`);
+    pubMs.add(Date.now() - t0);
+    published.add(1);
+  } catch (e) {
+    errors.add(1);
+  }
+  if (CONN === 'cold') {
+    c.close();
+  }
+}
+
+export function teardown() {
+  if (conn !== null) {
+    conn.close();
+  }
+}
+EOF
+fi
+
 # ---------------------------------------------------------------------------
 # /usr/bin/time instrumentation
 # ---------------------------------------------------------------------------
@@ -1164,6 +1344,37 @@ run_timed() {
 
 cpu_per_req() { # $1 requests → µs of CPU per request, or —
   awk "BEGIN{ r=$1; if (r > 0) printf \"%.1f\", (${T_USER_S:-0}+${T_SYS_S:-0})*1000000/r; else printf \"—\" }"
+}
+
+# TIME_WAIT drain between connection-churning rows (db cold, pubsub nats —
+# both connect per iteration): thousands of loopback TIME_WAIT sockets linger
+# ~30-60s, and the next row then runs out of ephemeral ports mid-run
+# (EADDRNOTAVAIL reads as engine errors — the machine's ceiling, not the
+# engine's). Settle on the DIRECT measure — TIME_WAIT sockets against the
+# target port (ss on Linux, netstat on macOS) — waiting for the count to
+# drain below 1000. Up to ~2 min.
+tw_timewait() { # $1 port
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -tan state time-wait 2>/dev/null | grep -c ":$port" || true
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -an -p tcp 2>/dev/null | grep TIME_WAIT | grep -c "[.:]$port[ .]" || true
+  else
+    echo 0
+  fi
+}
+tw_settle() { # $1 port, $2 target name (for the log lines)
+  local port="$1" name="$2" try tw
+  for try in $(seq 1 24); do
+    tw=$(tw_timewait "$port")
+    if [[ "$tw" -lt 1000 ]]; then
+      [[ "$try" == 1 ]] || echo "  ($name settled after $(( (try - 1) * 5 ))s: $tw TIME_WAIT left against port $port)" >&2
+      return 0
+    fi
+    [[ "$try" == 1 ]] && echo "  $tw TIME_WAIT sockets against $name port $port — waiting for the drain" >&2
+    sleep 5
+  done
+  echo "warning: still $tw TIME_WAIT sockets against port $port after 120s — the next cold row may hit EADDRNOTAVAIL" >&2
 }
 
 # Instrumented run + metric parse into shell vars. $1 label, $2 cmd,
@@ -1869,28 +2080,11 @@ if has_suite db; then
   # measure — TIME_WAIT sockets against the db port (ss on Linux, netstat on
   # macOS) — waiting for the count to drain below 1000 (a 10s row at the
   # observed ~1-1.8k conn/s then fits the ~16k range). Up to ~2 min.
-  db_timewait() {
-    local port="${DB_HOSTPORT##*:}"
-    if command -v ss >/dev/null 2>&1; then
-      ss -tan state time-wait 2>/dev/null | grep -c ":$port" || true
-    elif command -v netstat >/dev/null 2>&1; then
-      netstat -an -p tcp 2>/dev/null | grep TIME_WAIT | grep -c "[.:]$port[ .]" || true
-    else
-      echo 0
-    fi
-  }
+  # tw_timewait/tw_settle are the shared helpers defined next to measure();
+  # the pubsub suite's nats rows reuse them (the nats driver connects per
+  # exchange, the same churn shape).
   db_settle() {
-    local try tw
-    for try in $(seq 1 24); do
-      tw=$(db_timewait)
-      if [[ "$tw" -lt 1000 ]]; then
-        [[ "$try" == 1 ]] || echo "  (db target settled after $(( (try - 1) * 5 ))s: $tw TIME_WAIT left against the db port)" >&2
-        return 0
-      fi
-      [[ "$try" == 1 ]] && echo "  $tw TIME_WAIT sockets against the db port — waiting for the drain" >&2
-      sleep 5
-    done
-    echo "warning: still $tw TIME_WAIT sockets against the db port after 120s — the next cold row may hit EADDRNOTAVAIL" >&2
+    tw_settle "${DB_HOSTPORT##*:}" "db target"
   }
 
   if [[ "$HAS_DB" == 1 ]]; then
@@ -1984,6 +2178,110 @@ if has_suite db; then
     echo "that ceiling is the machine's, not the engine's). The \`scope: vu\` warm"
     echo "rows open only VUS connections total, so they are immune once started"
     echo "clean._"
+  } >>"$OUTPUT"
+fi
+
+# --- pubsub -------------------------------------------------------------------
+
+if has_suite pubsub; then
+  echo "suite: pubsub" >&2
+  section "Pub/Sub (${VUS} VUs, ${PUBSUB_DURATION} per scenario, ~${PUBSUB_PAYLOAD_BYTES}-byte payload)"
+  {
+    echo "| Scenario | Msgs | Msg/s | pub avg ms | pub p95 ms | e2e p95 ms | Err | CPU per msg | Peak RSS |"
+    echo "|---|---:|---:|---:|---:|---:|---:|---:|---|"
+  } >>"$OUTPUT"
+
+  # pubsub_row $1 label, $2 command — one instrumented run parsed with the
+  # pubsub-text kind (native summary and the xk6-nats script's k6-shaped
+  # summary share the metric names). e2e cells render "—" on publish-only
+  # rows.
+  pubsub_row() {
+    local label="$1" cmd="$2"
+    echo "  $label" >&2
+    iters=0 e2e_avg_ms=0 e2e_p95_ms=0 e2e_count=0
+    measure "$label" "$cmd" pubsub-text
+    if [[ "$parse_ok" != 1 ]]; then
+      echo "| $label | — | — | — | — | — | — | — | — |" >>"$OUTPUT"
+      return
+    fi
+    local e2e_cell="—"
+    [[ "$e2e_count" -gt 0 ]] && e2e_cell="$e2e_p95_ms"
+    $METRICS append "$RESULTS_D/pubsub.json" "$label" \
+      requests="$requests" rps="$rps" avg_ms="$avg_ms" p50_ms="$p50_ms" \
+      p90_ms="$p90_ms" p95_ms="$p95_ms" p99_ms="$p99_ms" err_pct="$err_pct" \
+      iters="$iters" e2e_avg_ms="$e2e_avg_ms" e2e_p95_ms="$e2e_p95_ms" \
+      e2e_count="$e2e_count" \
+      user_s="${T_USER_S:-0}" sys_s="${T_SYS_S:-0}" rss_mib="$T_RSS_MIB"
+    echo "| $label | $requests | $rps | $avg_ms | $p95_ms | $e2e_cell | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
+  }
+
+  # In-process floor first (no broker — runs even without NATS). perfscale
+  # rows run --quiet, like the db rows: the per-step firehose is pure
+  # overhead while the end-of-run summary the parser reads is kept.
+  pubsub_row "perfscale (memory, publish)" \
+    "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-publish-memory.yaml" --quiet)"
+  pubsub_row "perfscale (memory, pub/sub e2e)" \
+    "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-e2e-memory.yaml" --quiet)"
+
+  if [[ "$HAS_NATS" == 1 ]]; then
+    # The nats driver connects per exchange: like the db cold rows, each
+    # broker-backed row churns loopback connections into TIME_WAIT — settle
+    # the drain before the next row starts (shared tw_settle helper).
+    tw_settle "${NATS_HOSTPORT##*:}" "nats target"
+    pubsub_row "perfscale (nats, publish)" \
+      "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-publish-nats.yaml" --quiet)"
+    tw_settle "${NATS_HOSTPORT##*:}" "nats target"
+    pubsub_row "perfscale (nats, pub/sub e2e)" \
+      "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-e2e-nats.yaml" --quiet)"
+  fi
+
+  if [[ "$HAS_K6_NATS" == 1 ]]; then
+    # NOT the stock k6: a custom binary with the xk6-nats extension.
+    # Publish-only rows — the extension's subscribe handler races the VU
+    # runtime (see the script comment above), so there is no k6 e2e row.
+    tw_settle "${NATS_HOSTPORT##*:}" "nats target"
+    pubsub_row "k6 (xk6-nats, publish, warm)" \
+      "env BENCH_VUS=$VUS BENCH_DURATION=$PUBSUB_DURATION BENCH_NATS_URL='$BENCH_NATS_URL' BENCH_PUBSUB_PAD='$PS_PAD' BENCH_PUBSUB_CONN=warm $K6_NATS_BIN run --quiet $WORKDIR/pubsub-k6.js"
+    tw_settle "${NATS_HOSTPORT##*:}" "nats target"
+    pubsub_row "k6 (xk6-nats, publish, cold)" \
+      "env BENCH_VUS=$VUS BENCH_DURATION=$PUBSUB_DURATION BENCH_NATS_URL='$BENCH_NATS_URL' BENCH_PUBSUB_PAD='$PS_PAD' BENCH_PUBSUB_CONN=cold $K6_NATS_BIN run --quiet $WORKDIR/pubsub-k6.js"
+  fi
+
+  {
+    echo
+    echo "_Every row publishes one fixed ~${PUBSUB_PAYLOAD_BYTES}-byte message"
+    echo "per iteration. The \`perfscale (...)\` rows use \`std/pubsub@v1\`:"
+    echo "**memory** = the in-process broadcast bus (no broker — the engine's"
+    echo "cost floor); **nats** = the async-nats driver against the broker at"
+    echo "\`BENCH_NATS_URL\`, connecting per exchange (the driver's documented"
+    echo "no-pooling posture — connect cost is part of the measurement), so"
+    echo "Msg/s there is connect+publish+flush throughput, and the engine has"
+    echo "no warm-connection mode to compare with the k6 warm row."
+    echo "**pub/sub e2e** rows subscribe first, publish one marked message to a"
+    echo "per-VU subject, and wait for exactly that message; \`e2e p95\` is the"
+    echo "broker round trip (publish → consumed), \`—\` on publish-only rows."
+    echo "The **k6 (xk6-nats)** rows are NOT stock k6 — a custom binary built"
+    echo "with the xk6-nats extension (the rongfengliang fork of"
+    echo "ydarias/xk6-nats; see the CI environment summary for pinned versions;"
+    echo "its k6 core may differ from the stock one): **warm** keeps one"
+    echo "connection per VU (init scope), **cold** connects per iteration — the"
+    echo "fair twin of the perfscale nats row. There is deliberately no k6"
+    echo "roundtrip row: the extension invokes its subscribe handler from the"
+    echo "nats.go delivery goroutine, which races the VU's JS runtime and"
+    echo "intermittently panics the k6 process under load — k6 e2e is not"
+    echo "measurable with this extension, so e2e latency is native-only. k6"
+    echo "latencies are \`Date.now()\`-grained (1ms), so sub-millisecond publish"
+    echo "samples read as 0 — compare Msg/s and the native rows for latency."
+    echo "Between broker-backed rows the suite waits for the client's"
+    echo "TIME_WAIT sockets against the NATS port to drain below 1000 (the db"
+    echo "suite's settle helper): the cold rows churn ~1.7k conn/s, and on"
+    echo "macOS (~16k ephemeral ports, ~30s TIME_WAIT, no port tuning) a 10s"
+    echo "cold row exhausts the range mid-run — Err there is the machine's"
+    echo "ceiling, not the engine's (the CI runner widens"
+    echo "\`ip_local_port_range\` and enables \`tcp_tw_reuse\`)."
+    echo "Metrics share names on both sides (\`pubsub_msgs_published\`,"
+    echo "\`pubsub_publish_ms\`, \`pubsub_e2e_ms\`, \`pubsub_errors\`), parsed"
+    echo "by one pubsub-text parser._"
   } >>"$OUTPUT"
 fi
 

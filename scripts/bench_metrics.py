@@ -3,7 +3,8 @@
 
 Subcommands:
   parse <kind> <file>            kind: text | locust-csv | ws-text |
-                                 grpc-text | db-text | jmeter-summary
+                                 grpc-text | db-text | pubsub-text |
+                                 jmeter-summary
                                  prints shell-evalable `key=value` lines
   append <json> <label> [k=v..]  append a row object to a JSON array file
   boundary <kind> <file> <max-vus> <duration-s> <err-pct>
@@ -160,6 +161,61 @@ def parse_db_text(content):
     return out
 
 
+def parse_pubsub_text(content):
+    """Parse a pure-pub/sub run: message rate from the
+    `pubsub_msgs_published: N R/s` counter line, publish latency from the
+    `pubsub_publish_ms...` trend, errors from the `pubsub_errors` counter.
+    Fits both the native engine's summary (`name: total rate/s`) and the
+    k6 (xk6-nats) script's k6-shaped summary (dot-padded names, same metric
+    names) — the db-text convention. Error rate is per ITERATION (failed
+    connects publish nothing, so `pubsub_errors` must not be divided by the
+    messages that made it) — the `iterations` line supplies the denominator.
+    Also prints iters / e2e_avg_ms / e2e_p95_ms / e2e_count (e2e trend sample
+    count, 0 for publish-only rows) as extra keys for the pubsub report.
+    """
+    out = zeroed()
+
+    m = re.search(r"pubsub_msgs_published[.\s]*:\s*(\d+)\s+([\d.]+)/s", content)
+    if m:
+        out["requests"] = int(m.group(1))
+        out["rps"] = float(m.group(2))
+
+    iters = 0
+    m = re.search(r"^[ \t]*iterations[.\s]*:\s*(\d+)\s+[\d.]+/s", content, re.M)
+    if m:
+        iters = int(m.group(1))
+
+    m = re.search(r"pubsub_publish_ms[.\s]*:(.*)", content)
+    if m:
+        _trend_stats(out, m.group(1))
+
+    m = re.search(r"^[ \t]*pubsub_errors[.\s]*:\s*(\d+)\s+[\d.]+/s", content, re.M)
+    if m:
+        denom = iters or out["requests"]
+        if denom:
+            out["err_pct"] = int(m.group(1)) / denom * 100
+
+    e2e_avg = e2e_p95 = 0.0
+    e2e_count = 0
+    m = re.search(r"pubsub_e2e_ms[.\s]*:(.*)", content)
+    if m:
+        stats = {}
+        _trend_stats(stats, m.group(1))
+        e2e_avg = stats.get("avg_ms", 0)
+        e2e_p95 = stats.get("p95_ms", 0)
+        m_count = re.search(r"count=(\d+)", m.group(1))
+        if m_count:
+            e2e_count = int(m_count.group(1))
+
+    out["parse_ok"] = 1 if out["requests"] else 0
+    return out, {
+        "iters": iters,
+        "e2e_avg_ms": e2e_avg,
+        "e2e_p95_ms": e2e_p95,
+        "e2e_count": e2e_count,
+    }
+
+
 def parse_jmeter_summary(content):
     """Parse JMeter's non-GUI console summary: the last cumulative
     `summary =` line carries the totals (samples, rate, Avg/Min/Max in ms,
@@ -217,6 +273,7 @@ def parse_locust_csv(path):
 
 
 def cmd_parse(kind, path):
+    extra = {}
     try:
         if kind == "locust-csv":
             metrics = parse_locust_csv(path)
@@ -229,6 +286,9 @@ def cmd_parse(kind, path):
         elif kind == "db-text":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_db_text(f.read())
+        elif kind == "pubsub-text":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics, extra = parse_pubsub_text(f.read())
         elif kind == "jmeter-summary":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_jmeter_summary(f.read())
@@ -241,6 +301,8 @@ def cmd_parse(kind, path):
         metrics["parse_ok"] = 0
 
     for k, v in metrics.items():
+        print(f"{k}={v:.2f}" if isinstance(v, float) else f"{k}={v}")
+    for k, v in extra.items():
         print(f"{k}={v:.2f}" if isinstance(v, float) else f"{k}={v}")
 
 

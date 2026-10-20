@@ -29,6 +29,8 @@ ROW_METRICS = [
     ("grpc", "rps", True),
     ("graphql", "rps", True),
     ("db", "rps", True),
+    ("pubsub", "rps", True),
+    ("pubsub", "p95_ms", False),
     ("startup", "overhead_vs_ideal_ms", False),
 ]
 

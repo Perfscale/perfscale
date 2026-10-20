@@ -18,7 +18,7 @@ on:
         default: "5"
       suites:
         description: "Suites to run (see scripts/bench.sh)"
-        default: "overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db"
+        default: "overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub"
       boundary_duration:
         description: "Ramp duration per boundary ladder rung (e.g. 30s, 5m)"
         default: "30s"
@@ -47,6 +47,20 @@ env:
   XK6_SQL_VERSION: "1.2.3"
   XK6_SQL_PG_VERSION: "0.3.2"
   XK6_K6_VERSION: "2.3.0"
+  # Custom k6 for the pubsub suite's k6 rows: a community xk6-nats extension
+  # (there is no official grafana xk6-nats). Pondigo/xk6-nats looked like the
+  # candidate but never calls modules.Register, so its module cannot be
+  # imported at all; the rongfengliang fork of ydarias/xk6-nats registers
+  # `k6/x/nats` and tracks a current k6 core (sobek, k6 v1.3.0). No release
+  # tags exist upstream — pinned to a main-branch commit. The fork keeps the
+  # original module path, so the build uses xk6's replacement syntax. Its
+  # go.mod declares go.k6.io/k6 v1.3.0 (the v1 module path); xk6-sql above
+  # lives on go.k6.io/k6/v2 v2.3.0. The two cores cannot share one binary
+  # (different module paths, incompatible APIs), so xk6-nats gets its OWN
+  # binary at target/xk6-nats/k6, built against the k6 version its go.mod
+  # declares.
+  XK6_NATS_VERSION: "02a2720d27ba1387140796394f2c940495649712" # rongfengliang/xk6-nats main, 2025-10-28
+  XK6_NATS_K6_VERSION: "1.3.0"
   # xk6-sql v1.2.3 / driver v0.3.2 declare `go 1.26.0` / `toolchain go1.26.8`.
   XK6_GO_VERSION: "1.26.8"
 
@@ -66,6 +80,15 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 10
+      # pubsub suite target (BENCH_NATS_URL default matches this). No
+      # health-cmd: the stock image exposes no HTTP endpoint without extra
+      # args (service containers take no command override), and bench.sh
+      # probes the port itself before the nats rows — nats starts in
+      # milliseconds, so the probe absorbs the startup race.
+      nats:
+        image: nats:2.15-alpine
+        ports:
+          - 4222:4222
     steps:
       - uses: actions/checkout@v5
         with:
@@ -176,6 +199,36 @@ jobs:
           echo 'import sql from "k6/x/sql"; import driver from "k6/x/sql/driver/postgres"; export default function() {}' \
             | target/xk6-sql/k6 run -
 
+      # Custom k6 with the xk6-nats extension for the pubsub suite — a second
+      # binary (the xk6-sql core is go.k6.io/k6/v2, xk6-nats targets the v1
+      # module path; see the env pins above). Same cache-by-version-key
+      # posture as the xk6-sql build. bench.sh picks it up at
+      # target/xk6-nats/k6 (K6_NATS_BIN).
+      - name: Cache k6+xk6-nats binary
+        id: k6nats-cache
+        uses: actions/cache@v4
+        with:
+          path: target/xk6-nats/k6
+          key: xk6nats-${{ env.XK6_VERSION }}-${{ env.XK6_NATS_VERSION }}-k6${{ env.XK6_NATS_K6_VERSION }}-go${{ env.XK6_GO_VERSION }}
+
+      - name: Build k6 with xk6-nats
+        if: steps.k6nats-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .gobin
+          GOBIN="$PWD/.gobin" go install "go.k6.io/xk6/cmd/xk6@v${XK6_VERSION}"
+          mkdir -p target/xk6-nats
+          # The fork keeps the upstream module path — build via replacement.
+          ./.gobin/xk6 build "v${XK6_NATS_K6_VERSION}" \
+            --with "github.com/ydarias/xk6-nats=github.com/rongfengliang/xk6-nats@${XK6_NATS_VERSION}" \
+            --output target/xk6-nats/k6
+          rm -rf .gobin
+
+      - name: Verify k6+xk6-nats binary
+        run: |
+          target/xk6-nats/k6 version
+          echo 'import { Nats } from "k6/x/nats"; export default function() {}' \
+            | target/xk6-nats/k6 run -
+
       # Prebuilt binary (seconds) instead of `cargo install` compiling from
       # source (minutes). Pinned: bench numbers must stay comparable between
       # runs, and 1.22 changed the command-string rules (env-prefixed
@@ -221,6 +274,7 @@ jobs:
             echo "| perfscale | $(./target/release/perfscale --version) |"
             echo "| k6 | $(k6 version 2>/dev/null || echo 'not installed') |"
             echo "| k6 (xk6-sql custom build) | $(target/xk6-sql/k6 version 2>/dev/null || echo 'not built') — xk6-sql ${XK6_SQL_VERSION} + driver-postgres ${XK6_SQL_PG_VERSION} |"
+            echo "| k6 (xk6-nats custom build) | $(target/xk6-nats/k6 version 2>/dev/null || echo 'not built') — ydarias/xk6-nats (rongfengliang fork) ${XK6_NATS_VERSION:0:7} |"
             echo "| locust | $(locust --version 2>/dev/null || echo 'not installed') |"
             echo "| jmeter | ${JMETER_VERSION} |"
             echo "| pgjdbc | ${PGJDBC_VERSION} |"
@@ -235,7 +289,7 @@ jobs:
           VUS: ${{ github.event.inputs.vus || '10' }}
           DURATION: ${{ github.event.inputs.duration || '30s' }}
           RUNS: ${{ github.event.inputs.runs || '5' }}
-          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db' }}
+          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub' }}
           BOUNDARY_DURATION: ${{ github.event.inputs.boundary_duration || '30s' }}
         run: ./scripts/bench.sh
 
