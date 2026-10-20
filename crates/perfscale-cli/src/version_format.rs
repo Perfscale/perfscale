@@ -21,6 +21,26 @@ pub fn from_describe(base: &str, describe: Option<&str>) -> String {
     }
 }
 
+/// Like [`from_describe`], but a shallow clone without tags still earns a
+/// commit stamp when the environment provides one (CI exposes `GITHUB_SHA`):
+/// `<base>-next+g<sha>` — distance unknown, commit known. Only a missing or
+/// malformed sha falls back to `+unknown`.
+pub fn from_describe_or_sha(base: &str, describe: Option<&str>, sha: Option<&str>) -> String {
+    match describe.and_then(parse_describe) {
+        Some(_) => from_describe(base, describe),
+        None => match sha.and_then(short_sha) {
+            Some(short) => format!("{base}-next+g{short}"),
+            None => format!("{base}-next+unknown"),
+        },
+    }
+}
+
+/// Validate a full or short commit sha and cut it to 7 chars.
+fn short_sha(sha: &str) -> Option<&str> {
+    let sha = sha.trim();
+    (sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit())).then(|| &sha[..7])
+}
+
 /// Parse `git describe --long` output (`<tag>-<distance>-g<sha>`) into the
 /// commit distance and short sha.
 fn parse_describe(describe: &str) -> Option<(u64, &str)> {
@@ -55,6 +75,33 @@ mod tests {
     #[test]
     fn missing_git_or_tags_falls_back_to_unknown_dev_marker() {
         assert_eq!(from_describe("0.25.0", None), "0.25.0-next+unknown");
+    }
+
+    #[test]
+    fn shallow_clone_with_env_sha_yields_commit_stamp() {
+        assert_eq!(
+            from_describe_or_sha("0.25.0", None, Some("520b4781a2b3c4d5e6f7")),
+            "0.25.0-next+g520b478"
+        );
+    }
+
+    #[test]
+    fn describe_wins_over_env_sha() {
+        assert_eq!(
+            from_describe_or_sha("0.25.0", Some("v0.25.0-3-g520b478"), Some("fffffff")),
+            "0.25.0-next.3+g520b478"
+        );
+    }
+
+    #[test]
+    fn malformed_env_sha_still_falls_back_to_unknown() {
+        for garbage in ["", "abc", "xyz1234!", "not a sha"] {
+            assert_eq!(
+                from_describe_or_sha("0.25.0", None, Some(garbage)),
+                "0.25.0-next+unknown",
+                "input: {garbage:?}"
+            );
+        }
     }
 
     #[test]

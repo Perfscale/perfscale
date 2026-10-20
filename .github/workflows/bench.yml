@@ -68,6 +68,9 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history: build.rs stamps dev builds via `git describe`.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.0

@@ -10,6 +10,8 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=PERFSCALE_VERSION_OVERRIDE");
+    println!("cargo:rerun-if-env-changed=PERFSCALE_GIT_SHA");
+    println!("cargo:rerun-if-env-changed=GITHUB_SHA");
 
     // Re-stamp when the checkout moves: new commit, branch switch, new tag.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
@@ -23,7 +25,17 @@ fn main() {
     let version = match std::env::var("PERFSCALE_VERSION_OVERRIDE") {
         Ok(version) => version,
         Err(_) => {
-            version_format::from_describe(env!("CARGO_PKG_VERSION"), git_describe().as_deref())
+            // Shallow CI checkouts (fetch-depth: 1) carry no tags, so
+            // `git describe` finds nothing — stamp the commit from the
+            // environment instead of degrading to `-next+unknown`.
+            let env_sha = std::env::var("PERFSCALE_GIT_SHA")
+                .ok()
+                .or_else(|| std::env::var("GITHUB_SHA").ok());
+            version_format::from_describe_or_sha(
+                env!("CARGO_PKG_VERSION"),
+                git_describe().as_deref(),
+                env_sha.as_deref(),
+            )
         }
     };
     println!("cargo:rustc-env=PERFSCALE_BUILD_VERSION={version}");
