@@ -16,6 +16,7 @@
 //! spawns no task and no channel traffic exists — the zero-overhead path.
 
 pub mod cpu;
+pub mod reporters;
 pub mod stream;
 pub mod v1;
 
@@ -24,6 +25,10 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub use reporters::{
+    reporter_kind, resolve_env_refs, validate_reporters, ReporterConfig, ReporterKind,
+    ReporterWith,
+};
 pub use stream::{snapshot_to_samples, DuringRunShipper, MetricSnapshot, Sample};
 
 /// Minimum snapshot/flush interval — below ~100ms the sampler and shipper
@@ -73,6 +78,17 @@ pub struct ReportRunConfig {
     /// alive (default 24).
     #[serde(default = "default_max_pending")]
     pub max_pending: usize,
+
+    /// End-of-run reporters (`report.reporters`, issue #9): each entry
+    /// renders the canonical `report@v1` document and delivers it to a file
+    /// or an HTTP endpoint. Empty — the default — produces no report.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reporters: Vec<reporters::ReporterConfig>,
+
+    /// User labels stamped on the report's run identity (`report.labels`).
+    /// Values support `${{ env.* }}` interpolation, resolved at run time.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub labels: serde_json::Map<String, serde_json::Value>,
 }
 
 pub(crate) fn default_interval_ms() -> u64 {
@@ -100,6 +116,8 @@ impl Default for ReportRunConfig {
             batch_size: default_batch_size(),
             max_cpu_percent: default_max_cpu_percent(),
             max_pending: default_max_pending(),
+            reporters: Vec::new(),
+            labels: serde_json::Map::new(),
         }
     }
 }

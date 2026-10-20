@@ -333,7 +333,11 @@ fn kind_str(kind: MetricKind) -> &'static str {
     }
 }
 
-fn build_metrics(m: &Metrics, gpu: Option<&GpuSummary>, ctx: &ReportContext) -> Vec<MetricFamilyReport> {
+fn build_metrics(
+    m: &Metrics,
+    gpu: Option<&GpuSummary>,
+    ctx: &ReportContext,
+) -> Vec<MetricFamilyReport> {
     let mut out = Vec::new();
     // Registered families first, in registration order.
     for (family, def) in catalog() {
@@ -405,36 +409,41 @@ fn build_metrics(m: &Metrics, gpu: Option<&GpuSummary>, ctx: &ReportContext) -> 
     // GPU gauges: point-in-time series per device (`gpu="<index>"` label),
     // each with the collector's own timestamp of the last sample.
     if let Some(g) = gpu {
-        let mut gauge = |name: &str, unit: &str, pick: fn(&crate::gpu::GpuSample) -> Option<f64>| {
-            let series: Vec<MetricSeries> = g
-                .devices
-                .iter()
-                .filter_map(|d| {
-                    let last = d.samples.iter().rev().find_map(|s| pick(s).map(|v| (v, s.ts_ms)))?;
-                    Some(MetricSeries {
-                        labels: Map::from_iter([(
-                            "gpu".to_string(),
-                            Value::String(d.index.to_string()),
-                        )]),
-                        value: Some(last.0),
-                        ts: Some(crate::report::stream::epoch_ms_to_rfc3339(last.1 as i64)),
-                        ..MetricSeries::default()
+        let mut gauge =
+            |name: &str, unit: &str, pick: fn(&crate::gpu::GpuSample) -> Option<f64>| {
+                let series: Vec<MetricSeries> = g
+                    .devices
+                    .iter()
+                    .filter_map(|d| {
+                        let last = d
+                            .samples
+                            .iter()
+                            .rev()
+                            .find_map(|s| pick(s).map(|v| (v, s.ts_ms)))?;
+                        Some(MetricSeries {
+                            labels: Map::from_iter([(
+                                "gpu".to_string(),
+                                Value::String(d.index.to_string()),
+                            )]),
+                            value: Some(last.0),
+                            ts: Some(crate::report::stream::epoch_ms_to_rfc3339(last.1 as i64)),
+                            ..MetricSeries::default()
+                        })
                     })
-                })
-                .collect();
-            if series.is_empty() {
-                return;
-            }
-            out.push(MetricFamilyReport {
-                name: name.to_string(),
-                family: "gpu".to_string(),
-                kind: "gauge".to_string(),
-                unit: unit.to_string(),
-                description: format!("GPU gauge reported by {}", g.source),
-                recorded: true,
-                series,
-            });
-        };
+                    .collect();
+                if series.is_empty() {
+                    return;
+                }
+                out.push(MetricFamilyReport {
+                    name: name.to_string(),
+                    family: "gpu".to_string(),
+                    kind: "gauge".to_string(),
+                    unit: unit.to_string(),
+                    description: format!("GPU gauge reported by {}", g.source),
+                    recorded: true,
+                    series,
+                });
+            };
         gauge("gpu_utilization_pct", "%", |s| s.utilization_pct);
         gauge("gpu_memory_used_mib", "MiB", |s| s.memory_used_mib);
         gauge("gpu_memory_total_mib", "MiB", |s| s.memory_total_mib);
@@ -494,10 +503,25 @@ fn lookup_series(m: &Metrics, name: &str, ctx: &ReportContext) -> Option<MetricS
 impl ReportV1 {
     /// Canonical JSON dump — the `std/report/json@v1` renderer.
     pub fn to_json(&self) -> String {
-        let mut out =
-            serde_json::to_string_pretty(self).expect("report is always serializable");
+        let mut out = serde_json::to_string_pretty(self).expect("report is always serializable");
         out.push('\n');
         out
+    }
+
+    /// Apply one reporter's raw-sample cap in place: `0` drops the samples
+    /// blocks entirely, otherwise each step keeps its first `max_samples`
+    /// values and re-flags `truncated` accordingly.
+    pub fn truncate_samples(&mut self, max_samples: usize) {
+        for step in &mut self.steps {
+            step.samples = step.samples.take().and_then(|mut raw| {
+                if max_samples == 0 {
+                    return None;
+                }
+                raw.values.truncate(max_samples);
+                raw.truncated = raw.recorded as usize > raw.values.len();
+                Some(raw)
+            });
+        }
     }
 
     /// JUnit XML — the `std/report/junit@v1` renderer: the testsuite is the
@@ -621,10 +645,7 @@ mod tests {
             .unwrap();
         assert!(*q.get("0.95").unwrap() < 0.1, "seconds on the wire: {q:?}");
         assert_eq!(by_name["http_reqs"].series[0].value, Some(10.0));
-        assert_eq!(
-            by_name["http_req_failed"].series[0].failed,
-            Some(2.0)
-        );
+        assert_eq!(by_name["http_req_failed"].series[0].failed, Some(2.0));
         assert!(!by_name["llm_ttft_ms"].recorded);
         assert!(by_name["llm_ttft_ms"].series.is_empty());
         assert_eq!(by_name["perfscale_vus"].series[0].value, Some(2.0));

@@ -2263,8 +2263,10 @@ if has_suite pubsub; then
     pubsub_row "perfscale (nats, pub/sub e2e)" \
       "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-e2e-nats.yaml" --quiet)"
     # scope=vu rows: one connection per VU reused across iterations — the k6
-    # warm posture. They churn no sockets (one connect per VU total), so no
-    # TIME_WAIT settle is needed around them.
+    # warm posture. They churn no sockets themselves, but the first connect of
+    # each VU still needs a free ephemeral port, so the exchange rows' churn
+    # must have drained first.
+    tw_settle "${NATS_HOSTPORT##*:}" "nats target"
     pubsub_row "perfscale (nats, publish, scope=vu)" \
       "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-publish-nats-vu.yaml" --quiet)"
     pubsub_row "perfscale (nats, pub/sub e2e, scope=vu)" \

@@ -23,17 +23,39 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
         None => None,
     };
 
-    let mut plan = resolve_plan(&args, native_test, config.as_ref())?;
+    // Reporter specs fail fast, before the run starts (issue #9): unknown
+    // reporter, missing destination, unresolved `${VAR}` header refs.
+    let (flag_url, flag_reporters) = parse_report_flags(&args.report)?;
+    let labels = parse_labels(&args.label)?;
+
+    let mut plan = resolve_plan(&args, native_test, config.as_ref(), &flag_reporters, &labels)?;
     let (engine, vus, duration) = plan_meta(&plan);
-    let report_url = resolve_report_url(&args, config.as_ref());
+    let report_url = resolve_report_url(flag_url.as_ref(), config.as_ref());
     let shipper = wire_during_run(&mut plan, report_url.as_ref());
+    // The reporters the run will deliver at the end (config + CLI flags).
+    let reporters = plan_reporters(&plan, &flag_reporters);
+    if !reporters.is_empty() {
+        perfscale_core::report::validate_reporters(&reporters).map_err(|msg| {
+            CliError::new(format!("invalid report configuration: {msg}"))
+                .hint("reporters are declared in the config's `report.reporters` block or via --report json:PATH / junit:PATH")
+                .docs("yaml-reference.md#config--c-configyaml")
+        })?;
+    }
 
     let RunOutput {
         mut lines, exit, ..
     } = runner::execute(plan).await.map_err(CliError::from_engine)?;
     let mut summary_lines: Vec<String> = Vec::new();
+    // The native engine's machine-readable `report: {…}` line (report@v1) is
+    // captured here, never forwarded into the summary lines or the serve
+    // summary POST.
+    let mut report_line: Option<String> = None;
 
     while let Some(line) = lines.recv().await {
+        if matches!(line.source, LogSource::Stdout) && line.text.starts_with("report: {") {
+            report_line = Some(line.text.clone());
+            continue;
+        }
         if should_print(&line, args.quiet) {
             print_line(&line);
         }
@@ -62,8 +84,24 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
         let _ = tokio::time::timeout(Duration::from_secs(30), shipper).await;
     }
 
-    if let Some(url) = report_url {
-        report_summary(&url, &summary_lines).await;
+    if let Some(url) = report_url.as_ref() {
+        report_summary(url, &summary_lines).await;
+    }
+
+    // End-of-run reporters (issue #9): render the canonical report@v1
+    // document once, deliver per reporter. Runtime delivery errors are
+    // best-effort — logged and counted, the run still completes.
+    if !reporters.is_empty() {
+        let report = build_report(report_line.as_ref(), engine, vus, duration.clone(), &summary_lines, &labels);
+        let errors = deliver_reports(&reporters, &report).await;
+        // `perfscale serve` keeps report artifacts: push the document next
+        // to the summary lines when a target is connected.
+        if let Some(url) = report_url.as_ref() {
+            push_report_artifact(url, &report).await;
+        }
+        if errors > 0 {
+            eprintln!("[report] {errors} reporter error(s) (engine_report_errors)");
+        }
     }
 
     if !args.summary_export.is_empty() {
@@ -271,10 +309,16 @@ async fn load_test_def(path: &Path, opts: &ImportOptions) -> Result<TestDef, Cli
 ///
 /// `native_test` must be `Some` iff `args.file` is set; the caller loads and
 /// parses it beforehand since that step needs the filesystem.
+///
+/// `flag_reporters`/`labels` (parsed from `--report json:PATH` / `--label`)
+/// fold into the native run config's report block so the engine knows to
+/// emit the report@v1 document; delivery itself happens CLI-side.
 fn resolve_plan(
     args: &RunArgs,
     native_test: Option<TestDef>,
     config: Option<&ConfigFile>,
+    flag_reporters: &[perfscale_core::report::ReporterConfig],
+    labels: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<ExecutionPlan, CliError> {
     if let Some(script) = &args.k6 {
         return Ok(ExecutionPlan::K6Script(script.clone()));
@@ -310,9 +354,18 @@ fn resolve_plan(
         let cfg = config.expect("clap requires -c with -f");
         let mut run = cfg.run.clone();
         // Fold the `report:` block into the engine's run config — the engine
-        // reads `report.during_run` to decide whether to pump snapshots.
+        // reads `report.during_run` to decide whether to pump snapshots, and
+        // `report.reporters` to decide whether to emit the report@v1 line.
+        // CLI `--report json:PATH` / `--label` specs merge in on top.
         if let Some(report) = &cfg.report {
             run.report = Some(report.to_run_config());
+        }
+        if !flag_reporters.is_empty() || !labels.is_empty() {
+            let report = run.report.get_or_insert_with(Default::default);
+            report.reporters.extend(flag_reporters.iter().cloned());
+            for (k, v) in labels {
+                report.labels.insert(k.clone(), v.clone());
+            }
         }
         // Fold the `webrtc:` block in too (RFC 007) — pro/webrtc-* actions
         // read ICE servers and the peer-connection guardrail off the context.
@@ -342,11 +395,99 @@ fn resolve_plan(
     unreachable!("clap ArgGroup guarantees exactly one of --k6/--locust/--jmeter/-f")
 }
 
-/// `--report` wins over a `report:` block in the config file.
-fn resolve_report_url(args: &RunArgs, config: Option<&ConfigFile>) -> Option<String> {
-    args.report
-        .clone()
-        .or_else(|| config.and_then(|c| c.report.as_ref().map(|r| r.url.clone())))
+/// The serve target: a `--report http(s)://…` flag wins over the config
+/// file's `report.url`. An empty config `url` (a block that exists only for
+/// `reporters`/`labels`) counts as unset.
+fn resolve_report_url(flag_url: Option<&String>, config: Option<&ConfigFile>) -> Option<String> {
+    flag_url.cloned().or_else(|| {
+        config.and_then(|c| {
+            c.report
+                .as_ref()
+                .map(|r| r.url.clone())
+                .filter(|u| !u.is_empty())
+        })
+    })
+}
+
+/// Split the repeatable `--report` values into the serve URL and reporter
+/// specs. `http(s)://…` values keep the historical serve-URL meaning (at
+/// most one); `json:PATH` / `junit:PATH` declare an end-of-run reporter.
+/// Anything else is a configuration error — fail fast, before the run.
+fn parse_report_flags(
+    values: &[String],
+) -> Result<(Option<String>, Vec<perfscale_core::report::ReporterConfig>), CliError> {
+    let mut url: Option<String> = None;
+    let mut reporters = Vec::new();
+    for v in values {
+        if v.starts_with("http://") || v.starts_with("https://") {
+            if url.is_some() {
+                return Err(CliError::new(
+                    "only one --report URL (perfscale serve target) may be given",
+                ));
+            }
+            url = Some(v.clone());
+            continue;
+        }
+        let (name, path) = v.split_once(':').ok_or_else(|| {
+            CliError::new(format!("invalid --report value '{v}'"))
+                .hint("expected an http(s):// URL or a reporter spec like `json:out.json` / `junit:out.xml`")
+        })?;
+        if perfscale_core::report::reporter_kind(name).is_none() {
+            return Err(CliError::new(format!("unknown reporter '{name}'"))
+                .hint("built-in reporters: json, junit (config file: std/report/json@v1, std/report/junit@v1)"));
+        }
+        if path.is_empty() {
+            return Err(CliError::new(format!("--report {name}: needs a destination path"))
+                .hint("e.g. `--report junit:out.xml`"));
+        }
+        reporters.push(perfscale_core::report::ReporterConfig {
+            use_: name.to_string(),
+            with: perfscale_core::report::ReporterWith {
+                path: Some(path.to_string()),
+                ..Default::default()
+            },
+        });
+    }
+    Ok((url, reporters))
+}
+
+/// Parse `--label KEY=VALUE` values into the report's run labels.
+fn parse_labels(
+    values: &[String],
+) -> Result<serde_json::Map<String, serde_json::Value>, CliError> {
+    let mut out = serde_json::Map::new();
+    for v in values {
+        let (k, val) = v.split_once('=').ok_or_else(|| {
+            CliError::new(format!("invalid --label value '{v}'"))
+                .hint("expected KEY=VALUE, e.g. `--label testid=smoke`")
+        })?;
+        if k.is_empty() {
+            return Err(CliError::new(format!("invalid --label value '{v}'"))
+                .hint("the key must be non-empty, e.g. `--label env=staging`"));
+        }
+        out.insert(k.to_string(), serde_json::Value::String(val.to_string()));
+    }
+    Ok(out)
+}
+
+/// The reporters the resolved plan will deliver: the native run config's
+/// merged list, or the CLI's own specs for the script engines (their
+/// configs never carry a report block).
+fn plan_reporters(
+    plan: &ExecutionPlan,
+    flag_reporters: &[perfscale_core::report::ReporterConfig],
+) -> Vec<perfscale_core::report::ReporterConfig> {
+    match plan {
+        ExecutionPlan::NativeSteps { config, .. } => config
+            .report
+            .as_ref()
+            .map(|r| r.reporters.clone())
+            .unwrap_or_default(),
+        // Script engines (k6/locust/JMeter) have no config report block;
+        // their reporters come from the CLI flags alone, and the report is
+        // built from the parsed summary — no per-step section.
+        _ => flag_reporters.to_vec(),
+    }
 }
 
 /// When the native run opts into during-run streaming (`report.during_run`)
@@ -422,6 +563,151 @@ async fn report_summary(url: &str, lines: &[String]) {
     }
 }
 
+/// The report@v1 document for this run: parsed from the native engine's
+/// `report: {…}` line when present, otherwise built minimal CLI-side
+/// (script engines carry no per-step/metric detail; verdicts still come
+/// from the parsed thresholds line).
+fn build_report(
+    report_line: Option<&String>,
+    engine: &str,
+    vus: Option<u32>,
+    duration: Option<String>,
+    summary_lines: &[String],
+    labels: &serde_json::Map<String, serde_json::Value>,
+) -> perfscale_core::report::v1::ReportV1 {
+    use perfscale_core::report::v1 as v1;
+
+    if let Some(line) = report_line {
+        if let Ok(report) = serde_json::from_str::<v1::ReportV1>(line.trim_start_matches("report: ")) {
+            return report;
+        }
+        eprintln!("[report] could not parse the engine's report line — falling back to a minimal report");
+    }
+
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let thresholds = perfscale_core::summary::parse_thresholds(&summary_lines.join("\n"));
+    v1::ReportV1 {
+        schema_version: v1::SCHEMA_VERSION.to_string(),
+        run: v1::RunIdentity {
+            run_id: uuid::Uuid::new_v4().to_string(),
+            engine: engine.to_string(),
+            perfscale_version: crate::version::VERSION.to_string(),
+            vus,
+            started_at: iso8601_utc(secs),
+            duration_s: duration
+                .as_deref()
+                .map(perfscale_core::step::parse_duration_ms)
+                .map(|ms| ms as f64 / 1000.0)
+                .unwrap_or(0.0),
+            labels: labels.clone(),
+        },
+        steps: Vec::new(),
+        verdicts: thresholds
+            .map(|t| {
+                t.checks
+                    .iter()
+                    .map(|c| v1::Verdict {
+                        threshold: c.metric.clone(),
+                        expression: c.expr.clone(),
+                        pass: c.pass,
+                        observed: c.actual,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        metrics: Vec::new(),
+        seq: None,
+        samples: Vec::new(),
+    }
+}
+
+/// Render and deliver each configured reporter. Returns the number of
+/// delivery errors — the `engine_report_errors` count. Best-effort: errors
+/// are logged, never propagated.
+async fn deliver_reports(
+    reporters: &[perfscale_core::report::ReporterConfig],
+    report: &perfscale_core::report::v1::ReportV1,
+) -> u64 {
+    let mut errors = 0u64;
+    for r in reporters {
+        let mut doc = report.clone();
+        doc.truncate_samples(r.with.max_samples());
+        let body = match perfscale_core::report::reporter_kind(&r.use_) {
+            Some(perfscale_core::report::ReporterKind::Json) => doc.to_json(),
+            Some(perfscale_core::report::ReporterKind::Junit) => doc.to_junit_xml(),
+            // Validated before the run started.
+            None => continue,
+        };
+        let result = if let Some(path) = &r.with.path {
+            std::fs::write(path, &body).map(|_| {
+                eprintln!("[report] {} report written to {path}", r.use_);
+            })
+            .map_err(|e| e.to_string())
+        } else if let Some(url) = &r.with.url {
+            push_report_http(r, url, &body).await.map(|_| {
+                eprintln!("[report] {} report pushed to {url}", r.use_);
+            })
+        } else {
+            continue; // validated before the run started
+        };
+        if let Err(e) = result {
+            errors += 1;
+            eprintln!("[report] reporter {} failed: {e}", r.use_);
+        }
+    }
+    errors
+}
+
+/// HTTP push delivery. `${VAR}` references in header values resolve
+/// host-side here; the resolved values are never logged.
+async fn push_report_http(
+    r: &perfscale_core::report::ReporterConfig,
+    url: &str,
+    body: &str,
+) -> Result<(), String> {
+    let content_type = match perfscale_core::report::reporter_kind(&r.use_) {
+        Some(perfscale_core::report::ReporterKind::Junit) => "application/xml",
+        _ => "application/json",
+    };
+    let client = reqwest::Client::new();
+    let mut req = client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, content_type)
+        .body(body.to_string())
+        .timeout(Duration::from_secs(10));
+    for (k, v) in &r.with.headers {
+        let resolved = perfscale_core::report::resolve_env_refs(v)?;
+        req = req.header(k, resolved);
+    }
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => Ok(()),
+        Ok(resp) => Err(format!("{url} returned {}", resp.status())),
+        Err(e) => Err(format!("failed to reach {url}: {e}")),
+    }
+}
+
+/// Hand the report@v1 artifact to a connected `perfscale serve` — the
+/// dashboard stores it as a run artifact. Best-effort, like the summary
+/// POST.
+async fn push_report_artifact(url: &str, report: &perfscale_core::report::v1::ReportV1) {
+    let endpoint = format!("{}/api/v1/report", url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    match client
+        .post(&endpoint)
+        .json(report)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {}
+        Ok(resp) => eprintln!("[report] {endpoint} returned {}", resp.status()),
+        Err(e) => eprintln!("[report] failed to reach {endpoint}: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -439,7 +725,8 @@ mod tests {
             file: None,
             config: None,
             host: None,
-            report: None,
+            report: Vec::new(),
+            label: Vec::new(),
             quiet: false,
             summary_export: Vec::new(),
             summary_format: None,
@@ -483,7 +770,7 @@ mod tests {
             k6: Some(PathBuf::from("a.js")),
             ..base_args()
         };
-        let plan = resolve_plan(&args, None, None).unwrap();
+        let plan = resolve_plan(&args, None, None, &[], &serde_json::Map::new()).unwrap();
         assert!(matches!(plan, ExecutionPlan::K6Script(p) if p == Path::new("a.js")));
     }
 
@@ -493,7 +780,7 @@ mod tests {
             jmeter: Some(PathBuf::from("plan.jmx")),
             ..base_args()
         };
-        let plan = resolve_plan(&args, None, None).unwrap();
+        let plan = resolve_plan(&args, None, None, &[], &serde_json::Map::new()).unwrap();
         assert!(matches!(plan, ExecutionPlan::JMeterScript(p) if p == Path::new("plan.jmx")));
     }
 
@@ -504,7 +791,7 @@ mod tests {
             host: Some("https://example.com".into()),
             ..base_args()
         };
-        let plan = resolve_plan(&args, None, None).unwrap();
+        let plan = resolve_plan(&args, None, None, &[], &serde_json::Map::new()).unwrap();
         match plan {
             ExecutionPlan::LocustScript { path, opts } => {
                 assert_eq!(path, PathBuf::from("b.py"));
@@ -522,7 +809,7 @@ mod tests {
             ..base_args()
         };
         let config = sample_config(None);
-        let plan = resolve_plan(&args, None, Some(&config)).unwrap();
+        let plan = resolve_plan(&args, None, Some(&config), &[], &serde_json::Map::new()).unwrap();
         match plan {
             ExecutionPlan::LocustScript { opts, .. } => {
                 assert_eq!(opts.users, 4);
@@ -539,7 +826,7 @@ mod tests {
             ..base_args()
         };
         let config = sample_config(None);
-        let plan = resolve_plan(&args, Some(sample_test()), Some(&config)).unwrap();
+        let plan = resolve_plan(&args, Some(sample_test()), Some(&config), &[], &serde_json::Map::new()).unwrap();
         match plan {
             ExecutionPlan::NativeSteps { config, .. } => assert_eq!(config.vus, 4),
             _ => panic!("expected NativeSteps plan"),
@@ -554,7 +841,7 @@ mod tests {
         };
         let mut config = sample_config(Some("http://localhost:7999"));
         config.report.as_mut().unwrap().during_run = true;
-        let plan = resolve_plan(&args, Some(sample_test()), Some(&config)).unwrap();
+        let plan = resolve_plan(&args, Some(sample_test()), Some(&config), &[], &serde_json::Map::new()).unwrap();
         match plan {
             ExecutionPlan::NativeSteps {
                 config, metrics_tx, ..
@@ -632,36 +919,31 @@ mod tests {
             ..base_args()
         };
         let config = sample_config(None);
-        let _ = resolve_plan(&args, None, Some(&config));
+        let _ = resolve_plan(&args, None, Some(&config), &[], &serde_json::Map::new());
     }
 
     #[test]
     fn resolve_report_url_prefers_cli_flag_over_config() {
-        let args = RunArgs {
-            report: Some("http://cli-wins".into()),
-            ..base_args()
-        };
+        let (flag_url, _) = parse_report_flags(&["http://cli-wins".into()]).unwrap();
         let config = sample_config(Some("http://config-loses"));
         assert_eq!(
-            resolve_report_url(&args, Some(&config)).as_deref(),
+            resolve_report_url(flag_url.as_ref(), Some(&config)).as_deref(),
             Some("http://cli-wins")
         );
     }
 
     #[test]
     fn resolve_report_url_falls_back_to_config() {
-        let args = base_args();
         let config = sample_config(Some("http://from-config"));
         assert_eq!(
-            resolve_report_url(&args, Some(&config)).as_deref(),
+            resolve_report_url(None, Some(&config)).as_deref(),
             Some("http://from-config")
         );
     }
 
     #[test]
     fn resolve_report_url_none_when_neither_set() {
-        let args = base_args();
-        assert_eq!(resolve_report_url(&args, None), None);
+        assert_eq!(resolve_report_url(None, None), None);
     }
 
     #[test]
@@ -672,7 +954,7 @@ mod tests {
             ..base_args()
         };
         let config = sample_config(None);
-        let plan = resolve_plan(&args, Some(sample_test()), Some(&config)).unwrap();
+        let plan = resolve_plan(&args, Some(sample_test()), Some(&config), &[], &serde_json::Map::new()).unwrap();
         match plan {
             ExecutionPlan::NativeSteps { quiet, .. } => assert!(quiet),
             _ => panic!("expected NativeSteps plan"),
@@ -790,7 +1072,7 @@ mod tests {
             duration: "30s".into(),
             target: 10,
         }];
-        let err = resolve_plan(&args, None, Some(&config))
+        let err = resolve_plan(&args, None, Some(&config), &[], &serde_json::Map::new())
             .err()
             .expect("stages config must be rejected for --locust");
         assert!(err.to_string().contains("native engine"), "{err}");

@@ -284,6 +284,11 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "labels": {
+          "additionalProperties": true,
+          "description": "User labels stamped on the report's run identity.",
+          "type": "object"
+        },
         "max_cpu_percent": {
           "default": 90.0,
           "description": "CPU gate for during-run shipping: while the host's busy CPU% is at or above this value batches are held (no POSTs) and snapshots deferred — queued, not dropped, shipped in order once the gate opens. `0` disables the gate (default 90); off-Linux the gate is inert.",
@@ -297,14 +302,79 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "reporters": {
+          "description": "End-of-run reporters (issue #9): `[{ use: \"std/report/json@v1\", with: { path: out.json } }]` — the same `use:`/`with:` shape as steps. Validated fail-fast at lint and before the run starts.",
+          "items": {
+            "$ref": "#/definitions/ReporterConfig"
+          },
+          "type": "array"
+        },
         "url": {
-          "description": "Base URL of a running `perfscale serve` instance, e.g. `http://localhost:7999`.",
+          "default": "",
+          "description": "Base URL of a running `perfscale serve` instance, e.g. `http://localhost:7999`. May be omitted when the block exists only for `reporters`/`labels`.",
           "type": "string"
         }
       },
+      "type": "object"
+    },
+    "ReporterConfig": {
+      "additionalProperties": false,
+      "description": "One configured end-of-run reporter (`report.reporters[]`).",
+      "properties": {
+        "use": {
+          "description": "Reporter id: `std/report/json@v1` or `std/report/junit@v1`.",
+          "type": "string"
+        },
+        "with": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ReporterWith"
+            }
+          ],
+          "default": {},
+          "description": "Reporter parameters (destination + knobs)."
+        }
+      },
       "required": [
-        "url"
+        "use"
       ],
+      "type": "object"
+    },
+    "ReporterWith": {
+      "additionalProperties": false,
+      "description": "Reporter parameters. Exactly one of `path` / `url` is required.",
+      "properties": {
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers for the HTTP push. Values may embed `${VAR}` environment references, e.g. `Authorization: \"Bearer ${TOKEN}\"` — interpolated host-side at delivery, never logged.",
+          "type": "object"
+        },
+        "max_samples": {
+          "description": "Raw per-step samples to include (default [`MAX_STORED_STEP_SAMPLES`], `0` disables the samples block).",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Write the report to this local file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "POST the report to this URL (HTTP push).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "Step": {

@@ -281,14 +281,18 @@ const CONFIG_TOP_FIELDS: [&str; 16] = [
     "seed",
     "libraries",
 ];
-const REPORT_FIELDS: [&str; 6] = [
+const REPORT_FIELDS: [&str; 8] = [
     "url",
     "during_run",
     "interval_ms",
     "batch_size",
     "max_cpu_percent",
     "max_pending",
+    "reporters",
+    "labels",
 ];
+const REPORTER_FIELDS: [&str; 2] = ["use", "with"];
+const REPORTER_WITH_FIELDS: [&str; 4] = ["path", "url", "headers", "max_samples"];
 const CHECK_FIELDS: [&str; 7] = [
     "on",
     "status",
@@ -649,6 +653,7 @@ fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
 
     if let Some(report) = map.get("report").and_then(|v| v.as_object()) {
         unknown_field_issues(report, &REPORT_FIELDS, "/report", issues);
+        lint_reporters(report, issues);
     }
 
     // Load-profile validation: the schema accepts any stage list shape, but a
@@ -735,6 +740,78 @@ fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
                             suggestion: None,
                         });
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Fail-fast linting of the config's `report.reporters` block (issue #9):
+/// unknown reporter ids, unknown `with` keys, and a missing destination
+/// (`path`/`url`) are configuration errors and must surface before the run
+/// starts — same contract as `validate_reporters`, which the run applies.
+fn lint_reporters(
+    report: &serde_json::Map<String, Value>,
+    issues: &mut Vec<LintIssue>,
+) {
+    let Some(reporters) = report.get("reporters") else {
+        return;
+    };
+    let Some(list) = reporters.as_array() else {
+        issues.push(LintIssue {
+            location: "/report/reporters".into(),
+            problem: "'reporters' must be an array of reporter entries".into(),
+            suggestion: Some(
+                "e.g. `reporters: [{ use: std/report/junit@v1, with: { path: out.xml } }]`".into(),
+            ),
+        });
+        return;
+    };
+    for (i, entry) in list.iter().enumerate() {
+        let loc = format!("/report/reporters/{i}");
+        let Some(obj) = entry.as_object() else {
+            issues.push(LintIssue {
+                location: loc,
+                problem: "a reporter entry must be an object".into(),
+                suggestion: Some("e.g. `{ use: std/report/json@v1, with: { path: out.json } }`".into()),
+            });
+            continue;
+        };
+        unknown_field_issues(obj, &REPORTER_FIELDS, &loc, issues);
+        let use_ = entry
+            .get("use")
+            .or_else(|| entry.get("uses"))
+            .and_then(Value::as_str);
+        match use_ {
+            None => issues.push(LintIssue {
+                location: loc.clone(),
+                problem: "a reporter entry needs `use:` naming the reporter".into(),
+                suggestion: Some("built-ins: std/report/json@v1, std/report/junit@v1".into()),
+            }),
+            Some(u) if crate::report::reporter_kind(u).is_none() => issues.push(LintIssue {
+                location: format!("{loc}/use"),
+                problem: format!("unknown reporter '{u}'"),
+                suggestion: Some("built-ins: std/report/json@v1, std/report/junit@v1".into()),
+            }),
+            _ => {}
+        }
+        let with = entry.get("with").and_then(Value::as_object);
+        match with {
+            None => issues.push(LintIssue {
+                location: loc.clone(),
+                problem: "a reporter needs a destination: `with.path` (file) or `with.url` (HTTP push)".into(),
+                suggestion: None,
+            }),
+            Some(w) => {
+                unknown_field_issues(w, &REPORTER_WITH_FIELDS, &format!("{loc}/with"), issues);
+                let has_path = w.get("path").and_then(Value::as_str).is_some_and(|p| !p.is_empty());
+                let has_url = w.get("url").and_then(Value::as_str).is_some_and(|u| !u.is_empty());
+                if has_path == has_url {
+                    issues.push(LintIssue {
+                        location: format!("{loc}/with"),
+                        problem: "exactly one of `path` (file) or `url` (HTTP push) is required".into(),
+                        suggestion: None,
+                    });
                 }
             }
         }
@@ -2376,5 +2453,73 @@ steps:
 "#;
         assert_eq!(lint(yaml, DocKind::Test), vec![]);
         assert!(lint_warnings(yaml, DocKind::Test).is_empty());
+    }
+
+    #[test]
+    fn lint_config_reporters_block_is_validated_fail_fast() {
+        // A well-formed block lints clean.
+        let ok = r#"
+report:
+  labels: { testid: smoke }
+  reporters:
+    - use: std/report/json@v1
+      with: { path: out.json }
+    - use: std/report/junit@v1
+      with: { url: http://collector:9000/reports, headers: { Authorization: "Bearer ${TOKEN}" }, max_samples: 1000 }
+"#;
+        assert_eq!(lint(ok, DocKind::Config), vec![]);
+
+        // Unknown reporter id.
+        let bad = r#"
+report:
+  reporters:
+    - use: std/report/html@v1
+      with: { path: out.html }
+"#;
+        let issues = lint(bad, DocKind::Config);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.problem.contains("unknown reporter 'std/report/html@v1'")),
+            "{issues:?}"
+        );
+
+        // Missing destination.
+        let nodest = r#"
+report:
+  reporters:
+    - use: std/report/json@v1
+"#;
+        let issues = lint(nodest, DocKind::Config);
+        assert!(
+            issues.iter().any(|i| i.problem.contains("needs a destination")),
+            "{issues:?}"
+        );
+
+        // Both destinations at once.
+        let both = r#"
+report:
+  reporters:
+    - use: std/report/json@v1
+      with: { path: a.json, url: http://x }
+"#;
+        let issues = lint(both, DocKind::Config);
+        assert!(
+            issues.iter().any(|i| i.problem.contains("exactly one of")),
+            "{issues:?}"
+        );
+
+        // Unknown `with` key.
+        let typo = r#"
+report:
+  reporters:
+    - use: std/report/json@v1
+      with: { paths: a.json }
+"#;
+        let issues = lint(typo, DocKind::Config);
+        assert!(
+            issues.iter().any(|i| i.location == "/report/reporters/0/with"),
+            "{issues:?}"
+        );
     }
 }

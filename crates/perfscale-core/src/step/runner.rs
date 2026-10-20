@@ -275,6 +275,16 @@ pub async fn run_native(
     tx: mpsc::Sender<LogLine>,
     metrics_tx: Option<mpsc::Sender<MetricSnapshot>>,
 ) -> NativeRunOutcome {
+    // Run identity for `report@v1` (issue #9): an engine-generated run id
+    // and the run-start timestamp, fixed before any VU spawns.
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let started_at = crate::summary::iso8601_utc(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    );
+
     let vars = if variables.is_empty() {
         Value::Null
     } else {
@@ -294,6 +304,32 @@ pub async fn run_native(
     // Run settings handed to every library call as `CallCtx.settings_json`
     // (RFC 005): built once here, frozen for the whole run.
     let settings_json = build_library_settings(&config, &vars, &secrets);
+
+    // Report config errors (unknown reporter, missing destination) are
+    // fail-fast — before any setup step runs, like the library checks below.
+    if let Some(report) = &config.report {
+        if let Err(msg) = crate::report::validate_reporters(&report.reporters) {
+            emit(
+                &tx,
+                LogSource::Stderr,
+                &format!("invalid report configuration: {msg}"),
+                &secrets,
+            )
+            .await;
+            registry.shutdown_all().await;
+            emit(
+                &tx,
+                LogSource::System,
+                "Done — configuration error",
+                &secrets,
+            )
+            .await;
+            return NativeRunOutcome {
+                config_error: Some(msg),
+                ..NativeRunOutcome::default()
+            };
+        }
+    }
 
     // Library declarations are validated before anything runs (RFC 005):
     // unknown refs, capability grants without `allow_library_capabilities`,
@@ -469,6 +505,8 @@ pub async fn run_native(
     let started = Instant::now();
 
     let steps = Arc::new(steps);
+    // Declaration order for the report@v1 `steps` section.
+    let report_steps = Arc::clone(&steps);
     // Shared, immutable across VUs — cloned into each VU's context once.
     let config_seed = Arc::new(config_seed);
     let vars = Arc::new(vars);
@@ -749,6 +787,69 @@ pub async fn run_native(
             )
             .await;
         }
+    }
+    // Machine-readable `report@v1` document (issue #9): emitted only when
+    // the run config declares end-of-run reporters. One compact line,
+    // consumed downstream like the thresholds/gpu/libraries lines; the CLI
+    // parses it and drives the reporters. Samples are included up to the
+    // largest configured `max_samples` — each reporter re-truncates to its
+    // own knob at render time.
+    if let Some(report_cfg) = config.report.as_ref().filter(|r| !r.reporters.is_empty()) {
+        let max_samples = report_cfg
+            .reporters
+            .iter()
+            .map(|r| r.with.max_samples())
+            .max();
+        // Labels interpolate like variables do, and their resolved values
+        // join the masking registry so a `${{ env.* }}` label never leaks
+        // into the log in cleartext.
+        let mut scratch = Context::new();
+        scratch.secrets = secrets.clone();
+        let labels: Map<String, Value> = report_cfg
+            .labels
+            .iter()
+            .map(|(k, v)| (k.clone(), scratch.interpolate_value(v)))
+            .collect();
+        let (vus, vus_gauge) = match summary_shape {
+            SummaryShape::Fixed(v) => (Some(v), v as u64),
+            SummaryShape::Observed((last, _, _)) => (None, last),
+        };
+        let report = crate::report::v1::build_report_v1(
+            &metrics.merged(),
+            thresholds.as_ref(),
+            gpu_summary.as_ref(),
+            &crate::report::v1::ReportContext {
+                run_id: run_id.clone(),
+                engine: "native".into(),
+                perfscale_version: env!("CARGO_PKG_VERSION").to_string(),
+                vus,
+                started_at: started_at.clone(),
+                wall_secs,
+                labels,
+                step_order: report_steps
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.name.clone().unwrap_or_else(|| s.action.clone()),
+                            s.action.clone(),
+                        )
+                    })
+                    .collect(),
+                iterations: total_iters,
+                vus_gauge,
+                max_samples,
+            },
+        );
+        emit(
+            &tx,
+            LogSource::Stdout,
+            &format!(
+                "report: {}",
+                serde_json::to_string(&report).expect("report is always serializable")
+            ),
+            &secrets,
+        )
+        .await;
     }
     // Lossy per-step logging: if the bounded log channel backpressured
     // (slow stdout consumer), per-request lines were dropped — the summary
@@ -4477,5 +4578,111 @@ mod tests {
             line,
             "[stats] ts=1 rps=0.20 err_pct=0.00 p50=2.01 p90=2.01 p95=2.01 p99=2.01 reqs=1 iters=1 llm_reqs=1 llm_tok_s=25.5"
         );
+    }
+
+    /// A run with `report.reporters` configured emits one machine-readable
+    /// `report: {…}` line carrying the canonical report@v1 document; a run
+    /// without reporters stays byte-identical to before (no line).
+    #[tokio::test]
+    async fn report_line_is_emitted_when_reporters_are_configured() {
+        let reporter = crate::report::ReporterConfig {
+            use_: "std/report/json@v1".into(),
+            with: crate::report::ReporterWith {
+                path: Some("out.json".into()),
+                max_samples: Some(5),
+                ..crate::report::ReporterWith::default()
+            },
+        };
+        let config = RunConfig {
+            vus: 1,
+            duration: "200ms".into(),
+            report: Some(crate::report::ReportRunConfig {
+                reporters: vec![reporter],
+                ..crate::report::ReportRunConfig::default()
+            }),
+            ..Default::default()
+        };
+        let lines = run_and_collect(vec![sleep_step(10)], config, false).await;
+
+        let line = lines
+            .iter()
+            .find(|l| l.text.starts_with("report: "))
+            .expect("report line present");
+        let report: crate::report::v1::ReportV1 =
+            serde_json::from_str(line.text.trim_start_matches("report: ")).unwrap();
+        assert_eq!(report.schema_version, "report@v1");
+        assert!(!report.run.run_id.is_empty());
+        let step = report
+            .steps
+            .iter()
+            .find(|s| s.name == "std/sleep@v1")
+            .expect("per-step aggregate present");
+        assert!(step.count > 0);
+        let raw = step.samples.as_ref().expect("samples included");
+        assert!(raw.values.len() <= 5);
+        assert_eq!(raw.truncated, raw.recorded > raw.values.len() as u64);
+        // Every registered family is listed; unrecorded ones say so.
+        assert!(report
+            .metrics
+            .iter()
+            .any(|f| f.name == "http_req_duration" && !f.recorded));
+        assert!(report
+            .metrics
+            .iter()
+            .any(|f| f.name == "perfscale_vus" && f.recorded));
+
+        // No reporters → no line.
+        let config = RunConfig {
+            vus: 1,
+            duration: "100ms".into(),
+            ..Default::default()
+        };
+        let lines = run_and_collect(vec![sleep_step(5)], config, false).await;
+        assert!(!lines.iter().any(|l| l.text.starts_with("report: ")));
+    }
+
+    /// A broken reporter block fails fast with a configuration error — the
+    /// run never starts (no VU banner), and the outcome marks the config
+    /// error so the CLI exits non-zero.
+    #[tokio::test]
+    async fn invalid_reporter_config_fails_fast() {
+        let (tx, mut rx) = mpsc::channel(512);
+        let config = RunConfig {
+            vus: 1,
+            duration: "200ms".into(),
+            report: Some(crate::report::ReportRunConfig {
+                reporters: vec![crate::report::ReporterConfig {
+                    use_: "std/report/html@v1".into(),
+                    with: crate::report::ReporterWith {
+                        path: Some("out.html".into()),
+                        ..crate::report::ReporterWith::default()
+                    },
+                }],
+                ..crate::report::ReportRunConfig::default()
+            }),
+            ..Default::default()
+        };
+        let handle = tokio::spawn(run_native(
+            vec![sleep_step(10)],
+            Vec::new(),
+            Vec::new(),
+            config,
+            Map::new(),
+            Map::new(),
+            Vec::new(),
+            false,
+            tx,
+            None,
+        ));
+        let mut texts = Vec::new();
+        while let Some(line) = rx.recv().await {
+            texts.push(line.text);
+        }
+        let outcome = handle.await.unwrap();
+        assert!(outcome.config_error.is_some());
+        assert!(texts
+            .iter()
+            .any(|t| t.contains("invalid report configuration")), "{texts:?}");
+        assert!(!texts.iter().any(|t| t.starts_with("Starting 1 VU")), "{texts:?}");
     }
 }

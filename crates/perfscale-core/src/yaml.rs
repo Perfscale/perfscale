@@ -18,6 +18,8 @@ use crate::step::{RunConfig, Step, TestDef};
 #[serde(deny_unknown_fields)]
 pub struct ReportConfig {
     /// Base URL of a running `perfscale serve` instance, e.g. `http://localhost:7999`.
+    /// May be omitted when the block exists only for `reporters`/`labels`.
+    #[serde(default)]
     pub url: String,
 
     /// Stream metric snapshots during the run (batched POSTs to the same
@@ -44,6 +46,16 @@ pub struct ReportConfig {
     /// batches are never dropped while the run is alive (default 24).
     #[serde(default = "crate::report::default_max_pending")]
     pub max_pending: usize,
+
+    /// End-of-run reporters (issue #9): `[{ use: "std/report/json@v1", with:
+    /// { path: out.json } }]` — the same `use:`/`with:` shape as steps.
+    /// Validated fail-fast at lint and before the run starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reporters: Vec<crate::report::ReporterConfig>,
+
+    /// User labels stamped on the report's run identity.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub labels: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for ReportConfig {
@@ -55,6 +67,8 @@ impl Default for ReportConfig {
             batch_size: crate::report::default_batch_size(),
             max_cpu_percent: crate::report::default_max_cpu_percent(),
             max_pending: crate::report::default_max_pending(),
+            reporters: Vec::new(),
+            labels: serde_json::Map::new(),
         }
     }
 }
@@ -63,12 +77,18 @@ impl ReportConfig {
     /// Fold the config-file block into the engine's run-level report config.
     pub fn to_run_config(&self) -> crate::report::ReportRunConfig {
         crate::report::ReportRunConfig {
-            url: Some(self.url.clone()),
+            url: if self.url.is_empty() {
+                None
+            } else {
+                Some(self.url.clone())
+            },
             during_run: self.during_run,
             interval_ms: self.interval_ms,
             batch_size: self.batch_size,
             max_cpu_percent: self.max_cpu_percent,
             max_pending: self.max_pending,
+            reporters: self.reporters.clone(),
+            labels: self.labels.clone(),
         }
     }
 }
@@ -416,13 +436,21 @@ report:
         );
     }
 
+    /// Since issue #9 the `report:` block may exist without `url` — a block
+    /// carrying only `reporters`/`labels` (file/HTTP-push reports with no
+    /// `perfscale serve` target) is valid.
     #[test]
-    fn rejects_config_with_report_missing_url() {
-        let err = parse_config_file("report: {}\n").unwrap_err();
-        assert!(
-            err.contains("schema validation failed"),
-            "unexpected error: {err}"
-        );
+    fn report_block_without_url_parses_when_it_carries_reporters() {
+        let cfg = parse_config_file(
+            "report:\n  reporters:\n    - use: std/report/junit@v1\n      with: { path: out.xml }\n",
+        )
+        .unwrap();
+        let report = cfg.report.expect("report block parsed");
+        assert!(report.url.is_empty());
+        assert_eq!(report.reporters.len(), 1);
+        let run = report.to_run_config();
+        assert_eq!(run.url, None, "empty url maps to None");
+        assert_eq!(run.reporters.len(), 1);
     }
 
     #[test]

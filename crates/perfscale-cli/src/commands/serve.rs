@@ -50,11 +50,16 @@ const MAX_SNAPSHOT_BATCHES: usize = 2000;
 /// End-of-run summaries are rare (one per finished run) but each is a full
 /// k6-style block — keep the last few runs only.
 const MAX_SUMMARIES: usize = 20;
+/// Report artifacts (`report@v1` documents POSTed by `perfscale run`) — one
+/// per reported run, kept to the last few like summaries.
+const MAX_REPORTS: usize = 20;
 
 #[derive(Default)]
 struct StateInner {
     snapshots: VecDeque<SnapshotBatch>,
     summaries: VecDeque<Vec<String>>,
+    /// Received report@v1 artifacts (issue #9), oldest first.
+    reports: VecDeque<serde_json::Value>,
 }
 
 /// What the dashboard polls on `GET /api/v1/state`.
@@ -62,6 +67,7 @@ struct StateInner {
 struct StateView<'a> {
     snapshots: &'a VecDeque<SnapshotBatch>,
     summaries: &'a VecDeque<Vec<String>>,
+    reports: &'a VecDeque<serde_json::Value>,
 }
 
 #[derive(Clone, Default)]
@@ -85,12 +91,21 @@ impl AppState {
             inner.summaries.pop_front();
         }
     }
+
+    fn push_report(&self, report: serde_json::Value) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.reports.push_back(report);
+        while inner.reports.len() > MAX_REPORTS {
+            inner.reports.pop_front();
+        }
+    }
 }
 
 fn app(ui: bool) -> Router {
     let mut router = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/v1/metrics", post(ingest))
+        .route("/api/v1/report", post(ingest_report))
         .route("/api/v1/state", get(state_view))
         .route("/ws", get(ws_upgrade));
     if ui {
@@ -123,9 +138,24 @@ async fn state_view(State(state): State<AppState>) -> Json<serde_json::Value> {
         serde_json::to_value(StateView {
             snapshots: &inner.snapshots,
             summaries: &inner.summaries,
+            reports: &inner.reports,
         })
-        .unwrap_or_else(|_| serde_json::json!({ "snapshots": [], "summaries": [] })),
+        .unwrap_or_else(|_| serde_json::json!({ "snapshots": [], "summaries": [], "reports": [] })),
     )
+}
+
+/// `POST /api/v1/report` — receive a report@v1 artifact from
+/// `perfscale run --report …` and keep it as a run artifact (issue #9).
+/// Minimal by design: stored in memory, surfaced via `/api/v1/state`.
+async fn ingest_report(
+    State(state): State<AppState>,
+    Json(report): Json<serde_json::Value>,
+) -> &'static str {
+    let run_id = report["run"]["run_id"].as_str().unwrap_or("?").to_string();
+    let schema = report["schemaVersion"].as_str().unwrap_or("?").to_string();
+    println!("--- report artifact ({schema}, run {run_id}) ---");
+    state.push_report(report);
+    "ok"
 }
 
 /// Minimal local dev server: receives the aggregated summary that
@@ -382,6 +412,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn report_route_accepts_and_stores_report_v1_artifacts() {
+        let body = serde_json::json!({
+            "schemaVersion": "report@v1",
+            "run": {"run_id": "r-1", "engine": "native", "perfscale_version": "0.0.0",
+                    "started_at": "2026-10-20T00:00:00Z", "duration_s": 1.0},
+            "seq": null,
+            "samples": []
+        })
+        .to_string();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/report")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let state = app(false);
+        let response = state.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = state
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/state")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["reports"][0]["run"]["run_id"], "r-1");
+    }
+
+    #[tokio::test]
     async fn metrics_route_rejects_syntactically_invalid_json() {
         let request = Request::builder()
             .method("POST")
@@ -556,7 +620,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({ "snapshots": [], "summaries": [] })
+            serde_json::json!({ "snapshots": [], "summaries": [], "reports": [] })
         );
     }
 

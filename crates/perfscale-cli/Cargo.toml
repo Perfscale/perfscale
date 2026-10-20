@@ -32,6 +32,8 @@ serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 reqwest    = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+# run ids for the report@v1 artifact built CLI-side (non-native engines)
+uuid       = { version = "1", features = ["v4"] }
 
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

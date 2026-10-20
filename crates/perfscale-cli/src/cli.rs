@@ -25,6 +25,7 @@ fn run_after_help() -> String {
          perfscale run -f test.yaml -c config.yaml\n  \
          perfscale run -f test.yaml -c config.yaml --quiet\n  \
          perfscale run -f test.yaml -c config.yaml --report http://localhost:7999\n  \
+         perfscale run -f test.yaml -c config.yaml --report junit:junit.xml --report json:report.json\n  \
          perfscale run -f test.yaml -c config.yaml --summary-export result.json\n  \
          perfscale run --k6 script.js --summary-export \"$GITHUB_STEP_SUMMARY\" --summary-format md\n\n\
          The run exits 0 even when checks fail (that's load-test feedback, not a CLI error);\n\
@@ -240,10 +241,22 @@ pub struct RunArgs {
     #[arg(long, value_name = "URL")]
     pub host: Option<String>,
 
-    /// After the run, POST the metric summary to a `perfscale serve` instance,
-    /// e.g. http://localhost:7999. Overrides `report.url` from the config file.
-    #[arg(long, value_name = "URL")]
-    pub report: Option<String>,
+    /// Report destination. Repeatable. Two shapes:
+    ///
+    /// - `http(s)://URL` — POST the metric summary (and, when end-of-run
+    ///   reporters are configured, the `report@v1` artifact) to a
+    ///   `perfscale serve` instance. Overrides `report.url` from the config
+    ///   file.
+    /// - `json:PATH` / `junit:PATH` — write an end-of-run report file
+    ///   (canonical `report@v1` JSON, or JUnit XML for CI).
+    #[arg(long, value_name = "SPEC")]
+    pub report: Vec<String>,
+
+    /// Run label stamped on the report's run identity (`report@v1`
+    /// `run.labels`), e.g. `--label testid=smoke --label env=staging`.
+    /// Repeatable.
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub label: Vec<String>,
 
     /// Suppress per-request output; errors and the final metric summary still
     /// print. For the native engine the lines are dropped at the source, which
