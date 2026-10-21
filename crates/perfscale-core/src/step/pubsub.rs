@@ -751,6 +751,15 @@ mod tests {
         format!("{prefix}.{}", uuid::Uuid::new_v4())
     }
 
+    /// Context with a distinct VU id — the nats `scope: vu` client cache is
+    /// keyed by `(vu_id, url)` process-wide, so parallel tests must not share
+    /// the default VU 0.
+    fn vu_ctx(vu_id: u64) -> Context {
+        let mut ctx = Context::new();
+        ctx.set_vu_id(vu_id);
+        ctx
+    }
+
     // -----------------------------------------------------------------
     // Parameter parsing
     // -----------------------------------------------------------------
@@ -1180,7 +1189,7 @@ mod tests {
         });
 
         // First exchange of this VU connects (and says so)…
-        let first = execute_action("std/pubsub@v1", &params, &Context::new(), "vu-first").await;
+        let first = execute_action("std/pubsub@v1", &params, &vu_ctx(9001), "vu-first").await;
         assert!(first.success, "{:?}", first.logs);
         let connect = first.value["metrics"]["pubsub_connect_ms"]
             .as_array()
@@ -1189,7 +1198,7 @@ mod tests {
 
         // …later exchanges of the same VU reuse it — no connect sample.
         for _ in 0..3 {
-            let out = execute_action("std/pubsub@v1", &params, &Context::new(), "vu-reuse").await;
+            let out = execute_action("std/pubsub@v1", &params, &vu_ctx(9001), "vu-reuse").await;
             assert!(out.success, "{:?}", out.logs);
             assert!(
                 out.value["metrics"].get("pubsub_connect_ms").is_none(),
@@ -1238,7 +1247,7 @@ mod tests {
                 "flush": "none",
                 "subscribe": { "count": 2, "timeout_ms": 5000 },
             }),
-            &Context::new(),
+            &vu_ctx(9002),
             "nats-flush-none",
         )
         .await;
