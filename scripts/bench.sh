@@ -2081,7 +2081,7 @@ if has_suite db; then
     if [[ "$HAS_K6_SQL" == 1 ]]; then
       # NOT the stock k6: a custom binary with the xk6-sql extension.
       db_settle
-      db_row "k6 (xk6-sql)" \
+      db_row "k6 (xk6-sql, warm)" \
         "env BENCH_VUS=$VUS BENCH_DURATION=$DB_DURATION BENCH_PG_SQL_DSN='$K6_SQL_DSN' $K6_SQL_BIN run --quiet $WORKDIR/db-k6.js" \
         db-text
     fi
@@ -2185,19 +2185,19 @@ if has_suite pubsub; then
     # broker-backed row churns loopback connections into TIME_WAIT — settle
     # the drain before the next row starts (shared tw_settle helper).
     tw_settle "${NATS_HOSTPORT##*:}" "nats target"
-    pubsub_row "perfscale (nats, publish)" \
+    pubsub_row "perfscale (nats, publish, cold)" \
       "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-publish-nats.yaml" --quiet)"
     tw_settle "${NATS_HOSTPORT##*:}" "nats target"
-    pubsub_row "perfscale (nats, pub/sub e2e)" \
+    pubsub_row "perfscale (nats, pub/sub e2e, cold)" \
       "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-e2e-nats.yaml" --quiet)"
     # scope=vu rows: one connection per VU reused across iterations — the k6
     # warm posture. They churn no sockets themselves, but the first connect of
     # each VU still needs a free ephemeral port, so the exchange rows' churn
     # must have drained first.
     tw_settle "${NATS_HOSTPORT##*:}" "nats target"
-    pubsub_row "perfscale (nats, publish, scope=vu)" \
+    pubsub_row "perfscale (nats, publish, warm)" \
       "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-publish-nats-vu.yaml" --quiet)"
-    pubsub_row "perfscale (nats, pub/sub e2e, scope=vu)" \
+    pubsub_row "perfscale (nats, pub/sub e2e, warm)" \
       "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-e2e-nats-vu.yaml" --quiet)"
   fi
 
@@ -2220,10 +2220,11 @@ if has_suite pubsub; then
     echo "in-process driver rows, so the comparison shares the dependency. The"
     echo "\`perfscale (...)\` rows use \`std/pubsub@v1\` with the async-nats"
     echo "driver against the broker at"
-    echo "\`BENCH_NATS_URL\`. Default \`scope: exchange\` connects per iteration"
-    echo "(connect cost is part of the measurement — Msg/s there is"
-    echo "connect+publish+flush throughput); **scope=vu** rows keep one"
-    echo "connection per VU reused across iterations — the k6 warm posture."
+    echo "\`BENCH_NATS_URL\`. **cold** rows use the default \`scope: exchange\`,"
+    echo "connecting per iteration (connect cost is part of the measurement"
+    echo "— Msg/s there is connect+publish+flush throughput); **warm** rows"
+    echo "(\`scope: vu\`) keep one connection per VU reused across iterations"
+    echo "— the k6 warm posture."
     echo "**pub/sub e2e** rows subscribe first, publish one marked message to a"
     echo "per-VU subject, and wait for exactly that message; \`e2e p95\` is the"
     echo "broker round trip (publish → consumed), \`—\` on publish-only rows."

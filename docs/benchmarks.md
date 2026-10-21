@@ -91,7 +91,7 @@ There are no in-process SQLite rows: every row drives the same real
 PostgreSQL as the competitors, so the comparison shares the dependency.
 The locust row (`pipx inject locust psycopg2-binary`), the JMeter row
 (PostgreSQL JDBC jar in JMeter's `lib/`, `BENCH_PG_JDBC_JAR` to point
-elsewhere), and the k6 row repeat the warm shape. The `k6 (xk6-sql)` row is
+elsewhere), and the k6 row repeat the warm shape. The `k6 (xk6-sql, warm)` row is
 **not stock k6**: stock k6 has no SQL module, so the bench workflow builds a
 separate binary with `xk6 build` (xk6-sql extension + postgres driver, all
 versions pinned, binary cached; `K6_SQL_BIN`, default
@@ -106,9 +106,9 @@ dependency with the k6 rows. The `nats` rows publish to the broker at
 `BENCH_NATS_URL` (default `nats://127.0.0.1:4222`; locally
 `docker run -d -p 4222:4222 nats:2.15-alpine`, in CI a service container) and
 pay connect + publish + flush per iteration under the default
-`scope: exchange` (the connect cost is part of the measurement, visible
-separately in `pubsub_connect_ms`); the `scope=vu` twins reuse one
-connection per VU — the k6 warm posture. The
+`scope: exchange` — the **cold** rows (the connect cost is part of the
+measurement, visible separately in `pubsub_connect_ms`); the **warm** rows
+(`scope: vu`) reuse one connection per VU — the k6 warm posture. The
 `pub/sub e2e` rows subscribe first, publish one marker-tagged message to a
 per-VU subject (`bench.pubsub.vu${vu}`), and wait for exactly that message;
 `e2e p95` is the broker round trip. The `k6 (xk6-nats)` rows are **not stock
@@ -119,7 +119,7 @@ which cannot share a binary with xk6-sql's go.k6.io/k6/v2 core, hence a
 second binary: `K6_NATS_BIN`, default `target/xk6-nats/k6`, built by the
 bench workflow). The **warm** row keeps one connection per VU (init scope,
 the db suite's xk6-sql posture); **cold** connects per iteration — the fair
-twin of the perfscale `scope: exchange` nats row. There is no k6 roundtrip row: the extension
+twin of the perfscale cold nats row. There is no k6 roundtrip row: the extension
 invokes its subscribe handler from the nats.go delivery goroutine, racing
 the VU's JS runtime and intermittently panicking the k6 process under load —
 k6 e2e is not measurable with this extension, so e2e latency is native-only.
