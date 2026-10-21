@@ -164,9 +164,11 @@ Every exchange folds into the run summary as custom metrics:
 - `pubsub_msgs_received` — counter; messages counted toward
   `subscribe.count`. Emitted only when the step has a `subscribe` block.
 - `pubsub_publish_ms` — HDR histogram in ms; the transport's publish-call
-  latency, one sample per published message. For `nats` the final message's
-  sample includes the flush that pushes the batch onto the wire. Emitted
-  whenever at least one message was published.
+  latency, one sample per published message. For `nats` with the default
+  `flush: message` the final message's sample includes the flush that pushes
+  the batch onto the wire and awaits the broker's ack; with `flush: none`
+  the samples measure the enqueue only. Emitted whenever at least one
+  message was published.
 - `pubsub_connect_ms` — HDR histogram in ms; broker connect time, one sample
   per exchange that actually opened a connection: **every** exchange under
   the default `scope: exchange`, only the **first** exchange of each VU under
@@ -233,6 +235,35 @@ process exits; the `nats` driver reconnects internally if the broker drops
 it. Use `scope: vu` for sustained-throughput measurement (the k6 warm
 posture) and the default `scope: exchange` when the connect cost is what you
 are measuring.
+
+## Flush semantics
+
+The default `flush: message` flushes the connection after each exchange's
+publishes and awaits the broker's ack — `pubsub_publish_ms` is the full
+publish round trip (the ack folds into the last message's sample).
+`flush: none` is fire-and-forget: publishes enqueue onto the client's writer
+and the samples measure the enqueue only, so per-iteration latency no longer
+includes a broker round trip:
+
+```yaml
+steps:
+  - name: produce order events
+    use: std/pubsub@v1
+    with:
+      driver: nats
+      url: nats://nats.internal:4222
+      subject: orders.created
+      scope: vu                # warm connection per VU
+      flush: none              # no ack wait — the xk6-nats posture
+      publish: '{"id":"ord-${seq}"}'
+```
+
+`flush: none` pairs with `scope: vu` (a warm connection keeps its writer
+alive). With `scope: exchange` the driver still flushes once — unsampled —
+before dropping the connection, so queued messages are not lost with the
+client; the same happens before a subscribe wait on the exchange. Delivery
+under `flush: none` is best-effort by design: a crashed process can lose
+queued messages the broker never saw.
 
 ## Limits
 

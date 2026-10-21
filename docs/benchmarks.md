@@ -40,7 +40,7 @@ wrapping overhead — not the underlying tool.
 | `grpc` | `std/grpc@v1` unary echo against the repo's `grpc_echo_server` example |
 | `graphql` | `std/graphql@v1` query against the repo's `graphql_server` example |
 | `db` | SQL: cold connect+query vs warm VU-scoped connections vs transactions (`std/db-*@v1`, PostgreSQL at `BENCH_PG_DSN` — every row drives the same real server), plus the warm shape from locust (psycopg2), JMeter (JDBC) and k6 — the k6 row is a **custom binary** built with the `xk6-sql` extension + postgres driver (stock k6 has no SQL module), used only by this row |
-| `pubsub` | Pub/sub: publish throughput and pub/sub roundtrip e2e latency (`std/pubsub@v1`) against a NATS broker (`BENCH_NATS_URL` — every row drives the same real broker) in `scope: exchange` (connect per iteration) and `scope: vu` (one connection per VU) postures, plus k6 rows via a **custom binary** built with the xk6-nats extension (stock k6 has no NATS module), in warm (connection per VU) and cold (connect per iteration — the fair twin of `scope: exchange`) postures |
+| `pubsub` | Pub/sub: publish throughput and pub/sub roundtrip e2e latency (`std/pubsub@v1`) against a NATS broker (`BENCH_NATS_URL` — every row drives the same real broker) in `scope: exchange` (connect per iteration) and `scope: vu` (one connection per VU, with a fire-and-forget `flush: none` twin) postures, plus k6 rows via a **custom binary** built with the xk6-nats extension (stock k6 has no NATS module), in warm (connection per VU) and cold (connect per iteration — the fair twin of `scope: exchange`) postures |
 
 JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
 console summary has no percentiles, so it stays out of the `throughput`
@@ -108,7 +108,12 @@ dependency with the k6 rows. The `nats` rows publish to the broker at
 pay connect + publish + flush per iteration under the default
 `scope: exchange` — the **cold** rows (the connect cost is part of the
 measurement, visible separately in `pubsub_connect_ms`); the **warm** rows
-(`scope: vu`) reuse one connection per VU — the k6 warm posture. The
+(`scope: vu`) reuse one connection per VU — the k6 warm posture. Warm rows
+keep the default `flush: message` (flush + broker ack per iteration, so
+`pubsub_publish_ms` is the full round trip); the
+`perfscale (nats, publish, warm, flush=none)` row publishes fire-and-forget
+(enqueue measured, no ack wait) — the exact posture of the k6 xk6-nats
+client, which never awaits an ack. The
 `pub/sub e2e` rows subscribe first, publish one marker-tagged message to a
 per-VU subject (`bench.pubsub.vu${vu}`), and wait for exactly that message;
 `e2e p95` is the broker round trip. The `k6 (xk6-nats)` rows are **not stock

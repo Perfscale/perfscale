@@ -12,6 +12,13 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- `std/pubsub@v1`: new `flush` parameter (`message` | `none`, default
+  `message` — unchanged). `flush: message` flushes and awaits the broker ack
+  after publishing, so `pubsub_publish_ms` is the full round trip;
+  `flush: none` is fire-and-forget (samples measure the enqueue only) — the
+  xk6-nats posture, for like-for-like warm throughput comparisons. Pairs
+  with `scope: vu`; with `scope: exchange` one unsampled flush still runs
+  before the connection drops so queued messages are not lost.
 - Built-in `html` reporter (`std/report/html@v1`, `--report html:report.html`):
   a single self-contained dark-themed page with the run identity, threshold
   verdicts, a sortable per-step table with samples sparklines, and metric

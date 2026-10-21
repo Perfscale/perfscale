@@ -246,6 +246,7 @@ drivers, which is how you learn your build lacks them.
 | `subscribe` | object | — | `{ count, until_contains, timeout_ms }` — wait for `count` messages (default `1`) that each contain `until_contains` (optional), within `timeout_ms` (default `5000`) |
 | `options` | object | — | Driver-specific tuning passed through verbatim — ignored by the built-in drivers; pro drivers (Kafka, Redis, MQTT) use it for QoS, consumer groups, auth, … |
 | `scope` | string | `exchange` | Connection lifetime: `exchange` opens a fresh broker connection per exchange (connect cost included, see `pubsub_connect_ms`); `vu` keeps one connection per VU and reuses it across exchanges. Broker drivers only; `memory` ignores it |
+| `flush` | string | `message` | Publish ack mode: `message` flushes and awaits the broker ack after publishing (`pubsub_publish_ms` = round trip); `none` is fire-and-forget (`pubsub_publish_ms` = enqueue). Pairs with `scope: vu`; with `scope: exchange` one unsampled flush still runs before the connection drops |
 
 At least one of `publish` / `subscribe` is required. When both are given the
 subscription is established **first**, so a same-subject roundtrip sees its
@@ -272,7 +273,8 @@ holds one sample per exchange that opened a broker connection — every
 exchange under `scope: exchange`, only the first of each VU under
 `scope: vu`. `pubsub_publish_ms`
 holds one sample per published message — the transport's publish-call
-latency (for `nats` the last message's sample includes the batch flush).
+latency (for `nats` with `flush: message` the last message's sample
+includes the batch flush + ack).
 `pubsub_errors` counts failed exchanges and is emitted on every exchange (0
 on success — the `db_errors` convention). `${…}` generator tokens expand per
 execution in `subject`, `publish`, and `subscribe.until_contains`; one
