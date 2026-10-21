@@ -29,13 +29,16 @@
 //! compile failure, wrong world) are configuration errors — they surface
 //! fail-fast via [`crate::report::validate_reporters`] before the run starts.
 
+use std::collections::HashMap;
 use std::path::{Component as PathComponent, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Store, StoreLimitsBuilder};
 use wasmtime_wasi::WasiCtx;
 use wasmtime_wasi_http::WasiHttpCtx;
 
+use crate::library::burn;
 use crate::library::wasm::{
     build_linker, engine, net_allowlist, off_runtime, HostState, MAX_COMPONENT_BYTES,
 };
@@ -114,8 +117,125 @@ fn safe_join(root: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(root.join(rel))
 }
 
-/// A compiled WASM reporter: compile once per run (at delivery), instantiate
-/// once for the single `on-report` call.
+/// One run-cache entry: the module's content hash plus its compiled component.
+type CachedComponent = ([u8; 32], Component);
+
+/// Compiled reporter components of this process, keyed by module path with
+/// the content hash alongside: the validate path (`WasmReporter::check`) and
+/// the delivery path (`WasmReporter::load`) run in the same CLI process, and
+/// the second lookup must reuse the first compile. A module swapped mid-run
+/// recompiles — the stored digest is compared against the fresh bytes.
+static RUN_COMPONENTS: OnceLock<Mutex<HashMap<PathBuf, CachedComponent>>> = OnceLock::new();
+
+/// How a reporter component was obtained — test instrumentation for the
+/// cache layers.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompileSource {
+    /// Deserialized from the disk burn cache.
+    BurnCache,
+    /// Full Cranelift compilation.
+    Compiled,
+}
+
+/// Compile (or reuse) the reporter component for `bytes`.
+///
+/// Three layers, cheapest first:
+///
+/// 1. the per-process [`RUN_COMPONENTS`] map — the second `load`/`check` of
+///    the same module in one run is free;
+/// 2. the disk burn cache (`<cache>/reporters/<sha256>.cwasm`, same
+///    `PFSBURN1` format and invalidation rules as the library cache — engine
+///    config tag, wasmtime version, target triple, source digest): a hit
+///    deserializes native code instead of recompiling;
+/// 3. a full `Component::new`, which then writes through to both caches:
+///    the in-process entry and a best-effort disk artifact (a cache write
+///    failure never fails the load — the cache is advisory).
+fn compile_cached(module: &Path, bytes: &[u8]) -> Result<Component, String> {
+    let name = || module.display().to_string();
+    let sha = burn::sha256_bytes(bytes);
+    let run_cache = RUN_COMPONENTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let hit = run_cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(module)
+        .and_then(|(cached_sha, c)| (*cached_sha == sha).then(|| c.clone()));
+    if let Some(component) = hit {
+        return Ok(component);
+    }
+
+    // Disk burn cache: identical rules to the library loader — any header
+    // mismatch (engine config, wasmtime version, target, digest) or a
+    // corrupted artifact silently falls back to full compilation.
+    let cache_root = crate::import::default_reporter_cache_root();
+    let hex = burn::hex(&sha);
+    let burn_path = crate::import::reporter_burn_path(&cache_root, &hex);
+    let component = match std::fs::read(&burn_path) {
+        Ok(artifact) => match burn::load_burned(&artifact, &sha) {
+            Some(component) => {
+                #[cfg(test)]
+                record_compile(CompileSource::BurnCache);
+                component
+            }
+            None => {
+                tracing::debug!(
+                    "reporter '{}': burn artifact '{}' does not match this build — compiling from source",
+                    name(),
+                    burn_path.display()
+                );
+
+                compile_and_burn(&name(), bytes, &cache_root, &hex)?
+            }
+        },
+        Err(_) => compile_and_burn(&name(), bytes, &cache_root, &hex)?,
+    };
+    run_cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(module.to_path_buf(), (sha, component.clone()));
+    Ok(component)
+}
+
+/// Full compilation plus the best-effort burn-cache write-through (layer 3).
+fn compile_and_burn(
+    name: &str,
+    bytes: &[u8],
+    cache_root: &Path,
+    hex: &str,
+) -> Result<Component, String> {
+    let component = Component::new(engine()?, bytes)
+        .map_err(|e| format!("reporter '{name}': failed to compile as a WASM component: {e}"))?;
+    #[cfg(test)]
+    record_compile(CompileSource::Compiled);
+    // Write-through: serialize the component we just compiled (never a
+    // second precompile pass) and cache it for the next run. Best-effort —
+    // the run must not fail over a cache write.
+    match component.serialize() {
+        Ok(payload) => {
+            let artifact = burn::wrap_serialized(&payload, &burn::sha256_bytes(bytes));
+            if let Err(e) = crate::import::write_reporter_burn(cache_root, hex, &artifact) {
+                tracing::debug!("reporter '{name}': burn-cache write failed: {e}");
+            }
+        }
+        Err(e) => tracing::debug!("reporter '{name}': could not serialize for the burn cache: {e}"),
+    }
+    Ok(component)
+}
+
+#[cfg(test)]
+static COMPILE_LOG: Mutex<Vec<CompileSource>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn record_compile(source: CompileSource) {
+    COMPILE_LOG
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(source);
+}
+
+/// A compiled WASM reporter: compiled once per run (shared between the
+/// validate and delivery paths via [`RUN_COMPONENTS`], and across runs via
+/// the disk burn cache), instantiated once for the single `on-report` call.
 pub struct WasmReporter {
     path: PathBuf,
     output: PathBuf,
@@ -140,12 +260,7 @@ impl WasmReporter {
             ));
         }
         let engine = engine()?;
-        let component = Component::new(engine, &bytes).map_err(|e| {
-            format!(
-                "reporter '{}': failed to compile as a WASM component: {e}",
-                display()
-            )
-        })?;
+        let component = compile_cached(module, &bytes)?;
 
         // World check: the component must export `perfscale:reporter/reporter@0.1.x`.
         let ty = component.component_type();
@@ -253,6 +368,16 @@ mod tests {
     use crate::report::v1::{self, ReportContext};
     use std::sync::OnceLock;
 
+    /// Serializes fixture-backed tests: the burn-cache tests mutate the
+    /// process-global `PERFSCALE_CACHE_DIR` and the shared [`RUN_COMPONENTS`]
+    /// map, and plain reporter tests must not interleave with that (their
+    /// loads would add entries to the compile log).
+    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn cache_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     // --- fixture: a real reporter component built from the SDK examples -----
 
     fn wasip2_installed() -> bool {
@@ -356,6 +481,7 @@ mod tests {
 
     #[test]
     fn on_report_receives_report_v1_and_emit_file_writes() {
+        let _lock = cache_test_lock();
         let Some(module) = fixture() else { return };
         let dir = tempfile::tempdir().unwrap();
         let reporter = WasmReporter::load(module, Some(dir.path().to_str().unwrap())).unwrap();
@@ -372,6 +498,7 @@ mod tests {
 
     #[test]
     fn guest_error_is_best_effort() {
+        let _lock = cache_test_lock();
         let Some(module) = fixture() else { return };
         let dir = tempfile::tempdir().unwrap();
         let reporter = WasmReporter::load(module, Some(dir.path().to_str().unwrap())).unwrap();
@@ -385,6 +512,7 @@ mod tests {
 
     #[test]
     fn emit_file_refuses_path_traversal() {
+        let _lock = cache_test_lock();
         let Some(module) = fixture() else { return };
         let dir = tempfile::tempdir().unwrap();
         let reporter = WasmReporter::load(module, Some(dir.path().to_str().unwrap())).unwrap();
@@ -394,5 +522,137 @@ mod tests {
         assert!(err.contains("not a safe relative path"), "{err}");
         // Nothing escaped the output directory.
         assert!(!dir.path().join("../evil.txt").exists());
+    }
+
+    // --- burn cache ----------------------------------------------------------
+
+    struct CacheTestEnv {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _tmp: tempfile::TempDir,
+        reporters_root: PathBuf,
+    }
+
+    /// Fresh cache state: empty in-process map, empty compile log, and an
+    /// isolated `PERFSCALE_CACHE_DIR`.
+    fn cache_test_env() -> CacheTestEnv {
+        let lock = cache_test_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("PERFSCALE_CACHE_DIR", tmp.path());
+        RUN_COMPONENTS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        COMPILE_LOG
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        CacheTestEnv {
+            _lock: lock,
+            reporters_root: tmp.path().join("reporters"),
+            _tmp: tmp,
+        }
+    }
+
+    fn compile_log() -> Vec<CompileSource> {
+        COMPILE_LOG
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn burn_path_for(root: &Path, module: &Path) -> PathBuf {
+        let bytes = std::fs::read(module).unwrap();
+        crate::import::reporter_burn_path(root, &burn::hex(&burn::sha256_bytes(&bytes)))
+    }
+
+    #[test]
+    fn cold_cache_compiles_once_and_serves_validate_and_delivery() {
+        let env = cache_test_env();
+        let Some(module) = fixture() else { return };
+
+        // The fail-fast validate path compiles once…
+        WasmReporter::check(module).unwrap();
+        // …and delivery reuses that compile, in-process.
+        let dir = tempfile::tempdir().unwrap();
+        let reporter = WasmReporter::load(module, Some(dir.path().to_str().unwrap())).unwrap();
+        reporter.run(&report_json(), "{}").unwrap();
+
+        assert_eq!(compile_log(), [CompileSource::Compiled]);
+        // The compile wrote through to the disk burn cache.
+        assert!(
+            burn_path_for(&env.reporters_root, module).is_file(),
+            "cold compile must write the burn artifact"
+        );
+    }
+
+    #[test]
+    fn warm_burn_cache_deserializes_instead_of_compiling() {
+        let env = cache_test_env();
+        let Some(module) = fixture() else { return };
+        // Pre-populate the disk cache with a well-formed artifact.
+        let bytes = std::fs::read(module).unwrap();
+        let artifact = burn::burn_component(&bytes).unwrap();
+        let burn_path = burn_path_for(&env.reporters_root, module);
+        crate::import::write_reporter_burn(
+            &env.reporters_root,
+            &burn::hex(&burn::sha256_bytes(&bytes)),
+            &artifact,
+        )
+        .unwrap();
+        assert!(burn_path.is_file());
+
+        let dir = tempfile::tempdir().unwrap();
+        let reporter = WasmReporter::load(module, Some(dir.path().to_str().unwrap())).unwrap();
+        let summary = reporter.run(&report_json(), "{}").unwrap();
+        assert_eq!(summary, "run run-42: 1 step(s)");
+        assert_eq!(compile_log(), [CompileSource::BurnCache]);
+    }
+
+    #[test]
+    fn corrupted_burn_artifact_falls_back_to_compilation() {
+        let env = cache_test_env();
+        let Some(module) = fixture() else { return };
+        let burn_path = burn_path_for(&env.reporters_root, module);
+        std::fs::create_dir_all(&env.reporters_root).unwrap();
+        std::fs::write(&burn_path, b"PFSBURN1-corrupted-garbage").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let reporter = WasmReporter::load(module, Some(dir.path().to_str().unwrap())).unwrap();
+        reporter.run(&report_json(), "{}").unwrap();
+        assert_eq!(compile_log(), [CompileSource::Compiled]);
+        // The fallback compile replaces the corrupted artifact.
+        let bytes = std::fs::read(module).unwrap();
+        let repaired = std::fs::read(&burn_path).unwrap();
+        assert!(burn::artifact_matches(
+            &repaired,
+            &burn::sha256_bytes(&bytes)
+        ));
+    }
+
+    #[test]
+    fn tampered_module_recompiles_instead_of_reusing_the_cached_component() {
+        let _env = cache_test_env();
+        let Some(fixture_path) = fixture() else {
+            return;
+        };
+        // A mutable copy: overwriting the fixture itself would break others.
+        let dir = tempfile::tempdir().unwrap();
+        let module = dir.path().join("reporter.wasm");
+        std::fs::copy(fixture_path, &module).unwrap();
+
+        WasmReporter::load(&module, None).unwrap();
+        assert_eq!(compile_log(), [CompileSource::Compiled]);
+
+        // Same path, different bytes: the in-process entry is keyed on the
+        // content hash, so this recompiles — and the (valid, but wrong-world)
+        // component fails the reporter export check.
+        std::fs::write(&module, b"(component)").unwrap();
+        let err = WasmReporter::check(&module).unwrap_err();
+        assert!(err.contains("unsupported WIT interface version"), "{err}");
+        assert_eq!(
+            compile_log(),
+            [CompileSource::Compiled, CompileSource::Compiled]
+        );
     }
 }

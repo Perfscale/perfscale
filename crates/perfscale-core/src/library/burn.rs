@@ -109,15 +109,23 @@ pub fn burn_component(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let payload = engine
         .precompile_component(bytes)
         .map_err(|e| format!("failed to precompile the WASM component: {e}"))?;
+    Ok(wrap_serialized(&payload, &sha256_bytes(bytes)))
+}
+
+/// Wrap an already-serialized component image (`Component::serialize`) in the
+/// `PFSBURN1` header. The write-through path for loaders that compiled the
+/// component themselves (e.g. the WASM reporter host): caching the artifact
+/// must not pay a second `precompile_component`.
+pub fn wrap_serialized(payload: &[u8], source_sha256: &[u8; 32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(payload.len() + 128);
     out.extend_from_slice(ARTIFACT_MAGIC);
     out.extend_from_slice(&BURN_FORMAT_VERSION.to_le_bytes());
     put_str(&mut out, env!("PERFSCALE_WASMTIME_VERSION"));
     put_str(&mut out, env!("PERFSCALE_TARGET_TRIPLE"));
     out.extend_from_slice(&engine_tag().to_le_bytes());
-    out.extend_from_slice(&sha256_bytes(bytes));
-    out.extend_from_slice(&payload);
-    Ok(out)
+    out.extend_from_slice(source_sha256);
+    out.extend_from_slice(payload);
+    out
 }
 
 /// Deserialize a burn artifact produced from source bytes digesting to

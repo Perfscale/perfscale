@@ -19,6 +19,13 @@ Release notes for the next release, written as features land.
   xk6-nats posture, for like-for-like warm throughput comparisons. Pairs
   with `scope: vu`; with `scope: exchange` one unsampled flush still runs
   before the connection drops so queued messages are not lost.
+- WASM reporters compile once, not twice: a reporter component
+  (`use: wasm:./reporter.wasm`) used to pay a full Cranelift compilation at
+  both validate and delivery — and again on every `lint`. The compiled
+  component is now shared within a run, and a write-through burn cache
+  (`<cache>/reporters/<sha256>.cwasm`, same `PFSBURN1` format and
+  invalidation rules as libraries — no `perfscale install` needed) makes
+  repeat `lint`/`run` deserialize native code instead of recompiling.
 - Built-in `html` reporter (`std/report/html@v1`, `--report html:report.html`):
   a single self-contained dark-themed page with the run identity, threshold
   verdicts, a sortable per-step table with samples sparklines, and metric

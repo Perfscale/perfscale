@@ -533,6 +533,33 @@ pub fn default_library_cache_root() -> PathBuf {
     default_cache_dir().join("libraries")
 }
 
+/// The reporter burn-cache root (`<cache>/reporters`), sibling of the
+/// library artifact cache — used by the WASM reporter host's write-through
+/// burn cache (see `report::wasm`). Reads the environment at call time.
+#[cfg(feature = "wasm-libs")]
+pub fn default_reporter_cache_root() -> PathBuf {
+    default_cache_dir().join("reporters")
+}
+
+/// Path of one precompiled reporter burn artifact:
+/// `<cache>/reporters/<sha256>.cwasm` (same `PFSBURN1` format as libraries).
+#[cfg(feature = "wasm-libs")]
+pub fn reporter_burn_path(cache_root: &Path, sha256: &str) -> PathBuf {
+    cache_root.join(format!("{sha256}.cwasm"))
+}
+
+/// Write a reporter burn artifact into the cache, atomically. Same rules as
+/// [`write_library_burn`]: the artifact is tied to the producing engine, so
+/// an existing file is replaced unconditionally.
+#[cfg(feature = "wasm-libs")]
+pub fn write_reporter_burn(
+    cache_root: &Path,
+    sha256: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
+    write_cache_file(cache_root, &format!("{sha256}.cwasm"), bytes, true)
+}
+
 /// Write an artifact into the cache, atomically (temp sibling + rename) so a
 /// concurrent run never sees a partial file. Content-addressed: an existing
 /// file under the same digest is by definition the same bytes.
