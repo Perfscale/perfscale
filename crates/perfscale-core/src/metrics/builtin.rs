@@ -219,7 +219,7 @@ impl MetricsFamily for PubsubFamily {
                 name: "pubsub_publish_ms",
                 kind: MetricKind::Histogram,
                 unit: "ms",
-                description: "Publish-call latency per message (nats: the batch flush folds into the last sample)",
+                description: "Publish-call latency per message (nats, flush=message: the batch flush+ack folds into the last sample; flush=none: enqueue only)",
             },
             MetricDef {
                 name: "pubsub_connect_ms",

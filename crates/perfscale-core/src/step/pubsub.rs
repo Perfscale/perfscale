@@ -37,6 +37,7 @@
 //! | `subscribe`  | object          | —          | `{ count, until_contains, timeout_ms }` — wait for `count` messages (default 1) that each contain `until_contains` (optional), within `timeout_ms` (default 5000) |
 //! | `options`    | object          | —          | Driver-specific tuning, passed through verbatim (ignored by the built-in drivers; pro drivers use it for QoS, consumer groups, auth, …) |
 //! | `scope`      | string          | `"exchange"` | Connection lifetime: `exchange` opens a fresh broker connection per execution (connect cost is part of the measurement); `vu` reuses one connection per VU across executions. Only broker-backed drivers honour it (`memory` is in-process) |
+//! | `flush`      | string          | `"message"`  | Publish ack mode: `message` flushes and awaits the broker ack after publishing (`pubsub_publish_ms` = round trip); `none` is fire-and-forget (`pubsub_publish_ms` = enqueue). Pairs with `scope: vu`; with `scope: exchange` the driver still flushes once before dropping the connection (unsampled) so messages are not lost |
 //!
 //! `${…}` generator tokens expand per execution in `subject`, `publish`, and
 //! `subscribe.until_contains` — one execution is one message, so the payload
@@ -63,8 +64,10 @@
 //! exchange of each VU under `scope: vu` — keeping the connect cost visible
 //! separately instead of hiding it inside `pubsub_publish_ms`.
 //! `pubsub_publish_ms` holds one sample per published message: the transport's
-//! own publish-call latency (for `nats` the final message's sample includes
-//! the flush that pushes the batch onto the wire). `pubsub_errors` is a
+//! own publish-call latency (for `nats` with the default `flush: message` the
+//! final message's sample includes the flush that pushes the batch onto the
+//! wire and awaits the ack; with `flush: none` the samples measure the
+//! enqueue only). `pubsub_errors` is a
 //! counter emitted on every exchange — 0 on success, 1 on failure — so the
 //! run summary always has the error count (the `db_errors` convention).
 //! `received` / `body` / the `pubsub_msgs_received` and `pubsub_e2e_ms`
@@ -116,6 +119,27 @@ pub struct PubSubParams {
     pub options: Map<String, Value>,
     /// Connection lifetime requested for this step — see [`PubSubScope`].
     pub scope: PubSubScope,
+    /// Publish acknowledgement mode — see [`PubSubFlush`].
+    pub flush: PubSubFlush,
+}
+
+/// Publish acknowledgement mode for a `std/pubsub@v1` step.
+///
+/// - `Message` (default): after publishing, the driver flushes and waits for
+///   the broker's ack — `pubsub_publish_ms` measures the full round trip
+///   (the ack folds into the last message's sample).
+/// - `None`: fire-and-forget — publish enqueues onto the transport's writer
+///   and `pubsub_publish_ms` measures the enqueue only (the xk6-nats
+///   posture). Pairs with `scope: vu`; with `scope: exchange` the driver
+///   still flushes once before dropping the connection so messages are not
+///   lost — that flush is not part of the `pubsub_publish_ms` samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PubSubFlush {
+    /// Flush + await the broker ack after publishing (default).
+    #[default]
+    Message,
+    /// Enqueue without awaiting the broker ack.
+    None,
 }
 
 /// Connection lifetime for a `std/pubsub@v1` step.
@@ -202,6 +226,13 @@ impl PubSubParams {
             Some(_) => return Err("'scope' must be exchange or vu".into()),
         };
 
+        let flush = match params.get("flush") {
+            None | Some(Value::Null) => PubSubFlush::Message,
+            Some(Value::String(s)) if s == "message" => PubSubFlush::Message,
+            Some(Value::String(s)) if s == "none" => PubSubFlush::None,
+            Some(_) => return Err("'flush' must be message or none".into()),
+        };
+
         Ok(PubSubParams {
             driver,
             subject,
@@ -210,6 +241,7 @@ impl PubSubParams {
             subscribe,
             options,
             scope,
+            flush,
         })
     }
 }
@@ -523,14 +555,30 @@ impl PubSubDriver for NatsDriver {
                 outcome.published += 1;
             }
             if !params.publish.is_empty() {
-                // Push the queued messages out before waiting, so e2e samples
-                // measure the broker round trip, not client-side buffering.
-                // The flush is part of the publish cost — fold it into the
-                // last message's sample.
-                let t = Instant::now();
-                client.flush().await.map_err(|e| format!("flush: {e}"))?;
-                if let Some(last) = outcome.publish_ms.last_mut() {
-                    *last += t.elapsed().as_secs_f64() * 1000.0;
+                match params.flush {
+                    PubSubFlush::Message => {
+                        // Push the queued messages out and await the broker's
+                        // ack, so e2e samples measure the broker round trip,
+                        // not client-side buffering. The flush is part of the
+                        // publish cost — fold it into the last message's
+                        // sample.
+                        let t = Instant::now();
+                        client.flush().await.map_err(|e| format!("flush: {e}"))?;
+                        if let Some(last) = outcome.publish_ms.last_mut() {
+                            *last += t.elapsed().as_secs_f64() * 1000.0;
+                        }
+                    }
+                    PubSubFlush::None => {
+                        // Fire-and-forget: publish samples measure the enqueue
+                        // only. Still flush (unsampled) when the messages must
+                        // reach the broker deterministically: before a
+                        // subscribe wait on this exchange, and before an
+                        // exchange-scoped connection is dropped — a fresh
+                        // client dropped mid-write can lose queued messages.
+                        if params.subscribe.is_some() || params.scope == PubSubScope::Exchange {
+                            client.flush().await.map_err(|e| format!("flush: {e}"))?;
+                        }
+                    }
                 }
             }
 
@@ -729,6 +777,31 @@ mod tests {
         assert_eq!(spec.timeout_ms, 5000);
         assert!(spec.until_contains.is_none());
         assert!(p.options.is_empty());
+        assert_eq!(p.flush, PubSubFlush::Message, "flush defaults to message");
+    }
+
+    #[test]
+    fn params_flush_validates() {
+        for (text, want) in [("message", PubSubFlush::Message), ("none", PubSubFlush::None)] {
+            let p = PubSubParams::from_params(&json!({
+                "subject": "s",
+                "publish": "hi",
+                "flush": text,
+            }))
+            .unwrap();
+            assert_eq!(p.flush, want);
+        }
+
+        for bad in [json!("always"), json!(true)] {
+            let err = PubSubParams::from_params(&json!({
+                "subject": "s",
+                "publish": "hi",
+                "flush": bad,
+            }))
+            .err()
+            .unwrap();
+            assert!(err.contains("'flush' must be message or none"), "{err}");
+        }
     }
 
     #[test]
@@ -1139,6 +1212,57 @@ mod tests {
                 "scope: exchange connects every time"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn nats_flush_none_publishes_without_ack_wait() {
+        let Some(url) = nats_url().await else {
+            eprintln!("skipping: no NATS broker (set NATS_URL or run one on 127.0.0.1:4222)");
+            return;
+        };
+        // flush: none + scope: vu — fire-and-forget publishes still land
+        // (the driver's writer task pushes them; a roundtrip on the same
+        // client proves delivery).
+        let subject = unique_subject("nats.flush-none");
+        let out = execute_action(
+            "std/pubsub@v1",
+            &json!({
+                "driver": "nats",
+                "url": url,
+                "subject": subject,
+                "publish": ["f1", "f2"],
+                "scope": "vu",
+                "flush": "none",
+                "subscribe": { "count": 2, "timeout_ms": 5000 },
+            }),
+            &Context::new(),
+            "nats-flush-none",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(out.value["published"], 2);
+        assert_eq!(out.value["received"], 2);
+
+        // flush: none + scope: exchange — the unsampled closing flush keeps
+        // the messages from being lost with the dropped client.
+        let subject = unique_subject("nats.flush-none-cold");
+        let out = execute_action(
+            "std/pubsub@v1",
+            &json!({
+                "driver": "nats",
+                "url": url,
+                "subject": subject,
+                "publish": ["c1", "c2"],
+                "scope": "exchange",
+                "flush": "none",
+                "subscribe": { "count": 2, "timeout_ms": 5000 },
+            }),
+            &Context::new(),
+            "nats-flush-none-cold",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(out.value["received"], 2);
     }
 
     #[tokio::test]
