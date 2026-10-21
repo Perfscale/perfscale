@@ -28,7 +28,9 @@ use serde_json::{json, Map};
 use perfscale_core::step::actions::HttpSample;
 use perfscale_core::step::context::Context;
 use perfscale_core::step::process::{RingBuf, WaitUntil};
-use perfscale_core::step::pubsub::{self, PubSubContext, PubSubFlush, PubSubParams, PubSubScope, SubscribeSpec};
+use perfscale_core::step::pubsub::{
+    self, PubSubContext, PubSubFlush, PubSubParams, PubSubScope, SubscribeSpec,
+};
 use perfscale_core::step::runner::{Metrics, ShardedMetrics};
 use perfscale_core::step::shared_variable::{self, SharedVarOp};
 use perfscale_core::yaml;

@@ -782,7 +782,10 @@ mod tests {
 
     #[test]
     fn params_flush_validates() {
-        for (text, want) in [("message", PubSubFlush::Message), ("none", PubSubFlush::None)] {
+        for (text, want) in [
+            ("message", PubSubFlush::Message),
+            ("none", PubSubFlush::None),
+        ] {
             let p = PubSubParams::from_params(&json!({
                 "subject": "s",
                 "publish": "hi",
