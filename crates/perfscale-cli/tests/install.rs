@@ -240,6 +240,90 @@ async fn lint_remote_library_without_lock_points_at_install() {
         .stdout(predicates::str::contains("perfscale install"));
 }
 
+/// A valid WASM reporter component (the SDK reporter example), built once
+/// per test binary. `None` when the wasm32-wasip2 target is not installed.
+fn reporter_component() -> Option<&'static PathBuf> {
+    static COMPONENT: OnceLock<Option<PathBuf>> = OnceLock::new();
+    COMPONENT
+        .get_or_init(|| {
+            let installed = std::process::Command::new("rustup")
+                .args(["target", "list", "--installed"])
+                .output()
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .any(|l| l.trim() == "wasm32-wasip2")
+                })
+                .unwrap_or(false);
+            if !installed {
+                eprintln!("skipping reporter install check: wasm32-wasip2 not installed");
+                return None;
+            }
+            let ws = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .canonicalize()
+                .unwrap();
+            let target = ws.join("target/wasm-libs-fixtures");
+            let artifact = target.join("wasm32-wasip2/release/perfscale_reporter_example.wasm");
+            if artifact.is_file() {
+                return Some(artifact);
+            }
+            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+            let status = std::process::Command::new(cargo)
+                .args(["build", "--release", "--target", "wasm32-wasip2"])
+                .arg("--manifest-path")
+                .arg(ws.join("crates/perfscale-library-sdk/examples/reporter/Cargo.toml"))
+                .arg("--target-dir")
+                .arg(&target)
+                .status()
+                .ok()?;
+            status.success().then_some(artifact)
+        })
+        .as_ref()
+}
+
+/// `perfscale install` prewarms WASM reporters too (issue #9): a
+/// `report.reporters[].use: wasm:./r.wasm` entry is compiled + world-checked
+/// and its artifact lands in `<cache>/reporters/<sha256>.cwasm`. A reporter
+/// that does not compile warns but does not fail the install — same
+/// semantics as library burns.
+#[tokio::test]
+async fn install_prewarms_wasm_reporters() {
+    let Some(component) = reporter_component() else {
+        return;
+    };
+    let bytes = std::fs::read(component).unwrap();
+    let sha = sha256_hex(&bytes);
+
+    let dir = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    std::fs::copy(component, dir.path().join("reporter.wasm")).unwrap();
+    std::fs::write(dir.path().join("broken.wasm"), b"not a component").unwrap();
+    let yaml = write_yaml(
+        dir.path(),
+        "config.yaml",
+        "vus: 1\nduration: 1s\nreport:\n  reporters:\n    - use: wasm:./reporter.wasm\n    - use: wasm:./broken.wasm\n",
+    );
+
+    cmd()
+        .arg("install")
+        .arg(&yaml)
+        .env("PERFSCALE_CACHE_DIR", cache.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("burned reporter"))
+        .stdout(predicates::str::contains("warning:"));
+
+    assert!(
+        cache
+            .path()
+            .join("reporters")
+            .join(format!("{sha}.cwasm"))
+            .is_file(),
+        "the reporter artifact must land in the reporters burn cache"
+    );
+}
+
 #[tokio::test]
 async fn install_without_remote_libraries_is_a_noop() {
     let dir = tempfile::tempdir().unwrap();

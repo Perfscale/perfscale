@@ -281,7 +281,10 @@ Exit code: `0` when every remote library is installed (or already pinned),
 cache (`<cache>/libraries/<sha256>.cwasm`), so `run`/`lint` deserialize a
 precompiled artifact instead of compiling per run. The burn is advisory: a
 library that fails to precompile downgrades to a warning and compiles at
-run time instead.
+run time instead. WASM reporters (`report.reporters[].use: wasm:…`) are
+burned the same way into `<cache>/reporters/<sha256>.cwasm` — this is the
+explicit prewarm step for the reporter burn cache (lint only writes it in
+the background, so a lint-only workflow may never warm it).
 
 ## `perfscale burn`
 

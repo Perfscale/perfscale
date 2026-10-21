@@ -24,8 +24,11 @@ Release notes for the next release, written as features land.
   both validate and delivery — and again on every `lint`. The compiled
   component is now shared within a run, and a write-through burn cache
   (`<cache>/reporters/<sha256>.cwasm`, same `PFSBURN1` format and
-  invalidation rules as libraries — no `perfscale install` needed) makes
-  repeat `lint`/`run` deserialize native code instead of recompiling.
+  invalidation rules as libraries) makes repeat `lint`/`run` deserialize
+  native code instead of recompiling. `perfscale install` prewarms WASM
+  reporters alongside libraries (the explicit warm-cache step), and the
+  lint/validate path writes the artifact in the background — a cold lint no
+  longer pays the serialize+write on its critical path.
 - Built-in `html` reporter (`std/report/html@v1`, `--report html:report.html`):
   a single self-contained dark-themed page with the run identity, threshold
   verdicts, a sortable per-step table with samples sparklines, and metric

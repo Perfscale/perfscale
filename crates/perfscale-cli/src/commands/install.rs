@@ -14,13 +14,16 @@
 //! precompiled into `<cache>/libraries/<sha256>.cwasm` (burn artifact,
 //! see `perfscale_core::library::burn`), so `run`/`lint` skip per-run
 //! Cranelift compilation. Local libraries get no lockfile entry (nothing to
-//! pin — the file is already local).
+//! pin — the file is already local). WASM reporters
+//! (`report.reporters[].use: wasm:…`) are precompiled the same way into
+//! `<cache>/reporters/<sha256>.cwasm` — the explicit prewarm for the
+//! reporter burn cache.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use perfscale_core::import::{self, CollectedLibrary, GitImport, ImportOptions};
+use perfscale_core::import::{self, CollectedLibrary, CollectedReporter, GitImport, ImportOptions};
 use perfscale_core::library::lockfile::{LockEntry, Lockfile};
 use perfscale_core::library::{is_remote_ref, normalize_sha256, parse_git_library_ref};
 use sha2::{Digest, Sha256};
@@ -31,6 +34,7 @@ use crate::error::CliError;
 
 pub async fn run(args: InstallArgs) -> Result<(), CliError> {
     let collected: Arc<Mutex<Vec<CollectedLibrary>>> = Arc::new(Mutex::new(Vec::new()));
+    let collected_reporters: Arc<Mutex<Vec<CollectedReporter>>> = Arc::new(Mutex::new(Vec::new()));
     // Install is the network operation: imports are followed so libraries
     // declared in remote base documents are pinned too (their lockfile
     // belongs to the imported repository's root). Resolution itself is off —
@@ -40,6 +44,7 @@ pub async fn run(args: InstallArgs) -> Result<(), CliError> {
         refresh: args.refresh,
         resolve_libraries: false,
         collect_libraries: Some(collected.clone()),
+        collect_reporters: Some(collected_reporters.clone()),
         ..Default::default()
     };
 
@@ -50,6 +55,15 @@ pub async fn run(args: InstallArgs) -> Result<(), CliError> {
                 .docs("yaml-reference.md#libraries")
         })?;
     }
+
+    // WASM reporters (`report.reporters[].use: wasm:…`): prewarm the burn
+    // cache, same advisory semantics as libraries below.
+    let reporters = std::mem::take(
+        &mut *collected_reporters
+            .lock()
+            .map_err(|_| CliError::new("internal error: reporter collection poisoned"))?,
+    );
+    burn_reporters(reporters);
 
     let gathered = std::mem::take(
         &mut *collected
@@ -127,6 +141,24 @@ fn locals_deduped(local: Vec<CollectedLibrary>) -> Vec<CollectedLibrary> {
         .into_iter()
         .filter(|lib| seen.insert(lib.use_.clone()))
         .collect()
+}
+
+/// Prewarm every collected WASM reporter into the reporters burn cache
+/// (`<cache>/reporters/<sha256>.cwasm`): full compile + world check +
+/// synchronous artifact write per module. Same failure semantics as
+/// libraries: burn is advisory at install time (a warning, not an error) —
+/// a reporter that does not compile fails loudly at lint/run validation.
+fn burn_reporters(collected: Vec<CollectedReporter>) {
+    let mut seen = HashSet::new();
+    for rep in collected {
+        if !seen.insert(rep.module.clone()) {
+            continue;
+        }
+        match perfscale_core::report::wasm::burn_module(Path::new(&rep.module)) {
+            Ok(()) => println!("burned reporter {}", rep.module),
+            Err(e) => warn_on_burn_failure(&rep.module, Err(e)),
+        }
+    }
 }
 
 /// Burn is advisory for `install`: an artifact that does not compile (or a

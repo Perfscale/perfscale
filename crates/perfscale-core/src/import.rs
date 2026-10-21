@@ -143,6 +143,16 @@ pub struct CollectedLibrary {
     pub sha256: Option<String>,
 }
 
+/// A WASM reporter declaration collected while loading a document — install
+/// mode ([`ImportOptions::collect_reporters`]) gathers these so the caller
+/// (`perfscale install`) can prewarm the reporters burn cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectedReporter {
+    /// The module path from `use: wasm:<path>`, already anchored to the
+    /// declaring document's directory.
+    pub module: String,
+}
+
 /// Caller-side policy for import resolution. Fail-closed by construction:
 /// `Default` allows local file imports only.
 #[derive(Clone)]
@@ -166,6 +176,9 @@ pub struct ImportOptions {
     /// instead of resolving them. Takes precedence over
     /// `resolve_libraries`.
     pub collect_libraries: Option<std::sync::Arc<std::sync::Mutex<Vec<CollectedLibrary>>>>,
+    /// Install mode: collect `wasm:` reporter declarations per document so
+    /// `perfscale install` can prewarm their burn cache.
+    pub collect_reporters: Option<std::sync::Arc<std::sync::Mutex<Vec<CollectedReporter>>>>,
 }
 
 impl Default for ImportOptions {
@@ -177,6 +190,7 @@ impl Default for ImportOptions {
             remote_guard: None,
             resolve_libraries: true,
             collect_libraries: None,
+            collect_reporters: None,
         }
     }
 }
@@ -190,6 +204,7 @@ impl std::fmt::Debug for ImportOptions {
             .field("remote_guard", &self.remote_guard.as_ref().map(|_| "<fn>"))
             .field("resolve_libraries", &self.resolve_libraries)
             .field("collect_libraries", &self.collect_libraries.is_some())
+            .field("collect_reporters", &self.collect_reporters.is_some())
             .finish()
     }
 }
@@ -315,11 +330,13 @@ async fn resolve_parsed(
         Origin::Local { dir } => {
             anchor_library_paths(&mut value, dir);
             anchor_reporter_paths(&mut value, dir);
+            collect_reporters(&value, opts);
             process_remote_libraries(&mut value, dir, opts)?;
         }
         Origin::Git { repo_root, dir, .. } => {
             anchor_library_paths(&mut value, dir);
             anchor_reporter_paths(&mut value, dir);
+            collect_reporters(&value, opts);
             // The lockfile of a git-imported document lives at the root of
             // the clone — that is "next to the declaring file" from the
             // repository's point of view, and `perfscale install` writes it
@@ -541,6 +558,15 @@ pub fn default_reporter_cache_root() -> PathBuf {
     default_cache_dir().join("reporters")
 }
 
+/// The reporter burn-cache root with an `ImportOptions` override — used by
+/// `perfscale install`, which honors `--cache-dir`-style plumbing.
+pub fn reporter_cache_root(opts: &ImportOptions) -> PathBuf {
+    opts.cache_dir
+        .clone()
+        .unwrap_or_else(default_cache_dir)
+        .join("reporters")
+}
+
 /// Path of one precompiled reporter burn artifact:
 /// `<cache>/reporters/<sha256>.cwasm` (same `PFSBURN1` format as libraries).
 #[cfg(feature = "wasm-libs")]
@@ -660,6 +686,38 @@ fn anchor_reporter_paths(value: &mut Value, dir: &Path) {
         let path = Path::new(module);
         if !path.is_absolute() {
             *use_val = Value::String(format!("wasm:{}", dir.join(path).to_string_lossy()));
+        }
+    }
+}
+
+/// Install mode: gather `report.reporters[].use: wasm:<path>` declarations
+/// (already anchored to the declaring document, see [`anchor_reporter_paths`])
+/// so `perfscale install` can prewarm their burn cache.
+fn collect_reporters(value: &Value, opts: &ImportOptions) {
+    let Some(collect) = &opts.collect_reporters else {
+        return;
+    };
+    let Some(reporters) = value
+        .get("report")
+        .and_then(|r| r.get("reporters"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    for entry in reporters {
+        let Some(use_) = entry.get("use").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(module) = use_.strip_prefix("wasm:") else {
+            continue;
+        };
+        if module.is_empty() {
+            continue;
+        }
+        if let Ok(mut out) = collect.lock() {
+            out.push(CollectedReporter {
+                module: module.to_string(),
+            });
         }
     }
 }

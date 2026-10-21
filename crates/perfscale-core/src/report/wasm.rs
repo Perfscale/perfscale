@@ -138,6 +138,32 @@ enum CompileSource {
     Compiled,
 }
 
+/// Where the burn-cache write-through happens after a cold compile.
+///
+/// The validate path (`WasmReporter::check`, run by lint and pre-run
+/// validation) needs only the compiled component for the world-export check,
+/// so the serialize+write — which can cost as much as the compile for large
+/// JS-built components — moves to a background thread: lint returns after
+/// the compile. Delivery (`load`) and `perfscale install` stay synchronous:
+/// their caller expects the artifact to exist (install is the explicit
+/// prewarm step; delivery usually hits the run cache anyway).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BurnMode {
+    /// Serialize and write the artifact before returning.
+    Sync,
+    /// Serialize and write on a background thread, best-effort. A process
+    /// exiting first simply drops the write (the temp+rename in
+    /// `write_reporter_burn` guarantees no partial artifact); the next
+    /// cold run re-burns.
+    Background,
+}
+
+/// Background burn-artifact writes in flight. Fire-and-forget by design —
+/// shutdown does not join them (a reporter artifact is advisory; joining
+/// would put the serialize cost back on the lint critical path). Tests use
+/// [`drain_burn_writes`] for determinism.
+static PENDING_BURN_WRITES: OnceLock<Mutex<Vec<std::thread::JoinHandle<()>>>> = OnceLock::new();
+
 /// Compile (or reuse) the reporter component for `bytes`.
 ///
 /// Three layers, cheapest first:
@@ -150,8 +176,9 @@ enum CompileSource {
 ///    deserializes native code instead of recompiling;
 /// 3. a full `Component::new`, which then writes through to both caches:
 ///    the in-process entry and a best-effort disk artifact (a cache write
-///    failure never fails the load — the cache is advisory).
-fn compile_cached(module: &Path, bytes: &[u8]) -> Result<Component, String> {
+///    failure never fails the load — the cache is advisory; `mode` picks
+///    synchronous or background write-through).
+fn compile_cached(module: &Path, bytes: &[u8], mode: BurnMode) -> Result<Component, String> {
     let name = || module.display().to_string();
     let sha = burn::sha256_bytes(bytes);
     let run_cache = RUN_COMPONENTS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -168,8 +195,7 @@ fn compile_cached(module: &Path, bytes: &[u8]) -> Result<Component, String> {
     // mismatch (engine config, wasmtime version, target, digest) or a
     // corrupted artifact silently falls back to full compilation.
     let cache_root = crate::import::default_reporter_cache_root();
-    let hex = burn::hex(&sha);
-    let burn_path = crate::import::reporter_burn_path(&cache_root, &hex);
+    let burn_path = crate::import::reporter_burn_path(&cache_root, &burn::hex(&sha));
     let component = match std::fs::read(&burn_path) {
         Ok(artifact) => match burn::load_burned(&artifact, &sha) {
             Some(component) => {
@@ -184,10 +210,10 @@ fn compile_cached(module: &Path, bytes: &[u8]) -> Result<Component, String> {
                     burn_path.display()
                 );
 
-                compile_and_burn(&name(), bytes, &cache_root, &hex)?
+                compile_and_burn(&name(), bytes, &cache_root, &sha, mode)?
             }
         },
-        Err(_) => compile_and_burn(&name(), bytes, &cache_root, &hex)?,
+        Err(_) => compile_and_burn(&name(), bytes, &cache_root, &sha, mode)?,
     };
     run_cache
         .lock()
@@ -196,30 +222,80 @@ fn compile_cached(module: &Path, bytes: &[u8]) -> Result<Component, String> {
     Ok(component)
 }
 
-/// Full compilation plus the best-effort burn-cache write-through (layer 3).
+/// Full compilation plus the burn-cache write-through (layer 3), sync or
+/// background per `mode`.
 fn compile_and_burn(
     name: &str,
     bytes: &[u8],
     cache_root: &Path,
-    hex: &str,
+    sha: &[u8; 32],
+    mode: BurnMode,
 ) -> Result<Component, String> {
+    let component = compile_fresh(name, bytes)?;
+    match mode {
+        BurnMode::Sync => write_burn_artifact(name, &component, cache_root, sha),
+        BurnMode::Background => {
+            // Serialize and write off the critical path. The component is
+            // Send (wasmtime components are); errors are logged, never
+            // propagated — the cache is advisory.
+            let name = name.to_string();
+            let cache_root = cache_root.to_path_buf();
+            let sha = *sha;
+            let component = component.clone();
+            let handle = std::thread::spawn(move || {
+                write_burn_artifact(&name, &component, &cache_root, &sha);
+            });
+            PENDING_BURN_WRITES
+                .get_or_init(|| Mutex::new(Vec::new()))
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(handle);
+        }
+    }
+    Ok(component)
+}
+
+/// Full Cranelift compilation — the cold path every cache layer missed.
+fn compile_fresh(name: &str, bytes: &[u8]) -> Result<Component, String> {
     let component = Component::new(engine()?, bytes)
         .map_err(|e| format!("reporter '{name}': failed to compile as a WASM component: {e}"))?;
     #[cfg(test)]
     record_compile(CompileSource::Compiled);
-    // Write-through: serialize the component we just compiled (never a
-    // second precompile pass) and cache it for the next run. Best-effort —
-    // the run must not fail over a cache write.
+    Ok(component)
+}
+
+/// Serialize the component we just compiled (never a second precompile
+/// pass) and cache the artifact for the next run. Best-effort — the caller
+/// must not fail over a cache write.
+fn write_burn_artifact(name: &str, component: &Component, cache_root: &Path, sha: &[u8; 32]) {
     match component.serialize() {
         Ok(payload) => {
-            let artifact = burn::wrap_serialized(&payload, &burn::sha256_bytes(bytes));
-            if let Err(e) = crate::import::write_reporter_burn(cache_root, hex, &artifact) {
+            let artifact = burn::wrap_serialized(&payload, sha);
+            if let Err(e) =
+                crate::import::write_reporter_burn(cache_root, &burn::hex(sha), &artifact)
+            {
                 tracing::debug!("reporter '{name}': burn-cache write failed: {e}");
             }
         }
-        Err(e) => tracing::debug!("reporter '{name}': could not serialize for the burn cache: {e}"),
+        Err(e) => {
+            tracing::debug!("reporter '{name}': could not serialize for the burn cache: {e}")
+        }
     }
-    Ok(component)
+}
+
+/// Join every pending background burn write — the test seam that makes the
+/// background write-through deterministic.
+#[cfg(test)]
+fn drain_burn_writes() {
+    let pending: Vec<_> = PENDING_BURN_WRITES
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .drain(..)
+        .collect();
+    for h in pending {
+        let _ = h.join();
+    }
 }
 
 #[cfg(test)]
@@ -231,6 +307,63 @@ fn record_compile(source: CompileSource) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .push(source);
+}
+
+/// Read a reporter module, enforcing the load-time size cap (compilation
+/// memory scales with module size; matches the library host's cap).
+fn read_module(module: &Path) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(module)
+        .map_err(|e| format!("reporter '{}': failed to read: {e}", module.display()))?;
+    if bytes.len() > MAX_COMPONENT_BYTES {
+        return Err(format!(
+            "reporter '{}': component is {} MiB — the limit is {} MiB",
+            module.display(),
+            bytes.len() >> 20,
+            MAX_COMPONENT_BYTES >> 20,
+        ));
+    }
+    Ok(bytes)
+}
+
+/// The fail-closed world check: the component must export
+/// `perfscale:reporter/reporter@0.1.x`. Cheap on both the compiled and the
+/// deserialized (burn-cache) component — it reads the component type.
+fn world_check(component: &Component, module: &Path) -> Result<(), String> {
+    let ty = component.component_type();
+    let mut exported_wit: Option<String> = None;
+    for (name, _) in ty.exports(engine()?) {
+        if let Some(rest) = name.strip_prefix("perfscale:reporter/reporter") {
+            exported_wit = Some(rest.trim_start_matches('@').to_string());
+        }
+    }
+    match exported_wit.as_deref() {
+        Some(v) if v.starts_with("0.1.") => Ok(()),
+        other => Err(format!(
+            "reporter '{}': unsupported WIT interface version — this build supports {SUPPORTED_WIT}, the component exports perfscale:reporter/reporter@{}",
+            module.display(),
+            other.unwrap_or("<none — not a perfscale reporter component>")
+        )),
+    }
+}
+
+/// Prewarm the disk burn cache for one reporter module — the
+/// `perfscale install` path: full compile, world check, synchronous artifact
+/// write. Idempotent: an up-to-date artifact is left alone.
+pub fn burn_module(module: &Path) -> Result<(), String> {
+    let name = module.display().to_string();
+    let bytes = read_module(module)?;
+    let sha = burn::sha256_bytes(&bytes);
+    let hex = burn::hex(&sha);
+    let cache_root = crate::import::default_reporter_cache_root();
+    if let Ok(existing) = std::fs::read(crate::import::reporter_burn_path(&cache_root, &hex)) {
+        if burn::artifact_matches(&existing, &sha) {
+            return Ok(());
+        }
+    }
+    let component = compile_fresh(&name, &bytes)?;
+    world_check(&component, module)?;
+    write_burn_artifact(&name, &component, &cache_root, &sha);
+    Ok(())
 }
 
 /// A compiled WASM reporter: compiled once per run (shared between the
@@ -249,18 +382,9 @@ impl WasmReporter {
     /// `./perfscale-report-<module-stem>`.
     pub fn load(module: &Path, output: Option<&str>) -> Result<Self, String> {
         let display = || module.display().to_string();
-        let bytes = std::fs::read(module)
-            .map_err(|e| format!("reporter '{}': failed to read: {e}", display()))?;
-        if bytes.len() > MAX_COMPONENT_BYTES {
-            return Err(format!(
-                "reporter '{}': component is {} MiB — the limit is {} MiB",
-                display(),
-                bytes.len() >> 20,
-                MAX_COMPONENT_BYTES >> 20,
-            ));
-        }
+        let bytes = read_module(module)?;
         let engine = engine()?;
-        let component = compile_cached(module, &bytes)?;
+        let component = compile_cached(module, &bytes, BurnMode::Sync)?;
 
         // World check: the component must export `perfscale:reporter/reporter@0.1.x`.
         let ty = component.component_type();
@@ -306,8 +430,13 @@ impl WasmReporter {
     }
 
     /// Compile-and-world-check only — the fail-fast lint/validation path.
+    /// The burn-cache write-through runs in the background (see
+    /// [`BurnMode::Background`]): validation needs the compiled component for
+    /// the export check, not the artifact on disk.
     pub fn check(module: &Path) -> Result<(), String> {
-        Self::load(module, None).map(|_| ())
+        let bytes = read_module(module)?;
+        let component = compile_cached(module, &bytes, BurnMode::Background)?;
+        world_check(&component, module)
     }
 
     /// Instantiate the component and call `on-report` once. `report_json` is
@@ -579,11 +708,104 @@ mod tests {
         reporter.run(&report_json(), "{}").unwrap();
 
         assert_eq!(compile_log(), [CompileSource::Compiled]);
-        // The compile wrote through to the disk burn cache.
+        // The validate path's background write-through lands the artifact.
+        drain_burn_writes();
         assert!(
             burn_path_for(&env.reporters_root, module).is_file(),
             "cold compile must write the burn artifact"
         );
+    }
+
+    #[test]
+    fn background_burn_write_leaves_a_valid_artifact() {
+        let env = cache_test_env();
+        let Some(module) = fixture() else { return };
+
+        // check() returns after the compile; the serialize+write runs in the
+        // background.
+        WasmReporter::check(module).unwrap();
+        assert_eq!(compile_log(), [CompileSource::Compiled]);
+        drain_burn_writes();
+
+        let bytes = std::fs::read(module).unwrap();
+        let artifact = std::fs::read(burn_path_for(&env.reporters_root, module)).unwrap();
+        assert!(burn::artifact_matches(
+            &artifact,
+            &burn::sha256_bytes(&bytes)
+        ));
+        // And it is loadable: the next "process" (fresh run cache) deserializes.
+        RUN_COMPONENTS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        COMPILE_LOG
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        WasmReporter::check(module).unwrap();
+        assert_eq!(compile_log(), [CompileSource::BurnCache]);
+    }
+
+    /// A leftover `.cwasm.tmp-*` from a killed write must not be picked up:
+    /// the load falls back to compilation, and the fresh write lands via
+    /// temp+rename.
+    #[test]
+    fn stale_partial_burn_write_is_ignored() {
+        let env = cache_test_env();
+        let Some(module) = fixture() else { return };
+        std::fs::create_dir_all(&env.reporters_root).unwrap();
+        let bytes = std::fs::read(module).unwrap();
+        let hex = burn::hex(&burn::sha256_bytes(&bytes));
+        std::fs::write(
+            env.reporters_root.join(format!(".{hex}.cwasm.tmp-99999")),
+            b"partial-from-a-killed-process",
+        )
+        .unwrap();
+
+        let reporter = WasmReporter::load(module, None).unwrap();
+        let _ = reporter;
+        assert_eq!(compile_log(), [CompileSource::Compiled]);
+        let artifact = std::fs::read(burn_path_for(&env.reporters_root, module)).unwrap();
+        assert!(burn::artifact_matches(
+            &artifact,
+            &burn::sha256_bytes(&bytes)
+        ));
+    }
+
+    /// `perfscale install`'s prewarm: burn_module compiles, world-checks and
+    /// writes the artifact synchronously; a repeat call is a no-op.
+    #[test]
+    fn burn_module_prewarms_the_disk_cache_idempotently() {
+        let env = cache_test_env();
+        let Some(module) = fixture() else { return };
+
+        burn_module(module).unwrap();
+        assert_eq!(compile_log(), [CompileSource::Compiled]);
+        let bytes = std::fs::read(module).unwrap();
+        let artifact = std::fs::read(burn_path_for(&env.reporters_root, module)).unwrap();
+        assert!(burn::artifact_matches(
+            &artifact,
+            &burn::sha256_bytes(&bytes)
+        ));
+
+        burn_module(module).unwrap();
+        assert_eq!(
+            compile_log(),
+            [CompileSource::Compiled],
+            "an up-to-date artifact is not re-burned"
+        );
+    }
+
+    #[test]
+    fn burn_module_rejects_a_wrong_world_component() {
+        let env = cache_test_env();
+        let _ = &env;
+        let dir = tempfile::tempdir().unwrap();
+        let module = dir.path().join("not-a-reporter.wasm");
+        std::fs::write(&module, b"(component)").unwrap();
+        let err = burn_module(&module).unwrap_err();
+        assert!(err.contains("unsupported WIT interface version"), "{err}");
     }
 
     #[test]

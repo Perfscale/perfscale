@@ -487,9 +487,11 @@ Compiling a WASM component (Cranelift) costs real time on every `run`/
   perfscale invalidates them — re-run `perfscale install` to re-burn**.
   WASM **reporters** (`use: wasm:./reporter.wasm`) use the same artifact
   format under `<cache>/reporters/<sha256>.cwasm`, but write-through: the
-  first compile of a reporter caches the artifact automatically (no
-  `perfscale install` needed), and within one run the validate and delivery
-  paths share a single compile.
+  first compile of a reporter caches the artifact automatically, and within
+  one run the validate and delivery paths share a single compile. The
+  validate path (lint / pre-run) writes the artifact in the background, so
+  for a guaranteed warm cache use `perfscale install`, which precompiles
+  reporters too.
 - **Binary embedding.** `perfscale burn -f test.yaml [-c config.yaml] -o
   ./perfscale+libs` writes a copy of the running binary with the `.cwasm`
   artifacts of the documents' libraries appended (a `PFSEMBED` trailer — no
