@@ -1171,6 +1171,21 @@ steps:
       scope: vu
       publish: "m:\${vu}-\${seq}:${PS_PAD}"
 EOF
+  # scope=vu + flush=none twin — fire-and-forget publishes on a per-VU
+  # connection: the exact k6 (xk6-nats, warm) posture (xk6-nats never waits
+  # for the broker ack, which is why its publish latency reads 1ms-grained).
+  cat >"$WORKDIR/yaml-pubsub-publish-nats-vu-noflush.yaml" <<EOF
+steps:
+  - name: publish
+    use: std/pubsub@v1
+    with:
+      driver: nats
+      url: "$BENCH_NATS_URL"
+      subject: "bench.pubsub"
+      scope: vu
+      flush: none
+      publish: "m:\${vu}-\${seq}:${PS_PAD}"
+EOF
   cat >"$WORKDIR/yaml-pubsub-e2e-nats-vu.yaml" <<EOF
 steps:
   - name: pub/sub roundtrip
@@ -2197,6 +2212,11 @@ if has_suite pubsub; then
     tw_settle "${NATS_HOSTPORT##*:}" "nats target"
     pubsub_row "perfscale (nats, publish, warm)" \
       "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-publish-nats-vu.yaml" --quiet)"
+    # flush=none twin: publishes are fire-and-forget (enqueue measured, no
+    # broker ack per iteration) — the direct twin of the k6 warm row, which
+    # never awaits an ack either.
+    pubsub_row "perfscale (nats, publish, warm, flush=none)" \
+      "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-publish-nats-vu-noflush.yaml" --quiet)"
     pubsub_row "perfscale (nats, pub/sub e2e, warm)" \
       "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-e2e-nats-vu.yaml" --quiet)"
   fi
@@ -2224,7 +2244,12 @@ if has_suite pubsub; then
     echo "connecting per iteration (connect cost is part of the measurement"
     echo "— Msg/s there is connect+publish+flush throughput); **warm** rows"
     echo "(\`scope: vu\`) keep one connection per VU reused across iterations"
-    echo "— the k6 warm posture."
+    echo "— the k6 warm posture. Flush semantics: the default \`flush: message\`"
+    echo "flushes and awaits the broker ack after each iteration's publish, so"
+    echo "\`pubsub_publish_ms\` measures the full round trip; **flush=none** is"
+    echo "fire-and-forget (the sample measures the enqueue only) — the exact"
+    echo "posture of the k6 (xk6-nats) rows, whose client never awaits an ack"
+    echo "(and whose \`Date.now()\`-grained latency reads 0/1ms)."
     echo "**pub/sub e2e** rows subscribe first, publish one marked message to a"
     echo "per-VU subject, and wait for exactly that message; \`e2e p95\` is the"
     echo "broker round trip (publish → consumed), \`—\` on publish-only rows."
