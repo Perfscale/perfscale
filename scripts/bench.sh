@@ -44,18 +44,22 @@ set -euo pipefail
 #                 VU-scoped connections — one per VU, reused across iterations
 #                 — plus transactions and a prepared+store_rows:false tuned
 #                 row, with a store_rows:true twin isolating the per-row JSON
-#                 materialization cost) plus an in-process SQLite baseline, and the same warm
-#                 SELECT 1 shape from locust
+#                 materialization cost), and the same warm SELECT 1 shape from
+#                 locust
 #                 (psycopg2), JMeter (JDBC) and k6 — the k6 row needs a
 #                 custom binary with the xk6-sql extension (K6_SQL_BIN;
 #                 built by the bench workflow), stock k6 has no SQL module.
+#                 Every row drives the same real PostgreSQL — no in-process
+#                 engine-only baselines: the suite is a comparison against
+#                 the competitors, and those must share the dependency.
 #   pubsub      – pub/sub: native `std/pubsub@v1` publish and pub/sub
-#                 roundtrip (e2e latency) against the in-process `memory`
-#                 bus (the engine's cost floor — no broker) and a NATS broker
-#                 at BENCH_NATS_URL, plus k6 rows via a custom binary with
+#                 roundtrip (e2e latency) against a NATS broker at
+#                 BENCH_NATS_URL, plus k6 rows via a custom binary with
 #                 the xk6-nats extension (ydarias API, rongfengliang fork;
 #                 K6_NATS_BIN, built by the bench workflow) — stock k6 has no
-#                 NATS module. perfscale's
+#                 NATS module. Every row drives the same broker (no
+#                 in-process driver rows): the comparison must share the
+#                 external dependency. perfscale's
 #                 nats driver connects per exchange (a documented posture:
 #                 connect cost is part of the measurement), so the k6 side
 #                 gets both a warm row (connection per VU) and a cold row
@@ -354,8 +358,7 @@ fi
 
 # pubsub suite target: a NATS broker at BENCH_NATS_URL (CI service container;
 # locally `docker run -d -p 4222:4222 nats:2.15-alpine`). Probed by host:port
-# from the URL — the same posture as the db suite's BENCH_PG_DSN. The memory
-# rows need no broker and always run when the suite is selected.
+# from the URL — the same posture as the db suite's BENCH_PG_DSN.
 NATS_HOSTPORT="${BENCH_NATS_URL##*://}" # strip scheme
 NATS_HOSTPORT="${NATS_HOSTPORT%%/*}"    # strip any path
 HAS_NATS=0
@@ -830,11 +833,9 @@ fi
 #                     materialization cost.
 #   db-warm-tx      – warm path with DB_TX_CYCLES × (tx-begin, query, commit)
 #                     on the same VU-scoped connection.
-#   db-sqlite       – cold SQLite: connect + SELECT 1 per iteration against
-#                     :memory: (pool_size 1 — the default; a second pooled
-#                     connection would be a different database).
-#   db-sqlite-warm  – warm SQLite: the db-warm shape with no server at all —
-#                     the pure in-process cost floor of the engine's db path.
+#                 No sqlite rows: every row drives the same real PostgreSQL
+#                 as the competitors — the suite is a comparison, and the
+#                 comparison must share the dependency.
 if [[ "$HAS_DB" == 1 ]]; then
   cat >"$WORKDIR/yaml-db.yaml" <<EOF
 steps:
@@ -947,47 +948,6 @@ EOF
 EOF
     done
   } >"$WORKDIR/yaml-db-warm-tx.yaml"
-fi
-
-# SQLite scenarios need no server — they are generated whenever the db suite
-# is selected, so the in-process cost floor is measurable even without a
-# PostgreSQL at hand.
-if has_suite db; then
-  cat >"$WORKDIR/yaml-db-sqlite.yaml" <<EOF
-steps:
-  - name: connect
-    use: std/db-connect@v1
-    with:
-      driver: sqlite
-      dsn: "sqlite::memory:"
-    outputs: conn
-  - name: select one
-    use: std/db-query@v1
-    with:
-      id: "\${{ conn.id }}"
-      query: "SELECT 1"
-EOF
-  {
-    cat <<EOF
-steps:
-  - name: connect (vu-scoped)
-    use: std/db-connect@v1
-    with:
-      driver: sqlite
-      dsn: "sqlite::memory:"
-      scope: vu
-    outputs: conn
-EOF
-    for i in $(seq 1 "$DB_WARM_QUERIES"); do
-      cat <<EOF
-  - name: warm query $i
-    use: std/db-query@v1
-    with:
-      id: "\${{ conn.id }}"
-      query: "SELECT 1"
-EOF
-    done
-  } >"$WORKDIR/yaml-db-sqlite-warm.yaml"
 fi
 
 # locust db scenario: one psycopg2 connection per simulated user (on_start),
@@ -1166,35 +1126,12 @@ fi
 #             ${seq}); the per-VU subject keeps VUs from consuming each
 #             other's messages. pubsub_e2e_ms = publish-phase start →
 #             consumed.
-# The memory rows are the in-process cost floor (no broker — the sqlite rows
-# of this suite); the nats rows pay connect + publish + flush per iteration
+# Every row drives the same NATS broker as the k6 competitors — no
+# in-process `memory`-driver rows: the comparison must share the external
+# dependency. The nats rows pay connect + publish + flush per iteration
 # under the default `scope: exchange`, and the `scope: vu` twins reuse one
 # connection per VU (the k6 warm posture).
 PS_PAD="$(printf 'x%.0s' $(seq 1 $((PUBSUB_PAYLOAD_BYTES - 16))))"
-if has_suite pubsub; then
-  cat >"$WORKDIR/yaml-pubsub-publish-memory.yaml" <<EOF
-steps:
-  - name: publish
-    use: std/pubsub@v1
-    with:
-      driver: memory
-      subject: "bench.pubsub"
-      publish: "m:\${vu}-\${seq}:${PS_PAD}"
-EOF
-  cat >"$WORKDIR/yaml-pubsub-e2e-memory.yaml" <<EOF
-steps:
-  - name: pub/sub roundtrip
-    use: std/pubsub@v1
-    with:
-      driver: memory
-      subject: "bench.pubsub.vu\${vu}"
-      publish: "m:\${vu}-\${seq}:${PS_PAD}"
-      subscribe:
-        count: 1
-        until_contains: "m:\${vu}-\${seq}:"
-        timeout_ms: 5000
-EOF
-fi
 
 if [[ "$HAS_NATS" == 1 ]]; then
   cat >"$WORKDIR/yaml-pubsub-publish-nats.yaml" <<EOF
@@ -2087,14 +2024,9 @@ if has_suite db; then
     echo "| $label | $requests | $rps | $p95_ms | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
   }
 
-  # SQLite in-process baseline: no server needed, so these rows run even
-  # without a PostgreSQL at BENCH_PG_DSN. perfscale rows run with --quiet:
-  # the per-step firehose is pure overhead (the k6 db row runs --quiet too),
-  # while the end-of-run summary the db-text parser reads is kept.
-  db_row "perfscale (sqlite, cold)" "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-sqlite.yaml" --quiet)" db-text
-  db_row "perfscale (sqlite, warm x$DB_WARM_QUERIES)" \
-    "$(cmd_yaml "$VUS" "$DB_DURATION" "$WORKDIR/yaml-db-sqlite-warm.yaml" --quiet)" \
-    db-text "$DB_WARM_QUERIES"
+  # perfscale rows run with --quiet: the per-step firehose is pure overhead
+  # (the k6 db row runs --quiet too), while the end-of-run summary the
+  # db-text parser reads is kept.
 
   # Before each PostgreSQL-backed row the client must have ephemeral ports
   # free: the cold rows churn ~1k conn/s and leave thousands of loopback
@@ -2168,9 +2100,10 @@ if has_suite db; then
 
   {
     echo
-    echo "_Targets: PostgreSQL at \`BENCH_PG_DSN\` (CI service container) and"
-    echo "in-process SQLite (\`sqlite::memory:\`, pool_size 1 — the default; a"
-    echo "second pooled connection would be a different database). The"
+    echo "_Target: PostgreSQL at \`BENCH_PG_DSN\` (CI service container) — every"
+    echo "row drives the same real server as the competitors; there are no"
+    echo "in-process engine-only baselines, so the comparison shares the"
+    echo "dependency. The"
     echo "\`perfscale (...)\` rows all use \`std/db-*@v1\`: **cold** = connect +"
     echo "\`SELECT 1\` per iteration (the connection drops at iteration end —"
     echo "the serverless/short-lived shape); **cold, params** = the same with a"
@@ -2244,13 +2177,8 @@ if has_suite pubsub; then
     echo "| $label | $requests | $rps | $avg_ms | $p95_ms | $e2e_cell | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
   }
 
-  # In-process floor first (no broker — runs even without NATS). perfscale
-  # rows run --quiet, like the db rows: the per-step firehose is pure
-  # overhead while the end-of-run summary the parser reads is kept.
-  pubsub_row "perfscale (memory, publish)" \
-    "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-publish-memory.yaml" --quiet)"
-  pubsub_row "perfscale (memory, pub/sub e2e)" \
-    "$(cmd_yaml "$VUS" "$PUBSUB_DURATION" "$WORKDIR/yaml-pubsub-e2e-memory.yaml" --quiet)"
+  # perfscale rows run --quiet, like the db rows: the per-step firehose is
+  # pure overhead while the end-of-run summary the parser reads is kept.
 
   if [[ "$HAS_NATS" == 1 ]]; then
     # The nats driver connects per exchange: like the db cold rows, each
@@ -2288,9 +2216,10 @@ if has_suite pubsub; then
   {
     echo
     echo "_Every row publishes one fixed ~${PUBSUB_PAYLOAD_BYTES}-byte message"
-    echo "per iteration. The \`perfscale (...)\` rows use \`std/pubsub@v1\`:"
-    echo "**memory** = the in-process broadcast bus (no broker — the engine's"
-    echo "cost floor); **nats** = the async-nats driver against the broker at"
+    echo "per iteration, and every row drives the same NATS broker — no"
+    echo "in-process driver rows, so the comparison shares the dependency. The"
+    echo "\`perfscale (...)\` rows use \`std/pubsub@v1\` with the async-nats"
+    echo "driver against the broker at"
     echo "\`BENCH_NATS_URL\`. Default \`scope: exchange\` connects per iteration"
     echo "(connect cost is part of the measurement — Msg/s there is"
     echo "connect+publish+flush throughput); **scope=vu** rows keep one"

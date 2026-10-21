@@ -39,8 +39,8 @@ wrapping overhead — not the underlying tool.
 | `library` | WASM value-generator cost: per-run compile (cold) vs burn-cache deserialize vs the `@std/random` builtin |
 | `grpc` | `std/grpc@v1` unary echo against the repo's `grpc_echo_server` example |
 | `graphql` | `std/graphql@v1` query against the repo's `graphql_server` example |
-| `db` | SQL: cold connect+query vs warm VU-scoped connections vs transactions (`std/db-*@v1`, PostgreSQL + in-process SQLite), plus the warm shape from locust (psycopg2), JMeter (JDBC) and k6 — the k6 row is a **custom binary** built with the `xk6-sql` extension + postgres driver (stock k6 has no SQL module), used only by this row |
-| `pubsub` | Pub/sub: publish throughput and pub/sub roundtrip e2e latency (`std/pubsub@v1`) against the in-process `memory` bus (cost floor, no broker) and a NATS broker (`BENCH_NATS_URL`) in `scope: exchange` (connect per iteration) and `scope: vu` (one connection per VU) postures, plus k6 rows via a **custom binary** built with the xk6-nats extension (stock k6 has no NATS module), in warm (connection per VU) and cold (connect per iteration — the fair twin of `scope: exchange`) postures |
+| `db` | SQL: cold connect+query vs warm VU-scoped connections vs transactions (`std/db-*@v1`, PostgreSQL at `BENCH_PG_DSN` — every row drives the same real server), plus the warm shape from locust (psycopg2), JMeter (JDBC) and k6 — the k6 row is a **custom binary** built with the `xk6-sql` extension + postgres driver (stock k6 has no SQL module), used only by this row |
+| `pubsub` | Pub/sub: publish throughput and pub/sub roundtrip e2e latency (`std/pubsub@v1`) against a NATS broker (`BENCH_NATS_URL` — every row drives the same real broker) in `scope: exchange` (connect per iteration) and `scope: vu` (one connection per VU) postures, plus k6 rows via a **custom binary** built with the xk6-nats extension (stock k6 has no NATS module), in warm (connection per VU) and cold (connect per iteration — the fair twin of `scope: exchange`) postures |
 
 JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
 console summary has no percentiles, so it stays out of the `throughput`
@@ -86,9 +86,9 @@ adds `prepared: true` + `store_rows: false` for the engine's ceiling;
 `perfscale (warm vu+prepared+rows, …)` is the same with `store_rows: true`,
 so the delta between the two tuned rows isolates the per-row JSON
 materialization cost;
-`perfscale (warm tx, …)`: `DB_TX_CYCLES` × begin+query+commit) and
-adds an
-in-process SQLite floor (`perfscale (sqlite, …)`, no server needed).
+`perfscale (warm tx, …)`: `DB_TX_CYCLES` × begin+query+commit).
+There are no in-process SQLite rows: every row drives the same real
+PostgreSQL as the competitors, so the comparison shares the dependency.
 The locust row (`pipx inject locust psycopg2-binary`), the JMeter row
 (PostgreSQL JDBC jar in JMeter's `lib/`, `BENCH_PG_JDBC_JAR` to point
 elsewhere), and the k6 row repeat the warm shape. The `k6 (xk6-sql)` row is
@@ -100,9 +100,9 @@ CI environment summary prints both. The custom binary serves only this row;
 every other k6 scenario keeps using the stock binary.
 
 The `pubsub` suite publishes one fixed ~`PUBSUB_PAYLOAD_BYTES` (default 256)
-byte message per iteration. The `memory` rows (`std/pubsub@v1` on the
-in-process broadcast bus) are the engine's cost floor — no broker, like the
-db suite's SQLite rows. The `nats` rows publish to the broker at
+byte message per iteration. Every row drives the same real broker — there
+are no in-process `memory`-driver rows, so the comparison shares the
+dependency with the k6 rows. The `nats` rows publish to the broker at
 `BENCH_NATS_URL` (default `nats://127.0.0.1:4222`; locally
 `docker run -d -p 4222:4222 nats:2.15-alpine`, in CI a service container) and
 pay connect + publish + flush per iteration under the default

@@ -39,7 +39,8 @@ loopback, поэтому любая разница между строкой `pe
 | `library` | Стоимость WASM-библиотек значений: компиляция на каждый прогон (холодный кэш) против десериализации burn-кэша против встроенной `@std/random` |
 | `grpc` | Унарный вызов `std/grpc@v1` против примера `grpc_echo_server` из репозитория |
 | `graphql` | Запрос `std/graphql@v1` против примера `graphql_server` из репозитория |
-| `db` | SQL: холодный connect+query против тёплых VU-scoped соединений против транзакций (`std/db-*@v1`, PostgreSQL + in-process SQLite), плюс тёплая форма от locust (psycopg2), JMeter (JDBC) и k6 — строка k6 использует **кастомный бинарь**, собранный с расширением `xk6-sql` и postgres-драйвером (в стоковом k6 SQL-модуля нет), и только она его использует |
+| `db` | SQL: холодный connect+query против тёплых VU-scoped соединений против транзакций (`std/db-*@v1`, PostgreSQL по `BENCH_PG_DSN` — каждая строка ходит в тот же реальный сервер), плюс тёплая форма от locust (psycopg2), JMeter (JDBC) и k6 — строка k6 использует **кастомный бинарь**, собранный с расширением `xk6-sql` и postgres-драйвером (в стоковом k6 SQL-модуля нет), и только она его использует |
+| `pubsub` | Pub/sub: пропускная способность publish и e2e-латентность roundtrip pub/sub (`std/pubsub@v1`) против NATS-брокера (`BENCH_NATS_URL` — каждая строка ходит в тот же реальный брокер) в позициях `scope: exchange` (соединение на итерацию) и `scope: vu` (одно соединение на VU), плюс строки k6 через **кастомный бинарь** с расширением xk6-nats (в стоковом k6 NATS-модуля нет) в тёплой (соединение на VU) и холодной (соединение на итерацию — честный двойник `scope: exchange`) позициях |
 
 JMeter участвует только в наборах hyperfine (`overhead`/`startup`): его
 консольная сводка в non-GUI режиме не содержит перцентилей, поэтому он не
@@ -88,9 +89,9 @@ JMeter его нет в консольной сводке), плюс пиков�
 `perfscale (warm vu+prepared+rows, …)` — то же самое с `store_rows: true`,
 так что разница между двумя tuned-строками изолирует стоимость
 JSON-материализации строк;
-`perfscale (warm tx, …)`: `DB_TX_CYCLES` × begin+query+commit) и добавляет
-in-process
-SQLite-«пол» (`perfscale (sqlite, …)`, сервер не нужен). Строка locust
+`perfscale (warm tx, …)`: `DB_TX_CYCLES` × begin+query+commit).
+In-process SQLite-строк нет: каждая строка ходит в тот же реальный
+PostgreSQL, что и конкуренты, — сравнение делит зависимость. Строка locust
 (`pipx inject locust psycopg2-binary`) и строка JMeter (PostgreSQL JDBC jar в
 `lib/` JMeter, переменная `BENCH_PG_JDBC_JAR` для другого пути) и строка k6
 повторяют тёплую форму. Строка `k6 (xk6-sql)` — это **не стоковый k6**: в
@@ -102,9 +103,9 @@ SQLite-«пол» (`perfscale (sqlite, …)`, сервер не нужен). С�
 k6 продолжают использовать стоковый.
 
 Набор `pubsub` публикует одно сообщение фиксированного размера
-(~`PUBSUB_PAYLOAD_BYTES`, по умолчанию 256 байт) за итерацию. Строки `memory`
-(`std/pubsub@v1` на in-process шине) — ценовой пол движка: брокера нет, как
-строки SQLite в наборе db. Строки `nats` публикуют в брокер по
+(~`PUBSUB_PAYLOAD_BYTES`, по умолчанию 256 байт) за итерацию. Каждая строка
+ходит в тот же реальный брокер — in-process строк с драйвером `memory` нет,
+сравнение делит зависимость со строками k6. Строки `nats` публикуют в брокер по
 `BENCH_NATS_URL` (по умолчанию `nats://127.0.0.1:4222`; локально
 `docker run -d -p 4222:4222 nats:2.15-alpine`, в CI — service-контейнер) и
 платят connect + publish + flush за итерацию при `scope: exchange` по
