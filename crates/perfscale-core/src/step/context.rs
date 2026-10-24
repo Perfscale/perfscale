@@ -444,16 +444,23 @@ impl Context {
         }
         let mut segments = expr.split('.');
         let root = segments.next().unwrap_or("");
-        let Some(mut current) = self.vars.get(root).map(|v| &**v) else {
-            return Ok(String::new());
+        let Some(current) = self.vars.get(root).map(|v| &**v) else {
+            // Built-in VU identity, k6's `__VU` / `__ITER`: 1-based VU id and
+            // the 0-based iteration of this VU. A stored output of the same
+            // name wins (checked above), so existing scenarios keep working.
+            return Ok(match root {
+                "__vu__" => self.vu_id.to_string(),
+                "__iter__" => self.iteration_seq.saturating_sub(1).to_string(),
+                _ => String::new(),
+            });
         };
-        for segment in segments {
-            match current.get(segment) {
-                Some(v) => current = v,
-                None => return Ok(String::new()),
-            }
-        }
-        Ok(value_to_string(current))
+        // A string leaf holding JSON (an HTTP `body`) is parsed on demand when
+        // the path continues past it, so `${{ feed.body.posts.0.id }}` reads
+        // into the response without a separate extract step.
+        let segments: Vec<&str> = segments.collect();
+        Ok(walk_path(current, &segments)
+            .map(|v| value_to_string(&v))
+            .unwrap_or_default())
     }
 
     /// Apply interpolation to every string leaf of a JSON `Value`.
@@ -537,6 +544,33 @@ impl TokenExpander<'_> {
     }
 }
 
+/// One path segment: an object key, or a decimal index into an array.
+fn descend<'a>(v: &'a Value, segment: &str) -> Option<&'a Value> {
+    match v {
+        Value::Array(items) => segment.parse::<usize>().ok().and_then(|i| items.get(i)),
+        other => other.get(segment),
+    }
+}
+
+/// Follow `segments` from `v`. Borrowed while the path stays inside the
+/// stored value; a string leaf with segments left is parsed as JSON (an HTTP
+/// `body`) and the walk continues in the parsed document.
+pub(crate) fn walk_path<'a>(
+    v: &'a Value,
+    segments: &[&str],
+) -> Option<std::borrow::Cow<'a, Value>> {
+    let mut current = v;
+    for (i, segment) in segments.iter().enumerate() {
+        if let Value::String(s) = current {
+            let parsed: Value = serde_json::from_str(s).ok()?;
+            return walk_path(&parsed, &segments[i..])
+                .map(|c| std::borrow::Cow::Owned(c.into_owned()));
+        }
+        current = descend(current, segment)?;
+    }
+    Some(std::borrow::Cow::Borrowed(current))
+}
+
 fn value_to_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -588,6 +622,37 @@ mod tests {
         // A miss at any depth resolves to empty, same as one-level misses.
         assert_eq!(ctx.interpolate("${{ resp.headers.nope }}"), "");
         assert_eq!(ctx.interpolate("${{ resp.nope.deeper }}"), "");
+    }
+
+    #[test]
+    fn interpolate_descends_into_json_body_and_arrays() {
+        let mut ctx = Context::new();
+        ctx.set(
+            "feed",
+            json!({ "status": 200, "body": r#"{"posts":[{"id":7},{"id":9}]}"# }),
+        );
+        ctx.set("list", json!({ "items": ["a", "b"] }));
+        assert_eq!(ctx.interpolate("${{ feed.body.posts.1.id }}"), "9");
+        assert_eq!(ctx.interpolate("${{ feed.body.posts.0 }}"), r#"{"id":7}"#);
+        assert_eq!(ctx.interpolate("${{ list.items.0 }}"), "a");
+        // Out of range, non-numeric index, or a body that is not JSON → empty.
+        assert_eq!(ctx.interpolate("${{ feed.body.posts.5.id }}"), "");
+        assert_eq!(ctx.interpolate("${{ list.items.x }}"), "");
+        ctx.set("text", json!({ "body": "plain text" }));
+        assert_eq!(ctx.interpolate("${{ text.body.x }}"), "");
+        // The string itself is still returned verbatim when the path ends on it.
+        assert_eq!(ctx.interpolate("${{ text.body }}"), "plain text");
+    }
+
+    #[test]
+    fn interpolate_vu_identity() {
+        let mut ctx = Context::new();
+        ctx.set_vu_id(4);
+        ctx.iteration_seq = 3;
+        assert_eq!(ctx.interpolate("${{ __vu__ }}/${{ __iter__ }}"), "4/2");
+        // A stored output of the same name wins.
+        ctx.set("__vu__", json!("mine"));
+        assert_eq!(ctx.interpolate("${{ __vu__ }}"), "mine");
     }
 
     #[test]

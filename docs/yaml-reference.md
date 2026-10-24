@@ -46,6 +46,30 @@ steps:
 | `outputs` | no | Variable name to store the step output under |
 | `severity` | no | `std/thresholds@v1` only: what a violated gate becomes — `fail` (default; the run exits non-zero), `warn`, or `info` |
 | `message` | no | `std/thresholds@v1` only: custom label appended to the violation summary (interpolated) |
+| `if` | no | Run the step only when the condition holds — see [Conditional steps](#conditional-steps-if) |
+
+### Conditional steps (`if:`)
+
+`if:` skips a step unless its condition holds. `${{ … }}` placeholders and
+`${…}` generator tokens expand first; the result is a comparison (`==`,
+`!=`, `<`, `<=`, `>`, `>=` — numeric when both sides are numbers, string
+otherwise; quote literals with `'…'` if you like) or a bare value, false when
+empty, `false`, `0` or `null`. Clauses combine with `&&` and `||` (`&&` binds
+tighter, no parentheses). A skipped step produces no output, records no
+metrics and leaves `__last__` untouched.
+
+```yaml
+steps:
+  - use: std/sleep@v1
+    if: "${{ __iter__ }} == 0"                 # first iteration only
+    with: { ms: "${rand(0,5000)}" }
+  - use: std/http@v1
+    with: { url: "https://api.example.com/feed" }
+    outputs: feed
+  - use: std/http@v1
+    if: "${{ feed.status }} == 200 && ${randf(0,1,4)} < 0.15"   # 15% of good iterations
+    with: { method: POST, url: "https://api.example.com/like" }
+```
 
 ### Variables (`${{ ... }}`)
 
@@ -62,6 +86,7 @@ value** in a later step's `with:` or `check:` can then reference it:
 | `${{ config.<name>.<field> }}` | Output of a config-file `before:` setup step (see [Config](#config--c-configyaml)) |
 | `${{ vars.<key> }}` | A static value from the config file's `variables:` block |
 | `${{ env.NAME }}` | Process environment variable `NAME` — for secrets (`api_key`, tokens, DSNs) that must not live in the YAML |
+| `${{ __vu__ }}` / `${{ __iter__ }}` | This VU's 1-based id and its 0-based iteration (k6's `__VU` / `__ITER`). A stored output of the same name wins |
 
 For `std/http@v1` the stored output is
 `{ "status": <int>, "body": <string>, "duration_ms": <float>, "headers": <object> }`
@@ -129,6 +154,9 @@ Rules and edge cases:
   for secrets.
 - Path segments descend one JSON object level per `.` — header names with
   dots in them cannot be addressed (rare; everything else works).
+- A numeric segment indexes an array (`${{ resp.items.0 }}`), and a string
+  that holds JSON — an HTTP `body` — is parsed when the path continues past
+  it: `${{ feed.body.posts.0.id }}` reads straight into the response.
 - Placeholders are resolved per virtual user, per iteration — each VU sees
   the outputs of its own step chain, never another VU's.
 - Steps without any `${{` are executed as-is: the engine skips the

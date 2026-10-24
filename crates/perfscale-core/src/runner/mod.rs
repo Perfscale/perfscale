@@ -196,6 +196,7 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                condition: None,
             }],
         };
         let config = RunConfig {
@@ -304,6 +305,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         };
         ExecutionPlan::NativeSteps {
             test: TestDef {

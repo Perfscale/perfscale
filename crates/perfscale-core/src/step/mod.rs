@@ -25,6 +25,7 @@
 //! Use [`runner::run_steps`] to execute a test under a given [`RunConfig`].
 
 pub mod actions;
+pub(crate) mod condition;
 pub mod context;
 pub(crate) mod db;
 pub mod graphql;
@@ -112,6 +113,15 @@ pub struct Step {
     /// actions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Run the step only when this condition holds (`if:` in YAML). Both
+    /// `${{ … }}` placeholders and `${…}` generator tokens expand first, then
+    /// the result is either a comparison (`a == b`, `!=`, `<`, `<=`, `>`,
+    /// `>=` — numeric when both sides parse as numbers) or a bare value
+    /// (false when empty, `false`, `0` or `null`); clauses combine with `&&`
+    /// and `||`. A skipped step produces no
+    /// output, no metrics and leaves `__last__` untouched.
+    #[serde(rename = "if", default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

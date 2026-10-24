@@ -1412,8 +1412,43 @@ Pause the current VU.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `ms` | integer | `1000` | Milliseconds to sleep |
-| `seconds` | number | — | Alternative to `ms` (fractions allowed) |
+| `ms` | integer or string | `1000` | Milliseconds to sleep |
+| `seconds` | number or string | — | Alternative to `ms` (fractions allowed) |
+
+A string value expands `${…}` tokens first, so `ms: "${rand(3000,7000)}"` is
+a random think time. A string that is not a number after expansion fails the
+step (it used to fall back to 1000ms silently).
+
+## `std/pick@v1`
+
+Pick one element of a JSON array — a random post from a feed, or a
+per-VU test user from a fixture file.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `from` | array or string | one of from/file | The array, or a string holding a JSON array (`"${{ feed.body.posts }}"`) |
+| `file` | string (path) | one of from/file | A JSON array file, parsed once per process and cached by (mtime, size) like `std/file-read@v1`. Requires `allow_file_actions`, honours `fs_root` |
+| `index` | integer or string | random | Element index, wrapping modulo the length (`index: "${{ __vu__ }}"` gives each VU its own entry). Omitted → uniformly random |
+
+**Output**: the picked element itself.
+
+```yaml
+steps:
+  - use: std/pick@v1
+    with: { file: fixtures/users.json, index: "${{ __vu__ }}" }
+    outputs: user
+  - use: std/http@v1
+    with: { url: "https://api.example.com/feed" }
+    outputs: feed
+  - use: std/pick@v1
+    with: { from: "${{ feed.body.posts }}" }
+    outputs: post
+  - use: std/http@v1
+    with:
+      method: POST
+      url: "https://api.example.com/posts/${{ post.id }}/like"
+      headers: { Authorization: "Bearer ${{ user.token }}" }
+```
 
 ## `std/log@v1`
 

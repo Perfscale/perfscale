@@ -12,6 +12,17 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- Branching and data-driven scenarios in YAML, enough to port k6 scripts
+  like `if (Math.random() < 0.15) like(post)` one to one:
+  - step-level `if:` — `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||` over
+    interpolated values and `${…}` tokens; skipped steps record nothing;
+  - `${{ __vu__ }}` / `${{ __iter__ }}` (k6's `__VU` / `__ITER`);
+  - paths index arrays and read into JSON bodies:
+    `${{ feed.body.posts.0.id }}`;
+  - `std/pick@v1` — a random or per-VU element from an array or a JSON
+    file (parsed once per process);
+  - `std/sleep@v1` expands tokens (`ms: "${rand(3000,7000)}"`) and rejects
+    non-numeric strings instead of silently sleeping 1s.
 - `std/pubsub@v1`: new `flush` parameter (`message` | `none`, default
   `message` — unchanged). `flush: message` flushes and awaits the broker ack
   after publishing, so `pubsub_publish_ms` is the full round trip;

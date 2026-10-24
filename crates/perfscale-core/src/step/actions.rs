@@ -213,9 +213,10 @@ pub async fn execute_action(
             super::db::db_close_action(&resolved, ctx, step_name).await
         }
         "std/check@v1" | "check" => check_action(&resolved, ctx, step_name),
-        "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name).await,
+        "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name, ctx).await,
         "std/log@v1" | "log" => log_action(&resolved, step_name),
         "std/file-read@v1" | "file-read" => file_read_action(&resolved, step_name, ctx).await,
+        "std/pick@v1" | "pick" => pick_action(&resolved, step_name, ctx).await,
         "std/file-write@v1" | "file-write" => file_write_action(&resolved, step_name, ctx).await,
         "std/child_process@v1" | "child_process" => {
             child_process_action(&resolved, step_name, ctx).await
@@ -951,6 +952,120 @@ async fn file_read_action(params: &Value, step_name: &str, ctx: &Context) -> Act
 }
 
 // ---------------------------------------------------------------------------
+// std/pick@v1
+// ---------------------------------------------------------------------------
+//
+// Parameters (one source):
+//   from  – an array, or a string holding a JSON array (`"${{ feed.body.posts }}"`)
+//   file  – path to a JSON array file; parsed once per process and cached by
+//           (mtime, size) like std/file-read@v1 (needs allow_file_actions)
+//   index – optional integer (or string: `${{ __vu__ }}`); wraps modulo the
+//           array length. Omitted → a uniformly random element.
+//
+// Output: the picked element itself, so `outputs: user` + `${{ user.token }}`.
+
+type PickCacheEntry = (
+    Option<std::time::SystemTime>,
+    u64,
+    std::sync::Arc<Vec<Value>>,
+);
+
+fn pick_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, PickCacheEntry>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, PickCacheEntry>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+async fn pick_file(path: &str, ctx: &Context) -> Result<std::sync::Arc<Vec<Value>>, String> {
+    let path = confine_fs_path(ctx, path, false)?;
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| format!("cannot read file '{}': {e}", path.display()))?;
+    let (mtime, len) = (meta.modified().ok(), meta.len());
+    let key = path.to_string_lossy().into_owned();
+    // Never hold the lock across an await: check-release, read, insert.
+    let cached = {
+        let cache = pick_cache().lock().unwrap();
+        cache.get(&key).and_then(|(m, l, items)| {
+            (*m == mtime && *l == len).then(|| std::sync::Arc::clone(items))
+        })
+    };
+    if let Some(items) = cached {
+        return Ok(items);
+    }
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| format!("cannot read file '{}': {e}", path.display()))?;
+    let items = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(Value::Array(items)) => std::sync::Arc::new(items),
+        Ok(_) => return Err(format!("file '{}' is not a JSON array", path.display())),
+        Err(e) => return Err(format!("file '{}' is not valid JSON: {e}", path.display())),
+    };
+    pick_cache()
+        .lock()
+        .unwrap()
+        .insert(key, (mtime, len, std::sync::Arc::clone(&items)));
+    Ok(items)
+}
+
+async fn pick_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
+    let items: std::sync::Arc<Vec<Value>> = match (&params["from"], params["file"].as_str()) {
+        (Value::Null, Some(path)) => match pick_file(path, ctx).await {
+            Ok(items) => items,
+            Err(msg) => return err(step_name, &msg),
+        },
+        (Value::Array(items), None) => std::sync::Arc::new(items.clone()),
+        (Value::String(s), None) => match serde_json::from_str::<Value>(s) {
+            Ok(Value::Array(items)) => std::sync::Arc::new(items),
+            _ => return err(step_name, "`from` must be a JSON array"),
+        },
+        (Value::Null, None) => return err(step_name, "one of `from` or `file` is required"),
+        (_, Some(_)) => return err(step_name, "`from` and `file` are mutually exclusive"),
+        _ => return err(step_name, "`from` must be an array"),
+    };
+    if items.is_empty() {
+        return err(step_name, "cannot pick from an empty array");
+    }
+    let index = match &params["index"] {
+        Value::Null => {
+            let token = format!("${{rand(0,{})}}", items.len() - 1);
+            match ctx
+                .token_expander()
+                .expand(&token)
+                .map(|s| s.parse::<u64>())
+            {
+                Ok(Ok(i)) => i,
+                _ => return err(step_name, "random index generation failed"),
+            }
+        }
+        Value::Number(n) if n.as_u64().is_some() => n.as_u64().unwrap_or_default(),
+        Value::String(s) => match s.trim().parse::<u64>() {
+            Ok(i) => i,
+            Err(_) => {
+                return err(
+                    step_name,
+                    &format!("`index` must be a non-negative integer, got {s:?}"),
+                )
+            }
+        },
+        other => {
+            return err(
+                step_name,
+                &format!("`index` must be a non-negative integer, got {other}"),
+            )
+        }
+    };
+    let picked = items[(index % items.len() as u64) as usize].clone();
+    ActionOutput {
+        value: picked,
+        logs: Vec::new(),
+        success: true,
+        http_sample: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // std/file-write@v1
 // ---------------------------------------------------------------------------
 //
@@ -1332,12 +1447,41 @@ async fn kill_process_action(params: &Value, step_name: &str, ctx: &Context) -> 
 // Parameters:
 //   ms      – milliseconds to sleep (default 1000)
 //   seconds – alternative to ms
+//
+// Either may be a string: `${…}` tokens expand first, so
+// `ms: "${rand(3000,7000)}"` is a random think time. A string that is not a
+// number after expansion fails the step instead of falling back to 1000ms.
 
-async fn sleep_action(params: &Value, step_name: &str) -> ActionOutput {
-    let ms = params["ms"]
-        .as_u64()
-        .or_else(|| params["seconds"].as_f64().map(|s| (s * 1000.0) as u64))
-        .unwrap_or(1000);
+async fn sleep_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
+    let mut tokens = ctx.token_expander();
+    let mut number = |key: &str| -> Result<Option<f64>, String> {
+        match &params[key] {
+            Value::Null => Ok(None),
+            Value::Number(n) => Ok(n.as_f64()),
+            Value::String(s) => {
+                let expanded = tokens.expand(s)?;
+                expanded
+                    .trim()
+                    .parse::<f64>()
+                    .map(Some)
+                    .map_err(|_| format!("`{key}` must be a number, got {expanded:?}"))
+            }
+            other => Err(format!("`{key}` must be a number, got {other}")),
+        }
+    };
+    let ms = match (number("ms"), number("seconds")) {
+        (Err(e), _) | (_, Err(e)) => return err(step_name, &e),
+        (Ok(Some(ms)), _) => ms,
+        (Ok(None), Ok(Some(s))) => s * 1000.0,
+        (Ok(None), Ok(None)) => 1000.0,
+    };
+    if !ms.is_finite() || ms < 0.0 {
+        return err(
+            step_name,
+            &format!("sleep duration must be >= 0, got {ms}ms"),
+        );
+    }
+    let ms = ms as u64;
 
     tokio::time::sleep(Duration::from_millis(ms)).await;
 
@@ -2996,6 +3140,104 @@ mod tests {
         let ctx = Context::new();
         let out = execute_action("std/sleep@v1", &json!({ "seconds": 0.01 }), &ctx, "step").await;
         assert!(out.logs[0].1.contains("sleep 10ms"));
+    }
+
+    #[tokio::test]
+    async fn sleep_action_expands_tokens_in_string_params() {
+        let ctx = Context::new();
+        let out = execute_action(
+            "std/sleep@v1",
+            &json!({ "ms": "${rand(5,5)}" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success);
+        assert!(out.logs[0].1.contains("sleep 5ms"), "{:?}", out.logs);
+        let out =
+            execute_action("std/sleep@v1", &json!({ "seconds": "0.005" }), &ctx, "step").await;
+        assert!(out.logs[0].1.contains("sleep 5ms"), "{:?}", out.logs);
+    }
+
+    #[tokio::test]
+    async fn sleep_action_rejects_non_numeric_strings() {
+        let ctx = Context::new();
+        let out = execute_action("std/sleep@v1", &json!({ "ms": "soon" }), &ctx, "step").await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("`ms` must be a number"),
+            "{:?}",
+            out.logs
+        );
+        let out = execute_action("std/sleep@v1", &json!({ "ms": -5 }), &ctx, "step").await;
+        assert!(!out.success);
+    }
+
+    // -----------------------------------------------------------------
+    // std/pick@v1
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn pick_by_index_wraps_and_random_stays_in_range() {
+        let ctx = Context::new();
+        let from = json!([{ "id": 1 }, { "id": 2 }, { "id": 3 }]);
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": from, "index": 4 }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success);
+        assert_eq!(out.value, json!({ "id": 2 }));
+        // A JSON string source (an interpolated response body) and a string index.
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": "[10,20]", "index": "3" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!(20));
+        for _ in 0..20 {
+            let out = execute_action("std/pick@v1", &json!({ "from": from }), &ctx, "step").await;
+            let id = out.value["id"].as_u64().unwrap();
+            assert!((1..=3).contains(&id));
+        }
+    }
+
+    #[tokio::test]
+    async fn pick_rejects_bad_sources() {
+        let ctx = Context::new();
+        for params in [
+            json!({}),
+            json!({ "from": [] }),
+            json!({ "from": "not json" }),
+            json!({ "from": [1], "file": "x.json" }),
+            json!({ "from": [1], "index": "-1" }),
+        ] {
+            let out = execute_action("std/pick@v1", &params, &ctx, "step").await;
+            assert!(!out.success, "{params} should fail");
+        }
+    }
+
+    #[tokio::test]
+    async fn pick_from_file_needs_file_actions_and_caches_parsed_array() {
+        let dir = std::env::temp_dir().join(format!("perfscale-pick-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tokens.json");
+        std::fs::write(&path, r#"[{"token":"a"},{"token":"b"}]"#).unwrap();
+        let params = json!({ "file": path.to_string_lossy(), "index": 1 });
+
+        let denied = execute_action("std/pick@v1", &params, &Context::new(), "step").await;
+        assert!(!denied.success);
+
+        let mut ctx = Context::new();
+        ctx.allow_file_actions = true;
+        let out = execute_action("std/pick@v1", &params, &ctx, "step").await;
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(out.value, json!({ "token": "b" }));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // -----------------------------------------------------------------
