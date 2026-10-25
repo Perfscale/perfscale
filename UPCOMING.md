@@ -12,6 +12,16 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- Multi-source-IP HTTP load (`std/http@v1` `source_ips`): a step can bind
+  outgoing connections to a list of local source addresses — bare IPs or
+  CIDR prefixes (`source_ips: ["10.0.0.2", "10.0.0.16/28", "fd00::/120"]`,
+  expansion capped at 4096 addresses). The ephemeral source-port space is
+  per (source IP, dst IP, dst port), so multiple source addresses multiply
+  the ~64k-concurrent-connections-per-endpoint budget of one machine. VU `i`
+  is pinned to `ips[(i-1) % n]` (stable across iterations, keep-alive stays
+  warm); clients are built lazily per (shard, address) pair, the first
+  request logs how many addresses are active, and `perfscale lint` validates
+  the list before the run.
 - Typed run inputs (issue #11): config files declare an `inputs:` block
   (`number` with `min`/`max`, `string`, `bool` with 0/1/false/true coercion,
   GitHub-style `choice` with `options:`), steps interpolate

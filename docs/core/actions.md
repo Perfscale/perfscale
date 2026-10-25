@@ -28,6 +28,7 @@ Perform one HTTP request per iteration. Timing feeds the run's metrics.
 | `timeout` | integer (ms) | `10000` | Per-request timeout |
 | `insecure` | boolean | `false` | Skip TLS certificate verification — for self-signed targets like `perfscale serve --tls`. Never use against hosts you don't control |
 | `pool` | string | `per-vu` | `per-vu` pins the step to the VU's HTTP client shard; `shared` puts every VU on one process-global client |
+| `source_ips` | string \| array | — | Local source addresses to bind outgoing connections to — see [Source IPs](#source-ips). VU `i` is pinned to `ips[(i-1) % n]` |
 
 **Output** (available via `outputs` / `__last__`):
 
@@ -53,6 +54,35 @@ sniffed: valid UTF-8 behaves as text, anything else as binary.
 
 Statuses ≥ 400, transport errors, and timeouts count as failed requests in
 `http_req_failed`. A timeout is logged distinctly (`→ TIMEOUT after ...ms`).
+
+### Source IPs
+
+`source_ips` binds outgoing connections to local source addresses — the
+multiplier for the ~64k-concurrent-connections-per-endpoint budget: the
+ephemeral source-port space is per (source IP, destination IP, destination
+port) tuple, so one machine talking to one endpoint over one address caps
+out below 64k sockets. Entries are bare IPs or CIDR prefixes, IPv4 and IPv6:
+
+```yaml
+with:
+  url: http://target:8080/api
+  source_ips: ["10.0.0.2", "10.0.0.16/28", "fd00::/120"]
+```
+
+A CIDR expands to every address of the prefix (including network/broadcast —
+a non-bindable address fails loudly at connect time); the expanded list is
+capped at 4096 addresses, over which lint and run validation fail with a
+"narrow the prefix" error. Virtual user `i` is pinned to `ips[(i-1) % n]`,
+stable across iterations, so each VU keeps one warm keep-alive pool per its
+(shard, source IP) client. Clients are built lazily — a large list does not
+pre-allocate thousands of connection pools; a run creates at most as many
+source-IP clients as distinct (shard, address) pairs its VUs actually use.
+
+The addresses must exist on the load generator's interfaces (e.g. extra
+loopback aliases: `sudo ifconfig lo0 alias 127.0.0.2 up` on macOS; Linux
+routes all of 127/8 by default). The first request of a run logs how many
+source addresses are active. `source_ips` takes no `${{ … }}` interpolation —
+the list is validated at lint and cached.
 
 ### Multipart uploads
 
