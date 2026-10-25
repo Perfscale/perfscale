@@ -12,6 +12,15 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- `std/http@v1` `pool: dedicated` — one HTTP client per VU, created on the
+  VU's first request and held until the VU exits. The default shard pools
+  cap idle connections at 64 per host per shard, so past
+  ~`shards × 64` VUs a VU's keep-alive connection is evicted between its
+  requests (connect churn, TIME_WAIT buildup); dedicated mode removes the
+  ceiling for "N VUs = N standing connections" scenarios. Think time
+  (`std/sleep@v1`) does not close the connection, clients are dropped at VU
+  exit (fixed, staged, and arrival-rate runs alike), and the mode composes
+  with `source_ips` (client key: `(vu_id, source_ip)`).
 - Multi-source-IP HTTP load (`std/http@v1` `source_ips`): a step can bind
   outgoing connections to a list of local source addresses — bare IPs or
   CIDR prefixes (`source_ips: ["10.0.0.2", "10.0.0.16/28", "fd00::/120"]`,

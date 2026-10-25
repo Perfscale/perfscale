@@ -27,7 +27,7 @@ Perform one HTTP request per iteration. Timing feeds the run's metrics.
 | `multipart` | array | — | Send `multipart/form-data` — see [Multipart uploads](#multipart-uploads). Mutually exclusive with `body` |
 | `timeout` | integer (ms) | `10000` | Per-request timeout |
 | `insecure` | boolean | `false` | Skip TLS certificate verification — for self-signed targets like `perfscale serve --tls`. Never use against hosts you don't control |
-| `pool` | string | `per-vu` | `per-vu` pins the step to the VU's HTTP client shard; `shared` puts every VU on one process-global client |
+| `pool` | string | `per-vu` | `per-vu` pins the step to the VU's HTTP client shard; `shared` puts every VU on one process-global client; `dedicated` gives every VU its own client, held until the VU exits — see [Dedicated per-VU connections](#dedicated-per-vu-connections) |
 | `source_ips` | string \| array | — | Local source addresses to bind outgoing connections to — see [Source IPs](#source-ips). VU `i` is pinned to `ips[(i-1) % n]` |
 
 **Output** (available via `outputs` / `__last__`):
@@ -54,6 +54,43 @@ sniffed: valid UTF-8 behaves as text, anything else as binary.
 
 Statuses ≥ 400, transport errors, and timeouts count as failed requests in
 `http_req_failed`. A timeout is logged distinctly (`→ TIMEOUT after ...ms`).
+
+### Dedicated per-VU connections
+
+`pool: dedicated` gives every VU its own HTTP client, created on the VU's
+first request and held until the VU exits — think time (`std/sleep@v1`)
+between steps does not close the connection. This is the mode for "N virtual
+users = N standing keep-alive connections" scenarios: the default shard
+pools cap idle connections at 64 per host per shard, so past
+~`shards × 64` VUs a VU's idle connection is evicted between its requests
+and every request reconnects (connect churn, TIME_WAIT buildup). Dedicated
+mode removes that ceiling.
+
+```yaml
+with:
+  url: http://target:8080/api
+  pool: dedicated
+```
+
+Semantics and costs:
+
+- Each VU's client lives in a run-scoped registry keyed
+  `(vu_id, insecure, source_ip)` and is dropped when the VU exits (fixed,
+  staged ramp-down, and arrival-rate workers alike) — connections close at
+  VU exit, not at iteration end and not at process exit.
+- Composes with `source_ips`: the VU's client is bound to its pinned source
+  address, so both pinnings hold simultaneously.
+- `http_req_duration` semantics are unchanged; note that with a dedicated
+  client the TCP/TLS connect happens once per VU — the VU's first request
+  includes it, subsequent ones don't (same as the other modes, but the
+  warm-up happens exactly once per VU now).
+- Connections idle longer than 60 s are recycled, like every pool mode — a
+  target that drops idle sockets sooner will surface as reconnects.
+- Memory: a client with one idle socket costs well under 100 KB; 5 000 VUs
+  in dedicated mode add a few hundred MB of process RSS total. The first
+  request of a run logs `pool: dedicated — one HTTP client per VU`.
+- `pool: dedicated` is an `std/http@v1` mode; `std/graphql@v1` accepts only
+  `per-vu` / `shared`.
 
 ### Source IPs
 
@@ -82,7 +119,9 @@ The addresses must exist on the load generator's interfaces (e.g. extra
 loopback aliases: `sudo ifconfig lo0 alias 127.0.0.2 up` on macOS; Linux
 routes all of 127/8 by default). The first request of a run logs how many
 source addresses are active. `source_ips` takes no `${{ … }}` interpolation —
-the list is validated at lint and cached.
+the list is validated at lint and cached. With `pool: dedicated` the VU's
+own client is bound to its pinned address — the key becomes
+(vu_id, address) instead of (shard, address).
 
 ### Multipart uploads
 
