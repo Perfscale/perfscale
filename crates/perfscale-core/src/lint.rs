@@ -1443,10 +1443,10 @@ fn lint_db_with(
     }
 }
 
-/// Value validation for `std/http@v1`'s `source_ips` list: every entry must
-/// parse and the expansion must stay under the cap — a typo'd address
-/// otherwise fails only at the first request. Interpolated `${{ … }}` values
-/// resolve at runtime and skip the check.
+/// Value validation for `std/http@v1`: the `source_ips` list (every entry
+/// must parse, expansion under the cap) and the `pool` enum — a typo'd
+/// value otherwise fails only at the first request. Interpolated
+/// `${{ … }}` values resolve at runtime and skip the checks.
 fn lint_http_with(
     action: &str,
     with: Option<&serde_json::Map<String, Value>>,
@@ -1456,22 +1456,36 @@ fn lint_http_with(
     if !matches!(action, "std/http@v1" | "http") {
         return;
     }
-    let Some(value) = with.and_then(|w| w.get("source_ips")) else {
-        return;
-    };
+    let source_ips = with.and_then(|w| w.get("source_ips"));
     // A template token resolves at runtime — lint only checks literal lists.
-    if value.as_str().is_some_and(|s| s.contains("${")) {
-        return;
+    if let Some(value) = source_ips.filter(|v| !v.as_str().is_some_and(|s| s.contains("${"))) {
+        if let Err(msg) = crate::step::http::parse_source_ips(value) {
+            issues.push(LintIssue {
+                location: format!("{loc}/with/source_ips"),
+                problem: msg,
+                suggestion: Some(
+                    "e.g. `source_ips: [\"10.0.0.2\", \"10.0.0.16/28\"]` — bare IPs or CIDR prefixes"
+                        .into(),
+                ),
+            });
+        }
     }
-    if let Err(msg) = crate::step::http::parse_source_ips(value) {
-        issues.push(LintIssue {
-            location: format!("{loc}/with/source_ips"),
-            problem: msg,
-            suggestion: Some(
-                "e.g. `source_ips: [\"10.0.0.2\", \"10.0.0.16/28\"]` — bare IPs or CIDR prefixes"
-                    .into(),
-            ),
-        });
+    // A literal `pool` value is checkable here; the runtime parse otherwise
+    // fails only at the first request. Interpolated values skip the check.
+    if let Some(pool) = with
+        .and_then(|w| w.get("pool"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.contains("${"))
+    {
+        if let Err(msg) =
+            crate::step::http::ClientPool::from_params(&serde_json::json!({ "pool": pool }))
+        {
+            issues.push(LintIssue {
+                location: format!("{loc}/with/pool"),
+                problem: msg,
+                suggestion: Some("`pool: per-vu` (default), `shared`, or `dedicated`".into()),
+            });
+        }
     }
 }
 
@@ -1615,6 +1629,27 @@ steps:
     outputs: resp
 "#;
         assert_eq!(lint(yaml, DocKind::Test), vec![]);
+    }
+
+    #[test]
+    fn http_pool_value_lints_literals() {
+        // All three modes lint clean.
+        for mode in ["per-vu", "shared", "dedicated"] {
+            let yaml = format!(
+                "steps:\n  - use: std/http@v1\n    with:\n      url: http://x\n      pool: {mode}\n"
+            );
+            assert_eq!(lint(&yaml, DocKind::Test), vec![], "pool: {mode}");
+        }
+        // An unknown value fails at lint, at the field location.
+        let yaml =
+            "steps:\n  - use: std/http@v1\n    with:\n      url: http://x\n      pool: global\n";
+        let issues = lint(yaml, DocKind::Test);
+        let issue = issues
+            .iter()
+            .find(|i| i.location == "/steps/0/with/pool")
+            .unwrap();
+        assert!(issue.problem.contains("invalid pool 'global'"), "{issue:?}");
+        assert!(issue.problem.contains("dedicated"), "{issue:?}");
     }
 
     #[test]

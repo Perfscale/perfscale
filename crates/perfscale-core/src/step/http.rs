@@ -115,33 +115,44 @@ pub(crate) fn client_shard_count() -> usize {
 /// Connection-pool mode of an HTTP-based action (`pool` parameter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientPool {
-    /// VU-pinned client shard (default) — every VU keeps one warm pool.
+    /// VU-pinned client shard (default) — every VU keeps one warm pool in
+    /// its shard's client.
     PerVu,
     /// One process-global client shared by every VU: maximal connection
     /// reuse against a single endpoint, at the cost of pool-lock contention
     /// under very high VU counts.
     Shared,
+    /// One client per VU (`pool: dedicated`): the VU's keep-alive
+    /// connections are never evicted by other VUs — the mode for
+    /// "N VUs = N standing connections" scenarios. See
+    /// [`dedicated_client`].
+    Dedicated,
 }
 
 impl ClientPool {
-    /// Parse the optional `pool` parameter: `per-vu` (default) or `shared`.
+    /// Parse the optional `pool` parameter: `per-vu` (default), `shared`, or
+    /// `dedicated`.
     pub fn from_params(params: &Value) -> Result<Self, String> {
         match params["pool"].as_str().unwrap_or("per-vu") {
             "per-vu" => Ok(ClientPool::PerVu),
             "shared" => Ok(ClientPool::Shared),
+            "dedicated" => Ok(ClientPool::Dedicated),
             other => Err(format!(
-                "invalid pool '{other}' — expected per-vu or shared"
+                "invalid pool '{other}' — expected per-vu, shared, or dedicated"
             )),
         }
     }
 }
 
 /// The HTTP client for a step execution. The insecure variants skip TLS
-/// verification and never share a pool with verified requests.
+/// verification and never share a pool with verified requests. `Dedicated`
+/// cannot be resolved here (it keys on the VU id) — callers that accept it
+/// must go through [`dedicated_client`]; the defensive fallback is the
+/// per-VU shard.
 pub fn client(pool: ClientPool, insecure: bool, shard: usize) -> &'static reqwest::Client {
     match (pool, insecure) {
-        (ClientPool::PerVu, false) => shared_client(shard),
-        (ClientPool::PerVu, true) => shared_insecure_client(shard),
+        (ClientPool::PerVu | ClientPool::Dedicated, false) => shared_client(shard),
+        (ClientPool::PerVu | ClientPool::Dedicated, true) => shared_insecure_client(shard),
         (ClientPool::Shared, false) => {
             static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
             CLIENT.get_or_init(|| build_client(false))
@@ -386,12 +397,89 @@ pub fn client_with_source(
         None => client(pool, insecure, shard),
         Some(ip) => {
             let shard = match pool {
-                ClientPool::PerVu => shard % client_shard_count(),
+                ClientPool::PerVu | ClientPool::Dedicated => shard % client_shard_count(),
                 ClientPool::Shared => SHARED_POOL_SHARD,
             };
             source_client(shard, insecure, ip)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Dedicated per-VU clients (`pool: dedicated`)
+// ---------------------------------------------------------------------------
+//
+// The shard pools cap idle connections per host at 64 per shard — at 25k
+// VUs, ~1500 VUs share one 64-socket idle pool, so a VU's connection is
+// evicted between its requests and every request reconnects: connect churn
+// and TIME_WAIT storms instead of N standing sockets. `pool: dedicated`
+// gives each VU its own client, created on the VU's first request and held
+// until the VU exits, so a VU's keep-alive connection survives think time
+// (`std/sleep@v1`) untouched. Composes with `source_ips`: the key carries
+// the VU's pinned source address, so both pinnings hold simultaneously.
+
+/// Key of the dedicated per-VU client set: (vu_id, insecure, source
+/// address). vu_id 0 (hand-built contexts) shares one entry.
+type DedicatedClientKey = (u64, bool, Option<IpAddr>);
+
+fn dedicated_clients() -> &'static Mutex<HashMap<DedicatedClientKey, reqwest::Client>> {
+    static CLIENTS: OnceLock<Mutex<HashMap<DedicatedClientKey, reqwest::Client>>> = OnceLock::new();
+    CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The VU's dedicated client, created on first use. `reqwest::Client` is a
+/// cheap Arc handle, so handing out a clone per request shares the
+/// underlying pool; the registry's copy is dropped by
+/// [`drain_dedicated_vu_clients`] when the VU exits, and with it the last
+/// strong reference — the pool (and its idle sockets) close there, not at
+/// iteration end and not at process exit.
+fn dedicated_client(vu_id: u64, insecure: bool, source_ip: Option<IpAddr>) -> reqwest::Client {
+    let key = (vu_id, insecure, source_ip);
+    let mut map = dedicated_clients().lock().unwrap();
+    map.entry(key)
+        .or_insert_with(|| build_client_inner(insecure, source_ip))
+        .clone()
+}
+
+/// Drop every dedicated client of an exited VU. Called by the runner at VU
+/// exit (fixed, staged, and arrival-rate workers alike) — a ramp-down must
+/// close the VU's standing connection, not leak it to the next VU id
+/// collision or process end.
+pub(crate) fn drain_dedicated_vu_clients(vu_id: u64) {
+    dedicated_clients()
+        .lock()
+        .unwrap()
+        .retain(|key, _| key.0 != vu_id);
+}
+
+/// Log-once announce for dedicated mode, same pattern as
+/// [`announce_source_ips`]: the first dedicated execution of the process
+/// reports the mode, later ones stay quiet.
+fn announce_dedicated() -> Option<String> {
+    static ANNOUNCED: OnceLock<Mutex<bool>> = OnceLock::new();
+    let mut seen = ANNOUNCED.get_or_init(|| Mutex::new(false)).lock().unwrap();
+    if *seen {
+        return None;
+    }
+    *seen = true;
+    Some(
+        "pool: dedicated — one HTTP client (keep-alive connection) per VU, held until the VU exits"
+            .to_string(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn dedicated_registry_len() -> usize {
+    dedicated_clients().lock().unwrap().len()
+}
+
+#[cfg(test)]
+pub(crate) fn dedicated_registry_has_vu(vu_id: u64) -> bool {
+    dedicated_clients()
+        .lock()
+        .unwrap()
+        .keys()
+        .any(|k| k.0 == vu_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -668,8 +756,10 @@ pub fn error_chain(e: &dyn std::error::Error) -> String {
 //   timeout   – optional timeout in ms, default 10000
 //   insecure  – optional bool: skip TLS certificate verification (self-signed
 //               targets like `perfscale serve --tls`), default false
-//   pool      – optional "per-vu" (default) or "shared" (one process-global
-//               client for every VU)
+//   pool      – optional "per-vu" (default), "shared" (one process-global
+//               client for every VU), or "dedicated" (one client per VU,
+//               held until the VU exits — N VUs hold N keep-alive
+//               connections across think time)
 //   source_ips – optional string or array of strings: local source addresses
 //               to bind outgoing connections to. Entries are bare IPs
 //               ("10.0.0.9", "fd00::5") or CIDR prefixes ("10.0.0.0/28",
@@ -705,9 +795,12 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
     let source_ip = source_ips
         .as_ref()
         .map(|ips| source_ip_for_vu(ips, ctx.vu_id));
-    let announce = source_ips
+    let mut announce = source_ips
         .as_ref()
         .and_then(|ips| announce_source_ips(&params["source_ips"].to_string(), ips));
+    if pool == ClientPool::Dedicated {
+        announce = announce.or_else(announce_dedicated);
+    }
 
     // `${…}` generator tokens expand per execution — one request is one
     // message: the URL, header values, and body share one generator context
@@ -724,7 +817,12 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         Err(_) => return err(step_name, &format!("invalid HTTP method '{method}'")),
     };
 
-    let client = client_with_source(pool, insecure, ctx.http_client_shard, source_ip);
+    let client = match pool {
+        ClientPool::Dedicated => dedicated_client(ctx.vu_id, insecure, source_ip),
+        // Cheap Arc clone of a 'static shard/global client — one type for
+        // both pool paths below.
+        _ => client_with_source(pool, insecure, ctx.http_client_shard, source_ip).clone(),
+    };
     let mut req = client
         .request(reqwest_method, &url)
         .timeout(Duration::from_millis(timeout_ms));
@@ -953,6 +1051,10 @@ mod tests {
             ClientPool::from_params(&json!({ "pool": "shared" })).unwrap(),
             ClientPool::Shared
         );
+        assert_eq!(
+            ClientPool::from_params(&json!({ "pool": "dedicated" })).unwrap(),
+            ClientPool::Dedicated
+        );
     }
 
     #[test]
@@ -961,6 +1063,248 @@ mod tests {
         assert!(e.contains("invalid pool 'global'"), "{e}");
         assert!(e.contains("per-vu"), "{e} lists the valid modes");
         assert!(e.contains("shared"), "{e} lists the valid modes");
+        assert!(e.contains("dedicated"), "{e} lists the valid modes");
+    }
+
+    // -----------------------------------------------------------------
+    // Dedicated per-VU clients (pool: dedicated)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn dedicated_client_is_reused_per_vu_and_keyed_by_source_ip() {
+        // Key-presence assertions only — the registry is process-global and
+        // tests run in parallel.
+        let _a1 = dedicated_client(9_001, false, None);
+        let _a2 = dedicated_client(9_001, false, None);
+        let _b = dedicated_client(9_002, false, None);
+        let _a_src = dedicated_client(9_001, false, Some(IpAddr::from([127, 0, 0, 1])));
+        assert!(dedicated_registry_has_vu(9_001));
+        assert!(dedicated_registry_has_vu(9_002));
+        // Drain removes exactly the exited VU's clients (both keys of 9001).
+        drain_dedicated_vu_clients(9_001);
+        assert!(!dedicated_registry_has_vu(9_001));
+        assert!(dedicated_registry_has_vu(9_002), "other VUs untouched");
+        drain_dedicated_vu_clients(9_002);
+        assert!(!dedicated_registry_has_vu(9_002));
+    }
+
+    /// A keep-alive echo server: responds to every request with the peer's
+    /// port as the body, holds every connection open, and tracks how many
+    /// sockets are currently established. Returns (port, established gauge,
+    /// accept counter).
+    async fn peer_port_server() -> (
+        u16,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let established = Arc::new(AtomicUsize::new(0));
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let (est, acc) = (Arc::clone(&established), Arc::clone(&accepted));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, peer)) = listener.accept().await else {
+                    break;
+                };
+                acc.fetch_add(1, Ordering::SeqCst);
+                est.fetch_add(1, Ordering::SeqCst);
+                let est = Arc::clone(&est);
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let body = peer.port().to_string();
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match sock.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) => {
+                                let resp = format!(
+                                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{body}",
+                                    body.len()
+                                );
+                                if sock.write_all(resp.as_bytes()).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    est.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        (port, established, accepted)
+    }
+
+    async fn get_peer_port(url: &str, vu_id: u64, dedicated: bool) -> u64 {
+        let mut ctx = Context::new();
+        ctx.vu_id = vu_id;
+        let params = if dedicated {
+            json!({ "method": "GET", "url": url, "pool": "dedicated" })
+        } else {
+            json!({ "method": "GET", "url": url })
+        };
+        let out = http_action(&params, "fetch", &ctx).await;
+        assert!(out.success, "vu {vu_id}: {:?}", out.logs);
+        out.value["body"].as_str().unwrap().parse().unwrap()
+    }
+
+    /// N dedicated VUs hold N distinct sockets simultaneously across think
+    /// time: a second round after a sleep reuses exactly the same ports, and
+    /// the server counted no new connections. Draining the VUs closes every
+    /// socket. Unique vu_id band — the registry is process-global and tests
+    /// run in parallel.
+    #[tokio::test]
+    async fn dedicated_pool_holds_one_connection_per_vu_across_think_time() {
+        const N: u64 = 100;
+        const VU_BASE: u64 = 5_000;
+        let (port, established, accepted) = peer_port_server().await;
+        let url = format!("http://127.0.0.1:{port}/");
+
+        let mut first = Vec::new();
+        for vu in VU_BASE..VU_BASE + N {
+            first.push(get_peer_port(&url, vu, true).await);
+        }
+        // Think time: the sockets must stay open with no traffic.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            established.load(std::sync::atomic::Ordering::SeqCst),
+            N as usize,
+            "every dedicated VU keeps its socket open across think time"
+        );
+
+        let mut second = Vec::new();
+        for vu in VU_BASE..VU_BASE + N {
+            second.push(get_peer_port(&url, vu, true).await);
+        }
+        assert_eq!(first, second, "each VU reuses its own connection");
+        let distinct: std::collections::HashSet<_> = first.iter().collect();
+        assert_eq!(distinct.len(), N as usize, "N VUs = N distinct sockets");
+        assert_eq!(
+            accepted.load(std::sync::atomic::Ordering::SeqCst),
+            N as usize,
+            "no reconnects between rounds"
+        );
+
+        // VU exit (the runner's drain hook) closes every standing socket.
+        for vu in VU_BASE..VU_BASE + N {
+            drain_dedicated_vu_clients(vu);
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(established.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// Contrast: the default shard pool shares one client across VUs pinned
+    /// to the same shard (all hand-built contexts are shard 0), so 30 VUs
+    /// reuse a handful of sockets instead of holding 30.
+    #[tokio::test]
+    async fn default_pool_does_not_hold_one_socket_per_vu() {
+        const N: u64 = 30;
+        const VU_BASE: u64 = 6_000;
+        let (port, _established, _accepted) = peer_port_server().await;
+        let url = format!("http://127.0.0.1:{port}/");
+
+        let mut ports = Vec::new();
+        for vu in VU_BASE..VU_BASE + N {
+            ports.push(get_peer_port(&url, vu, false).await);
+        }
+        let distinct: std::collections::HashSet<_> = ports.iter().collect();
+        assert!(
+            distinct.len() < N as usize,
+            "shard pool reuses sockets across VUs, got {} distinct for {N} VUs",
+            distinct.len()
+        );
+    }
+
+    /// Dedicated mode composes with source_ips: the client is keyed
+    /// (vu_id, source address), so both pinnings hold at once. Gated like
+    /// the other loopback test — needs 127.0.0.2/.3 assigned.
+    #[tokio::test]
+    async fn dedicated_pool_composes_with_source_ips() {
+        if std::env::var("PERFSCALE_TEST_SOURCE_IPS").is_err() {
+            eprintln!("skipping: set PERFSCALE_TEST_SOURCE_IPS=1 to run");
+            return;
+        }
+        for ip in ["127.0.0.2", "127.0.0.3"] {
+            if std::net::TcpListener::bind((ip, 0)).is_err() {
+                eprintln!("skipping: {ip} is not assigned on this host");
+                return;
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let peers = Arc::new(Mutex::new(Vec::<IpAddr>::new()));
+        let peers_task = Arc::clone(&peers);
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut sock, peer) = listener.accept().await.unwrap();
+                peers_task.lock().unwrap().push(peer.ip());
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+            }
+        });
+
+        for vu_id in [7_001u64, 7_002] {
+            let mut ctx = Context::new();
+            ctx.vu_id = vu_id;
+            let out = http_action(
+                &json!({
+                    "method": "GET",
+                    "url": format!("http://127.0.0.1:{port}/"),
+                    "pool": "dedicated",
+                    "source_ips": ["127.0.0.2", "127.0.0.3"],
+                }),
+                "fetch",
+                &ctx,
+            )
+            .await;
+            assert!(out.success, "vu {vu_id}: {:?}", out.logs);
+        }
+        server.await.unwrap();
+
+        let peers = peers.lock().unwrap();
+        assert_eq!(peers[0], IpAddr::from([127, 0, 0, 2]));
+        assert_eq!(peers[1], IpAddr::from([127, 0, 0, 3]));
+        drop(peers);
+        drain_dedicated_vu_clients(7_001);
+        drain_dedicated_vu_clients(7_002);
+    }
+
+    /// Scale smoke for the "thousands of VU clients" claim — gated behind
+    /// PERFSCALE_TEST_DEDICATED_SCALE=<n> because it allocates n clients.
+    /// No sockets are opened: this measures the client bookkeeping itself
+    /// (a reqwest::Client is an Arc handle; n entries must cost megabytes,
+    /// not gigabytes, and build fast).
+    #[tokio::test]
+    async fn dedicated_registry_scales_to_thousands_of_vus() {
+        let Ok(n) = std::env::var("PERFSCALE_TEST_DEDICATED_SCALE") else {
+            eprintln!("skipping: set PERFSCALE_TEST_DEDICATED_SCALE=5000 to run");
+            return;
+        };
+        let n: u64 = n.parse().unwrap();
+        let base = dedicated_registry_len();
+        let t0 = Instant::now();
+        for vu in 10_000..10_000 + n {
+            let _ = dedicated_client(vu, false, None);
+        }
+        let elapsed = t0.elapsed();
+        assert_eq!(
+            dedicated_registry_len(),
+            base + n as usize,
+            "one registry entry per VU"
+        );
+        eprintln!(
+            "dedicated_registry: {n} clients built in {elapsed:?} ({:.0} clients/s)",
+            n as f64 / elapsed.as_secs_f64()
+        );
+        for vu in 10_000..10_000 + n {
+            drain_dedicated_vu_clients(vu);
+        }
+        assert_eq!(dedicated_registry_len(), base);
     }
 
     // -----------------------------------------------------------------

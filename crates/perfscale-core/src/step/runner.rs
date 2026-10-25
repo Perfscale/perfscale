@@ -1208,6 +1208,9 @@ fn spawn_vu(
         // VU exit: drop `scope: vu` DB connections (and anything else still
         // parked — the per-iteration drain normally left nothing).
         ctx.resources.drain_vu();
+        // Drop `pool: dedicated` HTTP clients — the VU's standing
+        // keep-alive connections close here, not at iteration end.
+        crate::step::http::drain_dedicated_vu_clients(vu_id as u64);
         if let Some(active) = &active_vus {
             active.fetch_sub(1, Ordering::SeqCst);
         }
@@ -1279,6 +1282,7 @@ fn spawn_arrival_worker(
         // Worker exit (arrival workers are VUs): drop `scope: vu` DB
         // connections parked past the per-iteration drains.
         ctx.resources.drain_vu();
+        crate::step::http::drain_dedicated_vu_clients(vu_id as u64);
         if let Some(active) = &active_vus {
             active.fetch_sub(1, Ordering::SeqCst);
         }
@@ -2346,6 +2350,48 @@ mod tests {
         assert!(lines.last().unwrap().text.starts_with("Done"));
         assert!(lines.iter().any(|l| l.text.starts_with("vus")));
         assert!(lines.iter().any(|l| l.text.starts_with("iterations")));
+    }
+
+    #[tokio::test]
+    async fn run_steps_drains_dedicated_http_clients_at_vu_exit() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ok"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let steps = vec![Step {
+            name: Some("hit".into()),
+            action: "std/http@v1".into(),
+            with: Some(json!({
+                "url": format!("{}/ok", server.uri()),
+                "pool": "dedicated",
+            })),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+        }];
+        let config = RunConfig {
+            vus: 4,
+            duration: "200ms".into(),
+            ..Default::default()
+        };
+        let lines = run_and_collect(steps, config, false).await;
+        assert!(
+            lines.iter().any(|l| l.text.starts_with("http_reqs")),
+            "run produced HTTP metrics"
+        );
+        // Fixed runs number VUs 1..=vus; every one of their dedicated
+        // clients must be gone after VU exit (other tests may hold unrelated
+        // entries in the process-global registry, so check per VU id).
+        for vu in 1..=4u64 {
+            assert!(
+                !crate::step::http::dedicated_registry_has_vu(vu),
+                "vu {vu}'s dedicated client was drained at VU exit"
+            );
+        }
     }
 
     #[tokio::test]

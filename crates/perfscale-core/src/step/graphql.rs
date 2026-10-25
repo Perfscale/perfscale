@@ -172,6 +172,14 @@ async fn parse_params(
     }
 
     let pool = match ClientPool::from_params(params) {
+        // `dedicated` is an std/http@v1 mode — graphql steps go through the
+        // shard/global pools only; reject it instead of silently degrading.
+        Ok(ClientPool::Dedicated) => {
+            return Err(err(
+                step_name,
+                "invalid pool 'dedicated' for graphql — expected per-vu or shared",
+            ))
+        }
         Ok(p) => p,
         Err(msg) => return Err(err(step_name, &msg)),
     };
