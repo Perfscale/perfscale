@@ -20,7 +20,9 @@
 //! `std/http@v1`; the shard constructors stay crate-private — downstream
 //! code selects a client through [`client`] and [`Context::http_client_shard`].
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use serde_json::{json, Value};
@@ -44,7 +46,11 @@ use super::ws::{bool_param, u64_param};
 /// cadence doesn't care about keep-alive anyway); 64 idle per host per
 /// shard — enough for a burst within one shard, far below VU×host fan-out.
 fn build_client(insecure: bool) -> reqwest::Client {
-    reqwest::Client::builder()
+    build_client_inner(insecure, None)
+}
+
+fn build_client_inner(insecure: bool, local_address: Option<IpAddr>) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
         .pool_max_idle_per_host(64)
         .pool_idle_timeout(Duration::from_secs(60))
         // codeql[rust/disabled-certificate-check] — deliberate feature of a
@@ -52,9 +58,11 @@ fn build_client(insecure: bool) -> reqwest::Client {
         // (testing targets with self-signed certs, like k6's
         // insecureSkipTLSVerify). Insecure clients live in a separate shard
         // set so verified requests never share a pool with them.
-        .danger_accept_invalid_certs(insecure)
-        .build()
-        .expect("client construction cannot fail")
+        .danger_accept_invalid_certs(insecure);
+    if let Some(ip) = local_address {
+        builder = builder.local_address(ip);
+    }
+    builder.build().expect("client construction cannot fail")
 }
 
 /// HTTP client shards: a fixed set of `reqwest::Client`s, one per available
@@ -141,6 +149,247 @@ pub fn client(pool: ClientPool, insecure: bool, shard: usize) -> &'static reqwes
         (ClientPool::Shared, true) => {
             static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
             CLIENT.get_or_init(|| build_client(true))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Source IPs — multi-source-IP load generation (`source_ips` parameter)
+// ---------------------------------------------------------------------------
+//
+// One (src ip, dst ip, dst port) tuple has ~28k ephemeral source ports, so a
+// single machine caps out below ~64k concurrent connections per target
+// endpoint. Binding sockets to several local addresses multiplies that
+// budget. `std/http@v1` accepts `source_ips: [<ip-or-cidr>, ...]`; each CIDR
+// expands to every address of the prefix (capped, see [`MAX_SOURCE_IPS`]).
+// VU i is pinned to `ips[(i - 1) % len]` — stable across iterations, which
+// is what keeps keep-alive meaningful: a VU reuses the same (shard, source
+// IP) client and its warm pool.
+
+/// Maximum number of source addresses one step's `source_ips` may expand to.
+/// Beyond this the per-step connection bookkeeping (one lazily-built client
+/// per used (shard, address) pair) stops paying for itself — narrow the
+/// prefix instead.
+pub const MAX_SOURCE_IPS: usize = 4096;
+
+/// Shard key used for `pool: shared` source-IP clients — pool mode `shared`
+/// ignores the VU shard, so the address alone keys the client.
+const SHARED_POOL_SHARD: usize = usize::MAX;
+
+/// The source address a VU is pinned to from an expanded `source_ips` list:
+/// `ips[(vu_id - 1) % len]` (vu_id is 1-based; 0 in hand-built contexts pins
+/// the first address). Stable per VU so keep-alive pools stay warm.
+pub fn source_ip_for_vu(ips: &[IpAddr], vu_id: u64) -> IpAddr {
+    ips[(vu_id.saturating_sub(1) as usize) % ips.len()]
+}
+
+/// Expand one `source_ips` entry — a single IP (`"10.0.0.9"`, `"fd00::5"`)
+/// or a CIDR prefix (`"10.0.0.0/28"`, `"fd00::/120"`) — appending every
+/// address into `out`. The network/broadcast addresses of a prefix are
+/// included: which addresses are actually bindable is a host question, and a
+/// wrong one fails loudly at connect time. Errors name the entry.
+fn expand_source_ip_entry(entry: &str, out: &mut Vec<IpAddr>) -> Result<(), String> {
+    let entry = entry.trim();
+    let Some((base, prefix)) = entry.split_once('/') else {
+        return entry.parse::<IpAddr>().map(|ip| out.push(ip)).map_err(|_| {
+            format!("invalid source_ips entry '{entry}' — expected an IP address or CIDR prefix")
+        });
+    };
+    let base: IpAddr = base.trim().parse().map_err(|_| {
+        format!("invalid source_ips entry '{entry}' — '{base}' is not an IP address")
+    })?;
+    let prefix: u8 = prefix.trim().parse().map_err(|_| {
+        format!("invalid source_ips entry '{entry}' — the prefix length after '/' must be a number")
+    })?;
+    let (base_bits, width) = match base {
+        IpAddr::V4(v4) => (u32::from(v4) as u128, 32),
+        IpAddr::V6(v6) => (u128::from(v6), 128),
+    };
+    if prefix > width {
+        return Err(format!(
+            "invalid source_ips entry '{entry}' — prefix length /{prefix} exceeds the address size (/{width})"
+        ));
+    }
+    let host_bits = width - prefix;
+    // A /0 spans 2^128 IPv6 addresses — never materialize that; report the
+    // exponent instead of shifting by the full width.
+    let count = if host_bits >= 13 {
+        None
+    } else {
+        Some(1u128 << host_bits)
+    };
+    let count = match count {
+        Some(count) if count <= MAX_SOURCE_IPS as u128 => count,
+        Some(count) => {
+            return Err(format!(
+                "source_ips entry '{entry}' expands to {count} addresses, over the {MAX_SOURCE_IPS} cap — narrow the prefix (e.g. /28, /120)"
+            ));
+        }
+        None => {
+            return Err(format!(
+                "source_ips entry '{entry}' expands to 2^{host_bits} addresses, over the {MAX_SOURCE_IPS} cap — narrow the prefix (e.g. /28, /120)"
+            ));
+        }
+    };
+    let mask = if host_bits == 0 {
+        u128::MAX
+    } else {
+        u128::MAX << host_bits
+    };
+    let network = base_bits & mask;
+    for i in 0..count {
+        let bits = network + i;
+        match base {
+            IpAddr::V4(_) => out.push(IpAddr::V4((bits as u32).into())),
+            IpAddr::V6(_) => out.push(IpAddr::V6(bits.into())),
+        }
+    }
+    Ok(())
+}
+
+/// Parse and expand the `source_ips` step parameter into the address list:
+/// an array of strings (a single string is accepted as a one-element list),
+/// each a bare IP or a CIDR prefix. The total expanded size is capped at
+/// [`MAX_SOURCE_IPS`]. Errors are actionable (name the entry, suggest the
+/// fix) — lint runs this same parse so a bad list fails before the run.
+pub fn parse_source_ips(value: &Value) -> Result<Vec<IpAddr>, String> {
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<&str> = match value {
+        Value::String(s) => vec![s.as_str()],
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                match item.as_str() {
+                    Some(s) => out.push(s),
+                    None => {
+                        return Err(format!(
+                            "source_ips entry #{i} must be a string (an IP address or CIDR prefix)"
+                        ))
+                    }
+                }
+            }
+            out
+        }
+        _ => {
+            return Err(
+                "source_ips must be an array of strings (IP addresses or CIDR prefixes)".into(),
+            )
+        }
+    };
+    if entries.is_empty() {
+        return Err(
+            "source_ips must not be empty — drop the key or list at least one address".into(),
+        );
+    }
+    let mut out = Vec::new();
+    for entry in entries {
+        expand_source_ip_entry(entry, &mut out)?;
+        if out.len() > MAX_SOURCE_IPS {
+            return Err(format!(
+                "source_ips expands to over {MAX_SOURCE_IPS} addresses — narrow the prefixes"
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// Resolve the step's `source_ips` parameter, caching the expanded list per
+/// distinct parameter value — a hot step executes per iteration and
+/// re-expanding a CIDR each time would be pure overhead. Errors are not
+/// cached (they fail the step before any network call, and lint catches them
+/// first anyway).
+fn resolve_source_ips(value: &Value) -> Result<Option<Arc<Vec<IpAddr>>>, String> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<Vec<IpAddr>>>>> = OnceLock::new();
+    let key = value.to_string();
+    if let Some(hit) = CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .get(&key)
+    {
+        return Ok(Some(Arc::clone(hit)));
+    }
+    let ips = Arc::new(parse_source_ips(value)?);
+    CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .insert(key, Arc::clone(&ips));
+    Ok(Some(ips))
+}
+
+/// Log-once announce: the first execution that uses a given expanded list
+/// adds a `source_ips: N address(es) active …` line to its step output, so
+/// the run log records how many source addresses are in play without every
+/// iteration repeating it.
+fn announce_source_ips(key: &str, ips: &[IpAddr]) -> Option<String> {
+    static ANNOUNCED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let mut seen = ANNOUNCED
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap();
+    if !seen.insert(key.to_string()) {
+        return None;
+    }
+    Some(format!(
+        "source_ips: {} address(es) active ({} … {}), VU i pinned to address[(i-1) % {}]",
+        ips.len(),
+        ips[0],
+        ips[ips.len() - 1],
+        ips.len()
+    ))
+}
+
+/// Key of the lazily-built source-IP client set: (shard, insecure, address).
+type SourceClientKey = (usize, bool, IpAddr);
+
+/// A client bound to a local source address, built lazily on first use per
+/// (shard, insecure, address) and leaked for the process lifetime — the
+/// static-shard pattern of [`shared_client`] cannot apply to an unbounded
+/// key set. Laziness keeps memory honest: a 4096-address list does not mean
+/// 4096 clients, because a VU only ever touches its own (shard, address)
+/// pair, so a run builds at most min(VUs, shards × addresses) clients.
+fn source_client(shard: usize, insecure: bool, ip: IpAddr) -> &'static reqwest::Client {
+    static CLIENTS: OnceLock<Mutex<HashMap<SourceClientKey, &'static reqwest::Client>>> =
+        OnceLock::new();
+    let key = (shard, insecure, ip);
+    let mut map = CLIENTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    if let Some(client) = map.get(&key) {
+        return client;
+    }
+    let client: &'static reqwest::Client =
+        Box::leak(Box::new(build_client_inner(insecure, Some(ip))));
+    map.insert(key, client);
+    client
+}
+
+/// The HTTP client for a step execution, optionally bound to a source
+/// address. `None` selects exactly the pre-`source_ips` behaviour
+/// ([`client`]); with an address the client is keyed by (pool mode, shard,
+/// insecure, address) — reqwest pools connections per client, so per-address
+/// clients give per-address pools for free.
+pub fn client_with_source(
+    pool: ClientPool,
+    insecure: bool,
+    shard: usize,
+    source_ip: Option<IpAddr>,
+) -> &'static reqwest::Client {
+    match source_ip {
+        None => client(pool, insecure, shard),
+        Some(ip) => {
+            let shard = match pool {
+                ClientPool::PerVu => shard % client_shard_count(),
+                ClientPool::Shared => SHARED_POOL_SHARD,
+            };
+            source_client(shard, insecure, ip)
         }
     }
 }
@@ -421,6 +670,15 @@ pub fn error_chain(e: &dyn std::error::Error) -> String {
 //               targets like `perfscale serve --tls`), default false
 //   pool      – optional "per-vu" (default) or "shared" (one process-global
 //               client for every VU)
+//   source_ips – optional string or array of strings: local source addresses
+//               to bind outgoing connections to. Entries are bare IPs
+//               ("10.0.0.9", "fd00::5") or CIDR prefixes ("10.0.0.0/28",
+//               "fd00::/120") expanded to every address of the prefix
+//               (≤ 4096 total). VU i is pinned to ips[(i-1) % n] — stable
+//               per VU so the (shard, source IP) client's keep-alive pool
+//               stays warm. Multiplies the ~64k-concurrent-connections-per-
+//               endpoint budget of a single source address. No `${…}`
+//               expansion: the list is validated at lint and cached.
 //
 // Output:
 //   { "status": <u16>, "body": <string>, "duration_ms": <f64> }
@@ -440,6 +698,16 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         Ok(p) => p,
         Err(msg) => return err(step_name, &msg),
     };
+    let source_ips = match resolve_source_ips(&params["source_ips"]) {
+        Ok(ips) => ips,
+        Err(msg) => return err(step_name, &msg),
+    };
+    let source_ip = source_ips
+        .as_ref()
+        .map(|ips| source_ip_for_vu(ips, ctx.vu_id));
+    let announce = source_ips
+        .as_ref()
+        .and_then(|ips| announce_source_ips(&params["source_ips"].to_string(), ips));
 
     // `${…}` generator tokens expand per execution — one request is one
     // message: the URL, header values, and body share one generator context
@@ -456,7 +724,7 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         Err(_) => return err(step_name, &format!("invalid HTTP method '{method}'")),
     };
 
-    let client = client(pool, insecure, ctx.http_client_shard);
+    let client = client_with_source(pool, insecure, ctx.http_client_shard, source_ip);
     let mut req = client
         .request(reqwest_method, &url)
         .timeout(Duration::from_millis(timeout_ms));
@@ -502,7 +770,7 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         }
     }
 
-    match timed_exchange(req, BodyKind::Auto, ctx.max_response_body_bytes).await {
+    let mut out = match timed_exchange(req, BodyKind::Auto, ctx.max_response_body_bytes).await {
         Ok(out) => {
             let failed = out.status >= 400;
             let mut value = json!({
@@ -530,7 +798,11 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
             }
         }
         Err((duration_ms, e)) => exchange_error(step_name, &method, &url, &e, duration_ms),
+    };
+    if let Some(line) = announce {
+        out.logs.insert(0, (LogTag::Out, line));
     }
+    out
 }
 
 /// Map an exchange failure to the action output: transport errors report
@@ -861,6 +1133,176 @@ mod tests {
         ] {
             assert!(!is_textual_content_type(ct), "{ct} should be binary");
         }
+    }
+
+    // -----------------------------------------------------------------
+    // source_ips parsing / validation
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn source_ips_absent_and_single_ip() {
+        assert_eq!(
+            parse_source_ips(&Value::Null).unwrap(),
+            Vec::<IpAddr>::new()
+        );
+        let ips = parse_source_ips(&json!(["127.0.0.2", "fd00::5"])).unwrap();
+        assert_eq!(
+            ips,
+            vec![
+                IpAddr::from([127, 0, 0, 2]),
+                "fd00::5".parse::<IpAddr>().unwrap()
+            ]
+        );
+        // A bare string is a one-element list.
+        assert_eq!(
+            parse_source_ips(&json!("10.0.0.9")).unwrap(),
+            vec![IpAddr::from([10, 0, 0, 9])]
+        );
+    }
+
+    #[test]
+    fn source_ips_cidr_expands_every_address_v4_and_v6() {
+        let v4 = parse_source_ips(&json!(["192.168.0.0/30"])).unwrap();
+        assert_eq!(
+            v4,
+            (0..=3)
+                .map(|i| IpAddr::from([192, 168, 0, i]))
+                .collect::<Vec<_>>()
+        );
+        let v6 = parse_source_ips(&json!(["fd00::/126"])).unwrap();
+        assert_eq!(v6.len(), 4);
+        assert_eq!(v6[0], "fd00::".parse::<IpAddr>().unwrap());
+        assert_eq!(v6[3], "fd00::3".parse::<IpAddr>().unwrap());
+        // A /32 is exactly one address.
+        assert_eq!(
+            parse_source_ips(&json!(["10.1.2.3/32"])).unwrap(),
+            vec![IpAddr::from([10, 1, 2, 3])]
+        );
+    }
+
+    #[test]
+    fn source_ips_rejects_bad_entries_with_actionable_errors() {
+        let e = parse_source_ips(&json!(["not-an-ip"])).unwrap_err();
+        assert!(e.contains("not-an-ip"), "{e}");
+        assert!(e.contains("IP address or CIDR"), "{e}");
+
+        let e = parse_source_ips(&json!(["10.0.0.0/33"])).unwrap_err();
+        assert!(e.contains("/33"), "{e}");
+
+        let e = parse_source_ips(&json!(["fd00::/129"])).unwrap_err();
+        assert!(e.contains("/129"), "{e}");
+
+        let e = parse_source_ips(&json!(["10.0.0.0/x"])).unwrap_err();
+        assert!(e.contains("prefix length"), "{e}");
+
+        let e = parse_source_ips(&json!([])).unwrap_err();
+        assert!(e.contains("must not be empty"), "{e}");
+
+        let e = parse_source_ips(&json!(42)).unwrap_err();
+        assert!(e.contains("array of strings"), "{e}");
+
+        let e = parse_source_ips(&json!([42])).unwrap_err();
+        assert!(e.contains("must be a string"), "{e}");
+    }
+
+    #[test]
+    fn source_ips_cidr_over_cap_is_rejected_with_narrowing_advice() {
+        let e = parse_source_ips(&json!(["10.0.0.0/8"])).unwrap_err();
+        assert!(e.contains("4096"), "{e}");
+        assert!(e.contains("narrow"), "{e}");
+        // IPv6 /0 must never try to materialize.
+        let e = parse_source_ips(&json!(["fd00::/64"])).unwrap_err();
+        assert!(e.contains("4096"), "{e}");
+        // ...and a list whose combined expansion overflows is rejected too.
+        let e = parse_source_ips(&json!(["10.0.0.0/20", "10.0.16.0/20"])).unwrap_err();
+        assert!(e.contains("4096"), "{e}");
+    }
+
+    #[test]
+    fn source_ip_pinning_is_stable_per_vu() {
+        let ips: Vec<IpAddr> = vec![
+            IpAddr::from([10, 0, 0, 1]),
+            IpAddr::from([10, 0, 0, 2]),
+            IpAddr::from([10, 0, 0, 3]),
+        ];
+        assert_eq!(source_ip_for_vu(&ips, 1), ips[0]);
+        assert_eq!(source_ip_for_vu(&ips, 3), ips[2]);
+        assert_eq!(source_ip_for_vu(&ips, 4), ips[0], "wraps around");
+        assert_eq!(source_ip_for_vu(&ips, 0), ips[0], "hand-built contexts");
+    }
+
+    // -----------------------------------------------------------------
+    // source_ips integration — two loopback sources, distinct peer addrs
+    // -----------------------------------------------------------------
+    //
+    // Gated behind PERFSCALE_TEST_SOURCE_IPS=1 plus a bind preflight: Linux
+    // routes all of 127/8, but macOS only answers 127.0.0.1 unless the
+    // addresses are aliased onto lo0 first
+    // (`sudo ifconfig lo0 alias 127.0.0.2 up` etc.), so a machine without
+    // the aliases skips instead of failing.
+
+    #[tokio::test]
+    async fn source_ips_distinct_vus_use_distinct_loopback_sources() {
+        if std::env::var("PERFSCALE_TEST_SOURCE_IPS").is_err() {
+            eprintln!("skipping: set PERFSCALE_TEST_SOURCE_IPS=1 to run");
+            return;
+        }
+        for ip in ["127.0.0.2", "127.0.0.3"] {
+            if std::net::TcpListener::bind((ip, 0)).is_err() {
+                eprintln!("skipping: {ip} is not assigned on this host");
+                return;
+            }
+        }
+
+        // Minimal HTTP echo: accept, record the peer address, respond 200.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let peers = Arc::new(Mutex::new(Vec::<IpAddr>::new()));
+        let peers_task = Arc::clone(&peers);
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut sock, peer) = listener.accept().await.unwrap();
+                peers_task.lock().unwrap().push(peer.ip());
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+            }
+        });
+
+        for vu_id in [1u64, 2] {
+            let mut ctx = Context::new();
+            ctx.vu_id = vu_id;
+            let out = http_action(
+                &json!({
+                    "method": "GET",
+                    "url": format!("http://127.0.0.1:{port}/"),
+                    "source_ips": ["127.0.0.2", "127.0.0.3"],
+                }),
+                "fetch",
+                &ctx,
+            )
+            .await;
+            assert!(out.success, "vu {vu_id}: {:?}", out.logs);
+        }
+        server.await.unwrap();
+
+        let peers = peers.lock().unwrap();
+        assert_eq!(peers[0], IpAddr::from([127, 0, 0, 2]), "vu 1 → first IP");
+        assert_eq!(peers[1], IpAddr::from([127, 0, 0, 3]), "vu 2 → second IP");
+    }
+
+    #[test]
+    fn source_ips_announcement_is_emitted_once_per_list() {
+        let ips = vec![IpAddr::from([10, 9, 0, 1])];
+        let key = "announce-test-10.9.0.1";
+        let first = announce_source_ips(key, &ips);
+        let second = announce_source_ips(key, &ips);
+        assert!(first.is_some(), "first use announces");
+        assert!(first.unwrap().contains("1 address(es) active"));
+        assert!(second.is_none(), "repeat use stays quiet");
     }
 
     // -----------------------------------------------------------------

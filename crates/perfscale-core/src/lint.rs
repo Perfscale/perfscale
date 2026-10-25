@@ -396,7 +396,7 @@ const CHECK_FIELDS: [&str; 7] = [
     "message_matches",
     "messages_count_gte",
 ];
-const HTTP_WITH_FIELDS: [&str; 8] = [
+const HTTP_WITH_FIELDS: [&str; 9] = [
     "method",
     "url",
     "headers",
@@ -405,6 +405,7 @@ const HTTP_WITH_FIELDS: [&str; 8] = [
     "insecure",
     "multipart",
     "pool",
+    "source_ips",
 ];
 const GRAPHQL_WITH_FIELDS: [&str; 12] = [
     "url",
@@ -730,6 +731,16 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
     // std/graphql@v1 gets the same treatment: a missing url/query or a
     // malformed GraphQL document otherwise fails only mid-run.
     lint_graphql_with(
+        action,
+        map.get("with").and_then(|v| v.as_object()),
+        loc,
+        issues,
+    );
+
+    // std/http@v1's `source_ips` list: every entry must parse and the
+    // expansion must stay under the cap — a typo'd address otherwise fails
+    // only at the first request.
+    lint_http_with(
         action,
         map.get("with").and_then(|v| v.as_object()),
         loc,
@@ -1432,6 +1443,38 @@ fn lint_db_with(
     }
 }
 
+/// Value validation for `std/http@v1`'s `source_ips` list: every entry must
+/// parse and the expansion must stay under the cap — a typo'd address
+/// otherwise fails only at the first request. Interpolated `${{ … }}` values
+/// resolve at runtime and skip the check.
+fn lint_http_with(
+    action: &str,
+    with: Option<&serde_json::Map<String, Value>>,
+    loc: &str,
+    issues: &mut Vec<LintIssue>,
+) {
+    if !matches!(action, "std/http@v1" | "http") {
+        return;
+    }
+    let Some(value) = with.and_then(|w| w.get("source_ips")) else {
+        return;
+    };
+    // A template token resolves at runtime — lint only checks literal lists.
+    if value.as_str().is_some_and(|s| s.contains("${")) {
+        return;
+    }
+    if let Err(msg) = crate::step::http::parse_source_ips(value) {
+        issues.push(LintIssue {
+            location: format!("{loc}/with/source_ips"),
+            problem: msg,
+            suggestion: Some(
+                "e.g. `source_ips: [\"10.0.0.2\", \"10.0.0.16/28\"]` — bare IPs or CIDR prefixes"
+                    .into(),
+            ),
+        });
+    }
+}
+
 /// Required-`with`-field checks for `std/graphql@v1`, plus offline validation
 /// of literal values: the query/document syntax (via `graphql-parser`), the
 /// `method` and `pool` enums. Interpolated `${{ … }}` values resolve at
@@ -1572,6 +1615,36 @@ steps:
     outputs: resp
 "#;
         assert_eq!(lint(yaml, DocKind::Test), vec![]);
+    }
+
+    #[test]
+    fn http_source_ips_lints_values() {
+        // A valid list (bare IPs + CIDRs, under the cap) lints clean.
+        let yaml = "steps:\n  - use: std/http@v1\n    with:\n      url: http://x\n      source_ips: [\"10.0.0.2\", \"10.0.0.16/28\", \"fd00::/126\"]\n";
+        assert_eq!(lint(yaml, DocKind::Test), vec![]);
+
+        // A typo'd entry fails at lint, at the field location.
+        let yaml = "steps:\n  - use: std/http@v1\n    with:\n      url: http://x\n      source_ips: [\"10.0.0.999\"]\n";
+        let issues = lint(yaml, DocKind::Test);
+        let issue = issues
+            .iter()
+            .find(|i| i.location == "/steps/0/with/source_ips")
+            .unwrap();
+        assert!(issue.problem.contains("10.0.0.999"), "{issue:?}");
+
+        // Over-cap CIDR fails with the narrowing advice.
+        let yaml = "steps:\n  - use: std/http@v1\n    with:\n      url: http://x\n      source_ips: [\"10.0.0.0/8\"]\n";
+        let issues = lint(yaml, DocKind::Test);
+        assert!(issues
+            .iter()
+            .any(|i| i.problem.contains("4096") && i.problem.contains("narrow")));
+
+        // An unknown typo near the field still gets the did-you-mean pass.
+        let yaml = "steps:\n  - use: std/http@v1\n    with:\n      url: http://x\n      source_ip: [\"10.0.0.2\"]\n";
+        let issues = lint(yaml, DocKind::Test);
+        assert!(issues
+            .iter()
+            .any(|i| i.problem.contains("unknown field 'source_ip'")));
     }
 
     #[test]
