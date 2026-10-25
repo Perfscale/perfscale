@@ -61,6 +61,7 @@ value** in a later step's `with:` or `check:` can then reference it:
 | `${{ __last__ }}` / `${{ __last__.field }}` | The immediately preceding step's output — always available, no `outputs:` needed |
 | `${{ config.<name>.<field> }}` | Output of a config-file `before:` setup step (see [Config](#config--c-configyaml)) |
 | `${{ vars.<key> }}` | A static value from the config file's `variables:` block |
+| `${{ inputs.<name> }}` | A resolved typed input from the config file's `inputs:` block (see [Typed inputs](#typed-inputs-inputs)) |
 | `${{ env.NAME }}` | Process environment variable `NAME` — for secrets (`api_key`, tokens, DSNs) that must not live in the YAML |
 
 For `std/http@v1` the stored output is
@@ -198,6 +199,42 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `max_response_body_bytes` | `16777216` (16 MiB) | Response body cap for `std/http@v1` / `std/graphql@v1`. A larger response fails the step with a clear error (never silently truncated — a truncated body could pass a `check:`). Native engine only |
 | `libraries` | — | Value-generator libraries for `${alias.fn(...)}` tokens — see [Libraries](#libraries-libraries) |
 | `import` | — | Base document to inherit from — see [Composing documents](#composing-documents-import) |
+
+### Typed inputs (`inputs:`)
+
+A config can declare typed run inputs (issue #11); steps reference them via
+`${{ inputs.<name> }}` everywhere `${{ ... }}` interpolation works, and the
+CLI overrides them at launch time:
+
+```yaml
+inputs:
+  users: number                                    # short form — required, no default
+  host: { type: string, default: localhost }
+  verbose: { type: bool, default: false }          # coercion: 0/1/false/true
+  env: { type: choice, options: [staging, prod], default: staging }
+  pacing_ms: { type: number, min: 1, max: 10000 }  # min/max bounds (number only)
+```
+
+```sh
+perfscale run -f test.yaml -c config.yaml -i users=10 -i env=prod
+perfscale run -f test.yaml -c config.yaml -i users=10,env=prod   # comma-separated form
+perfscale run -f test.yaml -c config.yaml -e staging.env          # KEY=VALUE env file
+perfscale lint config.yaml -i users=10   # prints the effective resolved inputs
+```
+
+Rules:
+
+- **Precedence** (highest wins): `-i key=value` CLI override > `-e file.env`
+  env file > the declaration's `default:`. An env file may carry unrelated
+  variables — only keys naming a declared input are consumed.
+- **Required**: a declared input with no `default:` and no override is a
+  hard error before the run starts. Unknown `-i` keys, type mismatches,
+  out-of-range numbers, and invalid `choice` values are hard errors too —
+  at lint and at run start.
+- **Comma in a value**: escape it as `\,` (a literal backslash is `\\`).
+- Inputs are fixed for the whole run. Typed config scalars (`vus:`,
+  `duration:`) stay statically typed — input-driven load shapes are a
+  follow-up; today inputs interpolate in step `with:`/`check:` payloads.
 
 ### GPU metrics (`gpu:`)
 
@@ -563,6 +600,34 @@ WASM library rules:
 | `date(a, b)` | Random date between `YYYY-MM-DD` a and b inclusive, `YYYY-MM-DD` out |
 | `timestamp(a, b)` | Random unix-ms timestamp in `[a, b]` |
 | `datetime(a, b)` | Random RFC 3339 datetime between dates a and b (whole end day included) |
+
+#### Config extensions (library-owned top-level keys, issue #10)
+
+A WASM library built against `perfscale:library@0.3.0` may export
+`config-schema`, declaring one top-level config key it owns plus a JSON
+Schema for its value:
+
+```yaml
+libraries:
+  - use: ./configlib.wasm
+    capabilities: []
+configlib:                    # claimed by the library's config-schema
+  endpoint: https://api.test  # validated against the library's schema
+```
+
+At lint and run start the engine loads the declared libraries, registers
+their claimed keys, and validates each block against the library's schema —
+fail-fast. The validated block reaches the guest in the run settings'
+`extensions` object (`ctx.settings.extensions["configlib"]` in the TS SDK).
+Every top-level key no loaded library claims is still a hard error (the
+unknown-key typo guard lives here), and two libraries claiming the same key
+is a hard error. The TS SDK declares the block via
+`defineLibrary({ configSchema: { key, schema }, ... })`;
+`perfscale-library-build` picks the `perfscale-library-config` world
+automatically when `configSchema` is present.
+
+Follow-ups (not in v1): interpolation inside extension blocks, schema
+evolution across `perfscale.lock` pins.
 
 ### Composing documents: `import`
 

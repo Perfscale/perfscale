@@ -281,6 +281,13 @@ pub trait LibraryProvider: Send + Sync {
     /// Exported functions, for docs and lint-time token validation.
     fn functions(&self) -> &[FunctionInfo];
 
+    /// The config extension this library declares (issue #10): the claimed
+    /// top-level config key plus its JSON Schema. `None` for libraries
+    /// without a `config-schema` export (all built-ins, legacy components).
+    fn config_schema(&self) -> Option<(&'static str, &serde_json::Value)> {
+        None
+    }
+
     /// Create one instance with its derived seed and optional `with:` config.
     fn instantiate(
         &self,
@@ -617,7 +624,71 @@ pub fn validate_libraries(
             rules,
         });
     }
+
+    // Config-extension keys (issue #10): the v1 policy is fail-fast — two
+    // libraries claiming the same top-level config key is a hard error, as
+    // is a library claiming a key the engine owns (the probe already rejects
+    // engine-key collisions; the check here covers non-WASM providers).
+    let mut claimed: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for r in &resolved {
+        if let Some((key, _)) = r.provider.config_schema() {
+            if crate::schema::known_config_keys().contains(key) {
+                return Err(format!(
+                    "library '{}' claims config key '{key}', which is a built-in config key",
+                    r.provider.id()
+                ));
+            }
+            if let Some(other) = claimed.insert(key, r.provider.id()) {
+                return Err(format!(
+                    "config key '{key}' is claimed by both '{other}' and '{}' — config extension keys must be unique per run",
+                    r.provider.id()
+                ));
+            }
+        }
+    }
     Ok(resolved)
+}
+
+/// Validate the config document's extension blocks (the unknown top-level
+/// keys collected into `ConfigFile::extensions`, issue #10) against the
+/// loaded libraries: every key must be claimed by exactly one library, and
+/// its value must satisfy that library's JSON Schema. Fail-fast — called at
+/// lint and at run start. The returned map holds the validated blocks keyed
+/// by the claimed config key (for the run settings' `extensions` object).
+pub fn validate_config_extensions(
+    extensions: &serde_json::Map<String, serde_json::Value>,
+    libraries: &[ResolvedLibrary],
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let mut validated = serde_json::Map::new();
+    for (key, value) in extensions {
+        let Some((_, schema)) = libraries
+            .iter()
+            .find_map(|r| r.provider.config_schema().filter(|(k, _)| *k == key))
+        else {
+            return Err(format!(
+                "unknown config key '{key}' — no loaded library claims it (known keys: {}; extension keys come from a library's config-schema export)",
+                crate::schema::known_config_keys()
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        };
+        let compiled = jsonschema::JSONSchema::compile(schema).map_err(|e| {
+            format!("config key '{key}': the library's schema does not compile: {e}")
+        })?;
+        if let Err(errors) = compiled.validate(value) {
+            let details = errors
+                .map(|e| format!("{e}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(format!(
+                "config key '{key}' does not match the library's schema: {details}"
+            ));
+        }
+        validated.insert(key.clone(), value.clone());
+    }
+    Ok(validated)
 }
 
 /// Parse `@std/name@vN` → the name part. Any other shape (unknown namespace,

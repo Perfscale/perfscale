@@ -171,6 +171,21 @@ pub struct ConfigFile {
     #[serde(default)]
     pub variables: serde_json::Map<String, serde_json::Value>,
 
+    /// Typed run inputs (issue #11): `${{ inputs.<name> }}` interpolation
+    /// targets with `-i key=value` CLI overrides. See [`crate::inputs`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inputs: Option<std::collections::BTreeMap<String, crate::inputs::InputDecl>>,
+
+    /// Library-claimed config extension blocks (issue #10): top-level keys
+    /// the static schema does not know land in this catch-all and are
+    /// validated — fail-fast — against the claiming libraries'
+    /// `config-schema` at lint and run start
+    /// ([`crate::library::validate_config_extensions`]). A key no loaded
+    /// library claims is the same "unknown config key" error the closed
+    /// schema used to produce at parse time.
+    #[serde(flatten)]
+    pub extensions: serde_json::Map<String, serde_json::Value>,
+
     /// Shared mutable variables for `std/set_shared_variable@v1` /
     /// `std/get_shared_variable@v1`: a map of name → initial JSON value,
     /// shared by every VU of the run. Declaration is mandatory — a step
@@ -320,13 +335,19 @@ steps:
     fn rejects_config_with_unknown_key() {
         // The issue-#8 case: a typo'd key in `-c config.yaml` must fail
         // loudly, naming the key, instead of silently changing the load
-        // profile. `ConfigFile` flattens `RunConfig`, so serde's
-        // `deny_unknown_fields` cannot apply at the top level — the schema
-        // pre-validation is what rejects unknown keys here.
-        let err = parse_config_file("vus: 2\niterations: 1\n").unwrap_err();
+        // profile. Since issue #10 the top level is open at parse time
+        // (library-claimed extension keys are unknowable until libraries
+        // load): unknown keys land in `ConfigFile::extensions`, and
+        // `validate_config_extensions` — called at lint and run start — is
+        // what rejects them, naming the key.
+        let cfg = parse_config_file("vus: 2\niterations: 1\n").unwrap();
+        assert_eq!(cfg.run.vus, 2);
+        assert!(cfg.extensions.contains_key("iterations"));
+        let err = crate::library::validate_config_extensions(&cfg.extensions, &[]).unwrap_err();
         assert!(err.contains("iterations"), "key named: {err}");
         // Same for a key that only exists on the wrong nesting level.
-        let err = parse_config_file("vus: 2\nurl: http://x\n").unwrap_err();
+        let cfg = parse_config_file("vus: 2\nurl: http://x\n").unwrap();
+        let err = crate::library::validate_config_extensions(&cfg.extensions, &[]).unwrap_err();
         assert!(err.contains("url"), "key named: {err}");
     }
 
@@ -555,6 +576,8 @@ steps:
             before: Vec::new(),
             after: Vec::new(),
             variables: serde_json::Map::new(),
+            inputs: None,
+            extensions: serde_json::Map::new(),
             shared_variables: serde_json::Map::new(),
             webrtc: None,
         };

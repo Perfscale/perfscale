@@ -56,9 +56,100 @@ pub fn lint(yaml: &str, kind: DocKind) -> Vec<LintIssue> {
         DocKind::Test => lint_test_fields(&value, &mut issues),
         DocKind::Config => lint_config_fields(&value, &mut issues),
     }
-    let (lib_issues, _) = library_token_checks(&value, kind);
+    let (lib_issues, _, providers) = library_checks(&value, kind);
     issues.extend(lib_issues);
+    if kind == DocKind::Config {
+        lint_inputs(&value, &mut issues);
+        lint_config_extensions(&value, &providers, &mut issues);
+    }
     issues
+}
+
+/// The `inputs:` block (issue #11): the shape is enforced by the config
+/// schema; semantics (bounds, options, defaults) fail lint here.
+fn lint_inputs(value: &Value, issues: &mut Vec<LintIssue>) {
+    let Some(inputs) = value.get("inputs") else {
+        return;
+    };
+    let Ok(decls) = serde_json::from_value::<
+        std::collections::BTreeMap<String, crate::inputs::InputDecl>,
+    >(inputs.clone()) else {
+        return; // the schema pass flags the malformed shape
+    };
+    if let Err(msg) = crate::inputs::validate_inputs(&decls) {
+        issues.push(LintIssue {
+            location: "/inputs".into(),
+            problem: msg,
+            suggestion: None,
+        });
+    }
+}
+
+/// Config extension keys (issue #10): every top-level key the engine does
+/// not know must be claimed by a loaded library's `config-schema` export,
+/// and the block must satisfy that library's schema. This is also the #8
+/// typo guard's home: the schema's top level opened for extensions, so
+/// unknown-key strictness is enforced here (and at run start).
+fn lint_config_extensions(
+    value: &Value,
+    providers: &ResolvedProviders,
+    issues: &mut Vec<LintIssue>,
+) {
+    let Some(map) = value.as_object() else {
+        return;
+    };
+    let extensions: serde_json::Map<String, Value> = map
+        .iter()
+        .filter(|(k, _)| !CONFIG_TOP_FIELDS.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if extensions.is_empty() {
+        return;
+    }
+    for (key, value) in &extensions {
+        let claimed = providers
+            .iter()
+            .find_map(|(_, p, _)| p.config_schema().filter(|(k, _)| *k == key.as_str()));
+        match claimed {
+            None => issues.push(LintIssue {
+                location: "(root)".into(),
+                problem: format!("unknown field '{key}'"),
+                suggestion: did_you_mean(key, &CONFIG_TOP_FIELDS).or_else(|| {
+                    Some(format!(
+                        "valid fields here: {}; extension keys are claimed by a loaded library's config-schema (issue #10)",
+                        CONFIG_TOP_FIELDS.join(", ")
+                    ))
+                }),
+            }),
+            Some((_, schema)) => {
+                let compiled = match jsonschema::JSONSchema::compile(schema) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        issues.push(LintIssue {
+                            location: format!("/{key}"),
+                            problem: format!(
+                                "the claiming library's schema does not compile: {e}"
+                            ),
+                            suggestion: None,
+                        });
+                        continue;
+                    }
+                };
+                let outcome = compiled.validate(value).map_err(|errors| {
+                    errors.map(|e| e.to_string()).collect::<Vec<_>>().join("; ")
+                });
+                if let Err(details) = outcome {
+                    issues.push(LintIssue {
+                        location: format!("/{key}"),
+                        problem: format!(
+                            "config key '{key}' does not match the library's schema: {details}"
+                        ),
+                        suggestion: None,
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// Network pass for `std/graphql@v1` steps, run by `perfscale lint` after the
@@ -263,7 +354,7 @@ const TEST_TOP_FIELDS: [&str; 2] = ["steps", "libraries"];
 const STEP_FIELDS: [&str; 8] = [
     "name", "use", "uses", "with", "check", "outputs", "severity", "message",
 ];
-const CONFIG_TOP_FIELDS: [&str; 16] = [
+const CONFIG_TOP_FIELDS: [&str; 18] = [
     "vus",
     "duration",
     "stages",
@@ -280,6 +371,8 @@ const CONFIG_TOP_FIELDS: [&str; 16] = [
     "allow_library_capabilities",
     "seed",
     "libraries",
+    "inputs",
+    "import",
 ];
 const REPORT_FIELDS: [&str; 8] = [
     "url",
@@ -650,8 +743,6 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
 
 fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
     let Some(map) = value.as_object() else { return };
-    unknown_field_issues(map, &CONFIG_TOP_FIELDS, "(root)", issues);
-
     if let Some(report) = map.get("report").and_then(|v| v.as_object()) {
         unknown_field_issues(report, &REPORT_FIELDS, "/report", issues);
         lint_reporters(report, issues);
@@ -975,10 +1066,21 @@ fn declared_libraries(value: &Value, kind: DocKind) -> (Vec<LintIssue>, Resolved
 /// parens/quotes) and the function name. Arguments are never evaluated, and
 /// `${{ … }}` interpolation is the engine's business, not lint's.
 fn library_token_checks(value: &Value, kind: DocKind) -> (Vec<LintIssue>, Vec<String>) {
+    let (issues, warnings, _) = library_checks(value, kind);
+    (issues, warnings)
+}
+
+/// Library declaration validation + token scanning, returning the resolved
+/// providers so other lint passes (config extensions, issue #10) don't load
+/// the components twice.
+fn library_checks(
+    value: &Value,
+    kind: DocKind,
+) -> (Vec<LintIssue>, Vec<String>, ResolvedProviders) {
     let (mut issues, aliases) = declared_libraries(value, kind);
     let mut warnings = Vec::new();
     if aliases.is_empty() {
-        return (issues, warnings);
+        return (issues, warnings, aliases);
     }
 
     let step_lists: &[&str] = match kind {
@@ -1001,7 +1103,7 @@ fn library_token_checks(value: &Value, kind: DocKind) -> (Vec<LintIssue>, Vec<St
             }
         }
     }
-    (issues, warnings)
+    (issues, warnings, aliases)
 }
 
 /// Recursive walk over a `with:` value — string leaves only, the same

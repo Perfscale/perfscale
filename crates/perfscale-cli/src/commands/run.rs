@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use perfscale_core::import::{self, ImportOptions};
@@ -28,12 +28,20 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
     let (flag_url, flag_reporters) = parse_report_flags(&args.report)?;
     let labels = parse_labels(&args.label)?;
 
+    // Typed inputs (issue #11): -i overrides and -e env files resolve
+    // against the config's `inputs:` declarations — fail fast on unknown
+    // keys, type mismatches, out-of-bounds values, missing required inputs.
+    let input_overrides = parse_input_overrides(&args.input)?;
+    let env_inputs = load_env_files(&args.env_file)?;
+
     let mut plan = resolve_plan(
         &args,
         native_test,
         config.as_ref(),
         &flag_reporters,
         &labels,
+        &input_overrides,
+        &env_inputs,
     )?;
     let (engine, vus, duration) = plan_meta(&plan);
     let report_url = resolve_report_url(flag_url.as_ref(), config.as_ref());
@@ -332,6 +340,8 @@ fn resolve_plan(
     config: Option<&ConfigFile>,
     flag_reporters: &[perfscale_core::report::ReporterConfig],
     labels: &serde_json::Map<String, serde_json::Value>,
+    input_overrides: &[(String, String)],
+    env_inputs: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<ExecutionPlan, CliError> {
     if let Some(script) = &args.k6 {
         return Ok(ExecutionPlan::K6Script(script.clone()));
@@ -383,6 +393,40 @@ fn resolve_plan(
         // Fold the `webrtc:` block in too (RFC 007) — pro/webrtc-* actions
         // read ICE servers and the peer-connection guardrail off the context.
         run.webrtc = cfg.webrtc.clone();
+        // Typed inputs (issue #11): declarations validate, then values
+        // resolve with `-i` > env file > `default:` precedence. Everything
+        // is fail-fast here — the engine receives the resolved map only.
+        match &cfg.inputs {
+            Some(decls) => {
+                perfscale_core::inputs::validate_inputs(decls).map_err(|msg| {
+                    CliError::new(format!("invalid inputs configuration: {msg}"))
+                        .docs("yaml-reference.md#config--c-configyaml")
+                })?;
+                run.input_values = perfscale_core::inputs::resolve_inputs(
+                    decls,
+                    input_overrides,
+                    env_inputs,
+                )
+                .map_err(|msg| {
+                    CliError::new(format!("invalid inputs: {msg}"))
+                        .hint("declare the input in the config's `inputs:` block, or pass `-i name=value`")
+                        .docs("yaml-reference.md#config--c-configyaml")
+                })?;
+            }
+            None if !input_overrides.is_empty() => {
+                return Err(CliError::new(format!(
+                    "unknown input '{}' — the config declares no `inputs:` block",
+                    input_overrides[0].0
+                ))
+                .hint("declare inputs in the config file first: `inputs: { name: string }`")
+                .docs("yaml-reference.md#config--c-configyaml"));
+            }
+            None => {}
+        }
+        // Config extension blocks (issue #10): the config document's
+        // library-claimed top-level keys. Validated against the claiming
+        // libraries at run start (engine-side).
+        run.config_extensions = cfg.extensions.clone();
         // `libraries:` from the config and the test file concatenate (RFC
         // 005); a duplicate alias across them is a validation error at run
         // start (engine-side, so the agent path gets the same check).
@@ -420,6 +464,69 @@ fn resolve_report_url(flag_url: Option<&String>, config: Option<&ConfigFile>) ->
                 .filter(|u| !u.is_empty())
         })
     })
+}
+
+/// Parse the repeatable `-i/--input` values into key/value overrides.
+/// Both `-i users=10 -i env=prod` and `-i users=10,env=prod` work; a literal
+/// comma in a value is escaped as `\,` (and `\\` is a literal backslash).
+pub(crate) fn parse_input_overrides(values: &[String]) -> Result<Vec<(String, String)>, CliError> {
+    let mut out = Vec::new();
+    for v in values {
+        for item in split_escaped_commas(v) {
+            let (k, val) = item.split_once('=').ok_or_else(|| {
+                CliError::new(format!("invalid -i value '{item}'"))
+                    .hint("expected KEY=VALUE, e.g. `-i users=10` or `-i users=10,env=prod`")
+            })?;
+            if k.is_empty() {
+                return Err(CliError::new(format!("invalid -i value '{item}'"))
+                    .hint("the key must be non-empty, e.g. `-i users=10`"));
+            }
+            out.push((k.to_string(), val.to_string()));
+        }
+    }
+    Ok(out)
+}
+
+/// Split on commas, honoring the `\,` escape (and `\\` for a literal
+/// backslash). Any other backslash sequence keeps both characters.
+fn split_escaped_commas(s: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut cur = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some(',') => cur.push(','),
+                Some('\\') => cur.push('\\'),
+                Some(other) => {
+                    cur.push('\\');
+                    cur.push(other);
+                }
+                None => cur.push('\\'),
+            },
+            ',' => items.push(std::mem::take(&mut cur)),
+            _ => cur.push(c),
+        }
+    }
+    items.push(cur);
+    items
+}
+
+/// Load the `-e/--env-file` inputs: KEY=VALUE files merged in order (later
+/// files override earlier ones).
+pub(crate) fn load_env_files(
+    paths: &[PathBuf],
+) -> Result<serde_json::Map<String, serde_json::Value>, CliError> {
+    let mut out = serde_json::Map::new();
+    for path in paths {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            CliError::new(format!("failed to read env file '{}': {e}", path.display()))
+        })?;
+        let parsed = perfscale_core::inputs::parse_env_file(&text)
+            .map_err(|e| CliError::new(format!("invalid env file '{}': {e}", path.display())))?;
+        out.extend(parsed);
+    }
+    Ok(out)
 }
 
 /// Split the repeatable `--report` values into the serve URL and reporter
@@ -794,6 +901,8 @@ mod tests {
             quiet: false,
             summary_export: Vec::new(),
             summary_format: None,
+            input: Vec::new(),
+            env_file: Vec::new(),
             allow_remote_import: false,
             refresh_imports: false,
         }
@@ -823,9 +932,112 @@ mod tests {
             before: Vec::new(),
             after: Vec::new(),
             variables: serde_json::Map::new(),
+            inputs: None,
+            extensions: serde_json::Map::new(),
             shared_variables: serde_json::Map::new(),
             webrtc: None,
         }
+    }
+
+    #[test]
+    fn parse_input_overrides_repeat_comma_and_escape() {
+        // Repeated flags and comma-separated forms both work.
+        let out = parse_input_overrides(&["users=10".into(), "env=prod".into()]).unwrap();
+        assert_eq!(
+            out,
+            vec![
+                ("users".to_string(), "10".to_string()),
+                ("env".to_string(), "prod".to_string())
+            ]
+        );
+        let out = parse_input_overrides(&["users=10,env=prod".into()]).unwrap();
+        assert_eq!(out.len(), 2);
+        // `\,` is a literal comma inside a value.
+        let out = parse_input_overrides(&[r"note=a\,b".into()]).unwrap();
+        assert_eq!(out, vec![("note".to_string(), "a,b".to_string())]);
+        // Missing '=' or empty key are CLI errors.
+        assert!(parse_input_overrides(&["users".into()]).is_err());
+        assert!(parse_input_overrides(&["=10".into()]).is_err());
+    }
+
+    #[test]
+    fn load_env_files_merges_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.env");
+        let b = dir.path().join("b.env");
+        std::fs::write(&a, "# comment\nusers=7\nhost=a\n").unwrap();
+        std::fs::write(&b, "host=b\n").unwrap();
+        let out = load_env_files(&[a, b]).unwrap();
+        assert_eq!(out["users"], serde_json::json!("7"));
+        assert_eq!(out["host"], serde_json::json!("b"), "later file wins");
+        let err = load_env_files(&[dir.path().join("missing.env")]).unwrap_err();
+        assert!(err.to_string().contains("failed to read env file"), "{err}");
+    }
+
+    #[test]
+    fn resolve_plan_resolves_inputs_into_the_run_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_file = dir.path().join("inputs.env");
+        std::fs::write(&env_file, "users=5\n").unwrap();
+        let mut config = sample_config(None);
+        config.inputs = Some(
+            serde_json::from_value(serde_json::json!({
+                "users": "number",
+                "env": { "type": "choice", "options": ["staging", "prod"], "default": "staging" }
+            }))
+            .unwrap(),
+        );
+        let args = RunArgs {
+            file: Some(PathBuf::from("t.yaml")),
+            ..base_args()
+        };
+        // -i beats the env file; defaults fill the rest.
+        let plan = resolve_plan(
+            &args,
+            Some(sample_test()),
+            Some(&config),
+            &[],
+            &serde_json::Map::new(),
+            &[("users".to_string(), "10".to_string())],
+            &load_env_files(&[env_file]).unwrap(),
+        )
+        .unwrap();
+        match plan {
+            ExecutionPlan::NativeSteps { config, .. } => {
+                assert_eq!(config.input_values["users"], serde_json::json!(10));
+                assert_eq!(config.input_values["env"], serde_json::json!("staging"));
+            }
+            _ => panic!("expected NativeSteps plan"),
+        }
+
+        // Missing required input fails before the run.
+        let err = resolve_plan(
+            &args,
+            Some(sample_test()),
+            Some(&config),
+            &[],
+            &serde_json::Map::new(),
+            &[],
+            &serde_json::Map::new(),
+        )
+        .err()
+        .expect("must fail");
+        assert!(err.to_string().contains("required"), "{err}");
+
+        // -i with no declared inputs fails too.
+        let plain = sample_config(None);
+        let err = resolve_plan(
+            &args,
+            Some(sample_test()),
+            Some(&plain),
+            &[],
+            &serde_json::Map::new(),
+            &[("users".to_string(), "10".to_string())],
+            &serde_json::Map::new(),
+        )
+        .err()
+        .expect("must fail");
+        assert!(err.to_string().contains("no `inputs:` block"), "{err}");
     }
 
     #[test]
@@ -834,7 +1046,16 @@ mod tests {
             k6: Some(PathBuf::from("a.js")),
             ..base_args()
         };
-        let plan = resolve_plan(&args, None, None, &[], &serde_json::Map::new()).unwrap();
+        let plan = resolve_plan(
+            &args,
+            None,
+            None,
+            &[],
+            &serde_json::Map::new(),
+            &[],
+            &serde_json::Map::new(),
+        )
+        .unwrap();
         assert!(matches!(plan, ExecutionPlan::K6Script(p) if p == Path::new("a.js")));
     }
 
@@ -844,7 +1065,16 @@ mod tests {
             jmeter: Some(PathBuf::from("plan.jmx")),
             ..base_args()
         };
-        let plan = resolve_plan(&args, None, None, &[], &serde_json::Map::new()).unwrap();
+        let plan = resolve_plan(
+            &args,
+            None,
+            None,
+            &[],
+            &serde_json::Map::new(),
+            &[],
+            &serde_json::Map::new(),
+        )
+        .unwrap();
         assert!(matches!(plan, ExecutionPlan::JMeterScript(p) if p == Path::new("plan.jmx")));
     }
 
@@ -855,7 +1085,16 @@ mod tests {
             host: Some("https://example.com".into()),
             ..base_args()
         };
-        let plan = resolve_plan(&args, None, None, &[], &serde_json::Map::new()).unwrap();
+        let plan = resolve_plan(
+            &args,
+            None,
+            None,
+            &[],
+            &serde_json::Map::new(),
+            &[],
+            &serde_json::Map::new(),
+        )
+        .unwrap();
         match plan {
             ExecutionPlan::LocustScript { path, opts } => {
                 assert_eq!(path, PathBuf::from("b.py"));
@@ -873,7 +1112,16 @@ mod tests {
             ..base_args()
         };
         let config = sample_config(None);
-        let plan = resolve_plan(&args, None, Some(&config), &[], &serde_json::Map::new()).unwrap();
+        let plan = resolve_plan(
+            &args,
+            None,
+            Some(&config),
+            &[],
+            &serde_json::Map::new(),
+            &[],
+            &serde_json::Map::new(),
+        )
+        .unwrap();
         match plan {
             ExecutionPlan::LocustScript { opts, .. } => {
                 assert_eq!(opts.users, 4);
@@ -896,6 +1144,8 @@ mod tests {
             Some(&config),
             &[],
             &serde_json::Map::new(),
+            &[],
+            &serde_json::Map::new(),
         )
         .unwrap();
         match plan {
@@ -916,6 +1166,8 @@ mod tests {
             &args,
             Some(sample_test()),
             Some(&config),
+            &[],
+            &serde_json::Map::new(),
             &[],
             &serde_json::Map::new(),
         )
@@ -997,7 +1249,15 @@ mod tests {
             ..base_args()
         };
         let config = sample_config(None);
-        let _ = resolve_plan(&args, None, Some(&config), &[], &serde_json::Map::new());
+        let _ = resolve_plan(
+            &args,
+            None,
+            Some(&config),
+            &[],
+            &serde_json::Map::new(),
+            &[],
+            &serde_json::Map::new(),
+        );
     }
 
     #[test]
@@ -1036,6 +1296,8 @@ mod tests {
             &args,
             Some(sample_test()),
             Some(&config),
+            &[],
+            &serde_json::Map::new(),
             &[],
             &serde_json::Map::new(),
         )
@@ -1157,9 +1419,17 @@ mod tests {
             duration: "30s".into(),
             target: 10,
         }];
-        let err = resolve_plan(&args, None, Some(&config), &[], &serde_json::Map::new())
-            .err()
-            .expect("stages config must be rejected for --locust");
+        let err = resolve_plan(
+            &args,
+            None,
+            Some(&config),
+            &[],
+            &serde_json::Map::new(),
+            &[],
+            &serde_json::Map::new(),
+        )
+        .err()
+        .expect("stages config must be rejected for --locust");
         assert!(err.to_string().contains("native engine"), "{err}");
     }
 

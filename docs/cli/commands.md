@@ -27,6 +27,8 @@ Exactly one engine flag is required: `--k6`, `--locust`, `--jmeter`, or `-f`.
 | `--host <URL>` | base URL | Target host for `--locust` (locust's `--host`) |
 | `--report <SPEC>` | repeatable | Two shapes. `http(s)://URL` — POST the summary (and the report@v1 artifact, when reporters are configured) to a `perfscale serve` instance; overrides `report.url`. `json:PATH` / `junit:PATH` / `html:PATH` — write an end-of-run `report@v1` report: canonical JSON, JUnit XML for CI (testcase per step, failures from threshold verdicts), or a self-contained dark-themed HTML page (opens offline, archives as a CI artifact). Repeat the flag for several reports from one run |
 | `--label <KEY=VALUE>` | repeatable | Run label stamped on the report's run identity (`run.labels`), e.g. `--label testid=smoke` |
+| `-i, --input <KEY=VALUE>` | repeatable | Override a typed input declared in the config's `inputs:` block (issue #11). Comma-separated form works too: `-i users=10,env=prod`; a literal comma in a value is escaped as `\,`. Precedence: `-i` > `-e` env file > `default:` |
+| `-e, --env-file <FILE>` | path, repeatable | Read input values from a KEY=VALUE env file (only keys naming a declared input are consumed); later files override earlier ones |
 | `-q, --quiet` | — | Suppress per-request output; errors and the final metric summary still print. The native engine drops the lines at the source, which also removes their formatting/IO cost under high load |
 | `--summary-export <FILE>` | path, repeatable | After the run, write the parsed metric summary (requests, RPS, latency percentiles, error rate) plus run metadata (engine, VUs, duration, timestamp, perfscale version) to this file. Repeat the flag to write several exports from one run. A `.md`/`.json` extension picks the format per file (default JSON) |
 | `--summary-format <json\|md>` | with `--summary-export` | Format for export files without a recognized extension. `md` renders a table for CI job summaries: `--summary-export "$GITHUB_STEP_SUMMARY" --summary-format md` |
@@ -219,6 +221,8 @@ perfscale lint --schema config load.yaml
 | `--offline` | off | Skip the network pass (GraphQL introspection) — validate offline only |
 | `--allow-remote-import` | off | Let `import:` in the linted documents fetch over the network so the merged result can be validated |
 | `--refresh-imports` | off | Refetch cached tag/branch git imports instead of trusting the cache |
+| `-i, --input <KEY=VALUE>` | — | Override a declared input — a clean config lint prints the effective resolved `inputs:` values |
+| `-e, --env-file <FILE>` | — | Read input values from a KEY=VALUE env file (same as `run -e`) |
 
 What it checks:
 

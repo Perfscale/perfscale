@@ -12,6 +12,23 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- Typed run inputs (issue #11): config files declare an `inputs:` block
+  (`number` with `min`/`max`, `string`, `bool` with 0/1/false/true coercion,
+  GitHub-style `choice` with `options:`), steps interpolate
+  `${{ inputs.<name> }}` everywhere `${{ ... }}` works, and the CLI overrides
+  values at launch: `-i users=10 -i env=prod`, the comma form
+  `-i users=10,env=prod` (`\,` escapes a literal comma), and `-e file.env`
+  env files. Precedence: `-i` > env file > `default:`; unknown keys, type
+  mismatches, out-of-range values and missing required inputs fail before
+  the run starts, and `perfscale lint` prints the effective resolved values.
+- Config extensions (issue #10): WASM libraries built against
+  `perfscale:library@0.3.0` may export `config-schema`, claiming one
+  top-level config key (`mylibrary: { ... }`) with a JSON Schema for its
+  value. The engine validates the block at lint and run start and hands it
+  to the guest via the run settings' `extensions` object. Unknown top-level
+  keys stay a hard error (the typo guard moved from schema parse to this
+  validation), and two libraries claiming one key is a hard error. Older
+  (0.1/0.2) components keep loading unchanged.
 - `std/pubsub@v1`: new `flush` parameter (`message` | `none`, default
   `message` — unchanged). `flush: message` flushes and awaits the broker ack
   after publishing, so `pubsub_publish_ms` is the full round trip;

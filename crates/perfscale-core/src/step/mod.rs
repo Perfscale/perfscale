@@ -235,6 +235,23 @@ pub struct RunConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(skip)]
     pub webrtc: Option<crate::yaml::WebRtcConfig>,
+
+    /// Resolved `${{ inputs.* }}` values (issue #11): populated by the
+    /// embedding process after precedence resolution (`-i` > env file >
+    /// `default:`); never parsed from YAML. The engine exposes them as the
+    /// `inputs` interpolation namespace.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub input_values: serde_json::Map<String, serde_json::Value>,
+
+    /// Library-claimed config extension blocks (issue #10): the config
+    /// document's unknown top-level keys, validated against the claiming
+    /// libraries' `config-schema` at run start and handed to guests through
+    /// the run settings' `extensions` object. Populated by the embedding
+    /// process; never parsed from YAML.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub config_extensions: serde_json::Map<String, serde_json::Value>,
 }
 
 /// One `stages:` entry — ramp the VU count linearly to `target` over
@@ -317,6 +334,8 @@ impl Default for RunConfig {
             report: None,
             fs_root: None,
             webrtc: None,
+            input_values: serde_json::Map::new(),
+            config_extensions: serde_json::Map::new(),
         }
     }
 }
