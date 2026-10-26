@@ -610,6 +610,7 @@ WASM library rules:
 |---|---|
 | `read(file)` | The whole parsed JSON file as a compact JSON string (process-wide cache shared with `std/read-json@v1`, revalidated by `(mtime, size)`) |
 | `read(file, query)` | The subvalue at a jq-style path (`.posts[0].id` ≡ `posts.0.id`); a string leaf verbatim, other values compact JSON. Mandatory miss → expansion error naming the segment; a `?` suffix resolves a miss to an empty string |
+| `pick(file)` / `pick(file, index)` | Element of the JSON array in `file` — random per message (deterministic under a run `seed:`), or `index` modulo the array length. Non-array document, empty array, or non-integer index → expansion error |
 
 #### Config extensions (library-owned top-level keys, issue #10)
 

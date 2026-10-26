@@ -29,7 +29,10 @@ Release notes for the next release, written as features land.
   ".users[0].token")}` inside generator tokens, sharing the step's
   parsed-document cache and its fail-closed `allow_file_actions` gate (a
   tolerant `?` miss resolves to an empty string in tokens; a mandatory miss
-  is an expansion error naming the segment).
+  is an expansion error naming the segment). `@std/json@v1` also exports
+  `pick(file[, index])` — a uniformly random (seeded-run deterministic) or
+  index-addressed element of a JSON array file. Like `@std/random@v1`, the
+  library is opt-in: it resolves only when declared in `libraries:`.
 - `std/http@v1` `pool: dedicated` — one HTTP client per VU, created on the
   VU's first request and held until the VU exits. The default shard pools
   cap idle connections at 64 per host per shard, so past

@@ -125,6 +125,7 @@ steps:
 |---|---|
 | `read(file)` | The whole parsed document, as a compact JSON string |
 | `read(file, query)` | The subvalue at a jq-style path (`.posts[0].id` ≡ `posts.0.id` — the same grammar as the `query:` parameter of the file steps); a string leaf verbatim, other values as compact JSON |
+| `pick(file)` / `pick(file, index)` | An element of the JSON array in `file` — uniformly random per message, or the deterministic `index` modulo the array length; a string element verbatim, other values as compact JSON |
 
 Notes:
 
@@ -138,6 +139,17 @@ Notes:
   while a `?`-tolerant miss (`json.read("f.json", ".users?[0]")`) resolves
   to an **empty string** — interpolation-friendly, where the step yields a
   `null` output.
+- `pick` respects seeded runs: the random index derives from the same
+  deterministic pipeline as the rest of the engine (FNV-1a over the per-call
+  seed — which folds in the run `seed:`, VU id, and generator sequence — plus
+  the message sequence and file path), so a `seed:` run replays the exact
+  pick sequence, unseeded runs are random, and repeat calls within one
+  message pick the same element. A document that is not a JSON array, an
+  empty array, or a non-integer `index` is a call error.
+
+Like `@std/random@v1`, `@std/json@v1` is **opt-in**: nothing is
+auto-registered — without the `libraries:` entry above, `${json.*}` tokens
+do not resolve.
 
 ## Capabilities and the sandbox
 
