@@ -140,8 +140,14 @@ sockets (`wasi:sockets`) are never provided.
   masks their results in logs.
 - **Run settings**: `ctx.settings_json` (or parsed via `ctx.settings()`)
   carries the run's frozen settings — `vus`/`duration_ms` (fixed profile)
-  or `stages`/`arrival`, `seed`, and the config `variables:` with
-  `${{ env.* }}` resolved. Identical for every call of the run.
+  or `stages`/`arrival`, `seed`, the config `variables:` with
+  `${{ env.* }}` resolved, and `extensions` with validated library-owned
+  config blocks. Identical for every call of the run.
+- **Config extensions** (ABI 0.3): `export_library!` exports the base
+  `perfscale-library` world. To claim a top-level config key with a JSON
+  Schema, use direct WIT bindings for `perfscale-library-config`; see
+  [`examples/configlib`](examples/configlib) for the declaration and reading
+  `extensions/configlib` from the settings JSON.
 
 ## Unit testing without the engine
 

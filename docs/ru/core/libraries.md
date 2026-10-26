@@ -224,7 +224,7 @@ libraries:
 ## Написание собственной библиотеки
 
 Одна форма, три языка — каждый SDK скрывает WIT-инфраструктуру
-(`perfscale:library@0.2.0`, WASI Preview 2) и предоставляет PRNG с seed'ом
+(`perfscale:library@0.3.0`, WASI Preview 2) и предоставляет PRNG с seed'ом
 (бит-идентичный во всех SDK и во встроенном генераторе движка), `memo()`
 для повторного использования в пределах сообщения, вспомогательные функции
 для аргументов и тестовое окружение без рантайма.
@@ -268,6 +268,10 @@ payload'ах. `Ctx` из SDK содержит `messageSeq`, `iterationSeq`, `vuI
 `seed`, `timeMs`, а также `ctx.memo()` и `ctx.rng()`; `testCall` запускает
 юнит-тесты под `node:test` без участия WASM.
 
+Про топ-левел блок конфига, принадлежащий библиотеке и проверяемый по JSON
+Schema (ABI 0.3), читайте в разделе расширений конфига
+[руководства по SDK](../library-sdk.md) и в [справочнике YAML](../yaml-reference.md).
+
 Замечание о песочнице: компоненты jco всегда импортируют `wasi:filesystem` и
 `wasi:clocks/wall-clock`. TS-библиотеке, объявляющей `"pure": true` в
 метаданных `info()`, не нужно разрешение `capabilities:` для этих импортов —
@@ -291,7 +295,7 @@ payload'ах. `Ctx` из SDK содержит `messageSeq`, `iterationSeq`, `vuI
 [`go/README.md`](https://github.com/Perfscale/sdk-libraries/blob/main/go/README.md)
 репозитория sdk-libraries. Готового SDK-пакета пока нет — WIT-контракт тот
 же, поэтому сгенерированные биндинги работают с любым релизом perfscale,
-поддерживающим `perfscale:library@0.2.0`.
+поддерживающим `perfscale:library@0.3.0`.
 
 ### Начало с шаблона
 

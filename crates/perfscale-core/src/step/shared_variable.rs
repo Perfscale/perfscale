@@ -947,6 +947,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }
     }
 

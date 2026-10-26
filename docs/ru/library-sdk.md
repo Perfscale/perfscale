@@ -12,7 +12,7 @@ SDK для создания **библиотек perfscale** — WASM-компо
 | Язык | Пакет | Статус |
 |---|---|---|
 | **Rust** | [`perfscale-library-sdk`](../crates/perfscale-library-sdk) (этот репозиторий) | Стабильный, версионируется вместе с движком |
-| **TypeScript / JavaScript** | [`@perfscale/library-sdk`](https://www.npmjs.com/package/@perfscale/library-sdk) ([sdk-libraries](https://github.com/Perfscale/sdk-libraries)) | Стабильный (v0.1.x) |
+| **TypeScript / JavaScript** | [`@perfscale/library-sdk`](https://www.npmjs.com/package/@perfscale/library-sdk) ([sdk-libraries](https://github.com/Perfscale/sdk-libraries)) | Стабильный (v0.3.x) |
 | **Go** | [Рецепт на TinyGo](https://github.com/Perfscale/sdk-libraries/tree/main/go) | Экспериментальный (пакета SDK пока нет) |
 
 ## Что даёт каждый SDK
@@ -21,8 +21,8 @@ SDK скрывает всю WIT-обвязку. Вы объявляете имя
 SDK предоставляет:
 
 - **`Ctx`** — контекст одного вызова: `message_seq`, `iteration_seq`,
-  `vu_id`, `seed`, `time_ms` (плюс зафиксированный для прогона `settings_json`
-  в ABI 0.2).
+  `vu_id`, `seed`, `time_ms`, а также зафиксированный для прогона
+  `settings_json` в ABI 0.2+ (включая `extensions` конфига библиотек в 0.3).
 - **`memo(key, fn)`** — повторное использование сгенерированного значения по
   ключу в пределах одного сообщения: `${fix.id(new)}`, встреченный дважды в
   одном сообщении, даст один и тот же id.
@@ -118,6 +118,67 @@ assert.equal(testCall(lib, ctx, "token", []), testCall(lib, ctx, "token", []));
 чтение к `fs_root` прогона) плюс `allow_library_capabilities: true`. Сборка
 уже вырезает `wasi:random`, `wasi:http` и таймеры.
 
+### Расширения конфига (WIT 0.3)
+
+TS-библиотека может заявить один топ-левел ключ `config.yaml` и его JSON
+Schema через `configSchema`. Этот пример экспортирует JSON-контракт
+`{ "key", "schema" }` из [справочника YAML](yaml-reference.md), а затем читает
+проверенный блок из настроек запуска:
+
+```ts
+import { defineLibrary } from "@perfscale/library-sdk";
+
+export default defineLibrary({
+  name: "configlib",
+  configSchema: {
+    key: "configlib",
+    schema: {
+      type: "object",
+      properties: {
+        endpoint: { type: "string" },
+        pool_size: { type: "integer", minimum: 1 },
+      },
+      required: ["endpoint"],
+      additionalProperties: false,
+    },
+  },
+  functions: {
+    endpoint: {
+      description: "The configured endpoint",
+      call(_argv, ctx) {
+        const block = (ctx.settings.extensions ?? {})["configlib"] as
+          | { endpoint?: string; pool_size?: number }
+          | undefined;
+        return block?.endpoint ?? "https://localhost";
+      },
+    },
+  },
+});
+```
+
+```yaml
+libraries:
+  - use: ./configlib.wasm
+    capabilities: []
+configlib:
+  endpoint: https://api.test
+  pool_size: 16
+```
+
+Сам блок расширения необязателен: если он отсутствует, в `extensions` нет
+записи `configlib`, и библиотека может применить собственное значение по
+умолчанию. Если блок задан, он валидируется на lint и при старте запуска —
+в данном примере `endpoint` обязателен, `pool_size` должен быть не меньше 1,
+а неизвестные поля отклоняются. Ключ должен соответствовать
+`[a-z][a-z0-9_]*` и быть уникальным среди встроенных ключей и загруженных
+библиотек. `perfscale-library-build` автоматически выбирает world
+`perfscale-library-config`, если задан `configSchema`.
+
+Rust-макрос `export_library!` сейчас экспортирует базовый world
+`perfscale-library`. Чтобы объявить схему из Rust, используйте прямые
+WIT-bindings для `perfscale-library-config`, как в полном
+[примере `configlib`](../crates/perfscale-library-sdk/examples/configlib/src/lib.rs).
+
 ## Go
 
 Репозиторий [sdk-libraries](https://github.com/Perfscale/sdk-libraries)
@@ -127,22 +188,30 @@ assert.equal(testCall(lib, ctx, "token", []), testCall(lib, ctx, "token", []));
 
 ## ABI-контракт
 
-Библиотечный компонент экспортирует один интерфейс
-(`wit/library.wit` в этом репозитории, копируется в репозиторий каждого SDK):
+Каждый библиотечный компонент экспортирует `library`; компонент с расширением
+конфига дополнительно экспортирует `config-schema` через world
+`perfscale-library-config` в ABI 0.3 (`wit/library.wit` в этом репозитории,
+копируется в репозиторий каждого SDK):
 
 ```wit
+// interface library
 info: func() -> string;   // JSON: { name, version, functions: […] }
 init: func(config-json: string) -> result<_, string>;
 call: func(ctx: context, func-name: string, args-json: string)
     -> result<string, string>;
+
+// interface config-schema, дополнительно экспортируется config world в ABI 0.3
+config-schema: func() -> string; // JSON: { key, schema }
 ```
 
 Аргументы и результаты — JSON-строки (JSON есть в любом языке, а назначение
 — всегда слот полезной нагрузки). Движок принимает компоненты, собранные под
-WIT `perfscale:library@0.1.x` и `@0.2.x` — 0.2 добавляет `settings-json` в
-контекст вызова; компоненты 0.1 продолжают работать и просто никогда его не
-видят. Минорные версии — строго аддитивные; неподдерживаемая мажорная версия
-не загружается, и в ошибке называются обе версии.
+WIT `perfscale:library@0.1.x`, `@0.2.x` и `@0.3.x`. ABI 0.2 добавил
+`settings-json`; 0.3 — config world для объявления расширений. Старые
+компоненты продолжают загружаться: в 0.1 нет поля настроек, а для объявления
+`config-schema` нужно пересобрать компонент против 0.3. Минорные версии —
+строго аддитивные; неподдерживаемая мажорная версия не загружается, и в
+ошибке называются обе версии.
 
 У функций, помеченных `secret: true` в `info()`, каждый результат маскируется
 (`***`) в журнале прогона — сгенерированные учётные данные никогда не

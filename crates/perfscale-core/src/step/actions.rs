@@ -215,10 +215,12 @@ pub async fn execute_action(
             super::db::db_close_action(&resolved, ctx, step_name).await
         }
         "std/check@v1" | "check" => check_action(&resolved, ctx, step_name),
-        "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name).await,
+        "std/random@v1" | "random" => random_action(&resolved, step_name, ctx),
+        "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name, ctx).await,
         "std/log@v1" | "log" => log_action(&resolved, step_name),
         "std/file-read@v1" | "file-read" => file_read_action(&resolved, step_name, ctx).await,
         "std/read-json@v1" | "read-json" => read_json_action(&resolved, step_name, ctx).await,
+        "std/pick@v1" | "pick" => pick_action(&resolved, step_name, ctx).await,
         "std/file-write@v1" | "file-write" => file_write_action(&resolved, step_name, ctx).await,
         "std/child_process@v1" | "child_process" => {
             child_process_action(&resolved, step_name, ctx).await
@@ -966,6 +968,163 @@ async fn file_read_action(params: &Value, step_name: &str, ctx: &Context) -> Act
 }
 
 // ---------------------------------------------------------------------------
+// std/random@v1
+// ---------------------------------------------------------------------------
+//
+// Parameters: type = integer|float, min/max = numeric bounds. Integer output
+// is inclusive on both ends; float output is in [min, max).
+// Output: the generated number itself.
+
+fn random_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
+    enum Range {
+        Integer(i64, i64),
+        Float(f64, f64),
+    }
+
+    let range = match params["type"].as_str() {
+        Some("integer") => match (params["min"].as_i64(), params["max"].as_i64()) {
+            (Some(min), Some(max)) if min <= max => Range::Integer(min, max),
+            (Some(_), Some(_)) => {
+                return err(step_name, "`min` must be less than or equal to `max`")
+            }
+            _ => return err(step_name, "`min` and `max` must be integers"),
+        },
+        Some("float") => match (params["min"].as_f64(), params["max"].as_f64()) {
+            (Some(min), Some(max)) if min.is_finite() && max.is_finite() && min <= max => {
+                Range::Float(min, max)
+            }
+            (Some(_), Some(_)) => {
+                return err(step_name, "`min` must be less than or equal to `max`")
+            }
+            _ => return err(step_name, "`min` and `max` must be finite numbers"),
+        },
+        _ => return err(step_name, "`type` must be `integer` or `float`"),
+    };
+    let mut generator = match ctx.new_generator() {
+        Ok(generator) => generator,
+        Err(msg) => return err(step_name, &msg),
+    };
+    let value = match range {
+        Range::Integer(min, max) => Value::from(generator.rand_range(min, max)),
+        Range::Float(min, max) => {
+            match serde_json::Number::from_f64(generator.rand_float(min, max)) {
+                Some(number) => Value::Number(number),
+                None => return err(step_name, "random result is not finite"),
+            }
+        }
+    };
+    ActionOutput {
+        value,
+        logs: Vec::new(),
+        success: true,
+        http_sample: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// std/pick@v1
+// ---------------------------------------------------------------------------
+//
+// Parameters (one source):
+//   from  – an array, or a string holding a JSON array (`"${{ feed.body.posts }}"`)
+//   file  – path to a JSON array file; uses the shared json_doc cache
+//           (needs allow_file_actions)
+//   index – optional integer (or string: `${{ __vu__ }}`); wraps modulo the
+//           array length. Omitted → a uniformly random element.
+//   index_offset – optional signed integer added to index before wrapping.
+//
+// Output: the picked element itself, so `outputs: user` + `${{ user.token }}`.
+
+async fn pick_file(path: &str, ctx: &Context) -> Result<std::sync::Arc<Value>, String> {
+    let doc = super::json_doc::load_async(path, ctx).await?;
+    if doc.is_array() {
+        Ok(doc)
+    } else {
+        Err(format!("file '{path}' is not a JSON array"))
+    }
+}
+
+async fn pick_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
+    let items: std::sync::Arc<Value> = match (&params["from"], params["file"].as_str()) {
+        (Value::Null, Some(path)) => match pick_file(path, ctx).await {
+            Ok(items) => items,
+            Err(msg) => return err(step_name, &msg),
+        },
+        (Value::Array(items), None) => std::sync::Arc::new(Value::Array(items.clone())),
+        (Value::String(s), None) => match serde_json::from_str::<Value>(s) {
+            Ok(Value::Array(items)) => std::sync::Arc::new(Value::Array(items)),
+            _ => return err(step_name, "`from` must be a JSON array"),
+        },
+        (Value::Null, None) => return err(step_name, "one of `from` or `file` is required"),
+        (_, Some(_)) => return err(step_name, "`from` and `file` are mutually exclusive"),
+        _ => return err(step_name, "`from` must be an array"),
+    };
+    let Some(items) = items.as_array() else {
+        return err(step_name, "`from` must be an array");
+    };
+    if items.is_empty() {
+        return err(step_name, "cannot pick from an empty array");
+    }
+    let index = match &params["index"] {
+        Value::Null => {
+            let token = format!("${{rand(0,{})}}", items.len() - 1);
+            match ctx
+                .token_expander()
+                .expand(&token)
+                .map(|s| s.parse::<u64>())
+            {
+                Ok(Ok(i)) => i,
+                _ => return err(step_name, "random index generation failed"),
+            }
+        }
+        Value::Number(n) if n.as_u64().is_some() => n.as_u64().unwrap_or_default(),
+        Value::String(s) => match s.trim().parse::<u64>() {
+            Ok(i) => i,
+            Err(_) => {
+                return err(
+                    step_name,
+                    &format!("`index` must be a non-negative integer, got {s:?}"),
+                )
+            }
+        },
+        other => {
+            return err(
+                step_name,
+                &format!("`index` must be a non-negative integer, got {other}"),
+            )
+        }
+    };
+    let offset = match &params["index_offset"] {
+        Value::Null => 0,
+        Value::Number(n) if n.as_i64().is_some() => n.as_i64().unwrap_or_default(),
+        Value::String(s) => match s.trim().parse::<i64>() {
+            Ok(offset) => offset,
+            Err(_) => {
+                return err(
+                    step_name,
+                    &format!("`index_offset` must be an integer, got {s:?}"),
+                )
+            }
+        },
+        other => {
+            return err(
+                step_name,
+                &format!("`index_offset` must be an integer, got {other}"),
+            )
+        }
+    };
+    let adjusted =
+        (i128::from(index) + i128::from(offset)).rem_euclid(items.len() as i128) as usize;
+    let picked = items[adjusted].clone();
+    ActionOutput {
+        value: picked,
+        logs: Vec::new(),
+        success: true,
+        http_sample: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // std/read-json@v1
 // ---------------------------------------------------------------------------
 //
@@ -1466,12 +1625,41 @@ async fn kill_process_action(params: &Value, step_name: &str, ctx: &Context) -> 
 // Parameters:
 //   ms      – milliseconds to sleep (default 1000)
 //   seconds – alternative to ms
+//
+// Either may be a string: `${…}` tokens expand first, so
+// `ms: "${rand(3000,7000)}"` is a random think time. A string that is not a
+// number after expansion fails the step instead of falling back to 1000ms.
 
-async fn sleep_action(params: &Value, step_name: &str) -> ActionOutput {
-    let ms = params["ms"]
-        .as_u64()
-        .or_else(|| params["seconds"].as_f64().map(|s| (s * 1000.0) as u64))
-        .unwrap_or(1000);
+async fn sleep_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
+    let mut tokens = ctx.token_expander();
+    let mut number = |key: &str| -> Result<Option<f64>, String> {
+        match &params[key] {
+            Value::Null => Ok(None),
+            Value::Number(n) => Ok(n.as_f64()),
+            Value::String(s) => {
+                let expanded = tokens.expand(s)?;
+                expanded
+                    .trim()
+                    .parse::<f64>()
+                    .map(Some)
+                    .map_err(|_| format!("`{key}` must be a number, got {expanded:?}"))
+            }
+            other => Err(format!("`{key}` must be a number, got {other}")),
+        }
+    };
+    let ms = match (number("ms"), number("seconds")) {
+        (Err(e), _) | (_, Err(e)) => return err(step_name, &e),
+        (Ok(Some(ms)), _) => ms,
+        (Ok(None), Ok(Some(s))) => s * 1000.0,
+        (Ok(None), Ok(None)) => 1000.0,
+    };
+    if !ms.is_finite() || ms < 0.0 {
+        return err(
+            step_name,
+            &format!("sleep duration must be >= 0, got {ms}ms"),
+        );
+    }
+    let ms = ms as u64;
 
     tokio::time::sleep(Duration::from_millis(ms)).await;
 
@@ -3401,6 +3589,193 @@ mod tests {
         let ctx = Context::new();
         let out = execute_action("std/sleep@v1", &json!({ "seconds": 0.01 }), &ctx, "step").await;
         assert!(out.logs[0].1.contains("sleep 10ms"));
+    }
+
+    #[tokio::test]
+    async fn sleep_action_expands_tokens_in_string_params() {
+        let ctx = Context::new();
+        let out = execute_action(
+            "std/sleep@v1",
+            &json!({ "ms": "${rand(5,5)}" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success);
+        assert!(out.logs[0].1.contains("sleep 5ms"), "{:?}", out.logs);
+        let out =
+            execute_action("std/sleep@v1", &json!({ "seconds": "0.005" }), &ctx, "step").await;
+        assert!(out.logs[0].1.contains("sleep 5ms"), "{:?}", out.logs);
+    }
+
+    #[tokio::test]
+    async fn sleep_action_rejects_non_numeric_strings() {
+        let ctx = Context::new();
+        let out = execute_action("std/sleep@v1", &json!({ "ms": "soon" }), &ctx, "step").await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("`ms` must be a number"),
+            "{:?}",
+            out.logs
+        );
+        let out = execute_action("std/sleep@v1", &json!({ "ms": -5 }), &ctx, "step").await;
+        assert!(!out.success);
+    }
+
+    // -----------------------------------------------------------------
+    // std/random@v1
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn random_action_returns_numbers_in_bounds() {
+        let ctx = Context::new();
+        for _ in 0..50 {
+            let out = execute_action(
+                "std/random@v1",
+                &json!({ "type": "integer", "min": -2, "max": 2 }),
+                &ctx,
+                "step",
+            )
+            .await;
+            assert!(out.success, "{:?}", out.logs);
+            let value = out.value.as_i64().unwrap();
+            assert!((-2..=2).contains(&value));
+
+            let out = execute_action(
+                "std/random@v1",
+                &json!({ "type": "float", "min": -1, "max": 1 }),
+                &ctx,
+                "step",
+            )
+            .await;
+            assert!(out.success, "{:?}", out.logs);
+            let value = out.value.as_f64().unwrap();
+            assert!((-1.0..1.0).contains(&value));
+        }
+        let out = execute_action(
+            "std/random@v1",
+            &json!({ "type": "float", "min": 1, "max": 1 }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!(1.0));
+    }
+
+    #[tokio::test]
+    async fn random_action_is_deterministic_under_seed() {
+        let params = json!({ "type": "float", "min": 0, "max": 1 });
+        let mut left = Context::new();
+        left.run_seed = Some(42);
+        left.vu_id = 7;
+        let mut right = Context::new();
+        right.run_seed = Some(42);
+        right.vu_id = 7;
+        for _ in 0..4 {
+            let a = execute_action("std/random@v1", &params, &left, "step").await;
+            let b = execute_action("std/random@v1", &params, &right, "step").await;
+            assert_eq!(a.value, b.value);
+        }
+    }
+
+    #[tokio::test]
+    async fn random_action_rejects_invalid_type_and_bounds() {
+        let ctx = Context::new();
+        for params in [
+            json!({}),
+            json!({ "type": "decimal", "min": 0, "max": 1 }),
+            json!({ "type": "integer", "min": 0.5, "max": 2 }),
+            json!({ "type": "integer", "min": 2, "max": 1 }),
+            json!({ "type": "float", "min": 2, "max": 1 }),
+        ] {
+            let out = execute_action("std/random@v1", &params, &ctx, "step").await;
+            assert!(!out.success, "{params} should fail");
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // std/pick@v1
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn pick_by_index_wraps_and_random_stays_in_range() {
+        let ctx = Context::new();
+        let from = json!([{ "id": 1 }, { "id": 2 }, { "id": 3 }]);
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": from, "index": 4 }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success);
+        assert_eq!(out.value, json!({ "id": 2 }));
+
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": from, "index": 4, "index_offset": -1 }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!({ "id": 1 }));
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": from, "index": 0, "index_offset": -1 }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!({ "id": 3 }));
+
+        // A JSON string source (an interpolated response body) and a string index.
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": "[10,20]", "index": "3" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!(20));
+        for _ in 0..20 {
+            let out = execute_action("std/pick@v1", &json!({ "from": from }), &ctx, "step").await;
+            let id = out.value["id"].as_u64().unwrap();
+            assert!((1..=3).contains(&id));
+        }
+    }
+
+    #[tokio::test]
+    async fn pick_rejects_bad_sources() {
+        let ctx = Context::new();
+        for params in [
+            json!({}),
+            json!({ "from": [] }),
+            json!({ "from": "not json" }),
+            json!({ "from": [1], "file": "x.json" }),
+            json!({ "from": [1], "index": "-1" }),
+        ] {
+            let out = execute_action("std/pick@v1", &params, &ctx, "step").await;
+            assert!(!out.success, "{params} should fail");
+        }
+    }
+
+    #[tokio::test]
+    async fn pick_from_file_needs_file_actions_and_caches_parsed_array() {
+        let dir = std::env::temp_dir().join(format!("perfscale-pick-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tokens.json");
+        std::fs::write(&path, r#"[{"token":"a"},{"token":"b"}]"#).unwrap();
+        let params = json!({ "file": path.to_string_lossy(), "index": 1 });
+
+        let denied = execute_action("std/pick@v1", &params, &Context::new(), "step").await;
+        assert!(!denied.success);
+
+        let mut ctx = Context::new();
+        ctx.allow_file_actions = true;
+        let out = execute_action("std/pick@v1", &params, &ctx, "step").await;
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(out.value, json!({ "token": "b" }));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // -----------------------------------------------------------------

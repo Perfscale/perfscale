@@ -39,13 +39,45 @@ steps:
 
 | Field | Required | Description |
 |---|---|---|
-| `use` | yes | Action ID: `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/read-json@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, `std/get_shared_variable@v1` (short aliases `http`, `graphql`, `tcp`, `udp`, `pubsub`, `llm`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`, `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`, `check`, `sleep`, `log`, `file-read`, `read-json`, `file-write`, `child_process`, `kill_process`, `thresholds`, `set_shared_variable`, `get_shared_variable` also work). `uses:` is accepted as an alias for `use:` |
+| `use` | yes | Action ID: `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/random@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/read-json@v1`, `std/pick@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, `std/get_shared_variable@v1` (short aliases `http`, `graphql`, `tcp`, `udp`, `pubsub`, `llm`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`, `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`, `check`, `random`, `sleep`, `log`, `file-read`, `read-json`, `pick`, `file-write`, `child_process`, `kill_process`, `thresholds`, `set_shared_variable`, `get_shared_variable` also work). `uses:` is accepted as an alias for `use:` |
 | `name` | no | Human-readable label shown in log lines |
 | `with` | no | Action parameters — see [Actions](core/actions.md) |
 | `check` | no | Assertions on this step's output — same keys as `std/check@v1` |
 | `outputs` | no | Variable name to store the step output under |
 | `severity` | no | `std/thresholds@v1` only: what a violated gate becomes — `fail` (default; the run exits non-zero), `warn`, or `info` |
 | `message` | no | `std/thresholds@v1` only: custom label appended to the violation summary (interpolated) |
+| `if` / `when` | no | Run the step only when the condition holds — see [Conditional steps](#conditional-steps-if--when) |
+
+### Conditional steps (`if:` / `when:`)
+
+`if:` and `when:` are equivalent aliases; declaring both on one step is a
+parse error. The step is skipped unless its condition holds. `${{ … }}`
+placeholders and `${…}` generator tokens expand first; the result is a
+comparison (`==`, `!=`, `<`, `<=`, `>`, `>=` — numeric when both sides are
+numbers, string otherwise; quote literals with `'…'` if you like) or a bare
+value, false when empty, `false`, `0` or `null`. Clauses combine with `&&`
+and `||` (`&&` binds tighter, no parentheses). A skipped step produces no
+output, records no metrics and leaves `__last__` untouched.
+
+```yaml
+steps:
+  - use: std/random@v1
+    when: "${{ __iter__ }} == 0"
+    with: { type: float, min: 0, max: 5 }
+    outputs: startup_delay
+  - use: std/sleep@v1
+    when: "${{ __iter__ }} == 0"                 # first iteration only
+    with: { seconds: "${{ startup_delay }}" }
+  - use: std/http@v1
+    with: { url: "https://api.example.com/feed" }
+    outputs: feed
+  - use: std/random@v1
+    with: { type: float, min: 0, max: 1 }
+    outputs: like_roll
+  - use: std/http@v1
+    when: "${{ feed.status }} == 200 && ${{ like_roll }} < 0.15"
+    with: { method: POST, url: "https://api.example.com/like" }
+```
 
 ### Variables (`${{ ... }}`)
 
@@ -65,6 +97,7 @@ value** in a later step's `with:` or `check:` can then reference it:
 | `${{ vars.<key> }}` | A static value from the config file's `variables:` block |
 | `${{ inputs.<name> }}` | A resolved typed input from the config file's `inputs:` block (see [Typed inputs](#typed-inputs-inputs)) |
 | `${{ env.NAME }}` | Process environment variable `NAME` — for secrets (`api_key`, tokens, DSNs) that must not live in the YAML |
+| `${{ __vu__ }}` / `${{ __iter__ }}` | This VU's 1-based id and its 0-based iteration (k6's `__VU` / `__ITER`). A stored output of the same name wins |
 
 For `std/http@v1` the stored output is
 `{ "status": <int>, "body": <string>, "duration_ms": <float>, "headers": <object> }`
@@ -132,6 +165,9 @@ Rules and edge cases:
   for secrets.
 - Path segments descend one JSON object level per `.` — header names with
   dots in them cannot be addressed (rare; everything else works).
+- A numeric segment indexes an array (`${{ resp.items.0 }}`), and a string
+  that holds JSON — an HTTP `body` — is parsed when the path continues past
+  it: `${{ feed.body.posts.0.id }}` reads straight into the response.
 - Placeholders are resolved per virtual user, per iteration — each VU sees
   the outputs of its own step chain, never another VU's.
 - Steps without any `${{` are executed as-is: the engine skips the
@@ -405,21 +441,32 @@ call of the run:
 
 ```json
 {
-  "vus": 10,            // fixed profile only, else null
-  "duration_ms": 300000, // fixed profile only, else null
-  "seed": 42,           // config seed, or null
-  "stages": null,       // staged profile: [{ "duration_ms", "target" }]
-  "arrival": null,      // arrival profile: { "max_vus", "pre_allocated_vus", "stages": [{ "duration_ms", "rate" }] }
-  "variables": {}       // config `variables:` with ${{ env.* }} resolved
+  "vus": 10,
+  "duration_ms": 300000,
+  "seed": 42,
+  "stages": null,
+  "arrival": null,
+  "variables": {},
+  "extensions": {
+    "configlib": {
+      "endpoint": "https://api.test",
+      "pool_size": 16
+    }
+  }
 }
 ```
 
 `vus`/`duration_ms` are only set for the fixed load profile; staged and
 arrival-rate runs leave them null and carry the profile in
-`stages`/`arrival` (durations normalized to milliseconds). `variables` are
-resolved through the same interpolation steps use — so an env-sourced value
-a library now receives is also recorded in the run's secret registry and
-stays masked in the run log. Components built against the WIT 0.1 ABI
+`stages`/`arrival` (durations normalized to milliseconds). `seed` is the
+configured run seed or `null`. Staged entries carry `duration_ms` and
+`target`; `arrival` carries `max_vus`, `pre_allocated_vus`, and its own
+entries with `duration_ms` and `rate`. `variables` are the config `variables:`
+block, resolved through the same interpolation steps use — so an env-sourced
+value a library now receives is also recorded in the run's secret registry
+and stays masked in the run log. `extensions` carries library-owned config
+blocks after validation against their JSON Schemas; the example matches the
+`configlib` extension declared below. Components built against the WIT 0.1 ABI
 receive `"{}"` (the 0.1 context has no settings field).
 
 #### Policy rules: `secret` / `allow` / `deny` / `log`
@@ -450,9 +497,10 @@ libraries:
   never fire).
 
 - Local paths (`use: ./libs/fixer-ids.wasm`) load WASM component libraries
-  (WASI Preview 2, `perfscale:library@0.2.0` WIT — components built against
-  the older `@0.1.x` ABI keep loading, they just never see the run settings;
-  see [RFC 005](../rfcs/005-libraries.md)). Paths resolve **relative to the
+  (WASI Preview 2; current WIT is `perfscale:library@0.3.0` — older
+  `@0.1.x`/`@0.2.x` components keep loading, but 0.1 components never see run
+  settings and config extensions require 0.3; see
+  [RFC 005](../rfcs/005-libraries.md)). Paths resolve **relative to the
   declaring file's directory**, like `import:` paths. The perfscale CLI
   binary ships WASM support; embedders of `perfscale-core` need the
   `wasm-libs` cargo feature.
@@ -616,26 +664,49 @@ WASM library rules:
 
 A WASM library built against `perfscale:library@0.3.0` may export
 `config-schema`, declaring one top-level config key it owns plus a JSON
-Schema for its value:
+Schema for its value. The export returns a JSON string such as:
+
+```json
+{
+  "key": "configlib",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "endpoint": { "type": "string" },
+      "pool_size": { "type": "integer", "minimum": 1 }
+    },
+    "required": ["endpoint"],
+    "additionalProperties": false
+  }
+}
+```
+
+This declaration claims `configlib`. When the optional block is present, it
+requires `endpoint`, accepts an optional `pool_size` of at least 1, and
+rejects other fields. When the block is omitted, `extensions` has no
+`configlib` entry. A matching config is:
 
 ```yaml
 libraries:
   - use: ./configlib.wasm
     capabilities: []
 configlib:                    # claimed by the library's config-schema
-  endpoint: https://api.test  # validated against the library's schema
+  endpoint: https://api.test  # required string
+  pool_size: 16               # optional integer, minimum 1
 ```
 
 At lint and run start the engine loads the declared libraries, registers
 their claimed keys, and validates each block against the library's schema —
 fail-fast. The validated block reaches the guest in the run settings'
 `extensions` object (`ctx.settings.extensions["configlib"]` in the TS SDK).
-Every top-level key no loaded library claims is still a hard error (the
-unknown-key typo guard lives here), and two libraries claiming the same key
-is a hard error. The TS SDK declares the block via
+The key must match `[a-z][a-z0-9_]*` and must not collide with a built-in
+config key or another loaded library's claim. Every top-level key no loaded
+library claims is still a hard error (the unknown-key typo guard lives here).
+The TS SDK declares the block via
 `defineLibrary({ configSchema: { key, schema }, ... })`;
 `perfscale-library-build` picks the `perfscale-library-config` world
-automatically when `configSchema` is present.
+automatically when `configSchema` is present. See the
+[Library SDK guide](library-sdk.md) for a complete authoring example.
 
 Follow-ups (not in v1): interpolation inside extension blocks, schema
 evolution across `perfscale.lock` pins.

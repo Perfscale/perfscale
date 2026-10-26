@@ -11,7 +11,7 @@ SDK shape, three languages:
 | Language | Package | Status |
 |---|---|---|
 | **Rust** | [`perfscale-library-sdk`](../crates/perfscale-library-sdk) (this repo) | Stable, versioned with the engine |
-| **TypeScript / JavaScript** | [`@perfscale/library-sdk`](https://www.npmjs.com/package/@perfscale/library-sdk) ([sdk-libraries](https://github.com/Perfscale/sdk-libraries)) | Stable (v0.1.x) |
+| **TypeScript / JavaScript** | [`@perfscale/library-sdk`](https://www.npmjs.com/package/@perfscale/library-sdk) ([sdk-libraries](https://github.com/Perfscale/sdk-libraries)) | Stable (v0.3.x) |
 | **Go** | [TinyGo recipe](https://github.com/Perfscale/sdk-libraries/tree/main/go) | Experimental (no SDK package yet) |
 
 ## What every SDK gives you
@@ -20,8 +20,8 @@ The SDK hides all WIT plumbing. You declare a library name and its
 functions; the SDK provides:
 
 - **`Ctx`** — the per-call context: `message_seq`, `iteration_seq`,
-  `vu_id`, `seed`, `time_ms` (plus the run's frozen `settings_json` on the
-  0.2 ABI).
+  `vu_id`, `seed`, `time_ms`, plus the run's frozen `settings_json` on ABI
+  0.2+ (including library config `extensions` on 0.3).
 - **`memo(key, fn)`** — keyed reuse of a generated value within one
   message: `${fix.id(new)}` appearing twice in one message yields one id.
 - **A seeded PRNG bit-identical across all SDKs and the engine's built-in
@@ -115,6 +115,66 @@ reads files still declares
 `allow_library_capabilities: true`. The build already strips `wasi:random`,
 `wasi:http` and timers.
 
+### Config extensions (WIT 0.3)
+
+A TS library can claim one top-level `config.yaml` key and its JSON Schema
+through `configSchema`. This example exports the `{ "key", "schema" }` JSON
+contract shown in the [YAML reference](yaml-reference.md), then reads the
+validated block back from the run settings:
+
+```ts
+import { defineLibrary } from "@perfscale/library-sdk";
+
+export default defineLibrary({
+  name: "configlib",
+  configSchema: {
+    key: "configlib",
+    schema: {
+      type: "object",
+      properties: {
+        endpoint: { type: "string" },
+        pool_size: { type: "integer", minimum: 1 },
+      },
+      required: ["endpoint"],
+      additionalProperties: false,
+    },
+  },
+  functions: {
+    endpoint: {
+      description: "The configured endpoint",
+      call(_argv, ctx) {
+        const block = (ctx.settings.extensions ?? {})["configlib"] as
+          | { endpoint?: string; pool_size?: number }
+          | undefined;
+        return block?.endpoint ?? "https://localhost";
+      },
+    },
+  },
+});
+```
+
+```yaml
+libraries:
+  - use: ./configlib.wasm
+    capabilities: []
+configlib:
+  endpoint: https://api.test
+  pool_size: 16
+```
+
+The extension block is optional; when omitted, `extensions` has no
+`configlib` entry and the library can apply its own fallback. When present,
+the block is validated at lint and run start — here `endpoint` is required,
+`pool_size` must be at least 1, and unknown fields are rejected. The key must
+match `[a-z][a-z0-9_]*` and be unique across built-in keys and loaded
+libraries. `perfscale-library-build` selects the `perfscale-library-config`
+world automatically when `configSchema` is present.
+
+The Rust `export_library!` macro currently exports the base
+`perfscale-library` world. To declare a schema from Rust, use direct WIT
+bindings for `perfscale-library-config`, as in the complete
+[`configlib` example](../crates/perfscale-library-sdk/examples/configlib/src/lib.rs).
+
 ## Go
 
 The [sdk-libraries](https://github.com/Perfscale/sdk-libraries) repo
@@ -123,22 +183,29 @@ same shape as the other SDKs. Experimental — no packaged SDK yet.
 
 ## The ABI contract
 
-A library component exports one interface
-(`wit/library.wit` in this repo, vendored into each SDK repo):
+Every library component exports `library`; a component declaring a config
+extension additionally exports `config-schema` through the 0.3
+`perfscale-library-config` world (`wit/library.wit` in this repo, vendored
+into each SDK repo):
 
 ```wit
+// interface library
 info: func() -> string;   // JSON: { name, version, functions: […] }
 init: func(config-json: string) -> result<_, string>;
 call: func(ctx: context, func-name: string, args-json: string)
     -> result<string, string>;
+
+// interface config-schema, additionally exported by the 0.3 config world
+config-schema: func() -> string; // JSON: { key, schema }
 ```
 
 Arguments and results are JSON strings (every language has JSON; the
 destination is always a payload slot). The engine accepts components built
-against WIT `perfscale:library@0.1.x` and `@0.2.x` — 0.2 adds
-`settings-json` to the call context; 0.1 components keep working and simply
-never see it. Minors are additive-only; an unsupported major fails to load
-with both versions named in the error.
+against WIT `perfscale:library@0.1.x`, `@0.2.x`, and `@0.3.x`. ABI 0.2 added
+`settings-json`; 0.3 added the config world for declaring extensions. Older
+components keep loading: 0.1 has no settings field, while declaring
+`config-schema` requires rebuilding against 0.3. Minors are additive-only;
+an unsupported major fails to load with both versions named in the error.
 
 Functions marked `secret: true` in `info()` have every result masked
 (`***`) in the run log — minted credentials never leak into logs. Declare

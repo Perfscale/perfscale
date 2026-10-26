@@ -327,10 +327,10 @@ fn schema_issues(value: &Value, kind: DocKind, issues: &mut Vec<LintIssue>) {
 
 fn schema_error_suggestion(problem: &str) -> Option<String> {
     // A step missing both `use` and `uses` fails the `anyOf` on the Step
-    // definition (see `schema::relax_use_alias`); the older wording was
+    // definition (see `schema::relax_step_aliases`); the older wording was
     // `"use" is a required property`.
     if problem.contains("\"use\" is a required property") || problem.contains("anyOf") {
-        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/read-json@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, or `std/get_shared_variable@v1`".into())
+        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/random@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/read-json@v1`, `std/pick@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, or `std/get_shared_variable@v1`".into())
     } else if problem.contains("\"steps\" is a required property") {
         Some("a test definition is a mapping with a `steps:` list at the top level".into())
     } else if problem.contains("\"url\" is a required property") {
@@ -351,8 +351,8 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 const TEST_TOP_FIELDS: [&str; 2] = ["steps", "libraries"];
-const STEP_FIELDS: [&str; 8] = [
-    "name", "use", "uses", "with", "check", "outputs", "severity", "message",
+const STEP_FIELDS: [&str; 10] = [
+    "name", "use", "uses", "with", "check", "outputs", "severity", "message", "if", "when",
 ];
 const CONFIG_TOP_FIELDS: [&str; 18] = [
     "vus",
@@ -533,9 +533,11 @@ const DB_CONNECT_WITH_FIELDS: [&str; 6] =
 const DB_QUERY_WITH_FIELDS: [&str; 5] = ["id", "query", "params", "max_rows", "timeout_ms"];
 const DB_TX_WITH_FIELDS: [&str; 2] = ["id", "timeout_ms"];
 const DB_CLOSE_WITH_FIELDS: [&str; 1] = ["id"];
+const RANDOM_WITH_FIELDS: [&str; 3] = ["type", "min", "max"];
 const SLEEP_WITH_FIELDS: [&str; 2] = ["ms", "seconds"];
 const LOG_WITH_FIELDS: [&str; 1] = ["message"];
 const FILE_READ_WITH_FIELDS: [&str; 3] = ["path", "encoding", "query"];
+const PICK_WITH_FIELDS: [&str; 4] = ["from", "file", "index", "index_offset"];
 const FILE_WRITE_WITH_FIELDS: [&str; 5] = ["path", "content", "encoding", "append", "query"];
 const READ_JSON_WITH_FIELDS: [&str; 2] = ["file", "query"];
 const CHILD_PROCESS_WITH_FIELDS: [&str; 10] = [
@@ -633,10 +635,12 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
                     "std/db-tx-rollback@v1",
                     "std/db-close@v1",
                     "std/check@v1",
+                    "std/random@v1",
                     "std/sleep@v1",
                     "std/log@v1",
                     "std/file-read@v1",
                     "std/read-json@v1",
+                    "std/pick@v1",
                     "std/file-write@v1",
                     "std/child_process@v1",
                     "std/kill_process@v1",
@@ -647,7 +651,7 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             )
             .or_else(|| {
                 Some(
-                    "available actions: std/http@v1, std/graphql@v1, std/tcp@v1, std/udp@v1, std/pubsub@v1, std/llm@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/db-connect@v1, std/db-query@v1, std/db-tx-begin@v1, std/db-tx-commit@v1, std/db-tx-rollback@v1, std/db-close@v1, std/check@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/read-json@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1, std/thresholds@v1, std/set_shared_variable@v1, std/get_shared_variable@v1"
+                    "available actions: std/http@v1, std/graphql@v1, std/tcp@v1, std/udp@v1, std/pubsub@v1, std/llm@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/db-connect@v1, std/db-query@v1, std/db-tx-begin@v1, std/db-tx-commit@v1, std/db-tx-rollback@v1, std/db-close@v1, std/check@v1, std/random@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/read-json@v1, std/pick@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1, std/thresholds@v1, std/set_shared_variable@v1, std/get_shared_variable@v1"
                         .into(),
                 )
             }),
@@ -686,10 +690,12 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             | "db-tx-rollback" => Some(&DB_TX_WITH_FIELDS),
             "std/db-close@v1" | "db-close" => Some(&DB_CLOSE_WITH_FIELDS),
             "std/check@v1" | "check" => Some(&CHECK_FIELDS),
+            "std/random@v1" | "random" => Some(&RANDOM_WITH_FIELDS),
             "std/sleep@v1" | "sleep" => Some(&SLEEP_WITH_FIELDS),
             "std/log@v1" | "log" => Some(&LOG_WITH_FIELDS),
             "std/file-read@v1" | "file-read" => Some(&FILE_READ_WITH_FIELDS),
             "std/read-json@v1" | "read-json" => Some(&READ_JSON_WITH_FIELDS),
+            "std/pick@v1" | "pick" => Some(&PICK_WITH_FIELDS),
             "std/file-write@v1" | "file-write" => Some(&FILE_WRITE_WITH_FIELDS),
             "std/child_process@v1" | "child_process" => Some(&CHILD_PROCESS_WITH_FIELDS),
             "std/kill_process@v1" | "kill_process" => Some(&KILL_PROCESS_WITH_FIELDS),
@@ -1349,6 +1355,8 @@ fn is_known_action(action: &str) -> bool {
             | "db-close"
             | "std/check@v1"
             | "check"
+            | "std/random@v1"
+            | "random"
             | "std/sleep@v1"
             | "sleep"
             | "std/log@v1"
@@ -1356,6 +1364,8 @@ fn is_known_action(action: &str) -> bool {
             | "file-read"
             | "std/read-json@v1"
             | "read-json"
+            | "std/pick@v1"
+            | "pick"
             | "std/file-write@v1"
             | "file-write"
             | "std/child_process@v1"

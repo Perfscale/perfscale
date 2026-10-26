@@ -212,7 +212,7 @@ libraries:
 ## Writing your own library
 
 One shape, three languages — each SDK hides the WIT plumbing
-(`perfscale:library@0.2.0`, WASI Preview 2) and gives you a seeded PRNG
+(`perfscale:library@0.3.0`, WASI Preview 2) and gives you a seeded PRNG
 (bit-identical across SDKs and the engine's built-in generator),
 `memo()` for per-message reuse, argument helpers, and a runtime-free test
 harness.
@@ -256,6 +256,10 @@ payloads. The SDK's `Ctx` carries `messageSeq`, `iterationSeq`, `vuId`,
 `seed`, `timeMs`, plus `ctx.memo()` and `ctx.rng()`; `testCall` runs unit
 tests under `node:test` with no WASM involved.
 
+For a library-owned top-level config block validated against JSON Schema
+(ABI 0.3), see [Config extensions](../library-sdk.md#config-extensions-wit-03)
+in the SDK guide and the [YAML reference](../yaml-reference.md).
+
 Sandboxing note: jco components always import `wasi:filesystem` and
 `wasi:clocks/wall-clock`. A TS library that declares `"pure": true` in its
 `info()` metadata needs no `capabilities:` grant for those imports — the
@@ -278,7 +282,7 @@ TinyGo + `wasm32-wasip2` + `wit-bindgen-go` walkthrough in
 [`go/README.md`](https://github.com/Perfscale/sdk-libraries/blob/main/go/README.md)
 of the sdk-libraries repo. No SDK crate yet — the WIT contract is the same,
 so generated bindings work against any perfscale release speaking
-`perfscale:library@0.2.0`.
+`perfscale:library@0.3.0`.
 
 ### Starting from a template
 

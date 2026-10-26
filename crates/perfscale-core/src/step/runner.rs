@@ -175,7 +175,8 @@ pub async fn run_steps(
 /// `CallCtx.settings_json` (RFC 005 settings). Built once at run start —
 /// the string is identical for every VU, iteration, and call of the run.
 ///
-/// Shape: `{"vus", "duration_ms", "seed", "stages", "arrival", "variables"}`.
+/// Shape: `{"vus", "duration_ms", "seed", "stages", "arrival", "variables",
+/// "extensions"}`.
 /// `vus`/`duration_ms` describe only the fixed load profile; staged and
 /// arrival-rate runs leave them null and carry the profile in
 /// `stages`/`arrival` as declared, with durations normalized to
@@ -1788,6 +1789,25 @@ async fn execute_step(
 ) {
     let action = &step.action;
     let step_name = step.name.as_deref().unwrap_or(action.as_str());
+    if let Some(condition) = &step.condition {
+        match super::condition::evaluate(condition, ctx) {
+            Ok(true) => {}
+            // Skipped: no output, no metrics, `__last__` untouched.
+            Ok(false) => return,
+            Err(e) => {
+                metrics.record_step(step_name, 0.0, true);
+                let mut dropped = 0u64;
+                emit_lossy(
+                    tx,
+                    LogSource::from(LogTag::Err),
+                    &format!("{step_name}: condition failed: {e}"),
+                    &ctx.secrets,
+                    &mut dropped,
+                );
+                return;
+            }
+        }
+    }
     let params = step_params(step);
 
     let step_start = Instant::now();
@@ -1993,6 +2013,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }
     }
 
@@ -2050,6 +2071,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }];
         let config = RunConfig {
             vus: 4,
@@ -2372,6 +2394,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }];
         let config = RunConfig {
             vus: 4,
@@ -2412,6 +2435,7 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                condition: None,
             },
             // Throttle the loop so a 250ms run makes a handful of requests, not
             // thousands — the suite runs many tests in parallel.
@@ -2451,6 +2475,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }];
         let config = RunConfig {
             vus: 1,
@@ -2485,6 +2510,7 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                condition: None,
             },
             sleep_step(50),
         ];
@@ -2526,6 +2552,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }];
         let config = RunConfig {
             vus: 1,
@@ -2573,6 +2600,7 @@ mod tests {
                 outputs: Some("resp".into()),
                 severity: None,
                 message: None,
+                condition: None,
             },
             Step {
                 name: Some("report".into()),
@@ -2582,6 +2610,7 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                condition: None,
             },
         ];
         let config = RunConfig {
@@ -3081,6 +3110,7 @@ mod tests {
                 outputs: Some("feed".into()),
                 severity: None,
                 message: None,
+                condition: None,
             },
             Step {
                 name: Some("sub".into()),
@@ -3090,6 +3120,7 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                condition: None,
             },
             Step {
                 name: Some("wait".into()),
@@ -3099,6 +3130,7 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                condition: None,
             },
             // No explicit close — the iteration-end drain must handle it.
             sleep_step(50),
@@ -3149,6 +3181,7 @@ mod tests {
                 outputs: Some("conn".into()),
                 severity: None,
                 message: None,
+                condition: None,
             },
             Step {
                 name: Some("unary".into()),
@@ -3162,6 +3195,7 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                condition: None,
             },
             Step {
                 name: Some("open".into()),
@@ -3174,6 +3208,7 @@ mod tests {
                 outputs: Some("stream".into()),
                 severity: None,
                 message: None,
+                condition: None,
             },
             Step {
                 name: Some("send".into()),
@@ -3187,6 +3222,7 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                condition: None,
             },
             Step {
                 name: Some("recv".into()),
@@ -3200,6 +3236,7 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                condition: None,
             },
             Step {
                 name: Some("close".into()),
@@ -3209,6 +3246,7 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                condition: None,
             },
         ];
         let config = RunConfig {
@@ -3256,6 +3294,7 @@ mod tests {
             outputs: outputs.map(str::to_owned),
             severity: None,
             message: None,
+            condition: None,
         }
     }
 
@@ -3391,6 +3430,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }];
         let config = RunConfig {
             vus: 1,
@@ -3425,6 +3465,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }];
         let config = RunConfig {
             vus: 1,
@@ -3457,6 +3498,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }];
         let config = RunConfig {
             vus: 2,
@@ -3496,6 +3538,7 @@ mod tests {
             outputs: Some("cfg".into()),
             severity: None,
             message: None,
+            condition: None,
         }];
         // Test step logs the config value interpolated from the before output.
         let steps = vec![log_step("show", "host=${{ config.cfg.content }}", None)];
@@ -3582,6 +3625,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }];
         let steps = vec![log_step("should-not-run", "MUST NOT APPEAR", None)];
 
@@ -3650,6 +3694,7 @@ mod tests {
             outputs: Some("cfg".into()),
             severity: None,
             message: None,
+            condition: None,
         }];
         let mut vars = Map::new();
         vars.insert("region".into(), json!("eu"));
@@ -3668,6 +3713,7 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                condition: None,
             },
             log_step("teardown-2", "AFTER STILL RUNS", None),
         ];
@@ -3724,6 +3770,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }];
         let after = vec![log_step("teardown", "AFTER ON SETUP FAILURE", None)];
 
@@ -3790,6 +3837,7 @@ mod tests {
             outputs: Some("keeper".into()),
             severity: None,
             message: None,
+            condition: None,
         }];
         let steps = vec![sleep_step(1)];
 
@@ -3828,6 +3876,7 @@ mod tests {
             outputs: Some("keeper".into()),
             severity: None,
             message: None,
+            condition: None,
         }];
         let after = vec![Step {
             name: Some("stop server".into()),
@@ -3837,6 +3886,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }];
         let steps = vec![sleep_step(1)];
 
@@ -3881,6 +3931,7 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            condition: None,
         }];
 
         let lines = run_native_and_collect(
@@ -4000,6 +4051,7 @@ mod tests {
             outputs: outputs.map(str::to_owned),
             severity: None,
             message: None,
+            condition: None,
         };
         vec![
             step(
@@ -4027,6 +4079,7 @@ mod tests {
             outputs: None,
             severity: severity.map(str::to_owned),
             message: message.map(str::to_owned),
+            condition: None,
         }
     }
 
@@ -4350,6 +4403,7 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                condition: None,
             },
             sleep_step(50),
         ];

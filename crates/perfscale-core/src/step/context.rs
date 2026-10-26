@@ -452,7 +452,14 @@ impl Context {
         let split = expr.find(['.', '[']).unwrap_or(expr.len());
         let (root, rest) = expr.split_at(split);
         let Some(current) = self.vars.get(root).map(|v| &**v) else {
-            return Ok(String::new());
+            // Built-in VU identity, k6's `__VU` / `__ITER`: 1-based VU id and
+            // the 0-based iteration of this VU. A stored output of the same
+            // name wins (checked above), so existing scenarios keep working.
+            return Ok(match root {
+                "__vu__" => self.vu_id.to_string(),
+                "__iter__" => self.iteration_seq.saturating_sub(1).to_string(),
+                _ => String::new(),
+            });
         };
         let Ok(segments) = super::json_path::parse(rest) else {
             return Ok(String::new());
@@ -617,6 +624,17 @@ mod tests {
         assert_eq!(ctx.interpolate("${{ text.body.x }}"), "");
         // The string itself is still returned verbatim when the path ends on it.
         assert_eq!(ctx.interpolate("${{ text.body }}"), "plain text");
+    }
+
+    #[test]
+    fn interpolate_vu_identity() {
+        let mut ctx = Context::new();
+        ctx.set_vu_id(4);
+        ctx.iteration_seq = 3;
+        assert_eq!(ctx.interpolate("${{ __vu__ }}/${{ __iter__ }}"), "4/2");
+        // A stored output of the same name wins.
+        ctx.set("__vu__", json!("mine"));
+        assert_eq!(ctx.interpolate("${{ __vu__ }}"), "mine");
     }
 
     #[test]

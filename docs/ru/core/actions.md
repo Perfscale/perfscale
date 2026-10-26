@@ -10,8 +10,8 @@
 `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`,
 `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`,
 `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`,
-`check`, `sleep`,
-`log`, `file-read`, `read-json`, `file-write`, `child_process`, `kill_process`,
+`check`, `random`, `sleep`,
+`log`, `file-read`, `read-json`, `pick`, `file-write`, `child_process`, `kill_process`,
 `set_shared_variable`, `get_shared_variable`) разрешаются в те же
 реализации.
 
@@ -1556,14 +1556,89 @@ ExecutionReport. Для детерминированных обменов адр
 Каждая проверка логирует `PASS`/`FAIL`; неудачи идут в stderr, но не
 останавливают прогон. Результат: `{ "passed": true|false }`.
 
+## `std/random@v1`
+
+Генерирует одно числовое значение. Результат — само число, доступное для
+интерполяции `${{ name }}` в следующих шагах.
+
+| Параметр | Тип | По умолчанию | Описание |
+|---|---|---|---|
+| `type` | string | **обязателен** | `integer` (включительно `[min, max]`) или `float` (`[min, max)`) |
+| `min` | number | **обязателен** | Нижняя граница; не больше `max` |
+| `max` | number | **обязателен** | Верхняя граница; не меньше `min` |
+
+При одинаковых границах возвращается эта константа. `seed:` прогона делает
+последовательность воспроизводимой; у каждого VU она своя.
+
+```yaml
+steps:
+  - use: std/random@v1
+    with: { type: float, min: 0, max: 1 }
+    outputs: like_roll
+  - use: std/http@v1
+    when: "${{ like_roll }} < 0.15"
+    with: { method: POST, url: "https://api.example.com/posts/1/like" }
+  - use: std/random@v1
+    with: { type: float, min: 3, max: 7 }
+    outputs: think_time
+  - use: std/sleep@v1
+    with: { seconds: "${{ think_time }}" }
+```
+
 ## `std/sleep@v1`
 
 Приостанавливает текущего VU.
 
 | Параметр | Тип | По умолчанию | Описание |
 |---|---|---|---|
-| `ms` | integer | `1000` | Сколько миллисекунд спать |
-| `seconds` | number | — | Альтернатива `ms` (допускаются дробные значения) |
+| `ms` | integer or string | `1000` | Сколько миллисекунд спать |
+| `seconds` | number or string | — | Альтернатива `ms` (допускаются дробные значения) |
+
+Строковое значение сначала раскрывает `${…}`-токены, поэтому
+`ms: "${rand(3000,7000)}"` задаёт случайную паузу. `${{ … }}` интерполяция
+происходит до запуска действия, поэтому `seconds: "${{ think_time }}"` может
+использовать результат `std/random@v1`. Нечисловая строка после раскрытия
+завершает шаг ошибкой (раньше молча использовалась пауза 1000 мс).
+
+## `std/pick@v1`
+
+Выбирает один элемент JSON-массива — случайный пост из ленты или тестового
+пользователя для конкретного VU из fixture-файла.
+
+| Параметр | Тип | По умолчанию | Описание |
+|---|---|---|---|
+| `from` | array or string | одно из from/file | Массив или строка с JSON-массивом (`"${{ feed.body.posts }}"`) |
+| `file` | string (path) | одно из from/file | Файл с JSON-массивом, парсится один раз на процесс и кешируется по `(mtime, size)`, как `std/file-read@v1`. Требует `allow_file_actions`, учитывает `fs_root` |
+| `index` | integer or string | random | Индекс элемента, заворачивается по модулю длины. Если опущен — равномерно случайный элемент |
+| `index_offset` | integer or string | `0` | Знаковое смещение к `index` перед модулем; отрицательные значения тоже заворачиваются |
+
+**Результат**: сам выбранный элемент.
+
+`index: "${{ __vu__ }}"` с `index_offset: -1` отображает 1-based VU на
+0-based элементы массива — точно `(VU-1) % length`. Для случайного выбора
+через явный `std/random@v1` передайте целый `index` из этого шага вместо
+случайного выбора внутри `pick`.
+
+```yaml
+steps:
+  - use: std/pick@v1
+    with: { file: fixtures/users.json, index: "${{ __vu__ }}", index_offset: -1 }
+    outputs: user
+  - use: std/http@v1
+    with: { url: "https://api.example.com/feed" }
+    outputs: feed
+  - use: std/random@v1
+    with: { type: integer, min: 0, max: 19 }
+    outputs: post_index
+  - use: std/pick@v1
+    with: { from: "${{ feed.body.posts }}", index: "${{ post_index }}" }
+    outputs: post
+  - use: std/http@v1
+    with:
+      method: POST
+      url: "https://api.example.com/posts/${{ post.id }}/like"
+      headers: { Authorization: "Bearer ${{ user.token }}" }
+```
 
 ## `std/log@v1`
 
