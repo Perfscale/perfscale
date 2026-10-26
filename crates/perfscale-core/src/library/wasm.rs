@@ -1391,6 +1391,10 @@ impl LibraryInstance for WasmLibraryInstance {
                 seed,
                 time_ms,
                 settings_json: "",
+                // WASM components get filesystem access through the `fs`
+                // capability preopen, never through the native gate.
+                allow_file_actions: false,
+                fs_root: None,
             };
             let args_json = std::str::from_utf8(&args_buf).expect("JSON is UTF-8");
             let result = call_guest(
@@ -1689,6 +1693,8 @@ mod tests {
             seed: 42,
             time_ms: 1_784_160_000_000,
             settings_json: "{}",
+            allow_file_actions: false,
+            fs_root: None,
         }
     }
 

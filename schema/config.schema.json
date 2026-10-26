@@ -325,7 +325,7 @@
           ]
         },
         "use": {
-          "description": "Library reference:\n\n- `@std/random@v1` — built-in, native; - a local `.wasm` path — WASM component, relative to the declaring file's directory (resolved by `import:` handling; requires a build with the `wasm-libs` feature, which the CLI enables); - `https://…/lib.wasm` — fetched by `perfscale install`; requires `sha256:` and is pinned in `perfscale.lock`; - `git+<repo-url>@<ref>#<path>` — a `.wasm` artifact inside a git repository at a tag/branch/commit, fetched by `perfscale install` and pinned to the resolved commit in `perfscale.lock`.\n\nRemote sources are resolved to the local cache at load time, so `run`/`lint` stay fully offline.",
+          "description": "Library reference:\n\n- `@std/random@v1`, `@std/json@v1` — built-in, native; - a local `.wasm` path — WASM component, relative to the declaring file's directory (resolved by `import:` handling; requires a build with the `wasm-libs` feature, which the CLI enables); - `https://…/lib.wasm` — fetched by `perfscale install`; requires `sha256:` and is pinned in `perfscale.lock`; - `git+<repo-url>@<ref>#<path>` — a `.wasm` artifact inside a git repository at a tag/branch/commit, fetched by `perfscale install` and pinned to the resolved commit in `perfscale.lock`.\n\nRemote sources are resolved to the local cache at load time, so `run`/`lint` stay fully offline.",
           "type": "string"
         },
         "with": {
@@ -635,7 +635,7 @@
     },
     "allow_file_actions": {
       "default": false,
-      "description": "Allow filesystem-touching steps: `std/file-read@v1`, `std/file-write@v1`, and `file` parts in `std/http@v1` multipart uploads. Fail-closed: defaults to `false` so a step list from an untrusted source cannot read or write arbitrary paths.",
+      "description": "Allow filesystem-touching steps: `std/file-read@v1`, `std/read-json@v1`, `std/file-write@v1`, and `file` parts in `std/http@v1` multipart uploads. Fail-closed: defaults to `false` so a step list from an untrusted source cannot read or write arbitrary paths.",
       "type": "boolean"
     },
     "allow_library_capabilities": {

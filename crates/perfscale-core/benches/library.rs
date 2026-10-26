@@ -88,6 +88,8 @@ fn ctx() -> CallCtx<'static> {
         seed: 42,
         time_ms: 1_784_160_000_000,
         settings_json: r#"{"vus":10,"seed":42}"#,
+        allow_file_actions: false,
+        fs_root: None,
     }
 }
 

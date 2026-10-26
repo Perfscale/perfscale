@@ -30,6 +30,8 @@ pub(crate) mod db;
 pub mod graphql;
 pub(crate) mod grpc;
 pub mod http;
+pub(crate) mod json_doc;
+pub(crate) mod json_path;
 pub mod llm;
 pub mod process;
 pub mod pubsub;
@@ -137,9 +139,10 @@ pub struct RunConfig {
     pub duration: String,
 
     /// Allow filesystem-touching steps: `std/file-read@v1`,
-    /// `std/file-write@v1`, and `file` parts in `std/http@v1` multipart
-    /// uploads. Fail-closed: defaults to `false` so a step list from an
-    /// untrusted source cannot read or write arbitrary paths.
+    /// `std/read-json@v1`, `std/file-write@v1`, and `file` parts in
+    /// `std/http@v1` multipart uploads. Fail-closed: defaults to `false` so a
+    /// step list from an untrusted source cannot read or write arbitrary
+    /// paths.
     #[serde(default)]
     pub allow_file_actions: bool,
 

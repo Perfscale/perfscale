@@ -39,7 +39,7 @@ steps:
 
 | Field | Required | Description |
 |---|---|---|
-| `use` | yes | Action ID: `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, `std/get_shared_variable@v1` (short aliases `http`, `graphql`, `tcp`, `udp`, `pubsub`, `llm`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`, `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`, `check`, `sleep`, `log`, `file-read`, `file-write`, `child_process`, `kill_process`, `thresholds`, `set_shared_variable`, `get_shared_variable` also work). `uses:` is accepted as an alias for `use:` |
+| `use` | yes | Action ID: `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/read-json@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, `std/get_shared_variable@v1` (short aliases `http`, `graphql`, `tcp`, `udp`, `pubsub`, `llm`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`, `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`, `check`, `sleep`, `log`, `file-read`, `read-json`, `file-write`, `child_process`, `kill_process`, `thresholds`, `set_shared_variable`, `get_shared_variable` also work). `uses:` is accepted as an alias for `use:` |
 | `name` | no | Human-readable label shown in log lines |
 | `with` | no | Action parameters — see [Actions](core/actions.md) |
 | `check` | no | Assertions on this step's output — same keys as `std/check@v1` |
@@ -58,6 +58,8 @@ value** in a later step's `with:` or `check:` can then reference it:
 | `${{ name }}` | The whole stored output, stringified |
 | `${{ name.field }}` | One field of a stored object (e.g. `.status`, `.body`, `.duration_ms`) |
 | `${{ name.a.b }}` | Nested path — one JSON level per `.`, e.g. `${{ resp.headers.x-request-id }}` |
+| `${{ name.arr.0 }}` / `${{ name.arr[0] }}` | Array indexing — a numeric segment indexes an array; dot and bracket syntax are interchangeable |
+| `${{ name.body.a[0].b }}` | A path that continues past a *string* leaf parses it as JSON on demand — e.g. an HTTP `body` — and walks into the document |
 | `${{ __last__ }}` / `${{ __last__.field }}` | The immediately preceding step's output — always available, no `outputs:` needed |
 | `${{ config.<name>.<field> }}` | Output of a config-file `before:` setup step (see [Config](#config--c-configyaml)) |
 | `${{ vars.<key> }}` | A static value from the config file's `variables:` block |
@@ -600,6 +602,15 @@ WASM library rules:
 | `date(a, b)` | Random date between `YYYY-MM-DD` a and b inclusive, `YYYY-MM-DD` out |
 | `timestamp(a, b)` | Random unix-ms timestamp in `[a, b]` |
 | `datetime(a, b)` | Random RFC 3339 datetime between dates a and b (whole end day included) |
+
+`@std/json@v1` functions (fail-closed like the file steps: the run must set
+`allow_file_actions: true`; paths honour `fs_root`):
+
+| Function | Returns |
+|---|---|
+| `read(file)` | The whole parsed JSON file as a compact JSON string (process-wide cache shared with `std/read-json@v1`, revalidated by `(mtime, size)`) |
+| `read(file, query)` | The subvalue at a jq-style path (`.posts[0].id` ≡ `posts.0.id`); a string leaf verbatim, other values compact JSON. Mandatory miss → expansion error naming the segment; a `?` suffix resolves a miss to an empty string |
+| `pick(file)` / `pick(file, index)` | Element of the JSON array in `file` — random per message (deterministic under a run `seed:`), or `index` modulo the array length. Non-array document, empty array, or non-integer index → expansion error |
 
 #### Config extensions (library-owned top-level keys, issue #10)
 
