@@ -603,6 +603,14 @@ WASM library rules:
 | `timestamp(a, b)` | Random unix-ms timestamp in `[a, b]` |
 | `datetime(a, b)` | Random RFC 3339 datetime between dates a and b (whole end day included) |
 
+`@std/json@v1` functions (fail-closed like the file steps: the run must set
+`allow_file_actions: true`; paths honour `fs_root`):
+
+| Function | Returns |
+|---|---|
+| `read(file)` | The whole parsed JSON file as a compact JSON string (process-wide cache shared with `std/read-json@v1`, revalidated by `(mtime, size)`) |
+| `read(file, query)` | The subvalue at a jq-style path (`.posts[0].id` ≡ `posts.0.id`); a string leaf verbatim, other values compact JSON. Mandatory miss → expansion error naming the segment; a `?` suffix resolves a miss to an empty string |
+
 #### Config extensions (library-owned top-level keys, issue #10)
 
 A WASM library built against `perfscale:library@0.3.0` may export

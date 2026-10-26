@@ -102,6 +102,43 @@ function accepts the optional trailing memo `key`:
 | `phone()` | Random phone number |
 | `date(a, b)` / `timestamp(a, b)` / `datetime(a, b)` | Random dates and timestamps in a range |
 
+## The `@std/json@v1` built-in
+
+Ships with the engine — no WASM, no install. Reads JSON files into
+generator tokens; the structured counterpart of the
+[`std/read-json@v1`](actions.md#stdread-jsonv1) step:
+
+```yaml
+libraries:
+  - use: '@std/json@v1'          # default alias: json
+    capabilities: []
+
+steps:
+  - use: std/http@v1
+    with:
+      method: POST
+      url: "https://api.example.com/login"
+      body: '{"token": ${json.read("users.json", ".users[0].token")}}'
+```
+
+| Function | Returns |
+|---|---|
+| `read(file)` | The whole parsed document, as a compact JSON string |
+| `read(file, query)` | The subvalue at a jq-style path (`.posts[0].id` ≡ `posts.0.id` — the same grammar as the `query:` parameter of the file steps); a string leaf verbatim, other values as compact JSON |
+
+Notes:
+
+- Parsed documents come from the **process-wide cache shared with
+  `std/read-json@v1`**, revalidated by `(mtime, size)` — the first call pays
+  the disk read and parse, every later call (step or library) hits RAM.
+- **Fail-closed**: the run must set `allow_file_actions: true` (and paths
+  honour `fs_root`), exactly like the `std/file-*@v1` steps.
+- Error semantics differ from the step: a missing mandatory path segment is
+  a token-expansion error naming the segment (fails the step it appears in),
+  while a `?`-tolerant miss (`json.read("f.json", ".users?[0]")`) resolves
+  to an **empty string** — interpolation-friendly, where the step yields a
+  `null` output.
+
 ## Capabilities and the sandbox
 
 Custom libraries run in a wasmtime sandbox under a **fail-closed**

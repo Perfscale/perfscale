@@ -24,7 +24,12 @@ Release notes for the next release, written as features land.
   `${{ ... }}` interpolation accepts the same paths, including bracket
   indexing, and a path that continues past a string leaf — an HTTP `body` —
   parses it as JSON on demand: `${{ feed.body.posts[0].id }}` reads straight
-  into a response without a separate extract step.
+  into a response without a separate extract step. The same reader is also
+  a built-in library, `@std/json@v1`: `${json.read("users.json",
+  ".users[0].token")}` inside generator tokens, sharing the step's
+  parsed-document cache and its fail-closed `allow_file_actions` gate (a
+  tolerant `?` miss resolves to an empty string in tokens; a mandatory miss
+  is an expansion error naming the segment).
 - `std/http@v1` `pool: dedicated` — one HTTP client per VU, created on the
   VU's first request and held until the VU exits. The default shard pools
   cap idle connections at 64 per host per shard, so past
