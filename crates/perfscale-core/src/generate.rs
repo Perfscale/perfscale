@@ -282,30 +282,30 @@ impl Gen {
         if !template.contains("${") {
             return Ok(template.to_string());
         }
-        let bytes = template.as_bytes();
-        let mut out = String::with_capacity(template.len());
-        let mut i = 0;
-        while i < bytes.len() {
+        let mut rest = template;
+        let mut out = String::with_capacity(template.len() + 32);
+        while let Some(open) = rest.find("${") {
             // A `${{` belongs to the engine's interpolation layer — leave it
-            // (and its content) alone by copying the first char and moving on.
-            if bytes[i] == b'$'
-                && i + 1 < bytes.len()
-                && bytes[i + 1] == b'{'
-                && bytes.get(i + 2) != Some(&b'{')
-            {
-                if let Some(close) = template[i + 2..].find('}') {
-                    let token = &template[i + 2..i + 2 + close];
-                    match self.eval(token)? {
-                        Some(v) => out.push_str(&v),
-                        None => out.push_str(&format!("${{{token}}}")),
-                    }
-                    i = i + 2 + close + 1;
-                    continue;
-                }
+            // (and its content) alone by copying the literal through the `$`.
+            if rest.as_bytes().get(open + 2) == Some(&b'{') {
+                out.push_str(&rest[..open + 1]);
+                rest = &rest[open + 1..];
+                continue;
             }
-            out.push(bytes[i] as char);
-            i += 1;
+            let Some(close) = rest[open + 2..].find('}') else {
+                out.push_str(rest);
+                return Ok(out);
+            };
+            let token_start = open + 2;
+            let token_end = token_start + close;
+            out.push_str(&rest[..open]);
+            match self.eval(&rest[token_start..token_end])? {
+                Some(value) => out.push_str(&value),
+                None => out.push_str(&rest[open..token_end + 1]),
+            }
+            rest = &rest[token_end + 1..];
         }
+        out.push_str(rest);
         Ok(out)
     }
 
@@ -327,24 +327,23 @@ impl Gen {
                 };
                 match name {
                     "rand" => {
-                        let Some((a, b)) = two_ints(&args) else {
+                        let Some((a, b)) = two_ints(args) else {
                             return self.eval_library(token);
                         };
                         Some(self.rand_range(a, b).to_string())
                     }
                     "randf" => {
-                        let Some(v) = self.eval_randf(&args) else {
+                        let Some(v) = self.eval_randf(args) else {
                             return self.eval_library(token);
                         };
                         Some(v)
                     }
                     "choice" => {
-                        let opts: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-                        if opts.is_empty() {
-                            return self.eval_library(token);
-                        }
-                        let idx = (self.next_u64() % opts.len() as u64) as usize;
-                        Some(opts[idx].trim().to_string())
+                        let mut options = args.split('|');
+                        let count = options.clone().count();
+                        let idx = (self.next_u64() % count as u64) as usize;
+                        let option = options.nth(idx).expect("split yields at least one option");
+                        Some(option.trim().to_string())
                     }
                     _ => return self.eval_library(token),
                 }
@@ -352,10 +351,14 @@ impl Gen {
         })
     }
 
-    fn eval_randf(&mut self, args: &[String]) -> Option<String> {
-        let a: f64 = args.first()?.trim().parse().ok()?;
-        let b: f64 = args.get(1)?.trim().parse().ok()?;
-        let dp: usize = args.get(2).and_then(|s| s.trim().parse().ok()).unwrap_or(2);
+    fn eval_randf(&mut self, args: &str) -> Option<String> {
+        let mut parts = args.split(',');
+        let a: f64 = parts.next()?.trim().parse().ok()?;
+        let b: f64 = parts.next()?.trim().parse().ok()?;
+        let dp: usize = parts
+            .next()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(2);
         // Scale to integer units at `dp` precision, pick, rescale.
         let scale = 10f64.powi(dp as i32);
         let lo = (a * scale) as i64;
@@ -445,7 +448,7 @@ impl Gen {
         args.extend_from_slice(extra_args);
         if !args_text.trim().is_empty() {
             for raw in split_args(args_text) {
-                args.push(arg_to_json(&self.expand(&raw)?));
+                args.push(arg_to_json(&self.expand(raw)?));
             }
         }
         self.invoke_library(trimmed, alias, func, args)
@@ -550,6 +553,34 @@ pub fn expand_tokens(
     })
 }
 
+/// In-place variant for callers that already own the JSON value. Token-free
+/// leaves are left untouched instead of being cloned into a new tree.
+pub fn expand_tokens_in_place(
+    v: &mut serde_json::Value,
+    generator: &mut Gen,
+) -> Result<(), String> {
+    use serde_json::Value;
+    match v {
+        Value::String(s) => {
+            if s.contains("${") {
+                *s = generator.expand(s)?;
+            }
+        }
+        Value::Array(a) => {
+            for x in a {
+                expand_tokens_in_place(x, generator)?;
+            }
+        }
+        Value::Object(m) => {
+            for x in m.values_mut() {
+                expand_tokens_in_place(x, generator)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Wall-clock formatting (no chrono dependency)
 // ---------------------------------------------------------------------------
@@ -620,23 +651,20 @@ fn is_fn_name(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Parse `name(a,b,c)` → `("name", ["a","b","c"])`. `choice` splits on `|`,
-/// everything else on `,`.
-fn parse_call(token: &str) -> Option<(&str, Vec<String>)> {
+/// Parse `name(a,b,c)` → `("name", "a,b,c")`. Argument separators are
+/// interpreted lazily by the caller.
+fn parse_call(token: &str) -> Option<(&str, &str)> {
     let open = token.find('(')?;
     if !token.ends_with(')') {
         return None;
     }
-    let name = &token[..open];
-    let inner = &token[open + 1..token.len() - 1];
-    let sep = if name == "choice" { '|' } else { ',' };
-    let args = inner.split(sep).map(|s| s.to_string()).collect();
-    Some((name, args))
+    Some((&token[..open], &token[open + 1..token.len() - 1]))
 }
 
-fn two_ints(args: &[String]) -> Option<(i64, i64)> {
-    let a = args.first()?.trim().parse().ok()?;
-    let b = args.get(1)?.trim().parse().ok()?;
+fn two_ints(args: &str) -> Option<(i64, i64)> {
+    let mut parts = args.split(',');
+    let a = parts.next()?.trim().parse().ok()?;
+    let b = parts.next()?.trim().parse().ok()?;
     Some((a, b))
 }
 
@@ -664,23 +692,21 @@ fn parse_library_call(call: &str) -> Option<(&str, Vec<serde_json::Value>)> {
 
 /// Split on commas not inside double quotes (quotes stay in the parts —
 /// [`arg_to_json`] strips them).
-fn split_args(text: &str) -> Vec<String> {
+fn split_args(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
-    let mut cur = String::new();
+    let mut start = 0;
     let mut in_quotes = false;
-    for ch in text.chars() {
+    for (i, ch) in text.char_indices() {
         match ch {
-            '"' => {
-                in_quotes = !in_quotes;
-                cur.push(ch);
-            }
+            '"' => in_quotes = !in_quotes,
             ',' if !in_quotes => {
-                out.push(std::mem::take(&mut cur));
+                out.push(&text[start..i]);
+                start = i + 1;
             }
-            _ => cur.push(ch),
+            _ => {}
         }
     }
-    out.push(cur);
+    out.push(&text[start..]);
     out
 }
 
@@ -704,6 +730,54 @@ mod tests {
     fn plain_string_passes_through() {
         let mut g = Gen::new(1);
         assert_eq!(g.expand("EURUSD").unwrap(), "EURUSD");
+    }
+
+    #[test]
+    fn non_ascii_literals_are_preserved() {
+        let mut g = Gen::new(1);
+        g.begin_message();
+        assert_eq!(
+            g.expand("prêt-${seq}-€-${unknown}-✓").unwrap(),
+            "prêt-1-€-${unknown}-✓"
+        );
+    }
+
+    #[test]
+    fn builtins_are_deterministic_per_seed() {
+        fn sequence(seed: u64) -> Vec<String> {
+            let mut gen = Gen::new(seed);
+            (0..4)
+                .map(|_| {
+                    gen.begin_message();
+                    gen.expand(
+                        "${seq}:${rand(1,1000000)}:${randf(1.0,2.0,3)}:${choice(a|b|c)}:${uuid}",
+                    )
+                    .unwrap()
+                })
+                .collect()
+        }
+        assert_eq!(sequence(77), sequence(77));
+        assert_ne!(sequence(77), sequence(78));
+    }
+
+    #[test]
+    fn in_place_json_expansion_matches_owned_api() {
+        let input = serde_json::json!({
+            "order": {
+                "id": "${rand(1,1000000)}",
+                "note": "msg-${seq}",
+                "static": "prêt-€"
+            },
+            "items": ["alpha", "${choice(a|b)}"]
+        });
+        let mut owned_gen = Gen::new(42);
+        owned_gen.begin_message();
+        let expected = expand_tokens(&input, &mut owned_gen).unwrap();
+        let mut in_place_gen = Gen::new(42);
+        in_place_gen.begin_message();
+        let mut actual = input;
+        expand_tokens_in_place(&mut actual, &mut in_place_gen).unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[test]
