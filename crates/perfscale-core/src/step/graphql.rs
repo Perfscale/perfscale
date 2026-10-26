@@ -72,8 +72,10 @@
 //!   also feeds the standard HTTP aggregates, like `std/http@v1`.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::future::{ready, Future};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use futures_util::future::Either;
 use graphql_parser::query::{
     Definition as QueryDefinition, Document as QueryDocument, OperationDefinition, Selection,
     SelectionSet, Value as GqlValue,
@@ -88,7 +90,7 @@ use super::http::{
     client as http_client, error_chain, request_line, timed_exchange, BodyKind, ClientPool,
 };
 use super::ws::{bool_param, u64_param};
-use crate::generate::expand_tokens;
+use crate::generate::expand_tokens_in_place;
 use crate::lint::closest_name;
 
 /// Recursion guard for the validation walk: fragment spreads can cycle
@@ -428,37 +430,50 @@ fn named_schema_type<'a>(t: &SchemaType<'a, &'a str>) -> String {
 // Query validation
 // ---------------------------------------------------------------------------
 
-/// Syntax-check a GraphQL document. Shared by the linter (offline) and the
-/// action (before every send — parsing a small document costs microseconds
-/// against a network round trip, so no cache).
-pub fn validate_query_syntax(query: &str) -> Result<(), String> {
-    graphql_parser::parse_query::<&str>(query)
-        .map(|_| ())
-        .map_err(|e| format!("invalid GraphQL syntax: {e}"))
+fn parse_query<'a>(query: &'a str) -> Result<QueryDocument<'a, &'a str>, String> {
+    graphql_parser::parse_query::<&str>(query).map_err(|e| format!("invalid GraphQL syntax: {e}"))
 }
 
-/// Validate a parsed document against a [`GraphqlSchema`]: every selected
+/// Syntax-check a GraphQL document. This remains the linter entry point; the
+/// action retains the parsed document for operation selection and validation.
+pub fn validate_query_syntax(query: &str) -> Result<(), String> {
+    parse_query(query).map(|_| ())
+}
+
+/// Validate a GraphQL document against a [`GraphqlSchema`]: every selected
 /// field must exist on its parent type, composites must have sub-selections,
 /// leaf types must not, and used variables must be defined by the operation.
 /// Errors name the selection path (`Mutation.createUser.viewr`) and suggest
 /// the closest known field on a typo.
 pub fn validate_against_schema(schema: &GraphqlSchema, query: &str) -> Result<(), String> {
-    let doc = graphql_parser::parse_query::<&str>(query)
-        .map_err(|e| format!("invalid GraphQL syntax: {e}"))?;
+    let doc = parse_query(query)?;
     validate_document(schema, &doc)
 }
 
-fn validate_document<'a>(
-    schema: &'a GraphqlSchema,
-    doc: &'a QueryDocument<'a, &'a str>,
-) -> Result<(), String> {
-    let fragments: HashMap<&str, &graphql_parser::query::FragmentDefinition<'a, &'a str>> = doc
+fn validate_document<'a, 'doc>(
+    schema: &GraphqlSchema,
+    doc: &'doc QueryDocument<'a, &'a str>,
+) -> Result<(), String>
+where
+    'a: 'doc,
+{
+    let fragments: HashMap<
+        &'doc str,
+        &'doc graphql_parser::query::FragmentDefinition<'a, &'a str>,
+    > = doc
         .definitions
         .iter()
-        .filter_map(|d| match d {
-            QueryDefinition::Fragment(f) => Some((f.name, f)),
-            _ => None,
-        })
+        .filter_map(
+            |d| -> Option<(
+                &'doc str,
+                &'doc graphql_parser::query::FragmentDefinition<'a, &'a str>,
+            )> {
+                match d {
+                    QueryDefinition::Fragment(f) => Some((f.name, f)),
+                    _ => None,
+                }
+            },
+        )
         .collect();
 
     for def in &doc.definitions {
@@ -500,7 +515,7 @@ fn validate_document<'a>(
 /// its variable definitions — an undeclared variable is a server-side error
 /// that schema validation should catch first.
 fn check_variables_defined<'a>(
-    selection_set: &'a SelectionSet<'a, &'a str>,
+    selection_set: &SelectionSet<'a, &'a str>,
     var_defs: &[graphql_parser::query::VariableDefinition<'a, &'a str>],
 ) -> Result<(), String> {
     let mut used = Vec::new();
@@ -513,8 +528,8 @@ fn check_variables_defined<'a>(
     Ok(())
 }
 
-fn collect_variables<'a>(selection_set: &'a SelectionSet<'a, &'a str>, out: &mut Vec<&'a str>) {
-    fn walk_value<'a>(v: &'a GqlValue<'a, &'a str>, out: &mut Vec<&'a str>) {
+fn collect_variables<'a>(selection_set: &SelectionSet<'a, &'a str>, out: &mut Vec<&'a str>) {
+    fn walk_value<'a>(v: &GqlValue<'a, &'a str>, out: &mut Vec<&'a str>) {
         match v {
             GqlValue::Variable(name) => out.push(name),
             GqlValue::List(items) => items.iter().for_each(|v| walk_value(v, out)),
@@ -538,14 +553,17 @@ fn collect_variables<'a>(selection_set: &'a SelectionSet<'a, &'a str>, out: &mut
     }
 }
 
-fn validate_selection_set<'a>(
-    schema: &'a GraphqlSchema,
-    fragments: &HashMap<&str, &'a graphql_parser::query::FragmentDefinition<'a, &'a str>>,
-    parent_type: &'a str,
-    selection_set: &'a SelectionSet<'a, &'a str>,
+fn validate_selection_set<'a, 'doc>(
+    schema: &GraphqlSchema,
+    fragments: &HashMap<&'doc str, &'doc graphql_parser::query::FragmentDefinition<'a, &'a str>>,
+    parent_type: &str,
+    selection_set: &SelectionSet<'a, &'a str>,
     path: &str,
     depth: usize,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    'a: 'doc,
+{
     if depth > MAX_VALIDATE_DEPTH {
         return Err(format!(
             "selection at '{path}' nests too deep (fragment cycle?)"
@@ -641,10 +659,13 @@ fn validate_selection_set<'a>(
 
 /// Resolve a fragment's type condition to the type name to validate against
 /// (no condition = the enclosing type).
-fn fragment_target<'a>(
-    cond: &'a Option<graphql_parser::query::TypeCondition<'a, &'a str>>,
-    default: &'a str,
-) -> &'a str {
+fn fragment_target<'a, 'b>(
+    cond: &Option<graphql_parser::query::TypeCondition<'a, &'a str>>,
+    default: &'b str,
+) -> &'b str
+where
+    'a: 'b,
+{
     match cond {
         Some(graphql_parser::query::TypeCondition::On(name)) => name,
         None => default,
@@ -654,8 +675,8 @@ fn fragment_target<'a>(
 /// Same for a named fragment definition, whose type condition is mandatory
 /// (`TypeCondition` has a single variant).
 fn fragment_def_target<'a>(
-    cond: &'a graphql_parser::query::TypeCondition<'a, &'a str>,
-    _default: &'a str,
+    cond: &graphql_parser::query::TypeCondition<'a, &'a str>,
+    _default: &str,
 ) -> &'a str {
     let graphql_parser::query::TypeCondition::On(name) = cond;
     name
@@ -669,7 +690,7 @@ fn fragment_def_target<'a>(
 /// entry: introspection was tried and refused — the step then runs
 /// unvalidated instead of re-fetching every iteration.
 struct SchemaEntry {
-    schema: Option<GraphqlSchema>,
+    schema: Option<Arc<GraphqlSchema>>,
 }
 
 fn schema_cache() -> &'static Mutex<HashMap<String, SchemaEntry>> {
@@ -686,7 +707,7 @@ async fn resolve_schema(
     params: &Params,
     ctx: &Context,
     client: &reqwest::Client,
-) -> Option<GraphqlSchema> {
+) -> Option<Arc<GraphqlSchema>> {
     // SDL file: parse once per path, cache under `file:<path>`.
     if let Some(path) = &params.schema_file {
         let key = format!("file:{path}");
@@ -705,14 +726,15 @@ async fn resolve_schema(
             },
             Err(_) => None,
         };
-        if parsed.is_some() {
+        if let Some(schema) = parsed {
+            let schema = Arc::new(schema);
             schema_cache().lock().unwrap().insert(
                 key,
                 SchemaEntry {
-                    schema: parsed.clone(),
+                    schema: Some(schema.clone()),
                 },
             );
-            return parsed;
+            return Some(schema);
         }
         // Fall through to introspection when the SDL file is unusable and
         // introspection is allowed.
@@ -732,7 +754,8 @@ async fn resolve_schema(
     }
     let fetched = introspect_schema(client, &params.url, &params.headers, params.timeout_ms)
         .await
-        .ok();
+        .ok()
+        .map(Arc::new);
     schema_cache().lock().unwrap().insert(
         key,
         SchemaEntry {
@@ -747,193 +770,200 @@ async fn resolve_schema(
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn graphql_action(params: &Value, ctx: &Context, step_name: &str) -> ActionOutput {
-    let params = match parse_params(params, step_name, ctx).await {
+    let mut params = match parse_params(params, step_name, ctx).await {
         Ok(p) => p,
         Err(out) => return out,
     };
+    graphql_action_with_params(&mut params, ctx, step_name).await
+}
 
+fn graphql_action_with_params<'a>(
+    params: &'a mut Params,
+    ctx: &'a Context,
+    step_name: &'a str,
+) -> impl Future<Output = ActionOutput> + Send + 'a {
     // Syntax gate: a malformed document fails without a network call.
-    if let Err(msg) = validate_query_syntax(&params.query) {
-        return err(step_name, &msg);
-    }
+    let doc = match parse_query(&params.query) {
+        Ok(doc) => doc,
+        Err(msg) => return Either::Left(ready(err(step_name, &msg))),
+    };
 
     // Operation name: explicit `operation` wins; else a single named
     // operation in the document provides it. Multiple operations require the
     // explicit form (the server rejects an anonymous multi-operation doc).
-    let operation = match resolve_operation(&params) {
-        Ok(op) => op,
-        Err(msg) => return err(step_name, &msg),
+    let operation = match resolve_operation(params.operation.as_deref(), &doc) {
+        Ok(operation) => operation,
+        Err(msg) => return Either::Left(ready(err(step_name, &msg))),
     };
 
     // `${…}` tokens in variables expand per execution — a fresh generator per
     // call, like the one-shot `std/grpc@v1`: `${uuid}`/`${rand}`/`${now}`
     // give per-iteration values (`${seq}` restarts at 1 without a live
     // connection to carry the counter).
-    let variables = match params.variables.as_ref() {
-        Some(v) => {
-            let mut gen = match ctx.new_generator() {
-                Ok(g) => g,
-                Err(msg) => return err(step_name, &msg),
-            };
-            gen.begin_message();
-            match expand_tokens(v, &mut gen) {
-                Ok(expanded) => Some(expanded),
-                Err(msg) => return err(step_name, &msg),
-            }
+    if let Some(v) = params.variables.as_mut() {
+        let mut gen = match ctx.new_generator() {
+            Ok(g) => g,
+            Err(msg) => return Either::Left(ready(err(step_name, &msg))),
+        };
+        gen.begin_message();
+        if let Err(msg) = expand_tokens_in_place(v, &mut gen) {
+            return Either::Left(ready(err(step_name, &msg)));
         }
-        None => None,
-    };
-
-    let client = http_client(params.pool, params.insecure, ctx.http_client_shard);
-
-    // Schema gate: validate against the cached/fetched schema when available.
-    // Unavailability is not a failure — the step runs unvalidated.
-    let mut logs: Vec<(LogTag, String)> = Vec::new();
-    match resolve_schema(&params, ctx, client).await {
-        Some(schema) => {
-            if let Err(msg) = validate_against_schema(&schema, &params.query) {
-                return err(step_name, &format!("query validation failed: {msg}"));
-            }
-        }
-        None if params.introspection && params.schema_file.is_none() => {
-            logs.push((
-                LogTag::Sys,
-                format!(
-                    "{step_name}: introspection unavailable for {} — running unvalidated",
-                    params.url
-                ),
-            ));
-        }
-        None => {}
     }
+    let variables = params.variables.take();
+    let params: &'a Params = params;
 
-    // Build the request: POST carries a JSON body; GET moves the same fields
-    // into URL query parameters (CDN-cacheable reads).
-    let method = if params.get { "GET" } else { "POST" };
-    let mut req = if params.get {
-        let mut qp: Vec<(&str, String)> = vec![("query", params.query.clone())];
-        if let Some(v) = &variables {
-            qp.push(("variables", v.to_string()));
-        }
-        if let Some(op) = &operation {
-            qp.push(("operationName", op.clone()));
-        }
-        client.get(&params.url).query(&qp)
-    } else {
-        let mut body = json!({ "query": params.query });
-        if let Some(v) = &variables {
-            body["variables"] = v.clone();
-        }
-        if let Some(op) = &operation {
-            body["operationName"] = json!(op);
-        }
-        client.post(&params.url).json(&body)
-    };
-    req = req.timeout(Duration::from_millis(params.timeout_ms));
-    for (k, v) in &params.headers {
-        req = req.header(k.as_str(), v.as_str());
-    }
+    Either::Right(async move {
+        let client = http_client(params.pool, params.insecure, ctx.http_client_shard);
 
-    match timed_exchange(req, BodyKind::Text, ctx.max_response_body_bytes).await {
-        Ok(out) => {
-            // Decode the GraphQL payload. A non-JSON body (proxy error page,
-            // CDN block) has no data — the step fails on that below.
-            let parsed: Option<Value> = serde_json::from_str(&out.body).ok();
-            let data = parsed.as_ref().and_then(|p| p.get("data")).cloned();
-            let errors: Vec<Value> = parsed
-                .as_ref()
-                .and_then(|p| p.get("errors"))
-                .and_then(|e| e.as_array())
-                .cloned()
-                .unwrap_or_default();
-
-            // The verdict: HTTP failures fail; GraphQL errors without any
-            // data fail; partial data with errors passes (counted below).
-            let has_data = data.as_ref().is_some_and(|d| !d.is_null());
-            let failed = out.status >= 400 || (!errors.is_empty() && !has_data);
-
-            let mut metrics = json!({
-                "graphql_req_duration": [out.duration_ms],
-                "graphql_errors": errors.len() as u64,
-            });
-            if let Some(op) = &operation {
-                metrics[format!("graphql_op_{op}_duration")] = json!([out.duration_ms]);
+        // Schema gate: validate against the cached/fetched schema when available.
+        // Unavailability is not a failure — the step runs unvalidated.
+        let mut logs: Vec<(LogTag, String)> = Vec::new();
+        match resolve_schema(params, ctx, client).await {
+            Some(schema) => {
+                if let Err(msg) = validate_document(schema.as_ref(), &doc) {
+                    return err(step_name, &format!("query validation failed: {msg}"));
+                }
             }
-
-            let mut value = json!({
-                "status": out.status,
-                "data": data.unwrap_or(Value::Null),
-                "body": out.body,
-                "duration_ms": out.duration_ms,
-                "headers": out.headers,
-                "metrics": metrics,
-            });
-            if !errors.is_empty() {
-                value["errors"] = json!(errors.clone());
-            }
-
-            let extra = format!(
-                "{}, graphql_errors={}",
-                operation
-                    .as_ref()
-                    .map(|o| format!(", op={o}"))
-                    .unwrap_or_default(),
-                errors.len()
-            );
-            let first_error = errors
-                .first()
-                .and_then(|e| e["message"].as_str())
-                .map(|m| format!(" — {m}"))
-                .unwrap_or_default();
-            logs.push((
-                if failed { LogTag::Err } else { LogTag::Out },
-                format!(
-                    "{}{}",
-                    request_line(
-                        method,
-                        &params.url,
-                        out.status,
-                        &out.reason,
-                        out.duration_ms,
-                        &extra
+            None if params.introspection && params.schema_file.is_none() => {
+                logs.push((
+                    LogTag::Sys,
+                    format!(
+                        "{step_name}: introspection unavailable for {} — running unvalidated",
+                        params.url
                     ),
-                    if failed { first_error.as_str() } else { "" },
-                ),
-            ));
+                ));
+            }
+            None => {}
+        }
 
-            ActionOutput {
-                value,
-                logs,
-                success: !failed,
-                http_sample: Some(HttpSample {
-                    duration_ms: out.duration_ms,
-                    status: out.status,
-                    failed,
-                }),
+        // Build the request: POST carries a JSON body; GET moves the same fields
+        // into URL query parameters (CDN-cacheable reads).
+        let method = if params.get { "GET" } else { "POST" };
+        let mut req = if params.get {
+            let mut qp: Vec<(&str, String)> = vec![("query", params.query.clone())];
+            if let Some(v) = &variables {
+                qp.push(("variables", v.to_string()));
+            }
+            if let Some(op) = &operation {
+                qp.push(("operationName", op.clone()));
+            }
+            client.get(&params.url).query(&qp)
+        } else {
+            let mut body = json!({ "query": params.query });
+            if let Some(v) = &variables {
+                body["variables"] = v.clone();
+            }
+            if let Some(op) = &operation {
+                body["operationName"] = json!(op);
+            }
+            client.post(&params.url).json(&body)
+        };
+        req = req.timeout(Duration::from_millis(params.timeout_ms));
+        for (k, v) in &params.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+
+        match timed_exchange(req, BodyKind::Text, ctx.max_response_body_bytes).await {
+            Ok(out) => {
+                // Decode the GraphQL payload. A non-JSON body (proxy error page,
+                // CDN block) has no data — the step fails on that below.
+                let parsed: Option<Value> = serde_json::from_str(&out.body).ok();
+                let data = parsed.as_ref().and_then(|p| p.get("data")).cloned();
+                let errors: Vec<Value> = parsed
+                    .as_ref()
+                    .and_then(|p| p.get("errors"))
+                    .and_then(|e| e.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+
+                // The verdict: HTTP failures fail; GraphQL errors without any
+                // data fail; partial data with errors passes (counted below).
+                let has_data = data.as_ref().is_some_and(|d| !d.is_null());
+                let failed = out.status >= 400 || (!errors.is_empty() && !has_data);
+
+                let mut metrics = json!({
+                    "graphql_req_duration": [out.duration_ms],
+                    "graphql_errors": errors.len() as u64,
+                });
+                if let Some(op) = &operation {
+                    metrics[format!("graphql_op_{op}_duration")] = json!([out.duration_ms]);
+                }
+
+                let mut value = json!({
+                    "status": out.status,
+                    "data": data.unwrap_or(Value::Null),
+                    "body": out.body,
+                    "duration_ms": out.duration_ms,
+                    "headers": out.headers,
+                    "metrics": metrics,
+                });
+                if !errors.is_empty() {
+                    value["errors"] = json!(errors.clone());
+                }
+
+                let extra = format!(
+                    "{}, graphql_errors={}",
+                    operation
+                        .as_ref()
+                        .map(|o| format!(", op={o}"))
+                        .unwrap_or_default(),
+                    errors.len()
+                );
+                let first_error = errors
+                    .first()
+                    .and_then(|e| e["message"].as_str())
+                    .map(|m| format!(" — {m}"))
+                    .unwrap_or_default();
+                logs.push((
+                    if failed { LogTag::Err } else { LogTag::Out },
+                    format!(
+                        "{}{}",
+                        request_line(
+                            method,
+                            &params.url,
+                            out.status,
+                            &out.reason,
+                            out.duration_ms,
+                            &extra
+                        ),
+                        if failed { first_error.as_str() } else { "" },
+                    ),
+                ));
+
+                ActionOutput {
+                    value,
+                    logs,
+                    success: !failed,
+                    http_sample: Some(HttpSample {
+                        duration_ms: out.duration_ms,
+                        status: out.status,
+                        failed,
+                    }),
+                }
+            }
+            Err((duration_ms, e)) => {
+                let mut out =
+                    super::http::exchange_error(step_name, method, &params.url, &e, duration_ms);
+                // The introspection sys line, when present, precedes the failure.
+                out.logs.splice(0..0, logs);
+                out
             }
         }
-        Err((duration_ms, e)) => {
-            let mut out =
-                super::http::exchange_error(step_name, method, &params.url, &e, duration_ms);
-            // The introspection sys line, when present, precedes the failure.
-            out.logs.splice(0..0, logs);
-            out
-        }
-    }
+    })
 }
 
 /// Determine the `operationName` to send: the explicit `operation` parameter,
 /// or the name of the document's single operation. A document with several
 /// operations and no explicit choice is an error (the server would reject it
 /// with "must provide operation name").
-fn resolve_operation(params: &Params) -> Result<Option<String>, String> {
-    if let Some(op) = &params.operation {
-        return Ok(Some(op.clone()));
+fn resolve_operation<'a>(
+    operation: Option<&str>,
+    doc: &QueryDocument<'a, &'a str>,
+) -> Result<Option<String>, String> {
+    if let Some(op) = operation {
+        return Ok(Some(op.to_string()));
     }
-    // Already syntax-checked by the caller.
-    let Ok(doc) = graphql_parser::parse_query::<&str>(&params.query) else {
-        return Ok(None);
-    };
     let ops: Vec<&OperationDefinition<'_, &str>> = doc
         .definitions
         .iter()
@@ -949,7 +979,7 @@ fn resolve_operation(params: &Params) -> Result<Option<String>, String> {
     }
 }
 
-fn operation_name<'a>(op: &'a OperationDefinition<'a, &'a str>) -> Option<&'a str> {
+fn operation_name<'a>(op: &OperationDefinition<'a, &'a str>) -> Option<&'a str> {
     match op {
         OperationDefinition::Query(q) => q.name,
         OperationDefinition::Mutation(m) => m.name,
@@ -1046,6 +1076,52 @@ mod tests {
         assert_eq!(s.unions["Any"], vec!["Viewer"]);
         // Introspection internals are excluded.
         assert!(!s.fields.contains_key("__Schema"));
+    }
+
+    #[tokio::test]
+    async fn schema_cache_hit_reuses_the_same_arc() {
+        let server = MockServer::start().await;
+        Mock::given(wm_method("POST"))
+            .and(path("/schema-cache-hit"))
+            .and(wiremock::matchers::body_string_contains(
+                "IntrospectionQuery",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "__schema": {
+                    "queryType": { "name": "Query" },
+                    "mutationType": null,
+                    "types": [
+                        { "kind": "OBJECT", "name": "Query", "fields": [
+                            { "name": "ok", "type": { "kind": "SCALAR", "name": "Boolean", "ofType": null } }
+                        ]}
+                    ]
+                }}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let params = Params {
+            url: format!("{}/schema-cache-hit", server.uri()),
+            query: "{ ok }".into(),
+            variables: None,
+            operation: None,
+            get: false,
+            headers: vec![],
+            timeout_ms: 1000,
+            insecure: false,
+            pool: ClientPool::PerVu,
+            introspection: true,
+            schema_file: None,
+        };
+        let ctx = Context::new();
+        let client = reqwest::Client::new();
+        let first = resolve_schema(&params, &ctx, &client).await.unwrap();
+        let second = resolve_schema(&params, &ctx, &client).await.unwrap();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.as_ref().field_type("Query", "ok"), Some("Boolean"));
+        server.verify().await;
     }
 
     // ---------------------------------------------------------------
@@ -1160,37 +1236,22 @@ mod tests {
 
     #[test]
     fn resolve_operation_rules() {
-        let p = |query: &str, operation: Option<&str>| Params {
-            url: "http://x".into(),
-            query: query.into(),
-            variables: None,
-            operation: operation.map(str::to_string),
-            get: false,
-            headers: vec![],
-            timeout_ms: 1000,
-            insecure: false,
-            pool: ClientPool::PerVu,
-            introspection: false,
-            schema_file: None,
+        let resolve = |query: &str, operation: Option<&str>| {
+            let doc = parse_query(query).unwrap();
+            resolve_operation(operation, &doc)
         };
         assert_eq!(
-            resolve_operation(&p("query GetUser { viewer { id } }", None)).unwrap(),
+            resolve("query GetUser { viewer { id } }", None).unwrap(),
             Some("GetUser".into())
         );
+        assert_eq!(resolve("{ viewer { id } }", None).unwrap(), None);
+        let e = resolve("query A { viewer { id } } query B { viewer { id } }", None).unwrap_err();
+        assert!(e.contains("document has multiple operations"), "got: {e}");
         assert_eq!(
-            resolve_operation(&p("{ viewer { id } }", None)).unwrap(),
-            None
-        );
-        assert!(resolve_operation(&p(
-            "query A { viewer { id } } query B { viewer { id } }",
-            None
-        ))
-        .is_err());
-        assert_eq!(
-            resolve_operation(&p(
+            resolve(
                 "query A { viewer { id } } query B { viewer { id } }",
                 Some("B")
-            ))
+            )
             .unwrap(),
             Some("B".into())
         );
@@ -1388,34 +1449,45 @@ mod tests {
 
     #[tokio::test]
     async fn introspection_unavailable_runs_unvalidated_with_sys_line() {
-        // The mock answers everything with 404 HTML — introspection fails,
-        // the actual query then runs without validation (negative cache).
+        // Introspection is rejected once; both queries use the negative cache
+        // entry and run without validation.
         let server = MockServer::start().await;
         Mock::given(wm_method("POST"))
+            .and(path("/negative-cache"))
             .and(wiremock::matchers::body_string_contains(
                 "IntrospectionQuery",
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "errors": [ { "message": "introspection is disabled" } ]
             })))
+            .expect(1)
             .mount(&server)
             .await;
         Mock::given(wm_method("POST"))
+            .and(path("/negative-cache"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": { "a": 1 } })))
+            .expect(2)
             .mount(&server)
             .await;
 
         // Introspection left at its default (true).
-        let params = json!({ "url": server.uri(), "query": "{ a }" });
-        let out = execute_action("std/graphql@v1", &params, &Context::new(), "step").await;
-        assert!(out.success, "logs: {:?}", out.logs);
-        assert!(
-            out.logs
-                .iter()
-                .any(|(t, l)| *t == LogTag::Sys && l.contains("running unvalidated")),
-            "sys line about unvalidated run: {:?}",
-            out.logs
-        );
+        let params = json!({
+            "url": format!("{}/negative-cache", server.uri()),
+            "query": "{ a }",
+        });
+        let ctx = Context::new();
+        for _ in 0..2 {
+            let out = execute_action("std/graphql@v1", &params, &ctx, "step").await;
+            assert!(out.success, "logs: {:?}", out.logs);
+            assert!(
+                out.logs
+                    .iter()
+                    .any(|(t, l)| *t == LogTag::Sys && l.contains("running unvalidated")),
+                "sys line about unvalidated run: {:?}",
+                out.logs
+            );
+        }
+        server.verify().await;
     }
 
     #[tokio::test]
