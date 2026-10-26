@@ -143,6 +143,12 @@ sockets (`wasi:sockets`) are never provided.
   or `stages`/`arrival`, `seed`, the config `variables:` with
   `${{ env.* }}` resolved, and `extensions` with validated library-owned
   config blocks. Identical for every call of the run.
+- **Settings delivery**: the generated `info()` manifest advertises
+  `settings_once: true`. Current engines send full settings on the first
+  completed call and an empty string afterwards, while the SDK retains the
+  original `ctx.settings_json`. Older engines ignore the flag and send full
+  settings on every call; every nonempty payload replaces the stored value.
+  Components without the flag keep the original per-call behavior.
 - **Config extensions** (ABI 0.3): `export_library!` exports the base
   `perfscale-library` world. To claim a top-level config key with a JSON
   Schema, use direct WIT bindings for `perfscale-library-config`; see
