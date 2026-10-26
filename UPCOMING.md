@@ -12,6 +12,19 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- JSON steps and paths: new `std/read-json@v1` reads and parses a JSON file
+  into the step output (process-wide cache keyed by `(mtime, size)`, so
+  iterations past the first skip both the disk read and the parse), and a new
+  `query` parameter on `std/read-json@v1`, `std/file-read@v1`, and
+  `std/file-write@v1` takes a jq-style path subset (`.posts[0].id` ≡
+  `posts.0.id`; a `?` suffix on a segment turns a miss into `null`).
+  `file-read` extracts the subvalue from JSON content, `file-write` does a
+  read-modify-write that sets `content` at the path (creating intermediate
+  objects/arrays like jq; an array index equal to the length appends).
+  `${{ ... }}` interpolation accepts the same paths, including bracket
+  indexing, and a path that continues past a string leaf — an HTTP `body` —
+  parses it as JSON on demand: `${{ feed.body.posts[0].id }}` reads straight
+  into a response without a separate extract step.
 - `std/http@v1` `pool: dedicated` — one HTTP client per VU, created on the
   VU's first request and held until the VU exits. The default shard pools
   cap idle connections at 64 per host per shard, so past
