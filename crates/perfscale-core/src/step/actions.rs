@@ -824,36 +824,12 @@ pub(crate) fn confine_fs_path(
     path: &str,
     for_write: bool,
 ) -> Result<std::path::PathBuf, String> {
-    if !ctx.allow_file_actions {
-        return Err("file actions disabled (allow_file_actions is false)".into());
-    }
-    let Some(root) = ctx.fs_root.as_deref() else {
-        return Ok(std::path::PathBuf::from(path));
-    };
-    let root = std::fs::canonicalize(root)
-        .map_err(|e| format!("fs_root '{}' cannot be resolved: {e}", root.display()))?;
-    let candidate = if for_write {
-        let p = std::path::Path::new(path);
-        let parent = p
-            .parent()
-            .filter(|d| !d.as_os_str().is_empty())
-            .unwrap_or(std::path::Path::new("."));
-        let canon_parent = std::fs::canonicalize(parent)
-            .map_err(|e| format!("cannot resolve directory of '{path}': {e}"))?;
-        let Some(name) = p.file_name() else {
-            return Err(format!("'{path}' is not a file path"));
-        };
-        canon_parent.join(name)
-    } else {
-        std::fs::canonicalize(path).map_err(|e| format!("cannot resolve '{path}': {e}"))?
-    };
-    if !candidate.starts_with(&root) {
-        return Err(format!(
-            "path '{path}' escapes fs_root '{}'",
-            root.display()
-        ));
-    }
-    Ok(candidate)
+    super::json_doc::confine_fs(
+        ctx.allow_file_actions,
+        ctx.fs_root.as_deref(),
+        path,
+        for_write,
+    )
 }
 
 /// Actual disk reads performed by `std/file-read@v1` — observable cache behaviour
@@ -1000,57 +976,16 @@ async fn file_read_action(params: &Value, step_name: &str, ctx: &Context) -> Act
 //
 // Output: the parsed JSON document, or the subvalue at `query`.
 //
-// The parsed document is cached process-wide, keyed by path and validated
-// against (mtime, len) on every access — the same contract as
+// The parsed document lives in the cache shared with the `@std/json@v1`
+// library (see [`super::json_doc`]) — the same contract as
 // `std/file-read@v1`, but the cache holds the parsed `Value`, so iterations
 // past the first skip both the disk read and the parse.
 //
 // File access is fail-closed like the other file actions (see
 // [`confine_fs_path`]).
 
-type JsonCacheEntry = (Option<std::time::SystemTime>, u64, std::sync::Arc<Value>);
-
-fn json_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, JsonCacheEntry>> {
-    static CACHE: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, JsonCacheEntry>>,
-    > = std::sync::OnceLock::new();
-    CACHE.get_or_init(Default::default)
-}
-
-/// Actual disk reads performed by `std/read-json@v1` — observable cache
-/// behaviour for tests (same idea as [`FILE_DISK_READS`]).
-static JSON_DISK_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 async fn read_json_file(path: &str, ctx: &Context) -> Result<std::sync::Arc<Value>, String> {
-    let path = confine_fs_path(ctx, path, false)?;
-    let meta = tokio::fs::metadata(&path)
-        .await
-        .map_err(|e| format!("cannot read file '{}': {e}", path.display()))?;
-    let (mtime, len) = (meta.modified().ok(), meta.len());
-    let key = path.to_string_lossy().into_owned();
-    // Never hold the lock across an await: check-release, read, insert.
-    let cached = {
-        let cache = json_cache().lock().unwrap();
-        cache
-            .get(&key)
-            .and_then(|(m, l, doc)| (*m == mtime && *l == len).then(|| std::sync::Arc::clone(doc)))
-    };
-    if let Some(doc) = cached {
-        return Ok(doc);
-    }
-    JSON_DISK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let bytes = tokio::fs::read(&path)
-        .await
-        .map_err(|e| format!("cannot read file '{}': {e}", path.display()))?;
-    let doc = match serde_json::from_slice::<Value>(&bytes) {
-        Ok(v) => std::sync::Arc::new(v),
-        Err(e) => return Err(format!("file '{}' is not valid JSON: {e}", path.display())),
-    };
-    json_cache()
-        .lock()
-        .unwrap()
-        .insert(key, (mtime, len, std::sync::Arc::clone(&doc)));
-    Ok(doc)
+    super::json_doc::load_async(path, ctx).await
 }
 
 async fn read_json_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
@@ -3181,7 +3116,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     fn json_disk_reads() -> u64 {
-        JSON_DISK_READS.load(std::sync::atomic::Ordering::Relaxed)
+        super::super::json_doc::JSON_DISK_READS.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     #[tokio::test]

@@ -293,7 +293,8 @@ impl Context {
         let mut gen = crate::generate::Gen::new(seed)
             .with_vu(self.vu_id, self.iteration_seq)
             .with_settings(Arc::clone(&self.settings_json))
-            .with_secrets(self.secrets.clone());
+            .with_secrets(self.secrets.clone())
+            .with_file_access(self.allow_file_actions, self.fs_root.clone());
         if let Some(metrics) = &self.library_metrics {
             gen = gen.with_library_metrics(Arc::clone(metrics));
         }
