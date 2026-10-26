@@ -207,6 +207,21 @@ components keep loading: 0.1 has no settings field, while declaring
 `config-schema` requires rebuilding against 0.3. Minors are additive-only;
 an unsupported major fails to load with both versions named in the error.
 
+### Run settings delivery
+
+The `info()` manifest may also declare `"settings_once": true`. The Rust SDK
+emits this flag and retains the run's frozen settings when later calls carry
+an empty settings string. A current engine sends full settings to such a
+component on its first completed call and an empty string on subsequent
+calls, avoiding a fresh host-side allocation and copy per call. Components
+without the flag keep receiving full settings on every call.
+
+Compatibility is bidirectional: an older engine ignores the unknown manifest
+field and continues sending full settings on every call, while a current SDK
+replaces its stored settings whenever it receives a nonempty payload. The WIT
+contract and the meaning of `Ctx.settings()` / `ctx.settings_json` do not
+change.
+
 Functions marked `secret: true` in `info()` have every result masked
 (`***`) in the run log — minted credentials never leak into logs. Declare
 it on the outermost producing function; never derive-and-return partial

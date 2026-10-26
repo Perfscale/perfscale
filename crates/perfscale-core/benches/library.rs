@@ -8,6 +8,10 @@
 //!   (the runner's hot path: `block_in_place` on multi-thread runtimes).
 //! - `wasm_call_current_thread_hop` — from a single-threaded runtime, where
 //!   the call must hop through the blocking pool.
+//! - `*_large_settings` — the same three hop paths with a ~16 KiB
+//!   `settings_json` (a large string under `variables`, built once outside
+//!   the timed loop), isolating the per-call `settings_json.to_string()`
+//!   cost ahead of a possible `settings_once` handshake.
 //! - `std_random_call` — the native built-in, the no-WASM floor.
 //! - `wasm_generator_mint_per_message` — the per-step cost of a token-bearing
 //!   step: minting the message generator off a VU context. With per-context
@@ -80,14 +84,31 @@ fn lib_ref(path: &Path) -> LibraryRef {
     }
 }
 
-fn ctx() -> CallCtx<'static> {
+const SMALL_SETTINGS: &str = r#"{"vus":10,"seed":42}"#;
+
+/// A valid settings document whose `variables` carry a 16 KiB string, built
+/// once and leaked so the allocation stays outside the timed loop.
+fn large_settings() -> &'static str {
+    static SETTINGS: OnceLock<&'static str> = OnceLock::new();
+    SETTINGS.get_or_init(|| {
+        serde_json::json!({
+            "vus": 10,
+            "seed": 42,
+            "variables": { "payload": "x".repeat(16 * 1024) },
+        })
+        .to_string()
+        .leak()
+    })
+}
+
+fn ctx(settings_json: &'static str) -> CallCtx<'static> {
     CallCtx {
         message_seq: 1,
         iteration_seq: 0,
         vu_id: 1,
         seed: 42,
         time_ms: 1_784_160_000_000,
-        settings_json: r#"{"vus":10,"seed":42}"#,
+        settings_json,
         allow_file_actions: false,
         fs_root: None,
     }
@@ -101,49 +122,75 @@ fn wasm_instance() -> Option<Box<dyn LibraryInstance>> {
     Some(resolved[0].provider.instantiate(None, 7).unwrap())
 }
 
-fn bench_wasm_call_inline(c: &mut Criterion) {
+fn bench_wasm_call(
+    c: &mut Criterion,
+    name: &str,
+    settings_json: &'static str,
+    rt: Option<tokio::runtime::Runtime>,
+) {
     let Some(mut inst) = wasm_instance() else {
         return;
     };
     let args = [Value::from("world")];
-    c.bench_function("wasm_call_inline", |b| {
+    c.bench_function(name, |b| {
+        let _guard = rt.as_ref().map(tokio::runtime::Runtime::enter);
         b.iter(|| {
-            inst.call(std::hint::black_box(&ctx()), "greet", &args)
+            inst.call(std::hint::black_box(&ctx(settings_json)), "greet", &args)
                 .unwrap()
         })
     });
+}
+
+fn bench_wasm_call_inline(c: &mut Criterion) {
+    bench_wasm_call(c, "wasm_call_inline", SMALL_SETTINGS, None);
+}
+
+fn bench_wasm_call_inline_large_settings(c: &mut Criterion) {
+    bench_wasm_call(c, "wasm_call_inline_large_settings", large_settings(), None);
 }
 
 fn bench_wasm_call_blocking_hop(c: &mut Criterion) {
-    let Some(mut inst) = wasm_instance() else {
-        return;
-    };
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let args = [Value::from("world")];
-    c.bench_function("wasm_call_blocking_hop", |b| {
-        let _guard = rt.enter();
-        b.iter(|| {
-            inst.call(std::hint::black_box(&ctx()), "greet", &args)
-                .unwrap()
-        })
-    });
+    bench_wasm_call(
+        c,
+        "wasm_call_blocking_hop",
+        SMALL_SETTINGS,
+        Some(tokio::runtime::Runtime::new().unwrap()),
+    );
+}
+
+fn bench_wasm_call_blocking_hop_large_settings(c: &mut Criterion) {
+    bench_wasm_call(
+        c,
+        "wasm_call_blocking_hop_large_settings",
+        large_settings(),
+        Some(tokio::runtime::Runtime::new().unwrap()),
+    );
 }
 
 fn bench_wasm_call_current_thread_hop(c: &mut Criterion) {
-    let Some(mut inst) = wasm_instance() else {
-        return;
-    };
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    let args = [Value::from("world")];
-    c.bench_function("wasm_call_current_thread_hop", |b| {
-        let _guard = rt.enter();
-        b.iter(|| {
-            inst.call(std::hint::black_box(&ctx()), "greet", &args)
-                .unwrap()
-        })
-    });
+    bench_wasm_call(
+        c,
+        "wasm_call_current_thread_hop",
+        SMALL_SETTINGS,
+        Some(
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap(),
+        ),
+    );
+}
+
+fn bench_wasm_call_current_thread_hop_large_settings(c: &mut Criterion) {
+    bench_wasm_call(
+        c,
+        "wasm_call_current_thread_hop_large_settings",
+        large_settings(),
+        Some(
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap(),
+        ),
+    );
 }
 
 fn bench_std_random_call(c: &mut Criterion) {
@@ -166,7 +213,7 @@ fn bench_std_random_call(c: &mut Criterion) {
     let mut inst = resolved[0].provider.instantiate(None, 7).unwrap();
     c.bench_function("std_random_call", |b| {
         b.iter(|| {
-            inst.call(std::hint::black_box(&ctx()), "uuid4", &[])
+            inst.call(std::hint::black_box(&ctx(SMALL_SETTINGS)), "uuid4", &[])
                 .unwrap()
         })
     });
@@ -195,8 +242,11 @@ fn bench_generator_mint_per_message(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_wasm_call_inline,
+    bench_wasm_call_inline_large_settings,
     bench_wasm_call_blocking_hop,
+    bench_wasm_call_blocking_hop_large_settings,
     bench_wasm_call_current_thread_hop,
+    bench_wasm_call_current_thread_hop_large_settings,
     bench_std_random_call,
     bench_generator_mint_per_message
 );

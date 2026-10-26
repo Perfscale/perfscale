@@ -596,6 +596,8 @@ pub struct WasmLibraryProvider {
     /// touches fs/clock/net, so its calls make no tokio-blocking WASI
     /// hostcalls and may run inline on a current-thread runtime.
     pure: bool,
+    /// The component retains settings when later calls carry an empty string.
+    settings_once: bool,
 }
 
 impl WasmLibraryProvider {
@@ -784,6 +786,7 @@ impl WasmLibraryProvider {
             config_key: None,
             config_schema: None,
             pure: false,
+            settings_once: false,
         };
 
         // `info()` once at load, BEFORE grant enforcement: populates
@@ -849,6 +852,7 @@ impl WasmLibraryProvider {
         }
 
         provider.pure = info.pure;
+        provider.settings_once = info.settings_once;
         provider.id = format!("{}@v{}", info.name, info.version);
         provider.name = info.name;
         provider.functions = info.functions;
@@ -1016,6 +1020,7 @@ impl WasmLibraryProvider {
             name: parsed.name,
             version: parsed.version,
             pure: parsed.pure,
+            settings_once: parsed.settings_once,
             functions,
         })
     }
@@ -1193,8 +1198,8 @@ impl Instantiated {
 
 /// Parsed `info()` JSON contract (RFC 005: `info` returns JSON — decided).
 /// No `deny_unknown_fields`: fields an older engine does not know (like
-/// `pure`) are ignored, so new libraries on old engines stay fail-closed
-/// (their fs imports then require the grant as before).
+/// `pure` and `settings_once`) are ignored, so new libraries on old engines
+/// stay fail-closed (their fs imports then require the grant as before).
 #[derive(serde::Deserialize)]
 struct WasmLibraryInfoJson {
     name: String,
@@ -1204,6 +1209,9 @@ struct WasmLibraryInfoJson {
     /// waives the fs/clock capability requirement (and provides no preopens).
     #[serde(default)]
     pure: bool,
+    /// The guest retains settings when later calls carry an empty string.
+    #[serde(default)]
+    settings_once: bool,
     functions: Vec<WasmFunctionInfoJson>,
 }
 
@@ -1220,6 +1228,7 @@ struct WasmLibraryInfo {
     name: String,
     version: String,
     pure: bool,
+    settings_once: bool,
     functions: Vec<FunctionInfo>,
 }
 
@@ -1256,6 +1265,8 @@ impl LibraryProvider for WasmLibraryProvider {
             args_buf: Vec::new(),
             id: Arc::from(self.id.as_str()),
             pure: self.pure,
+            settings_once: self.settings_once,
+            settings_sent: false,
         }))
     }
 
@@ -1287,6 +1298,20 @@ struct WasmLibraryInstance {
     args_buf: Vec<u8>,
     /// `Arc` so the blocking-pool handoff clones a pointer, not the string.
     id: Arc<str>,
+    /// The guest retains settings when later calls carry an empty string.
+    settings_once: bool,
+    /// Set only after a guest call returns normally, including a guest error.
+    settings_sent: bool,
+}
+
+impl WasmLibraryInstance {
+    fn settings_payload(&self, ctx: &CallCtx<'_>) -> String {
+        if self.settings_once && self.settings_sent {
+            String::new()
+        } else {
+            ctx.settings_json.to_string()
+        }
+    }
 }
 
 impl LibraryInstance for WasmLibraryInstance {
@@ -1299,6 +1324,7 @@ impl LibraryInstance for WasmLibraryInstance {
             Err(_) => {
                 // No runtime (lint, unit tests, sync embedders): run inline.
                 let args_json = std::str::from_utf8(&args_buf).expect("JSON is UTF-8");
+                let settings_json = self.settings_payload(ctx);
                 let store = self.store.as_mut().expect("store present between calls");
                 let instance = self.instance.as_ref().expect("instance present");
                 let result = call_guest(
@@ -1306,9 +1332,10 @@ impl LibraryInstance for WasmLibraryInstance {
                     instance,
                     &self.id,
                     ctx,
-                    ctx.settings_json.to_string(),
+                    settings_json,
                     func,
                     args_json,
+                    &mut self.settings_sent,
                 );
                 self.args_buf = args_buf;
                 return result;
@@ -1324,18 +1351,21 @@ impl LibraryInstance for WasmLibraryInstance {
             // internally, see `off_runtime`) are legal inside
             // `block_in_place`, so fs/clock guests work too.
             let args_json = std::str::from_utf8(&args_buf).expect("JSON is UTF-8");
+            let settings_json = self.settings_payload(ctx);
             let store = self.store.as_mut().expect("store present between calls");
             let instance = self.instance.as_ref().expect("instance present");
             let id = Arc::clone(&self.id);
+            let settings_sent = &mut self.settings_sent;
             let result = tokio::task::block_in_place(|| {
                 call_guest(
                     store,
                     instance,
                     &id,
                     ctx,
-                    ctx.settings_json.to_string(),
+                    settings_json,
                     func,
                     args_json,
+                    settings_sent,
                 )
             });
             self.args_buf = args_buf;
@@ -1348,6 +1378,7 @@ impl LibraryInstance for WasmLibraryInstance {
         // on the runtime thread: run inline and skip the hop entirely.
         if self.pure {
             let args_json = std::str::from_utf8(&args_buf).expect("JSON is UTF-8");
+            let settings_json = self.settings_payload(ctx);
             let store = self.store.as_mut().expect("store present between calls");
             let instance = self.instance.as_ref().expect("instance present");
             let result = call_guest(
@@ -1355,9 +1386,10 @@ impl LibraryInstance for WasmLibraryInstance {
                 instance,
                 &self.id,
                 ctx,
-                ctx.settings_json.to_string(),
+                settings_json,
                 func,
                 args_json,
+                &mut self.settings_sent,
             );
             self.args_buf = args_buf;
             return result;
@@ -1367,13 +1399,14 @@ impl LibraryInstance for WasmLibraryInstance {
         // hops to the blocking pool (see `off_runtime`): the store, the
         // instance handle and the args buffer move over and back. One hop
         // per call — microseconds against even a trivial WASM call.
-        // `settings_json` is copied exactly once here; the blocking thread
-        // hands the owned String straight to the guest context (no second
-        // copy).
+        // When settings are needed, they are copied exactly once here; the
+        // blocking thread hands the owned String straight to the guest
+        // context (no second copy).
         let mut store = self.store.take().expect("store present between calls");
         let instance = self.instance.take().expect("instance present");
         let id = Arc::clone(&self.id);
-        let settings_json = ctx.settings_json.to_string();
+        let settings_json = self.settings_payload(ctx);
+        let mut settings_sent = self.settings_sent;
         let func_string = func.to_string();
         let (message_seq, iteration_seq, vu_id, seed, time_ms) = (
             ctx.message_seq,
@@ -1405,18 +1438,22 @@ impl LibraryInstance for WasmLibraryInstance {
                 settings_json,
                 &func_string,
                 args_json,
+                &mut settings_sent,
             );
-            let _ = tx.send((store, instance, args_buf, result));
+            let _ = tx.send((store, instance, args_buf, result, settings_sent));
         });
         match rx.recv() {
-            Ok((store, instance, args_buf, result)) => {
+            Ok((store, instance, args_buf, result, settings_sent)) => {
                 self.store = Some(store);
                 self.instance = Some(instance);
                 self.args_buf = args_buf;
+                self.settings_sent = settings_sent;
                 result
             }
             // The blocking task panicked or was cancelled before sending;
-            // the store is lost with it, so this instance is dead.
+            // the store is lost with it, so this instance is dead. Its local
+            // settings_sent update is lost too, so a dead first call cannot
+            // make an uninitialized instance look initialized.
             Err(_) => Err(format!(
                 "{}.{func}: the library call worker died — this instance is unusable",
                 self.id
@@ -1427,7 +1464,8 @@ impl LibraryInstance for WasmLibraryInstance {
 
 /// One guest `call` with a fresh fuel budget, mapping the outcome to the
 /// engine's error contract: guest error → step failure, trap/fuel → step
-/// failure naming the trap.
+/// failure naming the trap. `settings_sent` advances only when the guest
+/// returns normally; a guest-level error still counts as a completed call.
 #[allow(clippy::too_many_arguments)]
 fn call_guest(
     store: &mut Store<HostState>,
@@ -1437,6 +1475,7 @@ fn call_guest(
     settings_json: String,
     func: &str,
     args_json: &str,
+    settings_sent: &mut bool,
 ) -> Result<String, String> {
     // Fresh fuel budget per call (the store's fuel is cumulative). This is a
     // single store-field write — already the cheapest reset mechanism; the
@@ -1444,7 +1483,11 @@ fn call_guest(
     store
         .set_fuel(PER_CALL_FUEL)
         .map_err(|e| format!("{id}.{func}: {e}"))?;
-    match instance.call_call(store, ctx, settings_json, func, args_json) {
+    let result = instance.call_call(store, ctx, settings_json, func, args_json);
+    if result.is_ok() {
+        *settings_sent = true;
+    }
+    match result {
         Ok(Ok(value)) => Ok(value),
         // Guest-level error (bad function/args): the step fails with it.
         Ok(Err(e)) => Err(format!("{id}.{func}: {e}")),
@@ -1698,7 +1741,64 @@ mod tests {
         }
     }
 
+    fn ctx_with_settings(settings_json: &str) -> CallCtx<'_> {
+        CallCtx {
+            settings_json,
+            ..ctx()
+        }
+    }
+
+    fn hello_provider(path: &Path) -> WasmLibraryProvider {
+        let provider = WasmLibraryProvider::load(path, None, None).unwrap();
+        assert!(
+            provider.settings_once,
+            "SDK-built hello fixture must advertise settings_once"
+        );
+        provider
+    }
+
+    fn assert_settings_once(inst: &mut dyn LibraryInstance) {
+        let settings = serde_json::json!({
+            "vus": 10,
+            "seed": 42,
+            "variables": {
+                "large": "x".repeat(256 * 1024),
+                "nested": { "enabled": true },
+            },
+            "extensions": {
+                "configlib": { "endpoint": "https://api.test", "pool_size": 4 },
+            },
+        })
+        .to_string();
+        let first = inst
+            .call(&ctx_with_settings(&settings), "settings", &[])
+            .unwrap();
+        assert_eq!(first, settings, "first call receives full settings");
+
+        let replacement = r#"{"vus":999,"variables":{"replacement":true}}"#;
+        let second = inst
+            .call(&ctx_with_settings(replacement), "settings", &[])
+            .unwrap();
+        assert_eq!(
+            second, settings,
+            "an empty follow-up must leave the original settings available"
+        );
+    }
+
     // --- pure checks (no fixtures needed) -----------------------------------
+
+    #[test]
+    fn info_settings_once_is_optional_and_defaults_off() {
+        let legacy: WasmLibraryInfoJson =
+            serde_json::from_str(r#"{"name":"legacy","functions":[],"future_field":true}"#)
+                .unwrap();
+        assert!(!legacy.settings_once);
+
+        let flagged: WasmLibraryInfoJson =
+            serde_json::from_str(r#"{"name":"flagged","settings_once":true,"functions":[]}"#)
+                .unwrap();
+        assert!(flagged.settings_once);
+    }
 
     #[test]
     fn import_capability_mapping() {
@@ -1860,6 +1960,8 @@ mod tests {
             r#"{"extensions":{"configlib":{"endpoint":"https://api.test","pool_size":4}}}"#;
         let v = inst.call(&c, "endpoint", &[]).unwrap();
         assert_eq!(v, "https://api.test");
+        // This manually authored guest has no settings_once marker, so the
+        // next full payload replaces the first one exactly as on old engines.
         // Absent block → the guest's own default.
         let v = inst.call(&ctx(), "endpoint", &[]).unwrap();
         assert_eq!(v, "https://localhost");
@@ -1931,6 +2033,70 @@ mod tests {
         c.settings_json = r#"{"vus":10,"seed":42}"#;
         let v = inst.call(&c, "settings", &[]).unwrap();
         assert_eq!(v, r#"{"vus":10,"seed":42}"#);
+    }
+
+    #[test]
+    fn settings_once_works_without_a_runtime() {
+        let Some(f) = fixtures() else { return };
+        let provider = hello_provider(&f.hello);
+        let mut inst = provider.instantiate(None, 1).unwrap();
+        assert_settings_once(&mut *inst);
+    }
+
+    #[test]
+    fn flagged_guest_accepts_full_settings_on_every_call() {
+        let Some(f) = fixtures() else { return };
+        let mut provider = hello_provider(&f.hello);
+        // An old engine ignores the new info field; disabling it here drives
+        // the same full-settings host path with the new SDK guest.
+        provider.settings_once = false;
+        let mut inst = provider.instantiate(None, 1).unwrap();
+        let first = r#"{"vus":1,"variables":{"version":"first"}}"#;
+        let second = r#"{"vus":2,"variables":{"version":"second"}}"#;
+        assert_eq!(
+            inst.call(&ctx_with_settings(first), "settings", &[])
+                .unwrap(),
+            first
+        );
+        assert_eq!(
+            inst.call(&ctx_with_settings(second), "settings", &[])
+                .unwrap(),
+            second
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settings_once_works_through_multi_thread_block_in_place() {
+        let Some(f) = fixtures() else { return };
+        let provider = hello_provider(&f.hello);
+        let mut inst = provider.instantiate(None, 1).unwrap();
+        tokio::task::spawn(async move { assert_settings_once(&mut *inst) })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settings_once_works_inline_on_a_current_thread_runtime() {
+        let Some(f) = fixtures() else { return };
+        let mut provider = hello_provider(&f.hello);
+        // The settings function makes no WASI hostcalls; force the host's
+        // pure routing so this test exercises the inline branch directly.
+        provider.pure = true;
+        let mut inst = provider.instantiate(None, 1).unwrap();
+        tokio::task::spawn(async move { assert_settings_once(&mut *inst) })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settings_once_works_through_current_thread_blocking_pool() {
+        let Some(f) = fixtures() else { return };
+        let provider = hello_provider(&f.hello);
+        assert!(!provider.pure, "test must take the blocking-pool branch");
+        let mut inst = provider.instantiate(None, 1).unwrap();
+        tokio::task::spawn(async move { assert_settings_once(&mut *inst) })
+            .await
+            .unwrap();
     }
 
     /// The runner's hot path: calls from a multi-thread runtime worker run
@@ -2382,6 +2548,50 @@ mod tests {
         r.capabilities = Some(vec![Capability::Simple("clock".into())]);
         let err = validate_libraries(&[r], false, None).unwrap_err();
         assert!(err.contains("allow_library_capabilities"), "{err}");
+    }
+
+    #[test]
+    fn settings_sent_tracks_completed_calls_not_traps() {
+        let Some(f) = fixtures() else { return };
+        let c = ctx_with_settings(r#"{"variables":{"initialized":true}}"#);
+
+        let hello = hello_provider(&f.hello);
+        let (mut store, instance) = hello.instantiate_store().unwrap();
+        let mut settings_sent = false;
+        let err = call_guest(
+            &mut store,
+            &instance,
+            &hello.id,
+            &c,
+            c.settings_json.to_string(),
+            "unknown",
+            "[]",
+            &mut settings_sent,
+        )
+        .unwrap_err();
+        assert!(err.contains("unknown function"), "{err}");
+        assert!(
+            settings_sent,
+            "a guest-level error still completes the settings handoff"
+        );
+
+        let spin = WasmLibraryProvider::load(&f.spin, None, None).unwrap();
+        assert!(spin.settings_once);
+        let (mut store, instance) = spin.instantiate_store().unwrap();
+        let mut settings_sent = false;
+        let err = call_guest(
+            &mut store,
+            &instance,
+            &spin.id,
+            &c,
+            c.settings_json.to_string(),
+            "spin",
+            "[]",
+            &mut settings_sent,
+        )
+        .unwrap_err();
+        assert!(err.contains("fuel"), "{err}");
+        assert!(!settings_sent, "a trap must not mark settings as sent");
     }
 
     #[test]

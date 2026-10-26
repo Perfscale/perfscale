@@ -25,7 +25,7 @@
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use serde_json::{json, Map};
 
-use perfscale_core::step::actions::HttpSample;
+use perfscale_core::step::actions::{execute_action, HttpSample};
 use perfscale_core::step::context::Context;
 use perfscale_core::step::process::{RingBuf, WaitUntil};
 use perfscale_core::step::pubsub::{
@@ -531,6 +531,101 @@ fn bench_pubsub(c: &mut Criterion) {
     });
 }
 
+/// Full `std/graphql@v1` action with schema discovery paid once during warm-up.
+/// The measured path still covers cached schema resolution, query parsing and
+/// validation, variable expansion, and the local HTTP exchange.
+fn bench_graphql(c: &mut Criterion) {
+    use wiremock::matchers::{body_json, body_string_contains, method as wm_method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const QUERY: &str = "query GetUser { viewer { id name } }";
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(MockServer::start());
+    let url = format!("{}/graphql", server.uri());
+
+    rt.block_on(async {
+        Mock::given(wm_method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("IntrospectionQuery"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "__schema": {
+                        "queryType": { "name": "Query" },
+                        "mutationType": null,
+                        "types": [
+                            { "kind": "OBJECT", "name": "Query", "fields": [
+                                { "name": "viewer", "type": { "kind": "OBJECT", "name": "Viewer", "ofType": null } }
+                            ]},
+                            { "kind": "OBJECT", "name": "Viewer", "fields": [
+                                { "name": "id", "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "ID", "ofType": null } } },
+                                { "name": "name", "type": { "kind": "SCALAR", "name": "String", "ofType": null } }
+                            ]},
+                            { "kind": "SCALAR", "name": "ID", "fields": null },
+                            { "kind": "SCALAR", "name": "String", "fields": null }
+                        ]
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(wm_method("POST"))
+            .and(path("/graphql"))
+            .and(body_json(json!({
+                "query": QUERY,
+                "variables": { "request_id": "bench-7" },
+                "operationName": "GetUser"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "viewer": { "id": "42", "name": "Ada" } }
+            })))
+            .mount(&server)
+            .await;
+    });
+
+    let params = json!({
+        "url": url,
+        "query": QUERY,
+        "variables": { "request_id": "bench-${rand(7,7)}" },
+    });
+    let ctx = Context::new();
+
+    let warmup = rt.block_on(execute_action(
+        "std/graphql@v1",
+        &params,
+        &ctx,
+        "graphql_warmup",
+    ));
+    assert!(warmup.success, "logs: {:?}", warmup.logs);
+    assert_eq!(warmup.value["status"], 200);
+    assert_eq!(warmup.value["data"]["viewer"]["name"], "Ada");
+    assert!(
+        !warmup
+            .logs
+            .iter()
+            .any(|(_, line)| line.contains("running unvalidated")),
+        "introspection did not produce a schema: {:?}",
+        warmup.logs
+    );
+
+    c.bench_function("graphql_execute_action", |b| {
+        b.iter(|| {
+            let out = rt.block_on(execute_action(
+                "std/graphql@v1",
+                std::hint::black_box(&params),
+                &ctx,
+                "graphql_bench",
+            ));
+            assert!(out.success, "logs: {:?}", out.logs);
+            std::hint::black_box(out)
+        })
+    });
+
+    rt.block_on(server.verify());
+}
+
 criterion_group!(
     benches,
     bench_yaml_parse,
@@ -541,6 +636,7 @@ criterion_group!(
     bench_ring_buf,
     bench_wait_until,
     bench_shared_variable,
-    bench_pubsub
+    bench_pubsub,
+    bench_graphql
 );
 criterion_main!(benches);

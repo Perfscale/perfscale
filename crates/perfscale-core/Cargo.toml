@@ -169,3 +169,7 @@ harness = false
 [[bench]]
 name = "library"
 harness = false
+
+[[bench]]
+name = "generate"
+harness = false

@@ -119,14 +119,14 @@ pub struct Ctx {
     pub seed: u64,
     /// Wall clock, unix milliseconds — the only time source a library gets.
     pub time_ms: u64,
-    /// Run settings as a JSON object, frozen once at run start — the string
-    /// is identical for every call of the run:
+    /// Run settings as a JSON object, frozen once at run start:
     /// `{"vus": N|null, "duration_ms": N|null, "seed": N|null,
     ///   "stages": [...]|null, "arrival": {...}|null, "variables": {...}}`.
     /// `vus`/`duration_ms` are only set for the fixed load profile; staged
     /// and arrival-rate runs carry the profile in `stages`/`arrival`.
-    /// `"{}"` for components built against the 0.1 ABI (they never see
-    /// settings) and in hand-built contexts. See [`Ctx::settings`].
+    /// The SDK retains the settings when a supporting engine elides them from
+    /// later calls. `"{}"` for components built against the 0.1 ABI (they
+    /// never see settings) and in hand-built contexts. See [`Ctx::settings`].
     pub settings_json: String,
     // --- SDK-managed state (not part of the ABI) ---
     memo_seq: u64,
@@ -157,6 +157,13 @@ impl Ctx {
     /// not parse (never a panic).
     pub fn settings(&self) -> Value {
         serde_json::from_str(&self.settings_json).unwrap_or(Value::Null)
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn update_settings_json(&mut self, settings_json: String) {
+        if !settings_json.is_empty() {
+            self.settings_json = settings_json;
+        }
     }
 
     /// The instance's seeded PRNG, created from `seed` on first use. All
@@ -490,6 +497,7 @@ pub mod __rt {
             "name": name.replace('-', "_"),
             "version": version,
             "pure": lib.pure(),
+            "settings_once": true,
             "functions": functions,
         })
         .to_string()
@@ -520,7 +528,7 @@ pub mod __rt {
             c.vu_id = ctx.vu_id;
             c.seed = ctx.seed;
             c.time_ms = ctx.time_ms;
-            c.settings_json = ctx.settings_json;
+            c.update_settings_json(ctx.settings_json);
             lib.call(c, func, args)
         })
         .map_err(|e: Error| e.message().to_string())
@@ -629,6 +637,31 @@ mod tests {
         ctx.message_seq = 2;
         let c = test_call(&mut lib, &mut ctx, "id", vec![]).unwrap();
         assert_ne!(a, c, "fresh after message_seq bumps");
+    }
+
+    #[test]
+    fn settings_updates_support_once_and_full_payload_paths() {
+        let settings = serde_json::json!({
+            "variables": {
+                "large": "x".repeat(256 * 1024),
+                "nested": { "enabled": true },
+            },
+            "extensions": {
+                "configlib": { "endpoint": "https://api.test", "pool_size": 4 },
+            },
+        });
+        let mut ctx = Ctx::new(42);
+        ctx.update_settings_json(settings.to_string());
+        ctx.update_settings_json(String::new());
+        assert_eq!(ctx.settings(), settings);
+
+        let replacement = serde_json::json!({ "vus": 2, "variables": { "new": true } });
+        ctx.update_settings_json(replacement.to_string());
+        assert_eq!(
+            ctx.settings(),
+            replacement,
+            "old engines keep sending a full replacement on every call"
+        );
     }
 
     #[test]
