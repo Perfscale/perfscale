@@ -1,4 +1,4 @@
-// perfscale library ABI, version 0.2 (RFC 005 phase 2/3.5).
+// perfscale library ABI, version 0.3 (RFC 005 phase 2/3.5 + issue #10).
 //
 // Single source of truth for the contract between the engine (host,
 // `crates/perfscale-core/src/library/wasm.rs`) and WASM value-generator
@@ -6,10 +6,16 @@
 // generate bindings from this file — keep it in sync with the RFC and bump
 // the package version on any change.
 //
-// 0.2.0 adds `settings-json` to the call context (run settings frozen once
-// at run start). The host still accepts 0.1.x components (bindings from
-// `wit/v0.1/library.wit`) — they simply never see the settings.
-package perfscale:library@0.2.0;
+// 0.2.0 added `settings-json` to the call context (run settings frozen once
+// at run start). 0.3.0 adds the optional `config-schema` export (issue #10):
+// a library may declare a typed config extension — the top-level config key
+// it owns plus a JSON Schema for its value. The host validates the user's
+// config block against the schema (fail-fast at lint/validate) and hands the
+// block to the guest in the run settings' `extensions` object. Components
+// without the export keep working unchanged: the `perfscale-library` world
+// is untouched, and 0.1.x/0.2.x components (`wit/v0.1`, `wit/v0.2`) keep
+// loading — they simply never see config extensions.
+package perfscale:library@0.3.0;
 
 interface library {
     /// The context every call receives (RFC 005 "Call context").
@@ -29,9 +35,12 @@ interface library {
         /// string is identical for every call of the run:
         /// `{"vus": N|null, "duration_ms": N|null, "seed": N|null,
         ///   "stages": [...]|null, "arrival": {...}|null,
-        ///   "variables": {...}}`. `vus`/`duration_ms` are only set for the
-        /// fixed load profile; staged/arrival runs carry the profile in
-        /// `stages`/`arrival` (durations normalized to milliseconds).
+        ///   "variables": {...}, "extensions": {...}}`. `vus`/`duration_ms`
+        /// are only set for the fixed load profile; staged/arrival runs carry
+        /// the profile in `stages`/`arrival` (durations normalized to
+        /// milliseconds). `extensions` carries the library-claimed config
+        /// extension blocks (issue #10), keyed by the claimed top-level key —
+        /// a library reads its own block as `extensions[<its key>]`.
         settings-json: string,
     }
 
@@ -55,9 +64,26 @@ interface library {
     call: func(ctx: context, func-name: string, args-json: string) -> result<string, string>;
 }
 
+/// Config extension declaration (issue #10). Returned JSON:
+/// `{ "key": "mylibrary", "schema": { ...JSON Schema... } }` — `key` is the
+/// top-level config key the library claims (`[a-z][a-z0-9_]*`, must not
+/// collide with an engine key or another loaded library's key — both are
+/// hard load/validation errors), `schema` a JSON Schema the host validates
+/// the user's config block against (fail-fast at lint/validate).
+interface config-schema {
+    config-schema: func() -> string;
+}
+
 world perfscale-library {
     export library;
     // WASI imports (wasi:filesystem, wasi:clocks, wasi:http) are optional
     // capabilities: the host connects exactly the granted subset and refuses
     // to load a component importing more than granted.
+}
+
+/// The world for libraries that declare a config extension: same as
+/// `perfscale-library`, plus the `config-schema` export.
+world perfscale-library-config {
+    export library;
+    export config-schema;
 }

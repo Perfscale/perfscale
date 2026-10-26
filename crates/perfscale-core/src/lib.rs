@@ -11,6 +11,7 @@
 pub mod generate;
 pub mod gpu;
 pub mod import;
+pub mod inputs;
 pub mod introspect;
 pub mod library;
 pub mod lint;

@@ -175,7 +175,8 @@ pub async fn run_steps(
 /// `CallCtx.settings_json` (RFC 005 settings). Built once at run start —
 /// the string is identical for every VU, iteration, and call of the run.
 ///
-/// Shape: `{"vus", "duration_ms", "seed", "stages", "arrival", "variables"}`.
+/// Shape: `{"vus", "duration_ms", "seed", "stages", "arrival", "variables",
+/// "extensions"}`.
 /// `vus`/`duration_ms` describe only the fixed load profile; staged and
 /// arrival-rate runs leave them null and carry the profile in
 /// `stages`/`arrival` as declared, with durations normalized to
@@ -241,6 +242,9 @@ fn build_library_settings(config: &RunConfig, vars: &Value, secrets: &SecretRegi
         "stages": stages,
         "arrival": arrival,
         "variables": variables,
+        // Library-claimed config extension blocks (issue #10), already
+        // validated against the claiming libraries' schemas at run start.
+        "extensions": config.config_extensions,
     });
     Arc::from(settings.to_string())
 }
@@ -290,6 +294,9 @@ pub async fn run_native(
     } else {
         Value::Object(variables)
     };
+    // Resolved `${{ inputs.* }}` values (issue #11) — the CLI resolves them
+    // (`-i` > env file > default) before the run; Null when undeclared.
+    let inputs = crate::inputs::inputs_namespace(&config.input_values);
 
     // Managed child processes live for the whole run — whether they were
     // spawned in `before`, a test step or `after`, everything still alive at
@@ -300,10 +307,6 @@ pub async fn run_native(
     // shares it, and every line sent to the run log is masked against it —
     // a resolved `${{ env.NAME }}` value must never appear in the log.
     let secrets = SecretRegistry::new();
-
-    // Run settings handed to every library call as `CallCtx.settings_json`
-    // (RFC 005): built once here, frozen for the whole run.
-    let settings_json = build_library_settings(&config, &vars, &secrets);
 
     // Report config errors (unknown reporter, missing destination) are
     // fail-fast — before any setup step runs, like the library checks below.
@@ -363,6 +366,66 @@ pub async fn run_native(
             };
         }
     };
+
+    // Config extension blocks (issue #10): the config document's unknown
+    // top-level keys must be claimed by a loaded library and satisfy its
+    // schema — fail-fast, before anything runs.
+    let mut config = config;
+    if let Some(set) = &library_set {
+        match crate::library::validate_config_extensions(&config.config_extensions, &set.libraries)
+        {
+            Ok(validated) => config.config_extensions = validated,
+            Err(msg) => {
+                emit(
+                    &tx,
+                    LogSource::Stderr,
+                    &format!("invalid configuration: {msg}"),
+                    &secrets,
+                )
+                .await;
+                registry.shutdown_all().await;
+                emit(
+                    &tx,
+                    LogSource::System,
+                    "Done — configuration error",
+                    &secrets,
+                )
+                .await;
+                return NativeRunOutcome {
+                    config_error: Some(msg),
+                    ..NativeRunOutcome::default()
+                };
+            }
+        }
+    } else if !config.config_extensions.is_empty() {
+        // Extensions with no libraries loaded: every key is unknown.
+        let msg = crate::library::validate_config_extensions(&config.config_extensions, &[])
+            .expect_err("extensions with no libraries always fail");
+        emit(
+            &tx,
+            LogSource::Stderr,
+            &format!("invalid configuration: {msg}"),
+            &secrets,
+        )
+        .await;
+        registry.shutdown_all().await;
+        emit(
+            &tx,
+            LogSource::System,
+            "Done — configuration error",
+            &secrets,
+        )
+        .await;
+        return NativeRunOutcome {
+            config_error: Some(msg),
+            ..NativeRunOutcome::default()
+        };
+    }
+
+    // Run settings handed to every library call as `CallCtx.settings_json`
+    // (RFC 005): built once here, frozen for the whole run. After the
+    // library resolution above — it carries the validated extension blocks.
+    let settings_json = build_library_settings(&config, &vars, &secrets);
 
     // Run-scoped per-library metrics recorder (RFC 005): every generator
     // minted by any context of the run counts and times its library calls
@@ -461,6 +524,7 @@ pub async fn run_native(
     let config_seed = match run_before(
         &before,
         &vars,
+        &inputs,
         &config,
         &registry,
         &secrets,
@@ -488,6 +552,7 @@ pub async fn run_native(
                 &after,
                 &Value::Null,
                 &vars,
+                &inputs,
                 &config,
                 &after_shared,
                 quiet,
@@ -510,6 +575,7 @@ pub async fn run_native(
     // Shared, immutable across VUs — cloned into each VU's context once.
     let config_seed = Arc::new(config_seed);
     let vars = Arc::new(vars);
+    let inputs = Arc::new(inputs);
 
     // Staged/arrival runs track the live-VU gauge so the summary and the
     // [stats] reporter can report the *observed* concurrency; fixed runs skip
@@ -524,6 +590,7 @@ pub async fn run_native(
         iter_count: Arc::clone(&iter_count),
         config_seed: Arc::clone(&config_seed),
         vars: Arc::clone(&vars),
+        inputs: Arc::clone(&inputs),
         fs_root: config.fs_root.clone(),
         allow_file_actions: config.allow_file_actions,
         allow_process_actions: config.allow_process_actions,
@@ -714,6 +781,7 @@ pub async fn run_native(
         &after,
         &config_seed,
         &vars,
+        &inputs,
         &config,
         &after_shared,
         quiet,
@@ -987,6 +1055,9 @@ struct VuShared {
     iter_count: Arc<AtomicU64>,
     config_seed: Arc<Value>,
     vars: Arc<Value>,
+    /// Resolved `${{ inputs.* }}` values (issue #11) — Null when the run
+    /// declares no inputs.
+    inputs: Arc<Value>,
     fs_root: Option<std::path::PathBuf>,
     allow_file_actions: bool,
     allow_process_actions: bool,
@@ -1043,6 +1114,9 @@ impl VuShared {
         }
         if !self.vars.is_null() {
             ctx.set("vars", (*self.vars).clone());
+        }
+        if !self.inputs.is_null() {
+            ctx.set("inputs", (*self.inputs).clone());
         }
         ctx
     }
@@ -1135,6 +1209,9 @@ fn spawn_vu(
         // VU exit: drop `scope: vu` DB connections (and anything else still
         // parked — the per-iteration drain normally left nothing).
         ctx.resources.drain_vu();
+        // Drop `pool: dedicated` HTTP clients — the VU's standing
+        // keep-alive connections close here, not at iteration end.
+        crate::step::http::drain_dedicated_vu_clients(vu_id as u64);
         if let Some(active) = &active_vus {
             active.fetch_sub(1, Ordering::SeqCst);
         }
@@ -1206,6 +1283,7 @@ fn spawn_arrival_worker(
         // Worker exit (arrival workers are VUs): drop `scope: vu` DB
         // connections parked past the per-iteration drains.
         ctx.resources.drain_vu();
+        crate::step::http::drain_dedicated_vu_clients(vu_id as u64);
         if let Some(active) = &active_vus {
             active.fetch_sub(1, Ordering::SeqCst);
         }
@@ -1507,6 +1585,7 @@ fn spawn_interrupt_handler(
 async fn run_before(
     before: &[Step],
     vars: &Value,
+    inputs: &Value,
     config: &RunConfig,
     registry: &Arc<ProcessRegistry>,
     secrets: &SecretRegistry,
@@ -1548,6 +1627,9 @@ async fn run_before(
     ctx.quiet = quiet;
     if !vars.is_null() {
         ctx.set("vars", vars.clone());
+    }
+    if !inputs.is_null() {
+        ctx.set("inputs", inputs.clone());
     }
 
     let mut config = Map::new();
@@ -1609,10 +1691,12 @@ struct AfterShared {
 /// The run's shared [`Metrics`] handle is seeded into the context so
 /// `std/thresholds@v1` gates can evaluate over everything the run collected
 /// (empty when setup failed before any VU ran).
+#[allow(clippy::too_many_arguments)]
 async fn run_after(
     after: &[Step],
     config_seed: &Value,
     vars: &Value,
+    inputs: &Value,
     config: &RunConfig,
     shared: &AfterShared,
     quiet: bool,
@@ -1651,6 +1735,9 @@ async fn run_after(
     ctx.quiet = quiet;
     if !vars.is_null() {
         ctx.set("vars", vars.clone());
+    }
+    if !inputs.is_null() {
+        ctx.set("inputs", inputs.clone());
     }
     if !config_seed.is_null() {
         ctx.set("config", config_seed.clone());
@@ -2285,6 +2372,49 @@ mod tests {
         assert!(lines.last().unwrap().text.starts_with("Done"));
         assert!(lines.iter().any(|l| l.text.starts_with("vus")));
         assert!(lines.iter().any(|l| l.text.starts_with("iterations")));
+    }
+
+    #[tokio::test]
+    async fn run_steps_drains_dedicated_http_clients_at_vu_exit() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ok"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let steps = vec![Step {
+            name: Some("hit".into()),
+            action: "std/http@v1".into(),
+            with: Some(json!({
+                "url": format!("{}/ok", server.uri()),
+                "pool": "dedicated",
+            })),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+            condition: None,
+        }];
+        let config = RunConfig {
+            vus: 4,
+            duration: "200ms".into(),
+            ..Default::default()
+        };
+        let lines = run_and_collect(steps, config, false).await;
+        assert!(
+            lines.iter().any(|l| l.text.starts_with("http_reqs")),
+            "run produced HTTP metrics"
+        );
+        // Fixed runs number VUs 1..=vus; every one of their dedicated
+        // clients must be gone after VU exit (other tests may hold unrelated
+        // entries in the process-global registry, so check per VU id).
+        for vu in 1..=4u64 {
+            assert!(
+                !crate::step::http::dedicated_registry_has_vu(vu),
+                "vu {vu}'s dedicated client was drained at VU exit"
+            );
+        }
     }
 
     #[tokio::test]
@@ -3166,6 +3296,57 @@ mod tests {
             message: None,
             condition: None,
         }
+    }
+
+    /// `${{ inputs.* }}` (issue #11): the resolved values the CLI put on the
+    /// run config are exposed as the `inputs` namespace in every context.
+    #[tokio::test]
+    async fn inputs_namespace_interpolates_in_steps() {
+        let mut config = quick_run();
+        config.input_values.insert("users".into(), json!(10));
+        let steps = vec![log_step("i", "users=${{ inputs.users }}", None)];
+        let lines = run_native_and_collect(steps, Vec::new(), Vec::new(), Map::new(), config).await;
+        assert!(
+            lines.iter().any(|l| l.text.contains("users=10")),
+            "{lines:?}"
+        );
+    }
+
+    /// Config extensions (issue #10): an extension key no loaded library
+    /// claims is a run-start configuration error, not a silent pass.
+    #[tokio::test]
+    async fn unclaimed_config_extension_fails_the_run_at_start() {
+        let mut config = quick_run();
+        config
+            .config_extensions
+            .insert("itertions".into(), json!(5));
+        let (_lines, outcome) = run_native_full(
+            vec![sleep_step(10)],
+            Vec::new(),
+            Vec::new(),
+            Map::new(),
+            config,
+        )
+        .await;
+        let err = outcome.config_error.expect("config error present");
+        assert!(err.contains("unknown config key 'itertions'"), "{err}");
+    }
+
+    /// The validated extension blocks land in the run settings' `extensions`
+    /// object — the guest's delivery channel.
+    #[test]
+    fn settings_json_carries_validated_extensions() {
+        let mut config = RunConfig::default();
+        config.config_extensions.insert(
+            "configlib".into(),
+            json!({ "endpoint": "https://api.test" }),
+        );
+        let s = super::build_library_settings(&config, &Value::Null, &SecretRegistry::new());
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            parsed["extensions"]["configlib"]["endpoint"],
+            json!("https://api.test")
+        );
     }
 
     async fn run_native_and_collect(

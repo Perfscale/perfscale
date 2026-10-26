@@ -52,6 +52,7 @@ use serde::{Deserialize, Serialize};
 pub mod burn;
 pub mod lockfile;
 pub mod metrics;
+pub mod std_json;
 pub mod std_random;
 #[cfg(feature = "wasm-libs")]
 pub mod wasm;
@@ -60,7 +61,7 @@ pub use metrics::{LibraryAliasSummary, LibraryMetrics};
 
 /// Every library ref the engine can resolve — the complete list, named in
 /// "unknown library" errors.
-pub const AVAILABLE_LIBRARIES: &[&str] = &["@std/random@v1"];
+pub const AVAILABLE_LIBRARIES: &[&str] = &["@std/random@v1", "@std/json@v1"];
 
 /// Token names owned by the generator itself; a library alias may not shadow
 /// them (built-ins match first, so the alias would silently never resolve).
@@ -82,7 +83,7 @@ pub const RESERVED_TOKEN_NAMES: &[&str] = &[
 pub struct LibraryRef {
     /// Library reference:
     ///
-    /// - `@std/random@v1` — built-in, native;
+    /// - `@std/random@v1`, `@std/json@v1` — built-in, native;
     /// - a local `.wasm` path — WASM component, relative to the declaring
     ///   file's directory (resolved by `import:` handling; requires a build
     ///   with the `wasm-libs` feature, which the CLI enables);
@@ -242,6 +243,14 @@ pub struct CallCtx<'a> {
     /// `variables:` with `${{ env.* }}` resolved. `"{}"` when the caller
     /// wired nothing (hand-built generators, WIT 0.1 components).
     pub settings_json: &'a str,
+    /// The run's `allow_file_actions` flag (fail-closed default `false`) —
+    /// native libraries that touch the filesystem (`@std/json@v1`) must gate
+    /// on it exactly like the `std/file-*@v1` steps. WASM libraries never see
+    /// this: their filesystem access is the `fs` capability's WASI preopen.
+    pub allow_file_actions: bool,
+    /// The run's `fs_root` confinement (same source as above); when set, a
+    /// native library's paths must stay under it.
+    pub fs_root: Option<&'a std::path::Path>,
 }
 
 impl CallCtx<'_> {
@@ -280,6 +289,13 @@ pub trait LibraryProvider: Send + Sync {
 
     /// Exported functions, for docs and lint-time token validation.
     fn functions(&self) -> &[FunctionInfo];
+
+    /// The config extension this library declares (issue #10): the claimed
+    /// top-level config key plus its JSON Schema. `None` for libraries
+    /// without a `config-schema` export (all built-ins, legacy components).
+    fn config_schema(&self) -> Option<(&'static str, &serde_json::Value)> {
+        None
+    }
 
     /// Create one instance with its derived seed and optional `with:` config.
     fn instantiate(
@@ -403,6 +419,7 @@ pub struct LibrarySet {
 pub fn builtin_provider(id: &str) -> Option<Arc<dyn LibraryProvider>> {
     match id {
         "@std/random@v1" => Some(Arc::new(std_random::StdRandomProvider)),
+        "@std/json@v1" => Some(Arc::new(std_json::StdJsonProvider)),
         _ => None,
     }
 }
@@ -617,7 +634,71 @@ pub fn validate_libraries(
             rules,
         });
     }
+
+    // Config-extension keys (issue #10): the v1 policy is fail-fast — two
+    // libraries claiming the same top-level config key is a hard error, as
+    // is a library claiming a key the engine owns (the probe already rejects
+    // engine-key collisions; the check here covers non-WASM providers).
+    let mut claimed: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for r in &resolved {
+        if let Some((key, _)) = r.provider.config_schema() {
+            if crate::schema::known_config_keys().contains(key) {
+                return Err(format!(
+                    "library '{}' claims config key '{key}', which is a built-in config key",
+                    r.provider.id()
+                ));
+            }
+            if let Some(other) = claimed.insert(key, r.provider.id()) {
+                return Err(format!(
+                    "config key '{key}' is claimed by both '{other}' and '{}' — config extension keys must be unique per run",
+                    r.provider.id()
+                ));
+            }
+        }
+    }
     Ok(resolved)
+}
+
+/// Validate the config document's extension blocks (the unknown top-level
+/// keys collected into `ConfigFile::extensions`, issue #10) against the
+/// loaded libraries: every key must be claimed by exactly one library, and
+/// its value must satisfy that library's JSON Schema. Fail-fast — called at
+/// lint and at run start. The returned map holds the validated blocks keyed
+/// by the claimed config key (for the run settings' `extensions` object).
+pub fn validate_config_extensions(
+    extensions: &serde_json::Map<String, serde_json::Value>,
+    libraries: &[ResolvedLibrary],
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let mut validated = serde_json::Map::new();
+    for (key, value) in extensions {
+        let Some((_, schema)) = libraries
+            .iter()
+            .find_map(|r| r.provider.config_schema().filter(|(k, _)| *k == key))
+        else {
+            return Err(format!(
+                "unknown config key '{key}' — no loaded library claims it (known keys: {}; extension keys come from a library's config-schema export)",
+                crate::schema::known_config_keys()
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        };
+        let compiled = jsonschema::JSONSchema::compile(schema).map_err(|e| {
+            format!("config key '{key}': the library's schema does not compile: {e}")
+        })?;
+        if let Err(errors) = compiled.validate(value) {
+            let details = errors
+                .map(|e| format!("{e}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(format!(
+                "config key '{key}' does not match the library's schema: {details}"
+            ));
+        }
+        validated.insert(key.clone(), value.clone());
+    }
+    Ok(validated)
 }
 
 /// Parse `@std/name@vN` → the name part. Any other shape (unknown namespace,
@@ -876,6 +957,16 @@ mod tests {
         } else {
             assert!(err.contains("no WASM support"), "{err}");
         }
+    }
+
+    #[test]
+    fn validates_std_json_with_default_alias() {
+        let mut r = std_random_ref();
+        r.use_ = "@std/json@v1".into();
+        let resolved = validate_libraries(&[r], false, None).unwrap();
+        assert_eq!(resolved[0].alias, "json");
+        assert_eq!(resolved[0].provider.id(), "@std/json@v1");
+        assert!(AVAILABLE_LIBRARIES.contains(&"@std/json@v1"));
     }
 
     #[test]

@@ -27,6 +27,63 @@ Release notes for the next release, written as features land.
     modulo for exact 1-based-to-0-based index mapping;
   - `std/sleep@v1` expands tokens (`ms: "${rand(3000,7000)}"`) and rejects
     non-numeric strings instead of silently sleeping 1s.
+- JSON steps and paths: new `std/read-json@v1` reads and parses a JSON file
+  into the step output (process-wide cache keyed by `(mtime, size)`, so
+  iterations past the first skip both the disk read and the parse), and a new
+  `query` parameter on `std/read-json@v1`, `std/file-read@v1`, and
+  `std/file-write@v1` takes a jq-style path subset (`.posts[0].id` ≡
+  `posts.0.id`; a `?` suffix on a segment turns a miss into `null`).
+  `file-read` extracts the subvalue from JSON content, `file-write` does a
+  read-modify-write that sets `content` at the path (creating intermediate
+  objects/arrays like jq; an array index equal to the length appends).
+  `${{ ... }}` interpolation accepts the same paths, including bracket
+  indexing, and a path that continues past a string leaf — an HTTP `body` —
+  parses it as JSON on demand: `${{ feed.body.posts[0].id }}` reads straight
+  into a response without a separate extract step. The same reader is also
+  a built-in library, `@std/json@v1`: `${json.read("users.json",
+  ".users[0].token")}` inside generator tokens, sharing the step's
+  parsed-document cache and its fail-closed `allow_file_actions` gate (a
+  tolerant `?` miss resolves to an empty string in tokens; a mandatory miss
+  is an expansion error naming the segment). `@std/json@v1` also exports
+  `pick(file[, index])` — a uniformly random (seeded-run deterministic) or
+  index-addressed element of a JSON array file. Like `@std/random@v1`, the
+  library is opt-in: it resolves only when declared in `libraries:`.
+- `std/http@v1` `pool: dedicated` — one HTTP client per VU, created on the
+  VU's first request and held until the VU exits. The default shard pools
+  cap idle connections at 64 per host per shard, so past
+  ~`shards × 64` VUs a VU's keep-alive connection is evicted between its
+  requests (connect churn, TIME_WAIT buildup); dedicated mode removes the
+  ceiling for "N VUs = N standing connections" scenarios. Think time
+  (`std/sleep@v1`) does not close the connection, clients are dropped at VU
+  exit (fixed, staged, and arrival-rate runs alike), and the mode composes
+  with `source_ips` (client key: `(vu_id, source_ip)`).
+- Multi-source-IP HTTP load (`std/http@v1` `source_ips`): a step can bind
+  outgoing connections to a list of local source addresses — bare IPs or
+  CIDR prefixes (`source_ips: ["10.0.0.2", "10.0.0.16/28", "fd00::/120"]`,
+  expansion capped at 4096 addresses). The ephemeral source-port space is
+  per (source IP, dst IP, dst port), so multiple source addresses multiply
+  the ~64k-concurrent-connections-per-endpoint budget of one machine. VU `i`
+  is pinned to `ips[(i-1) % n]` (stable across iterations, keep-alive stays
+  warm); clients are built lazily per (shard, address) pair, the first
+  request logs how many addresses are active, and `perfscale lint` validates
+  the list before the run.
+- Typed run inputs (issue #11): config files declare an `inputs:` block
+  (`number` with `min`/`max`, `string`, `bool` with 0/1/false/true coercion,
+  GitHub-style `choice` with `options:`), steps interpolate
+  `${{ inputs.<name> }}` everywhere `${{ ... }}` works, and the CLI overrides
+  values at launch: `-i users=10 -i env=prod`, the comma form
+  `-i users=10,env=prod` (`\,` escapes a literal comma), and `-e file.env`
+  env files. Precedence: `-i` > env file > `default:`; unknown keys, type
+  mismatches, out-of-range values and missing required inputs fail before
+  the run starts, and `perfscale lint` prints the effective resolved values.
+- Config extensions (issue #10): WASM libraries built against
+  `perfscale:library@0.3.0` may export `config-schema`, claiming one
+  top-level config key (`mylibrary: { ... }`) with a JSON Schema for its
+  value. The engine validates the block at lint and run start and hands it
+  to the guest via the run settings' `extensions` object. Unknown top-level
+  keys stay a hard error (the typo guard moved from schema parse to this
+  validation), and two libraries claiming one key is a hard error. Older
+  (0.1/0.2) components keep loading unchanged.
 - `std/pubsub@v1`: new `flush` parameter (`message` | `none`, default
   `message` — unchanged). `flush: message` flushes and awaits the broker ack
   after publishing, so `pubsub_publish_ms` is the full round trip;

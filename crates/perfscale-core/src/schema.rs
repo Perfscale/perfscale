@@ -19,12 +19,33 @@ pub fn test_schema() -> serde_json::Value {
 }
 
 /// Schema for `-c config.yaml` documents.
+///
+/// The top level is deliberately NOT closed (`additionalProperties`):
+/// library-claimed config extension keys (issue #10) are only knowable once
+/// the document's libraries are loaded, so unknown top-level keys are
+/// collected into [`ConfigFile::extensions`](crate::yaml::ConfigFile) and
+/// validated after library resolution — fail-fast at lint and run start
+/// ([`crate::library::validate_config_extensions`]). Nested blocks keep
+/// their per-struct `deny_unknown_fields` strictness.
 pub fn config_schema() -> serde_json::Value {
     let mut schema = serde_json::to_value(schema_for!(ConfigFile))
         .expect("ConfigFile schema is always valid JSON");
     relax_step_aliases(&mut schema);
-    close_config_top_level(&mut schema);
     schema
+}
+
+/// The config document's statically known top-level keys (everything the
+/// schema names). `validate_config_extensions` treats anything else as an
+/// extension key a loaded library must claim — or an error.
+pub fn known_config_keys() -> &'static std::collections::BTreeSet<String> {
+    static KEYS: OnceLock<std::collections::BTreeSet<String>> = OnceLock::new();
+    KEYS.get_or_init(|| {
+        config_schema()
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .map(|p| p.keys().cloned().collect())
+            .unwrap_or_default()
+    })
 }
 
 /// Compiled [`test_schema`], built once and cached. Schema compilation
@@ -73,19 +94,6 @@ fn relax_step_aliases(schema: &mut serde_json::Value) {
     }
 }
 
-/// `ConfigFile` flattens `RunConfig`, and serde's `deny_unknown_fields` does
-/// not work through `flatten` (neither does schemars' emission of it) — so a
-/// typo'd top-level key (`iterations: 1`) would still parse silently (#8).
-/// Close the top level here instead: schemars inlines the flattened
-/// `RunConfig` properties into `ConfigFile`'s `properties`, so
-/// `additionalProperties: false` at the root rejects exactly the unknown
-/// keys.
-fn close_config_top_level(schema: &mut serde_json::Value) {
-    if let Some(obj) = schema.as_object_mut() {
-        obj.insert("additionalProperties".to_string(), json!(false));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,15 +119,22 @@ mod tests {
     }
 
     #[test]
-    fn config_schema_rejects_unknown_top_level_keys() {
-        // The issue-#8 guard: `deny_unknown_fields` can't cross the
-        // `RunConfig` flatten, so the schema patch is what rejects a typo'd
-        // top-level key.
+    fn config_schema_top_level_is_open_for_extensions() {
+        // Since issue #10 the schema's top level is OPEN: library-claimed
+        // config extension keys are unknowable until the document's
+        // libraries load. Unknown keys are collected into
+        // `ConfigFile::extensions` and rejected post-parse by
+        // `validate_config_extensions` (lint + run start) — see the yaml
+        // tests for the typo-guard behavior.
         let schema = config_schema();
-        assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+        assert_ne!(schema["additionalProperties"], serde_json::json!(false));
         let compiled = jsonschema::JSONSchema::compile(&schema).unwrap();
         assert!(compiled
             .validate(&serde_json::json!({"vus": 2, "iterations": 1}))
+            .is_ok());
+        // Known fields keep their static types.
+        assert!(compiled
+            .validate(&serde_json::json!({"vus": "two"}))
             .is_err());
         assert!(compiled
             .validate(&serde_json::json!({"vus": 2, "duration": "30s"}))

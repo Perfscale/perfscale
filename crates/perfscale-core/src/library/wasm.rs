@@ -67,12 +67,31 @@ use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpCtxView, WasiHttpView};
 
 use super::{CallCtx, Capability, FunctionInfo, LibraryInstance, LibraryProvider};
 
+/// Host-side bindings for the 0.2 ABI (`wit/v0.2/library.wit` — the first
+/// version with `settings-json` in the call context).
+mod bindings_v2 {
+    wasmtime::component::bindgen!({
+        path: "../../wit/v0.2",
+        world: "perfscale-library",
+    });
+}
+
 /// Host-side bindings generated from the same `wit/library.wit` the SDK uses
-/// (the current ABI, 0.2.x — context carries `settings-json`).
-mod bindings {
+/// (the current ABI, 0.3.x — like 0.2, plus the optional `config-schema`
+/// export of issue #10 via the `perfscale-library-config` world).
+mod bindings_v3 {
     wasmtime::component::bindgen!({
         path: "../../wit",
         world: "perfscale-library",
+    });
+}
+
+/// Bindings for the 0.3 `perfscale-library-config` world — components that
+/// additionally export `config-schema`.
+mod bindings_v3_config {
+    wasmtime::component::bindgen!({
+        path: "../../wit",
+        world: "perfscale-library-config",
     });
 }
 
@@ -87,7 +106,7 @@ mod bindings_v1 {
 
 /// The WIT package versions this host implements. A component built against
 /// another major fails to load with both versions named.
-const SUPPORTED_WIT: &str = "perfscale:library/library@0.1.x and @0.2.x";
+const SUPPORTED_WIT: &str = "perfscale:library/library@0.1.x, @0.2.x and @0.3.x";
 
 /// Fuel budget per guest call (`init` and `call`). Fuel is the phase-2
 /// execution bound: ~50M fuel is generous for value generation (string
@@ -562,9 +581,17 @@ pub struct WasmLibraryProvider {
     functions: Vec<FunctionInfo>,
     fs_root: Option<PathBuf>,
     grants: Grants,
-    /// WIT ABI major the component was built against (1 or 2) — picks the
-    /// bindings used at instantiation.
+    /// WIT ABI major the component was built against (1, 2 or 3) — picks
+    /// the bindings used at instantiation.
     wit_major: u8,
+    /// The component exports `perfscale:library/config-schema` (0.3,
+    /// `perfscale-library-config` world) — it declares a config extension
+    /// (issue #10).
+    has_config_schema: bool,
+    /// The claimed top-level config key and its JSON Schema, from the
+    /// `config-schema` probe. `None` when the component has no such export.
+    config_key: Option<&'static str>,
+    config_schema: Option<Value>,
     /// The component's self-declared `"pure": true` from `info()`: never
     /// touches fs/clock/net, so its calls make no tokio-blocking WASI
     /// hostcalls and may run inline on a current-thread runtime.
@@ -660,14 +687,29 @@ impl WasmLibraryProvider {
         // versions (RFC 005 "Versioning").
         let ty = component.component_type();
         let mut exported_wit: Option<String> = None;
+        let mut has_config_schema = false;
         for (name, _) in ty.exports(engine) {
             if let Some(rest) = name.strip_prefix("perfscale:library/library") {
                 exported_wit = Some(rest.trim_start_matches('@').to_string());
             }
+            if name.starts_with("perfscale:library/config-schema") {
+                has_config_schema = true;
+            }
+        }
+        if has_config_schema
+            && exported_wit
+                .as_deref()
+                .is_some_and(|v| !v.starts_with("0.3."))
+        {
+            return Err(format!(
+                "library '{}': config-schema requires the 0.3 ABI — rebuild the component against wit/library.wit 0.3.0",
+                display()
+            ));
         }
         let wit_major: u8 = match exported_wit.as_deref() {
             Some(v) if v.starts_with("0.1.") => 1,
             Some(v) if v.starts_with("0.2.") => 2,
+            Some(v) if v.starts_with("0.3.") => 3,
             other => {
                 return Err(format!(
                     "library '{}': unsupported WIT interface version — this build supports {SUPPORTED_WIT}, the component exports perfscale:library/library@{}",
@@ -738,6 +780,9 @@ impl WasmLibraryProvider {
             fs_root,
             grants: grants.clone(),
             wit_major,
+            has_config_schema,
+            config_key: None,
+            config_schema: None,
             pure: false,
         };
 
@@ -747,6 +792,9 @@ impl WasmLibraryProvider {
         // fuel-limited like any other call. A malformed or trapping `info()`
         // is a load error.
         let info = provider.probe_info()?;
+        if has_config_schema {
+            provider.probe_config_schema()?;
+        }
 
         // A library whose info() declares `"pure": true` never touches the
         // filesystem or the wall clock: its fs/wall-clock imports are
@@ -861,8 +909,8 @@ impl WasmLibraryProvider {
         store
             .set_fuel(PER_CALL_FUEL)
             .map_err(|e| format!("library '{}': {e}", self.path.display()))?;
-        let instance = match self.wit_major {
-            1 => Instantiated::V1(
+        let instance = match (self.wit_major, self.has_config_schema) {
+            (1, _) => Instantiated::V1(
                 bindings_v1::PerfscaleLibrary::instantiate(
                     &mut store,
                     &self.component,
@@ -875,14 +923,44 @@ impl WasmLibraryProvider {
                     )
                 })?,
             ),
-            _ => Instantiated::V2(
-                bindings::PerfscaleLibrary::instantiate(&mut store, &self.component, &self.linker)
-                    .map_err(|e| {
-                        format!(
-                            "library '{}': failed to instantiate: {e}",
-                            self.path.display()
-                        )
-                    })?,
+            (2, _) => Instantiated::V2(
+                bindings_v2::PerfscaleLibrary::instantiate(
+                    &mut store,
+                    &self.component,
+                    &self.linker,
+                )
+                .map_err(|e| {
+                    format!(
+                        "library '{}': failed to instantiate: {e}",
+                        self.path.display()
+                    )
+                })?,
+            ),
+            (_, true) => Instantiated::V3Config(
+                bindings_v3_config::PerfscaleLibraryConfig::instantiate(
+                    &mut store,
+                    &self.component,
+                    &self.linker,
+                )
+                .map_err(|e| {
+                    format!(
+                        "library '{}': failed to instantiate: {e}",
+                        self.path.display()
+                    )
+                })?,
+            ),
+            _ => Instantiated::V3(
+                bindings_v3::PerfscaleLibrary::instantiate(
+                    &mut store,
+                    &self.component,
+                    &self.linker,
+                )
+                .map_err(|e| {
+                    format!(
+                        "library '{}': failed to instantiate: {e}",
+                        self.path.display()
+                    )
+                })?,
             ),
         };
         Ok((store, instance))
@@ -894,6 +972,8 @@ impl WasmLibraryProvider {
         let json = off_runtime(|| match &instance {
             Instantiated::V1(i) => i.perfscale_library_library().call_info(&mut store),
             Instantiated::V2(i) => i.perfscale_library_library().call_info(&mut store),
+            Instantiated::V3(i) => i.perfscale_library_library().call_info(&mut store),
+            Instantiated::V3Config(i) => i.perfscale_library_library().call_info(&mut store),
         })
         .map_err(|e| {
             format!(
@@ -939,14 +1019,82 @@ impl WasmLibraryProvider {
             functions,
         })
     }
+
+    /// Call the `config-schema` export (issue #10) and validate the
+    /// declaration: `{ "key": "mylibrary", "schema": {…} }`. The key must be
+    /// a `[a-z][a-z0-9_]*` identifier and must not collide with a built-in
+    /// config key; the schema must compile as JSON Schema. Failures are load
+    /// errors — the component declares the extension, so a broken
+    /// declaration is its bug, not a runtime condition.
+    fn probe_config_schema(&mut self) -> Result<(), String> {
+        let (mut store, instance) = self.instantiate_store()?;
+        let json = off_runtime(|| {
+            instance
+                .call_config_schema(&mut store)
+                .expect("the config world was selected when the export was detected")
+        })
+        .map_err(|e| {
+            format!(
+                "library '{}': config-schema() trapped or exhausted fuel: {e}",
+                self.path.display()
+            )
+        })?;
+        let parsed: ConfigSchemaJson = serde_json::from_str(&json).map_err(|e| {
+            format!(
+                "library '{}': config-schema() returned invalid JSON: {e}",
+                self.path.display()
+            )
+        })?;
+        let valid_key =
+            !parsed.key.is_empty()
+                && parsed.key.bytes().enumerate().all(|(i, b)| {
+                    b.is_ascii_lowercase() || b == b'_' || (i > 0 && b.is_ascii_digit())
+                });
+        if !valid_key {
+            return Err(format!(
+                "library '{}': config-schema key '{}' is not a valid key ([a-z][a-z0-9_]*)",
+                self.path.display(),
+                parsed.key
+            ));
+        }
+        if crate::schema::known_config_keys().contains(&parsed.key) {
+            return Err(format!(
+                "library '{}': config-schema key '{}' collides with a built-in config key",
+                self.path.display(),
+                parsed.key
+            ));
+        }
+        jsonschema::JSONSchema::compile(&parsed.schema).map_err(|e| {
+            format!(
+                "library '{}': config-schema for key '{}' is not a valid JSON Schema: {e}",
+                self.path.display(),
+                parsed.key
+            )
+        })?;
+        // Leaked like the function names: one key per declared library, set
+        // once per run at load.
+        self.config_key = Some(Box::leak(parsed.key.into_boxed_str()));
+        self.config_schema = Some(parsed.schema);
+        Ok(())
+    }
+}
+
+/// Parsed `config-schema` JSON contract (issue #10).
+#[derive(serde::Deserialize)]
+struct ConfigSchemaJson {
+    key: String,
+    schema: Value,
 }
 
 /// A component instance, through the bindings of its WIT major: 0.1
-/// components get the legacy context (no `settings-json`), 0.2 components
-/// the current one.
+/// components get the legacy context (no `settings-json`), 0.2 and 0.3
+/// components the current one (the 0.3 `library` interface is unchanged —
+/// the new `config-schema` export lives on the `V3Config` variant).
 enum Instantiated {
     V1(bindings_v1::PerfscaleLibrary),
-    V2(bindings::PerfscaleLibrary),
+    V2(bindings_v2::PerfscaleLibrary),
+    V3(bindings_v3::PerfscaleLibrary),
+    V3Config(bindings_v3_config::PerfscaleLibraryConfig),
 }
 
 impl Instantiated {
@@ -958,6 +1106,25 @@ impl Instantiated {
         match self {
             Instantiated::V1(i) => i.perfscale_library_library().call_init(store, config_json),
             Instantiated::V2(i) => i.perfscale_library_library().call_init(store, config_json),
+            Instantiated::V3(i) => i.perfscale_library_library().call_init(store, config_json),
+            Instantiated::V3Config(i) => {
+                i.perfscale_library_library().call_init(store, config_json)
+            }
+        }
+    }
+
+    /// The optional `config-schema` export (issue #10) — present only on the
+    /// 0.3 config world.
+    fn call_config_schema(
+        &self,
+        store: &mut Store<HostState>,
+    ) -> Option<Result<String, wasmtime::Error>> {
+        match self {
+            Instantiated::V3Config(i) => Some(
+                i.perfscale_library_config_schema()
+                    .call_config_schema(store),
+            ),
+            _ => None,
         }
     }
 
@@ -985,7 +1152,31 @@ impl Instantiated {
                     .call_call(store, wctx, func, args_json)
             }
             Instantiated::V2(i) => {
-                let wctx = bindings::exports::perfscale::library::library::Context {
+                let wctx = bindings_v2::exports::perfscale::library::library::Context {
+                    message_seq: ctx.message_seq,
+                    iteration_seq: ctx.iteration_seq,
+                    vu_id: ctx.vu_id,
+                    seed: ctx.seed,
+                    time_ms: ctx.time_ms,
+                    settings_json,
+                };
+                i.perfscale_library_library()
+                    .call_call(store, &wctx, func, args_json)
+            }
+            Instantiated::V3(i) => {
+                let wctx = bindings_v3::exports::perfscale::library::library::Context {
+                    message_seq: ctx.message_seq,
+                    iteration_seq: ctx.iteration_seq,
+                    vu_id: ctx.vu_id,
+                    seed: ctx.seed,
+                    time_ms: ctx.time_ms,
+                    settings_json,
+                };
+                i.perfscale_library_library()
+                    .call_call(store, &wctx, func, args_json)
+            }
+            Instantiated::V3Config(i) => {
+                let wctx = bindings_v3_config::exports::perfscale::library::library::Context {
                     message_seq: ctx.message_seq,
                     iteration_seq: ctx.iteration_seq,
                     vu_id: ctx.vu_id,
@@ -1035,6 +1226,10 @@ struct WasmLibraryInfo {
 impl LibraryProvider for WasmLibraryProvider {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn config_schema(&self) -> Option<(&'static str, &Value)> {
+        self.config_key.zip(self.config_schema.as_ref())
     }
 
     fn functions(&self) -> &[FunctionInfo] {
@@ -1196,6 +1391,10 @@ impl LibraryInstance for WasmLibraryInstance {
                 seed,
                 time_ms,
                 settings_json: "",
+                // WASM components get filesystem access through the `fs`
+                // capability preopen, never through the native gate.
+                allow_file_actions: false,
+                fs_root: None,
             };
             let args_json = std::str::from_utf8(&args_buf).expect("JSON is UTF-8");
             let result = call_guest(
@@ -1401,6 +1600,7 @@ mod tests {
     struct Fixtures {
         hello: PathBuf,
         hello01: PathBuf,
+        configlib: PathBuf,
         spin: PathBuf,
         fsreader: PathBuf,
         purefs: PathBuf,
@@ -1460,6 +1660,7 @@ mod tests {
                 Some(Fixtures {
                     hello: build("hello", "perfscale_hello_library")?,
                     hello01: build("hello01", "perfscale_hello01_library")?,
+                    configlib: build("configlib", "perfscale_configlib_example")?,
                     spin: build("spin", "perfscale_spin_library")?,
                     fsreader: build("fsreader", "perfscale_fsreader_library")?,
                     purefs: build("purefs", "perfscale_purefs_library")?,
@@ -1492,6 +1693,8 @@ mod tests {
             seed: 42,
             time_ms: 1_784_160_000_000,
             settings_json: "{}",
+            allow_file_actions: false,
+            fs_root: None,
         }
     }
 
@@ -1633,6 +1836,90 @@ mod tests {
                 .any(|fi| fi.name == "token" && fi.secret),
             "info() metadata (secret flags) parses for 0.1 components too"
         );
+    }
+
+    // --- config-schema (issue #10, WIT 0.3) --------------------------------
+
+    #[test]
+    fn config_schema_is_registered_and_served() {
+        let Some(f) = fixtures() else { return };
+        let mut r = lib_ref(&f.configlib);
+        r.r#as = Some("configlib".into());
+        let resolved = validate_libraries(&[r], false, None).unwrap();
+        let (key, schema) = resolved[0]
+            .provider
+            .config_schema()
+            .expect("configlib declares a config schema");
+        assert_eq!(key, "configlib");
+        assert_eq!(schema["required"], serde_json::json!(["endpoint"]));
+
+        // The validated block reaches the guest through settings.extensions.
+        let mut inst = resolved[0].provider.instantiate(None, 1).unwrap();
+        let mut c = ctx();
+        c.settings_json =
+            r#"{"extensions":{"configlib":{"endpoint":"https://api.test","pool_size":4}}}"#;
+        let v = inst.call(&c, "endpoint", &[]).unwrap();
+        assert_eq!(v, "https://api.test");
+        // Absent block → the guest's own default.
+        let v = inst.call(&ctx(), "endpoint", &[]).unwrap();
+        assert_eq!(v, "https://localhost");
+    }
+
+    #[test]
+    fn config_key_collision_between_two_libraries_is_a_hard_error() {
+        let Some(f) = fixtures() else { return };
+        let mut a = lib_ref(&f.configlib);
+        a.r#as = Some("one".into());
+        let mut b = lib_ref(&f.configlib);
+        b.r#as = Some("two".into());
+        let err = validate_libraries(&[a, b], false, None).unwrap_err();
+        assert!(err.contains("claimed by both"), "{err}");
+    }
+
+    #[test]
+    fn legacy_components_have_no_config_schema() {
+        let Some(f) = fixtures() else { return };
+        // hello (rebuilt against the current ABI) and hello01 (0.1) declare
+        // no config extension.
+        for path in [&f.hello, &f.hello01] {
+            let resolved = validate_libraries(&[lib_ref(path)], false, None).unwrap();
+            assert!(resolved[0].provider.config_schema().is_none());
+        }
+    }
+
+    #[test]
+    fn config_extensions_validate_against_the_claiming_library() {
+        let Some(f) = fixtures() else { return };
+        let mut r = lib_ref(&f.configlib);
+        r.r#as = Some("configlib".into());
+        let resolved = validate_libraries(&[r], false, None).unwrap();
+
+        // Unknown key — nothing claims it (this is also the #8 typo guard's
+        // new home: unknown top-level keys fail here, not at schema parse).
+        let ext = serde_json::json!({ "iterations": 1 })
+            .as_object()
+            .unwrap()
+            .clone();
+        let err = crate::library::validate_config_extensions(&ext, &resolved).unwrap_err();
+        assert!(err.contains("unknown config key 'iterations'"), "{err}");
+
+        // Valid block passes and is returned for the settings.
+        let ext = serde_json::json!({ "configlib": { "endpoint": "https://x", "pool_size": 2 } })
+            .as_object()
+            .unwrap()
+            .clone();
+        let validated = crate::library::validate_config_extensions(&ext, &resolved).unwrap();
+        assert_eq!(validated["configlib"]["pool_size"], serde_json::json!(2));
+
+        // Schema violation: missing required endpoint; pool_size below min.
+        for bad in [
+            serde_json::json!({ "configlib": { "pool_size": 2 } }),
+            serde_json::json!({ "configlib": { "endpoint": "https://x", "pool_size": 0 } }),
+        ] {
+            let ext = bad.as_object().unwrap().clone();
+            let err = crate::library::validate_config_extensions(&ext, &resolved).unwrap_err();
+            assert!(err.contains("does not match"), "{err}");
+        }
     }
 
     #[test]

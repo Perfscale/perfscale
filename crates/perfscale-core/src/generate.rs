@@ -86,6 +86,11 @@ pub struct Gen {
     /// Run's secret registry: results of secret-marked library functions are
     /// recorded here so the log pipeline masks them (RFC 005 secrets).
     secrets: Option<crate::log_mask::SecretRegistry>,
+    /// The run's filesystem gate, handed to every library call as
+    /// `CallCtx.allow_file_actions` / `CallCtx.fs_root` (fail-closed:
+    /// `false`/`None` in hand-built generators).
+    allow_file_actions: bool,
+    fs_root: Option<std::path::PathBuf>,
 }
 
 /// One library bound behind its alias: the live instance, the entry's call
@@ -139,6 +144,8 @@ impl Gen {
             library_metrics: None,
             settings_json: std::sync::Arc::from("{}"),
             secrets: None,
+            allow_file_actions: false,
+            fs_root: None,
         }
     }
 
@@ -171,6 +178,19 @@ impl Gen {
     /// list) are recorded for log masking.
     pub fn with_secrets(mut self, secrets: crate::log_mask::SecretRegistry) -> Self {
         self.secrets = Some(secrets);
+        self
+    }
+
+    /// Attach the run's filesystem gate — passed to every library call as
+    /// `CallCtx.allow_file_actions` / `CallCtx.fs_root` (native libraries
+    /// confine through it like the `std/file-*@v1` steps).
+    pub fn with_file_access(
+        mut self,
+        allow_file_actions: bool,
+        fs_root: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.allow_file_actions = allow_file_actions;
+        self.fs_root = fs_root;
         self
     }
 
@@ -449,6 +469,8 @@ impl Gen {
             seed: self.seed,
             time_ms: now_unix_millis() as u64,
             settings_json: &self.settings_json,
+            allow_file_actions: self.allow_file_actions,
+            fs_root: self.fs_root.as_deref(),
         };
         let entry = self
             .libraries

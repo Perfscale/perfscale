@@ -41,7 +41,7 @@ steps:
 
 | Поле | Обязательно | Описание |
 |---|---|---|
-| `use` | да | Идентификатор действия: `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/random@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/pick@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, `std/get_shared_variable@v1` (также работают короткие алиасы `http`, `graphql`, `tcp`, `udp`, `pubsub`, `llm`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`, `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`, `check`, `random`, `sleep`, `log`, `file-read`, `pick`, `file-write`, `child_process`, `kill_process`, `thresholds`, `set_shared_variable`, `get_shared_variable`). `uses:` принимается как алиас для `use:` |
+| `use` | да | Идентификатор действия: `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/random@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/read-json@v1`, `std/pick@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, `std/get_shared_variable@v1` (также работают короткие алиасы `http`, `graphql`, `tcp`, `udp`, `pubsub`, `llm`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`, `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`, `check`, `random`, `sleep`, `log`, `file-read`, `read-json`, `pick`, `file-write`, `child_process`, `kill_process`, `thresholds`, `set_shared_variable`, `get_shared_variable`). `uses:` принимается как алиас для `use:` |
 | `name` | нет | Человекочитаемая метка, отображаемая в строках лога |
 | `with` | нет | Параметры действия — см. [Действия](core/actions.md) |
 | `check` | нет | Проверки вывода этого шага — те же ключи, что у `std/check@v1` |
@@ -93,9 +93,12 @@ Actions. Шаг сохраняет свой вывод под именем, за
 | `${{ name }}` | Весь сохранённый вывод, приведённый к строке |
 | `${{ name.field }}` | Одно поле сохранённого объекта (например, `.status`, `.body`, `.duration_ms`) |
 | `${{ name.a.b }}` | Вложенный путь — один уровень JSON на каждую `.`, например `${{ resp.headers.x-request-id }}` |
+| `${{ name.arr.0 }}` / `${{ name.arr[0] }}` | Индексация массивов — числовой сегмент индексирует массив; точечный и скобочный синтаксис взаимозаменяемы |
+| `${{ name.body.a[0].b }}` | Путь, продолжающийся после *строкового* листа, парсит его как JSON по требованию — например, HTTP `body` — и идёт дальше по документу |
 | `${{ __last__ }}` / `${{ __last__.field }}` | Вывод непосредственно предыдущего шага — всегда доступен, `outputs:` не нужен |
 | `${{ config.<name>.<field> }}` | Вывод шага инициализации `before:` из конфиг-файла (см. [Конфиг](#config--c-configyaml)) |
 | `${{ vars.<key> }}` | Статическое значение из блока `variables:` конфиг-файла |
+| `${{ inputs.<name> }}` | Разрешённое типизированное значение из блока `inputs:` конфига (см. [Типизированные входы](#типизированные-входы-inputs)) |
 | `${{ env.NAME }}` | Переменная окружения процесса `NAME` — для секретов (`api_key`, токенов, DSN), которые не должны храниться в YAML |
 | `${{ __vu__ }}` / `${{ __iter__ }}` | 1-based id текущего VU и 0-based номер его итерации (аналоги `__VU` / `__ITER` в k6). Сохранённый результат с таким же именем имеет приоритет |
 
@@ -235,6 +238,41 @@ gpu:             # необязательно — метрики GPU во вре
 | `max_response_body_bytes` | `16777216` (16 МиБ) | Лимит размера тела ответа для `std/http@v1` / `std/graphql@v1`. Больший ответ завершает шаг понятной ошибкой (никогда не обрезается молча — обрезанное тело могло бы пройти `check:`). Только нативный движок |
 | `libraries` | — | Библиотеки генераторов значений для токенов `${alias.fn(...)}` — см. [Библиотеки](#libraries-libraries) |
 | `import` | — | Базовый документ для наследования — см. [Композиция документов](#composing-documents-import) |
+
+### Типизированные входы (`inputs:`)
+
+Конфиг может объявлять типизированные входы запуска (issue #11); шаги
+ссылаются на них через `${{ inputs.<name> }}` везде, где работает
+интерполяция `${{ ... }}`, а CLI переопределяет их при запуске:
+
+```yaml
+inputs:
+  users: number                                    # короткая форма — обязателен, без default
+  host: { type: string, default: localhost }
+  verbose: { type: bool, default: false }          # coercion: 0/1/false/true
+  env: { type: choice, options: [staging, prod], default: staging }
+  pacing_ms: { type: number, min: 1, max: 10000 }  # границы min/max (только number)
+```
+
+```sh
+perfscale run -f test.yaml -c config.yaml -i users=10 -i env=prod
+perfscale run -f test.yaml -c config.yaml -i users=10,env=prod   # форма через запятую
+perfscale run -f test.yaml -c config.yaml -e staging.env          # env-файл KEY=VALUE
+perfscale lint config.yaml -i users=10   # печатает разрешённые значения
+```
+
+Правила:
+
+- **Приоритет** (высший побеждает): `-i key=value` > env-файл `-e` >
+  `default:` из объявления. env-файл может содержать посторонние переменные —
+  используются только ключи объявленных входов.
+- **Обязательность**: вход без `default:` и без переопределения — жёсткая
+  ошибка до старта. Неизвестные ключи `-i`, несовпадение типа, выход за
+  границы и невалидные `choice` — тоже жёсткие ошибки, на lint и на старте.
+- **Запятая в значении**: экранируется как `\,` (бэкслеш — `\\`).
+- Входы фиксированы на весь запуск. Типизированные скаляры конфига (`vus:`,
+  `duration:`) остаются статически типизированными — входы в профиле
+  нагрузки это follow-up; сегодня входы интерполируются в `with:`/`check:`.
 
 ### Метрики GPU (`gpu:`)
 
@@ -410,23 +448,34 @@ with:
 
 ```json
 {
-  "vus": 10,            // только фиксированный профиль, иначе null
-  "duration_ms": 300000, // только фиксированный профиль, иначе null
-  "seed": 42,           // seed из конфига или null
-  "stages": null,       // профиль со стадиями: [{ "duration_ms", "target" }]
-  "arrival": null,      // arrival-профиль: { "max_vus", "pre_allocated_vus", "stages": [{ "duration_ms", "rate" }] }
-  "variables": {}       // `variables:` из конфига с раскрытыми ${{ env.* }}
+  "vus": 10,
+  "duration_ms": 300000,
+  "seed": 42,
+  "stages": null,
+  "arrival": null,
+  "variables": {},
+  "extensions": {
+    "configlib": {
+      "endpoint": "https://api.test",
+      "pool_size": 16
+    }
+  }
 }
 ```
 
 `vus`/`duration_ms` задаются только для фиксированного профиля нагрузки;
 запуски со стадиями и arrival-rate оставляют их null и несут профиль в
-`stages`/`arrival` (длительности нормализованы до миллисекунд). `variables`
-раскрываются через ту же интерполяцию, что используют шаги, — поэтому
+`stages`/`arrival` (длительности нормализованы до миллисекунд). `seed` — это
+seed из конфига или `null`. Элементы `stages` содержат `duration_ms` и
+`target`; `arrival` содержит `max_vus`, `pre_allocated_vus` и собственные
+элементы с `duration_ms` и `rate`. `variables` — это блок `variables:` из
+конфига, раскрытый через ту же интерполяцию, что используют шаги, — поэтому
 значение из env, которое теперь получает библиотека, также записывается в
-реестр секретов запуска и остаётся замаскированным в логе. Компоненты,
-собранные под ABI WIT 0.1, получают `"{}"` (в контексте 0.1 нет поля
-настроек).
+реестр секретов запуска и остаётся замаскированным в логе. `extensions`
+содержит блоки конфига, принадлежащие библиотекам, после проверки по их JSON
+Schema; пример соответствует расширению `configlib`, объявленному ниже.
+Компоненты, собранные под ABI WIT 0.1, получают `"{}"` (в контексте 0.1 нет
+поля настроек).
 
 #### Правила политики: `secret` / `allow` / `deny` / `log`
 
@@ -457,10 +506,11 @@ libraries:
   валидации (иначе она молча никогда бы не сработала).
 
 - Локальные пути (`use: ./libs/fixer-ids.wasm`) загружают библиотеки
-  WASM-компонентов (WASI Preview 2, WIT `perfscale:library@0.2.0` —
-  компоненты, собранные под старый ABI `@0.1.x`, продолжают загружаться,
-  просто они никогда не видят настройки запуска; см.
-  [RFC 005](../rfcs/005-libraries.md)). Пути разрешаются **относительно
+  WASM-компонентов (WASI Preview 2; актуальный WIT —
+  `perfscale:library@0.3.0`, при этом компоненты `@0.1.x`/`@0.2.x` продолжают
+  загружаться, но компоненты 0.1 не видят настройки запуска, а расширения
+  конфига требуют 0.3; см. [RFC 005](../rfcs/005-libraries.md)). Пути
+  разрешаются **относительно
   директории объявляющего файла**, как пути `import:`. Бинарник perfscale CLI
   поставляется с поддержкой WASM; встраивающим `perfscale-core` нужна
   cargo-фича `wasm-libs`.
@@ -609,6 +659,66 @@ sha256 = "…artifact digest…"
 | `date(a, b)` | Случайная дата между `YYYY-MM-DD` a и b включительно, на выходе `YYYY-MM-DD` |
 | `timestamp(a, b)` | Случайная метка времени unix-мс в `[a, b]` |
 | `datetime(a, b)` | Случайный datetime RFC 3339 между датами a и b (весь конечный день включён) |
+
+Функции `@std/json@v1` (fail-closed, как файловые шаги: прогон должен
+включить `allow_file_actions: true`; пути подчиняются `fs_root`):
+
+| Функция | Возвращает |
+|---|---|
+| `read(file)` | Весь распарсенный JSON-файл компактной JSON-строкой (общий на процесс кэш, разделённый с `std/read-json@v1`, перевалидация по `(mtime, size)`) |
+| `read(file, query)` | Подзначение по jq-подобному пути (`.posts[0].id` ≡ `posts.0.id`); строковый лист — как есть, остальные значения — компактным JSON. Обязательный промах → ошибка раскрытия с именем сегмента; суффикс `?` разрешает промах в пустую строку |
+| `pick(file)` / `pick(file, index)` | Элемент JSON-массива из `file` — случайный на сообщение (детерминирован при `seed:` прогона) или `index` по модулю длины массива. Не-массив, пустой массив или нецелый index → ошибка раскрытия |
+
+#### Расширения конфига (топ-левел ключи библиотек, issue #10)
+
+WASM-библиотека, собранная против `perfscale:library@0.3.0`, может
+экспортировать `config-schema`, объявляя один топ-левел ключ конфига и
+JSON Schema для его значения. Экспорт возвращает JSON-строку, например:
+
+```json
+{
+  "key": "configlib",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "endpoint": { "type": "string" },
+      "pool_size": { "type": "integer", "minimum": 1 }
+    },
+    "required": ["endpoint"],
+    "additionalProperties": false
+  }
+}
+```
+
+Эта декларация заявляет ключ `configlib`. Если необязательный блок задан, он
+должен содержать `endpoint`, может содержать `pool_size` не меньше 1 и не
+может содержать другие поля. Если блок отсутствует, в `extensions` нет записи
+`configlib`. Соответствующий конфиг:
+
+```yaml
+libraries:
+  - use: ./configlib.wasm
+    capabilities: []
+configlib:                    # ключ заявлен config-schema библиотеки
+  endpoint: https://api.test  # обязательная строка
+  pool_size: 16               # необязательное целое, минимум 1
+```
+
+На lint и на старте движок загружает объявленные библиотеки, регистрирует
+заявленные ключи и валидирует каждый блок по схеме библиотеки — fail-fast.
+Проверенный блок попадает гостю в run settings (`extensions`; в TS SDK —
+`ctx.settings.extensions["configlib"]`). Ключ должен соответствовать
+`[a-z][a-z0-9_]*` и не должен пересекаться со встроенным ключом конфига или
+ключом другой загруженной библиотеки. Любой топ-левел ключ, который не заявлен
+ни одной загруженной библиотекой, остаётся жёсткой ошибкой (защита от
+опечаток живёт тут). В TS SDK блок объявляется через
+`defineLibrary({ configSchema: { key, schema }, ... })`;
+`perfscale-library-build` сам выбирает world `perfscale-library-config`,
+когда `configSchema` присутствует. Полный пример создания библиотеки есть в
+[руководстве по SDK](library-sdk.md).
+
+Отложено (не в v1): интерполяция внутри extension-блоков, эволюция схем
+между пинами `perfscale.lock`.
 
 ### Композиция документов: `import`
 

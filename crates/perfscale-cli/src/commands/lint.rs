@@ -47,6 +47,7 @@ pub async fn run(args: LintArgs) -> Result<(), CliError> {
                 }
                 if remote.is_empty() {
                     println!("✓ {} ({}) — ok", path.display(), kind_label(kind));
+                    print_effective_inputs(&effective, kind, &args)?;
                 } else {
                     any_problems = true;
                     print_issues(path, kind, &remote);
@@ -142,6 +143,39 @@ async fn graphql_remote_pass(
         return (Vec::new(), Vec::new());
     }
     perfscale_core::lint::lint_graphql_remote(effective, offline).await
+}
+
+/// Print the effective resolved inputs for a config document that declares
+/// them (issue #11): `-i` overrides and `-e` env files apply, so lint shows
+/// exactly what the run would see. Resolution errors fail the lint — they
+/// are the run's fail-fast errors too.
+fn print_effective_inputs(effective: &str, kind: DocKind, args: &LintArgs) -> Result<(), CliError> {
+    if kind != DocKind::Config {
+        return Ok(());
+    }
+    let value: serde_json::Value = match serde_yaml::from_str(effective) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let Some(inputs) = value.get("inputs") else {
+        return Ok(());
+    };
+    let decls: std::collections::BTreeMap<String, perfscale_core::inputs::InputDecl> =
+        match serde_json::from_value(inputs.clone()) {
+            Ok(d) => d,
+            Err(_) => return Ok(()), // the schema pass flagged the shape
+        };
+    let overrides = crate::commands::run::parse_input_overrides(&args.input)?;
+    let env_values = crate::commands::run::load_env_files(&args.env_file)?;
+    let resolved = perfscale_core::inputs::resolve_inputs(&decls, &overrides, &env_values)
+        .map_err(|msg| CliError::new(format!("invalid inputs: {msg}")))?;
+    let rendered = resolved
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("  inputs: {rendered}");
+    Ok(())
 }
 
 fn kind_label(kind: DocKind) -> &'static str {

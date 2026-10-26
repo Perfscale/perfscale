@@ -20,7 +20,9 @@
 //! `std/http@v1`; the shard constructors stay crate-private — downstream
 //! code selects a client through [`client`] and [`Context::http_client_shard`].
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use serde_json::{json, Value};
@@ -44,7 +46,11 @@ use super::ws::{bool_param, u64_param};
 /// cadence doesn't care about keep-alive anyway); 64 idle per host per
 /// shard — enough for a burst within one shard, far below VU×host fan-out.
 fn build_client(insecure: bool) -> reqwest::Client {
-    reqwest::Client::builder()
+    build_client_inner(insecure, None)
+}
+
+fn build_client_inner(insecure: bool, local_address: Option<IpAddr>) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
         .pool_max_idle_per_host(64)
         .pool_idle_timeout(Duration::from_secs(60))
         // codeql[rust/disabled-certificate-check] — deliberate feature of a
@@ -52,9 +58,11 @@ fn build_client(insecure: bool) -> reqwest::Client {
         // (testing targets with self-signed certs, like k6's
         // insecureSkipTLSVerify). Insecure clients live in a separate shard
         // set so verified requests never share a pool with them.
-        .danger_accept_invalid_certs(insecure)
-        .build()
-        .expect("client construction cannot fail")
+        .danger_accept_invalid_certs(insecure);
+    if let Some(ip) = local_address {
+        builder = builder.local_address(ip);
+    }
+    builder.build().expect("client construction cannot fail")
 }
 
 /// HTTP client shards: a fixed set of `reqwest::Client`s, one per available
@@ -107,33 +115,44 @@ pub(crate) fn client_shard_count() -> usize {
 /// Connection-pool mode of an HTTP-based action (`pool` parameter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientPool {
-    /// VU-pinned client shard (default) — every VU keeps one warm pool.
+    /// VU-pinned client shard (default) — every VU keeps one warm pool in
+    /// its shard's client.
     PerVu,
     /// One process-global client shared by every VU: maximal connection
     /// reuse against a single endpoint, at the cost of pool-lock contention
     /// under very high VU counts.
     Shared,
+    /// One client per VU (`pool: dedicated`): the VU's keep-alive
+    /// connections are never evicted by other VUs — the mode for
+    /// "N VUs = N standing connections" scenarios. See
+    /// [`dedicated_client`].
+    Dedicated,
 }
 
 impl ClientPool {
-    /// Parse the optional `pool` parameter: `per-vu` (default) or `shared`.
+    /// Parse the optional `pool` parameter: `per-vu` (default), `shared`, or
+    /// `dedicated`.
     pub fn from_params(params: &Value) -> Result<Self, String> {
         match params["pool"].as_str().unwrap_or("per-vu") {
             "per-vu" => Ok(ClientPool::PerVu),
             "shared" => Ok(ClientPool::Shared),
+            "dedicated" => Ok(ClientPool::Dedicated),
             other => Err(format!(
-                "invalid pool '{other}' — expected per-vu or shared"
+                "invalid pool '{other}' — expected per-vu, shared, or dedicated"
             )),
         }
     }
 }
 
 /// The HTTP client for a step execution. The insecure variants skip TLS
-/// verification and never share a pool with verified requests.
+/// verification and never share a pool with verified requests. `Dedicated`
+/// cannot be resolved here (it keys on the VU id) — callers that accept it
+/// must go through [`dedicated_client`]; the defensive fallback is the
+/// per-VU shard.
 pub fn client(pool: ClientPool, insecure: bool, shard: usize) -> &'static reqwest::Client {
     match (pool, insecure) {
-        (ClientPool::PerVu, false) => shared_client(shard),
-        (ClientPool::PerVu, true) => shared_insecure_client(shard),
+        (ClientPool::PerVu | ClientPool::Dedicated, false) => shared_client(shard),
+        (ClientPool::PerVu | ClientPool::Dedicated, true) => shared_insecure_client(shard),
         (ClientPool::Shared, false) => {
             static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
             CLIENT.get_or_init(|| build_client(false))
@@ -143,6 +162,324 @@ pub fn client(pool: ClientPool, insecure: bool, shard: usize) -> &'static reqwes
             CLIENT.get_or_init(|| build_client(true))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Source IPs — multi-source-IP load generation (`source_ips` parameter)
+// ---------------------------------------------------------------------------
+//
+// One (src ip, dst ip, dst port) tuple has ~28k ephemeral source ports, so a
+// single machine caps out below ~64k concurrent connections per target
+// endpoint. Binding sockets to several local addresses multiplies that
+// budget. `std/http@v1` accepts `source_ips: [<ip-or-cidr>, ...]`; each CIDR
+// expands to every address of the prefix (capped, see [`MAX_SOURCE_IPS`]).
+// VU i is pinned to `ips[(i - 1) % len]` — stable across iterations, which
+// is what keeps keep-alive meaningful: a VU reuses the same (shard, source
+// IP) client and its warm pool.
+
+/// Maximum number of source addresses one step's `source_ips` may expand to.
+/// Beyond this the per-step connection bookkeeping (one lazily-built client
+/// per used (shard, address) pair) stops paying for itself — narrow the
+/// prefix instead.
+pub const MAX_SOURCE_IPS: usize = 4096;
+
+/// Shard key used for `pool: shared` source-IP clients — pool mode `shared`
+/// ignores the VU shard, so the address alone keys the client.
+const SHARED_POOL_SHARD: usize = usize::MAX;
+
+/// The source address a VU is pinned to from an expanded `source_ips` list:
+/// `ips[(vu_id - 1) % len]` (vu_id is 1-based; 0 in hand-built contexts pins
+/// the first address). Stable per VU so keep-alive pools stay warm.
+pub fn source_ip_for_vu(ips: &[IpAddr], vu_id: u64) -> IpAddr {
+    ips[(vu_id.saturating_sub(1) as usize) % ips.len()]
+}
+
+/// Expand one `source_ips` entry — a single IP (`"10.0.0.9"`, `"fd00::5"`)
+/// or a CIDR prefix (`"10.0.0.0/28"`, `"fd00::/120"`) — appending every
+/// address into `out`. The network/broadcast addresses of a prefix are
+/// included: which addresses are actually bindable is a host question, and a
+/// wrong one fails loudly at connect time. Errors name the entry.
+fn expand_source_ip_entry(entry: &str, out: &mut Vec<IpAddr>) -> Result<(), String> {
+    let entry = entry.trim();
+    let Some((base, prefix)) = entry.split_once('/') else {
+        return entry.parse::<IpAddr>().map(|ip| out.push(ip)).map_err(|_| {
+            format!("invalid source_ips entry '{entry}' — expected an IP address or CIDR prefix")
+        });
+    };
+    let base: IpAddr = base.trim().parse().map_err(|_| {
+        format!("invalid source_ips entry '{entry}' — '{base}' is not an IP address")
+    })?;
+    let prefix: u8 = prefix.trim().parse().map_err(|_| {
+        format!("invalid source_ips entry '{entry}' — the prefix length after '/' must be a number")
+    })?;
+    let (base_bits, width) = match base {
+        IpAddr::V4(v4) => (u32::from(v4) as u128, 32),
+        IpAddr::V6(v6) => (u128::from(v6), 128),
+    };
+    if prefix > width {
+        return Err(format!(
+            "invalid source_ips entry '{entry}' — prefix length /{prefix} exceeds the address size (/{width})"
+        ));
+    }
+    let host_bits = width - prefix;
+    // A /0 spans 2^128 IPv6 addresses — never materialize that; report the
+    // exponent instead of shifting by the full width.
+    let count = if host_bits >= 13 {
+        None
+    } else {
+        Some(1u128 << host_bits)
+    };
+    let count = match count {
+        Some(count) if count <= MAX_SOURCE_IPS as u128 => count,
+        Some(count) => {
+            return Err(format!(
+                "source_ips entry '{entry}' expands to {count} addresses, over the {MAX_SOURCE_IPS} cap — narrow the prefix (e.g. /28, /120)"
+            ));
+        }
+        None => {
+            return Err(format!(
+                "source_ips entry '{entry}' expands to 2^{host_bits} addresses, over the {MAX_SOURCE_IPS} cap — narrow the prefix (e.g. /28, /120)"
+            ));
+        }
+    };
+    let mask = if host_bits == 0 {
+        u128::MAX
+    } else {
+        u128::MAX << host_bits
+    };
+    let network = base_bits & mask;
+    for i in 0..count {
+        let bits = network + i;
+        match base {
+            IpAddr::V4(_) => out.push(IpAddr::V4((bits as u32).into())),
+            IpAddr::V6(_) => out.push(IpAddr::V6(bits.into())),
+        }
+    }
+    Ok(())
+}
+
+/// Parse and expand the `source_ips` step parameter into the address list:
+/// an array of strings (a single string is accepted as a one-element list),
+/// each a bare IP or a CIDR prefix. The total expanded size is capped at
+/// [`MAX_SOURCE_IPS`]. Errors are actionable (name the entry, suggest the
+/// fix) — lint runs this same parse so a bad list fails before the run.
+pub fn parse_source_ips(value: &Value) -> Result<Vec<IpAddr>, String> {
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<&str> = match value {
+        Value::String(s) => vec![s.as_str()],
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                match item.as_str() {
+                    Some(s) => out.push(s),
+                    None => {
+                        return Err(format!(
+                            "source_ips entry #{i} must be a string (an IP address or CIDR prefix)"
+                        ))
+                    }
+                }
+            }
+            out
+        }
+        _ => {
+            return Err(
+                "source_ips must be an array of strings (IP addresses or CIDR prefixes)".into(),
+            )
+        }
+    };
+    if entries.is_empty() {
+        return Err(
+            "source_ips must not be empty — drop the key or list at least one address".into(),
+        );
+    }
+    let mut out = Vec::new();
+    for entry in entries {
+        expand_source_ip_entry(entry, &mut out)?;
+        if out.len() > MAX_SOURCE_IPS {
+            return Err(format!(
+                "source_ips expands to over {MAX_SOURCE_IPS} addresses — narrow the prefixes"
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// Resolve the step's `source_ips` parameter, caching the expanded list per
+/// distinct parameter value — a hot step executes per iteration and
+/// re-expanding a CIDR each time would be pure overhead. Errors are not
+/// cached (they fail the step before any network call, and lint catches them
+/// first anyway).
+fn resolve_source_ips(value: &Value) -> Result<Option<Arc<Vec<IpAddr>>>, String> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<Vec<IpAddr>>>>> = OnceLock::new();
+    let key = value.to_string();
+    if let Some(hit) = CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .get(&key)
+    {
+        return Ok(Some(Arc::clone(hit)));
+    }
+    let ips = Arc::new(parse_source_ips(value)?);
+    CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .insert(key, Arc::clone(&ips));
+    Ok(Some(ips))
+}
+
+/// Log-once announce: the first execution that uses a given expanded list
+/// adds a `source_ips: N address(es) active …` line to its step output, so
+/// the run log records how many source addresses are in play without every
+/// iteration repeating it.
+fn announce_source_ips(key: &str, ips: &[IpAddr]) -> Option<String> {
+    static ANNOUNCED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let mut seen = ANNOUNCED
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap();
+    if !seen.insert(key.to_string()) {
+        return None;
+    }
+    Some(format!(
+        "source_ips: {} address(es) active ({} … {}), VU i pinned to address[(i-1) % {}]",
+        ips.len(),
+        ips[0],
+        ips[ips.len() - 1],
+        ips.len()
+    ))
+}
+
+/// Key of the lazily-built source-IP client set: (shard, insecure, address).
+type SourceClientKey = (usize, bool, IpAddr);
+
+/// A client bound to a local source address, built lazily on first use per
+/// (shard, insecure, address) and leaked for the process lifetime — the
+/// static-shard pattern of [`shared_client`] cannot apply to an unbounded
+/// key set. Laziness keeps memory honest: a 4096-address list does not mean
+/// 4096 clients, because a VU only ever touches its own (shard, address)
+/// pair, so a run builds at most min(VUs, shards × addresses) clients.
+fn source_client(shard: usize, insecure: bool, ip: IpAddr) -> &'static reqwest::Client {
+    static CLIENTS: OnceLock<Mutex<HashMap<SourceClientKey, &'static reqwest::Client>>> =
+        OnceLock::new();
+    let key = (shard, insecure, ip);
+    let mut map = CLIENTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    if let Some(client) = map.get(&key) {
+        return client;
+    }
+    let client: &'static reqwest::Client =
+        Box::leak(Box::new(build_client_inner(insecure, Some(ip))));
+    map.insert(key, client);
+    client
+}
+
+/// The HTTP client for a step execution, optionally bound to a source
+/// address. `None` selects exactly the pre-`source_ips` behaviour
+/// ([`client`]); with an address the client is keyed by (pool mode, shard,
+/// insecure, address) — reqwest pools connections per client, so per-address
+/// clients give per-address pools for free.
+pub fn client_with_source(
+    pool: ClientPool,
+    insecure: bool,
+    shard: usize,
+    source_ip: Option<IpAddr>,
+) -> &'static reqwest::Client {
+    match source_ip {
+        None => client(pool, insecure, shard),
+        Some(ip) => {
+            let shard = match pool {
+                ClientPool::PerVu | ClientPool::Dedicated => shard % client_shard_count(),
+                ClientPool::Shared => SHARED_POOL_SHARD,
+            };
+            source_client(shard, insecure, ip)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dedicated per-VU clients (`pool: dedicated`)
+// ---------------------------------------------------------------------------
+//
+// The shard pools cap idle connections per host at 64 per shard — at 25k
+// VUs, ~1500 VUs share one 64-socket idle pool, so a VU's connection is
+// evicted between its requests and every request reconnects: connect churn
+// and TIME_WAIT storms instead of N standing sockets. `pool: dedicated`
+// gives each VU its own client, created on the VU's first request and held
+// until the VU exits, so a VU's keep-alive connection survives think time
+// (`std/sleep@v1`) untouched. Composes with `source_ips`: the key carries
+// the VU's pinned source address, so both pinnings hold simultaneously.
+
+/// Key of the dedicated per-VU client set: (vu_id, insecure, source
+/// address). vu_id 0 (hand-built contexts) shares one entry.
+type DedicatedClientKey = (u64, bool, Option<IpAddr>);
+
+fn dedicated_clients() -> &'static Mutex<HashMap<DedicatedClientKey, reqwest::Client>> {
+    static CLIENTS: OnceLock<Mutex<HashMap<DedicatedClientKey, reqwest::Client>>> = OnceLock::new();
+    CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The VU's dedicated client, created on first use. `reqwest::Client` is a
+/// cheap Arc handle, so handing out a clone per request shares the
+/// underlying pool; the registry's copy is dropped by
+/// [`drain_dedicated_vu_clients`] when the VU exits, and with it the last
+/// strong reference — the pool (and its idle sockets) close there, not at
+/// iteration end and not at process exit.
+fn dedicated_client(vu_id: u64, insecure: bool, source_ip: Option<IpAddr>) -> reqwest::Client {
+    let key = (vu_id, insecure, source_ip);
+    let mut map = dedicated_clients().lock().unwrap();
+    map.entry(key)
+        .or_insert_with(|| build_client_inner(insecure, source_ip))
+        .clone()
+}
+
+/// Drop every dedicated client of an exited VU. Called by the runner at VU
+/// exit (fixed, staged, and arrival-rate workers alike) — a ramp-down must
+/// close the VU's standing connection, not leak it to the next VU id
+/// collision or process end.
+pub(crate) fn drain_dedicated_vu_clients(vu_id: u64) {
+    dedicated_clients()
+        .lock()
+        .unwrap()
+        .retain(|key, _| key.0 != vu_id);
+}
+
+/// Log-once announce for dedicated mode, same pattern as
+/// [`announce_source_ips`]: the first dedicated execution of the process
+/// reports the mode, later ones stay quiet.
+fn announce_dedicated() -> Option<String> {
+    static ANNOUNCED: OnceLock<Mutex<bool>> = OnceLock::new();
+    let mut seen = ANNOUNCED.get_or_init(|| Mutex::new(false)).lock().unwrap();
+    if *seen {
+        return None;
+    }
+    *seen = true;
+    Some(
+        "pool: dedicated — one HTTP client (keep-alive connection) per VU, held until the VU exits"
+            .to_string(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn dedicated_registry_len() -> usize {
+    dedicated_clients().lock().unwrap().len()
+}
+
+#[cfg(test)]
+pub(crate) fn dedicated_registry_has_vu(vu_id: u64) -> bool {
+    dedicated_clients()
+        .lock()
+        .unwrap()
+        .keys()
+        .any(|k| k.0 == vu_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -419,8 +756,19 @@ pub fn error_chain(e: &dyn std::error::Error) -> String {
 //   timeout   – optional timeout in ms, default 10000
 //   insecure  – optional bool: skip TLS certificate verification (self-signed
 //               targets like `perfscale serve --tls`), default false
-//   pool      – optional "per-vu" (default) or "shared" (one process-global
-//               client for every VU)
+//   pool      – optional "per-vu" (default), "shared" (one process-global
+//               client for every VU), or "dedicated" (one client per VU,
+//               held until the VU exits — N VUs hold N keep-alive
+//               connections across think time)
+//   source_ips – optional string or array of strings: local source addresses
+//               to bind outgoing connections to. Entries are bare IPs
+//               ("10.0.0.9", "fd00::5") or CIDR prefixes ("10.0.0.0/28",
+//               "fd00::/120") expanded to every address of the prefix
+//               (≤ 4096 total). VU i is pinned to ips[(i-1) % n] — stable
+//               per VU so the (shard, source IP) client's keep-alive pool
+//               stays warm. Multiplies the ~64k-concurrent-connections-per-
+//               endpoint budget of a single source address. No `${…}`
+//               expansion: the list is validated at lint and cached.
 //
 // Output:
 //   { "status": <u16>, "body": <string>, "duration_ms": <f64> }
@@ -440,6 +788,19 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         Ok(p) => p,
         Err(msg) => return err(step_name, &msg),
     };
+    let source_ips = match resolve_source_ips(&params["source_ips"]) {
+        Ok(ips) => ips,
+        Err(msg) => return err(step_name, &msg),
+    };
+    let source_ip = source_ips
+        .as_ref()
+        .map(|ips| source_ip_for_vu(ips, ctx.vu_id));
+    let mut announce = source_ips
+        .as_ref()
+        .and_then(|ips| announce_source_ips(&params["source_ips"].to_string(), ips));
+    if pool == ClientPool::Dedicated {
+        announce = announce.or_else(announce_dedicated);
+    }
 
     // `${…}` generator tokens expand per execution — one request is one
     // message: the URL, header values, and body share one generator context
@@ -456,7 +817,12 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         Err(_) => return err(step_name, &format!("invalid HTTP method '{method}'")),
     };
 
-    let client = client(pool, insecure, ctx.http_client_shard);
+    let client = match pool {
+        ClientPool::Dedicated => dedicated_client(ctx.vu_id, insecure, source_ip),
+        // Cheap Arc clone of a 'static shard/global client — one type for
+        // both pool paths below.
+        _ => client_with_source(pool, insecure, ctx.http_client_shard, source_ip).clone(),
+    };
     let mut req = client
         .request(reqwest_method, &url)
         .timeout(Duration::from_millis(timeout_ms));
@@ -502,7 +868,7 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         }
     }
 
-    match timed_exchange(req, BodyKind::Auto, ctx.max_response_body_bytes).await {
+    let mut out = match timed_exchange(req, BodyKind::Auto, ctx.max_response_body_bytes).await {
         Ok(out) => {
             let failed = out.status >= 400;
             let mut value = json!({
@@ -530,7 +896,11 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
             }
         }
         Err((duration_ms, e)) => exchange_error(step_name, &method, &url, &e, duration_ms),
+    };
+    if let Some(line) = announce {
+        out.logs.insert(0, (LogTag::Out, line));
     }
+    out
 }
 
 /// Map an exchange failure to the action output: transport errors report
@@ -681,6 +1051,10 @@ mod tests {
             ClientPool::from_params(&json!({ "pool": "shared" })).unwrap(),
             ClientPool::Shared
         );
+        assert_eq!(
+            ClientPool::from_params(&json!({ "pool": "dedicated" })).unwrap(),
+            ClientPool::Dedicated
+        );
     }
 
     #[test]
@@ -689,6 +1063,248 @@ mod tests {
         assert!(e.contains("invalid pool 'global'"), "{e}");
         assert!(e.contains("per-vu"), "{e} lists the valid modes");
         assert!(e.contains("shared"), "{e} lists the valid modes");
+        assert!(e.contains("dedicated"), "{e} lists the valid modes");
+    }
+
+    // -----------------------------------------------------------------
+    // Dedicated per-VU clients (pool: dedicated)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn dedicated_client_is_reused_per_vu_and_keyed_by_source_ip() {
+        // Key-presence assertions only — the registry is process-global and
+        // tests run in parallel.
+        let _a1 = dedicated_client(9_001, false, None);
+        let _a2 = dedicated_client(9_001, false, None);
+        let _b = dedicated_client(9_002, false, None);
+        let _a_src = dedicated_client(9_001, false, Some(IpAddr::from([127, 0, 0, 1])));
+        assert!(dedicated_registry_has_vu(9_001));
+        assert!(dedicated_registry_has_vu(9_002));
+        // Drain removes exactly the exited VU's clients (both keys of 9001).
+        drain_dedicated_vu_clients(9_001);
+        assert!(!dedicated_registry_has_vu(9_001));
+        assert!(dedicated_registry_has_vu(9_002), "other VUs untouched");
+        drain_dedicated_vu_clients(9_002);
+        assert!(!dedicated_registry_has_vu(9_002));
+    }
+
+    /// A keep-alive echo server: responds to every request with the peer's
+    /// port as the body, holds every connection open, and tracks how many
+    /// sockets are currently established. Returns (port, established gauge,
+    /// accept counter).
+    async fn peer_port_server() -> (
+        u16,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let established = Arc::new(AtomicUsize::new(0));
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let (est, acc) = (Arc::clone(&established), Arc::clone(&accepted));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, peer)) = listener.accept().await else {
+                    break;
+                };
+                acc.fetch_add(1, Ordering::SeqCst);
+                est.fetch_add(1, Ordering::SeqCst);
+                let est = Arc::clone(&est);
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let body = peer.port().to_string();
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match sock.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) => {
+                                let resp = format!(
+                                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{body}",
+                                    body.len()
+                                );
+                                if sock.write_all(resp.as_bytes()).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    est.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        (port, established, accepted)
+    }
+
+    async fn get_peer_port(url: &str, vu_id: u64, dedicated: bool) -> u64 {
+        let mut ctx = Context::new();
+        ctx.vu_id = vu_id;
+        let params = if dedicated {
+            json!({ "method": "GET", "url": url, "pool": "dedicated" })
+        } else {
+            json!({ "method": "GET", "url": url })
+        };
+        let out = http_action(&params, "fetch", &ctx).await;
+        assert!(out.success, "vu {vu_id}: {:?}", out.logs);
+        out.value["body"].as_str().unwrap().parse().unwrap()
+    }
+
+    /// N dedicated VUs hold N distinct sockets simultaneously across think
+    /// time: a second round after a sleep reuses exactly the same ports, and
+    /// the server counted no new connections. Draining the VUs closes every
+    /// socket. Unique vu_id band — the registry is process-global and tests
+    /// run in parallel.
+    #[tokio::test]
+    async fn dedicated_pool_holds_one_connection_per_vu_across_think_time() {
+        const N: u64 = 100;
+        const VU_BASE: u64 = 5_000;
+        let (port, established, accepted) = peer_port_server().await;
+        let url = format!("http://127.0.0.1:{port}/");
+
+        let mut first = Vec::new();
+        for vu in VU_BASE..VU_BASE + N {
+            first.push(get_peer_port(&url, vu, true).await);
+        }
+        // Think time: the sockets must stay open with no traffic.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            established.load(std::sync::atomic::Ordering::SeqCst),
+            N as usize,
+            "every dedicated VU keeps its socket open across think time"
+        );
+
+        let mut second = Vec::new();
+        for vu in VU_BASE..VU_BASE + N {
+            second.push(get_peer_port(&url, vu, true).await);
+        }
+        assert_eq!(first, second, "each VU reuses its own connection");
+        let distinct: std::collections::HashSet<_> = first.iter().collect();
+        assert_eq!(distinct.len(), N as usize, "N VUs = N distinct sockets");
+        assert_eq!(
+            accepted.load(std::sync::atomic::Ordering::SeqCst),
+            N as usize,
+            "no reconnects between rounds"
+        );
+
+        // VU exit (the runner's drain hook) closes every standing socket.
+        for vu in VU_BASE..VU_BASE + N {
+            drain_dedicated_vu_clients(vu);
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(established.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// Contrast: the default shard pool shares one client across VUs pinned
+    /// to the same shard (all hand-built contexts are shard 0), so 30 VUs
+    /// reuse a handful of sockets instead of holding 30.
+    #[tokio::test]
+    async fn default_pool_does_not_hold_one_socket_per_vu() {
+        const N: u64 = 30;
+        const VU_BASE: u64 = 6_000;
+        let (port, _established, _accepted) = peer_port_server().await;
+        let url = format!("http://127.0.0.1:{port}/");
+
+        let mut ports = Vec::new();
+        for vu in VU_BASE..VU_BASE + N {
+            ports.push(get_peer_port(&url, vu, false).await);
+        }
+        let distinct: std::collections::HashSet<_> = ports.iter().collect();
+        assert!(
+            distinct.len() < N as usize,
+            "shard pool reuses sockets across VUs, got {} distinct for {N} VUs",
+            distinct.len()
+        );
+    }
+
+    /// Dedicated mode composes with source_ips: the client is keyed
+    /// (vu_id, source address), so both pinnings hold at once. Gated like
+    /// the other loopback test — needs 127.0.0.2/.3 assigned.
+    #[tokio::test]
+    async fn dedicated_pool_composes_with_source_ips() {
+        if std::env::var("PERFSCALE_TEST_SOURCE_IPS").is_err() {
+            eprintln!("skipping: set PERFSCALE_TEST_SOURCE_IPS=1 to run");
+            return;
+        }
+        for ip in ["127.0.0.2", "127.0.0.3"] {
+            if std::net::TcpListener::bind((ip, 0)).is_err() {
+                eprintln!("skipping: {ip} is not assigned on this host");
+                return;
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let peers = Arc::new(Mutex::new(Vec::<IpAddr>::new()));
+        let peers_task = Arc::clone(&peers);
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut sock, peer) = listener.accept().await.unwrap();
+                peers_task.lock().unwrap().push(peer.ip());
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+            }
+        });
+
+        for vu_id in [7_001u64, 7_002] {
+            let mut ctx = Context::new();
+            ctx.vu_id = vu_id;
+            let out = http_action(
+                &json!({
+                    "method": "GET",
+                    "url": format!("http://127.0.0.1:{port}/"),
+                    "pool": "dedicated",
+                    "source_ips": ["127.0.0.2", "127.0.0.3"],
+                }),
+                "fetch",
+                &ctx,
+            )
+            .await;
+            assert!(out.success, "vu {vu_id}: {:?}", out.logs);
+        }
+        server.await.unwrap();
+
+        let peers = peers.lock().unwrap();
+        assert_eq!(peers[0], IpAddr::from([127, 0, 0, 2]));
+        assert_eq!(peers[1], IpAddr::from([127, 0, 0, 3]));
+        drop(peers);
+        drain_dedicated_vu_clients(7_001);
+        drain_dedicated_vu_clients(7_002);
+    }
+
+    /// Scale smoke for the "thousands of VU clients" claim — gated behind
+    /// PERFSCALE_TEST_DEDICATED_SCALE=<n> because it allocates n clients.
+    /// No sockets are opened: this measures the client bookkeeping itself
+    /// (a reqwest::Client is an Arc handle; n entries must cost megabytes,
+    /// not gigabytes, and build fast).
+    #[tokio::test]
+    async fn dedicated_registry_scales_to_thousands_of_vus() {
+        let Ok(n) = std::env::var("PERFSCALE_TEST_DEDICATED_SCALE") else {
+            eprintln!("skipping: set PERFSCALE_TEST_DEDICATED_SCALE=5000 to run");
+            return;
+        };
+        let n: u64 = n.parse().unwrap();
+        let base = dedicated_registry_len();
+        let t0 = Instant::now();
+        for vu in 10_000..10_000 + n {
+            let _ = dedicated_client(vu, false, None);
+        }
+        let elapsed = t0.elapsed();
+        assert_eq!(
+            dedicated_registry_len(),
+            base + n as usize,
+            "one registry entry per VU"
+        );
+        eprintln!(
+            "dedicated_registry: {n} clients built in {elapsed:?} ({:.0} clients/s)",
+            n as f64 / elapsed.as_secs_f64()
+        );
+        for vu in 10_000..10_000 + n {
+            drain_dedicated_vu_clients(vu);
+        }
+        assert_eq!(dedicated_registry_len(), base);
     }
 
     // -----------------------------------------------------------------
@@ -861,6 +1477,176 @@ mod tests {
         ] {
             assert!(!is_textual_content_type(ct), "{ct} should be binary");
         }
+    }
+
+    // -----------------------------------------------------------------
+    // source_ips parsing / validation
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn source_ips_absent_and_single_ip() {
+        assert_eq!(
+            parse_source_ips(&Value::Null).unwrap(),
+            Vec::<IpAddr>::new()
+        );
+        let ips = parse_source_ips(&json!(["127.0.0.2", "fd00::5"])).unwrap();
+        assert_eq!(
+            ips,
+            vec![
+                IpAddr::from([127, 0, 0, 2]),
+                "fd00::5".parse::<IpAddr>().unwrap()
+            ]
+        );
+        // A bare string is a one-element list.
+        assert_eq!(
+            parse_source_ips(&json!("10.0.0.9")).unwrap(),
+            vec![IpAddr::from([10, 0, 0, 9])]
+        );
+    }
+
+    #[test]
+    fn source_ips_cidr_expands_every_address_v4_and_v6() {
+        let v4 = parse_source_ips(&json!(["192.168.0.0/30"])).unwrap();
+        assert_eq!(
+            v4,
+            (0..=3)
+                .map(|i| IpAddr::from([192, 168, 0, i]))
+                .collect::<Vec<_>>()
+        );
+        let v6 = parse_source_ips(&json!(["fd00::/126"])).unwrap();
+        assert_eq!(v6.len(), 4);
+        assert_eq!(v6[0], "fd00::".parse::<IpAddr>().unwrap());
+        assert_eq!(v6[3], "fd00::3".parse::<IpAddr>().unwrap());
+        // A /32 is exactly one address.
+        assert_eq!(
+            parse_source_ips(&json!(["10.1.2.3/32"])).unwrap(),
+            vec![IpAddr::from([10, 1, 2, 3])]
+        );
+    }
+
+    #[test]
+    fn source_ips_rejects_bad_entries_with_actionable_errors() {
+        let e = parse_source_ips(&json!(["not-an-ip"])).unwrap_err();
+        assert!(e.contains("not-an-ip"), "{e}");
+        assert!(e.contains("IP address or CIDR"), "{e}");
+
+        let e = parse_source_ips(&json!(["10.0.0.0/33"])).unwrap_err();
+        assert!(e.contains("/33"), "{e}");
+
+        let e = parse_source_ips(&json!(["fd00::/129"])).unwrap_err();
+        assert!(e.contains("/129"), "{e}");
+
+        let e = parse_source_ips(&json!(["10.0.0.0/x"])).unwrap_err();
+        assert!(e.contains("prefix length"), "{e}");
+
+        let e = parse_source_ips(&json!([])).unwrap_err();
+        assert!(e.contains("must not be empty"), "{e}");
+
+        let e = parse_source_ips(&json!(42)).unwrap_err();
+        assert!(e.contains("array of strings"), "{e}");
+
+        let e = parse_source_ips(&json!([42])).unwrap_err();
+        assert!(e.contains("must be a string"), "{e}");
+    }
+
+    #[test]
+    fn source_ips_cidr_over_cap_is_rejected_with_narrowing_advice() {
+        let e = parse_source_ips(&json!(["10.0.0.0/8"])).unwrap_err();
+        assert!(e.contains("4096"), "{e}");
+        assert!(e.contains("narrow"), "{e}");
+        // IPv6 /0 must never try to materialize.
+        let e = parse_source_ips(&json!(["fd00::/64"])).unwrap_err();
+        assert!(e.contains("4096"), "{e}");
+        // ...and a list whose combined expansion overflows is rejected too.
+        let e = parse_source_ips(&json!(["10.0.0.0/20", "10.0.16.0/20"])).unwrap_err();
+        assert!(e.contains("4096"), "{e}");
+    }
+
+    #[test]
+    fn source_ip_pinning_is_stable_per_vu() {
+        let ips: Vec<IpAddr> = vec![
+            IpAddr::from([10, 0, 0, 1]),
+            IpAddr::from([10, 0, 0, 2]),
+            IpAddr::from([10, 0, 0, 3]),
+        ];
+        assert_eq!(source_ip_for_vu(&ips, 1), ips[0]);
+        assert_eq!(source_ip_for_vu(&ips, 3), ips[2]);
+        assert_eq!(source_ip_for_vu(&ips, 4), ips[0], "wraps around");
+        assert_eq!(source_ip_for_vu(&ips, 0), ips[0], "hand-built contexts");
+    }
+
+    // -----------------------------------------------------------------
+    // source_ips integration — two loopback sources, distinct peer addrs
+    // -----------------------------------------------------------------
+    //
+    // Gated behind PERFSCALE_TEST_SOURCE_IPS=1 plus a bind preflight: Linux
+    // routes all of 127/8, but macOS only answers 127.0.0.1 unless the
+    // addresses are aliased onto lo0 first
+    // (`sudo ifconfig lo0 alias 127.0.0.2 up` etc.), so a machine without
+    // the aliases skips instead of failing.
+
+    #[tokio::test]
+    async fn source_ips_distinct_vus_use_distinct_loopback_sources() {
+        if std::env::var("PERFSCALE_TEST_SOURCE_IPS").is_err() {
+            eprintln!("skipping: set PERFSCALE_TEST_SOURCE_IPS=1 to run");
+            return;
+        }
+        for ip in ["127.0.0.2", "127.0.0.3"] {
+            if std::net::TcpListener::bind((ip, 0)).is_err() {
+                eprintln!("skipping: {ip} is not assigned on this host");
+                return;
+            }
+        }
+
+        // Minimal HTTP echo: accept, record the peer address, respond 200.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let peers = Arc::new(Mutex::new(Vec::<IpAddr>::new()));
+        let peers_task = Arc::clone(&peers);
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut sock, peer) = listener.accept().await.unwrap();
+                peers_task.lock().unwrap().push(peer.ip());
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+            }
+        });
+
+        for vu_id in [1u64, 2] {
+            let mut ctx = Context::new();
+            ctx.vu_id = vu_id;
+            let out = http_action(
+                &json!({
+                    "method": "GET",
+                    "url": format!("http://127.0.0.1:{port}/"),
+                    "source_ips": ["127.0.0.2", "127.0.0.3"],
+                }),
+                "fetch",
+                &ctx,
+            )
+            .await;
+            assert!(out.success, "vu {vu_id}: {:?}", out.logs);
+        }
+        server.await.unwrap();
+
+        let peers = peers.lock().unwrap();
+        assert_eq!(peers[0], IpAddr::from([127, 0, 0, 2]), "vu 1 → first IP");
+        assert_eq!(peers[1], IpAddr::from([127, 0, 0, 3]), "vu 2 → second IP");
+    }
+
+    #[test]
+    fn source_ips_announcement_is_emitted_once_per_list() {
+        let ips = vec![IpAddr::from([10, 9, 0, 1])];
+        let key = "announce-test-10.9.0.1";
+        let first = announce_source_ips(key, &ips);
+        let second = announce_source_ips(key, &ips);
+        assert!(first.is_some(), "first use announces");
+        assert!(first.unwrap().contains("1 address(es) active"));
+        assert!(second.is_none(), "repeat use stays quiet");
     }
 
     // -----------------------------------------------------------------

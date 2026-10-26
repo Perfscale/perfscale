@@ -278,6 +278,21 @@ pub struct RunArgs {
     #[arg(long, value_enum, requires = "summary_export")]
     pub summary_format: Option<SummaryFormat>,
 
+    /// Override a typed input declared in the config's `inputs:` block
+    /// (issue #11). Repeatable and comma-separated:
+    /// `-i users=10 -i env=prod` or `-i users=10,env=prod`. A literal comma
+    /// in a value is escaped as `\,`. Precedence: `-i` beats `-e` env-file
+    /// values, which beat the declaration's `default:`.
+    #[arg(short = 'i', long = "input", value_name = "KEY=VALUE")]
+    pub input: Vec<String>,
+
+    /// Read input values from a KEY=VALUE env file (one per line, `#`
+    /// comments allowed). Repeatable; later files override earlier ones.
+    /// Only keys naming a declared input are consumed — the file may carry
+    /// unrelated variables.
+    #[arg(short = 'e', long = "env-file", value_name = "FILE.env")]
+    pub env_file: Vec<PathBuf>,
+
     /// Allow `import:` in -f/-c documents to fetch over the network
     /// (http(s) URLs and git remotes). Off by default: a document must not
     /// be able to grant itself network access. Local-path imports are
@@ -367,6 +382,17 @@ pub struct LintArgs {
     /// Refetch cached tag/branch git imports instead of trusting the cache.
     #[arg(long)]
     pub refresh_imports: bool,
+
+    /// Override a typed input declared in the config's `inputs:` block —
+    /// lint resolves and prints the effective values. Same syntax as
+    /// `perfscale run -i`.
+    #[arg(short = 'i', long = "input", value_name = "KEY=VALUE")]
+    pub input: Vec<String>,
+
+    /// Read input values from a KEY=VALUE env file (same semantics as
+    /// `perfscale run -e`).
+    #[arg(short = 'e', long = "env-file", value_name = "FILE.env")]
+    pub env_file: Vec<PathBuf>,
 }
 
 fn install_after_help() -> String {

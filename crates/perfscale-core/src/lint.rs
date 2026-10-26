@@ -56,9 +56,100 @@ pub fn lint(yaml: &str, kind: DocKind) -> Vec<LintIssue> {
         DocKind::Test => lint_test_fields(&value, &mut issues),
         DocKind::Config => lint_config_fields(&value, &mut issues),
     }
-    let (lib_issues, _) = library_token_checks(&value, kind);
+    let (lib_issues, _, providers) = library_checks(&value, kind);
     issues.extend(lib_issues);
+    if kind == DocKind::Config {
+        lint_inputs(&value, &mut issues);
+        lint_config_extensions(&value, &providers, &mut issues);
+    }
     issues
+}
+
+/// The `inputs:` block (issue #11): the shape is enforced by the config
+/// schema; semantics (bounds, options, defaults) fail lint here.
+fn lint_inputs(value: &Value, issues: &mut Vec<LintIssue>) {
+    let Some(inputs) = value.get("inputs") else {
+        return;
+    };
+    let Ok(decls) = serde_json::from_value::<
+        std::collections::BTreeMap<String, crate::inputs::InputDecl>,
+    >(inputs.clone()) else {
+        return; // the schema pass flags the malformed shape
+    };
+    if let Err(msg) = crate::inputs::validate_inputs(&decls) {
+        issues.push(LintIssue {
+            location: "/inputs".into(),
+            problem: msg,
+            suggestion: None,
+        });
+    }
+}
+
+/// Config extension keys (issue #10): every top-level key the engine does
+/// not know must be claimed by a loaded library's `config-schema` export,
+/// and the block must satisfy that library's schema. This is also the #8
+/// typo guard's home: the schema's top level opened for extensions, so
+/// unknown-key strictness is enforced here (and at run start).
+fn lint_config_extensions(
+    value: &Value,
+    providers: &ResolvedProviders,
+    issues: &mut Vec<LintIssue>,
+) {
+    let Some(map) = value.as_object() else {
+        return;
+    };
+    let extensions: serde_json::Map<String, Value> = map
+        .iter()
+        .filter(|(k, _)| !CONFIG_TOP_FIELDS.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if extensions.is_empty() {
+        return;
+    }
+    for (key, value) in &extensions {
+        let claimed = providers
+            .iter()
+            .find_map(|(_, p, _)| p.config_schema().filter(|(k, _)| *k == key.as_str()));
+        match claimed {
+            None => issues.push(LintIssue {
+                location: "(root)".into(),
+                problem: format!("unknown field '{key}'"),
+                suggestion: did_you_mean(key, &CONFIG_TOP_FIELDS).or_else(|| {
+                    Some(format!(
+                        "valid fields here: {}; extension keys are claimed by a loaded library's config-schema (issue #10)",
+                        CONFIG_TOP_FIELDS.join(", ")
+                    ))
+                }),
+            }),
+            Some((_, schema)) => {
+                let compiled = match jsonschema::JSONSchema::compile(schema) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        issues.push(LintIssue {
+                            location: format!("/{key}"),
+                            problem: format!(
+                                "the claiming library's schema does not compile: {e}"
+                            ),
+                            suggestion: None,
+                        });
+                        continue;
+                    }
+                };
+                let outcome = compiled.validate(value).map_err(|errors| {
+                    errors.map(|e| e.to_string()).collect::<Vec<_>>().join("; ")
+                });
+                if let Err(details) = outcome {
+                    issues.push(LintIssue {
+                        location: format!("/{key}"),
+                        problem: format!(
+                            "config key '{key}' does not match the library's schema: {details}"
+                        ),
+                        suggestion: None,
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// Network pass for `std/graphql@v1` steps, run by `perfscale lint` after the
@@ -239,7 +330,7 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
     // definition (see `schema::relax_step_aliases`); the older wording was
     // `"use" is a required property`.
     if problem.contains("\"use\" is a required property") || problem.contains("anyOf") {
-        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/random@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/pick@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, or `std/get_shared_variable@v1`".into())
+        Some("every step must name an action: `use: std/http@v1` (or the `uses:` alias) — `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/random@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/read-json@v1`, `std/pick@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, or `std/get_shared_variable@v1`".into())
     } else if problem.contains("\"steps\" is a required property") {
         Some("a test definition is a mapping with a `steps:` list at the top level".into())
     } else if problem.contains("\"url\" is a required property") {
@@ -263,7 +354,7 @@ const TEST_TOP_FIELDS: [&str; 2] = ["steps", "libraries"];
 const STEP_FIELDS: [&str; 10] = [
     "name", "use", "uses", "with", "check", "outputs", "severity", "message", "if", "when",
 ];
-const CONFIG_TOP_FIELDS: [&str; 16] = [
+const CONFIG_TOP_FIELDS: [&str; 18] = [
     "vus",
     "duration",
     "stages",
@@ -280,6 +371,8 @@ const CONFIG_TOP_FIELDS: [&str; 16] = [
     "allow_library_capabilities",
     "seed",
     "libraries",
+    "inputs",
+    "import",
 ];
 const REPORT_FIELDS: [&str; 8] = [
     "url",
@@ -303,7 +396,7 @@ const CHECK_FIELDS: [&str; 7] = [
     "message_matches",
     "messages_count_gte",
 ];
-const HTTP_WITH_FIELDS: [&str; 8] = [
+const HTTP_WITH_FIELDS: [&str; 9] = [
     "method",
     "url",
     "headers",
@@ -312,6 +405,7 @@ const HTTP_WITH_FIELDS: [&str; 8] = [
     "insecure",
     "multipart",
     "pool",
+    "source_ips",
 ];
 const GRAPHQL_WITH_FIELDS: [&str; 12] = [
     "url",
@@ -442,9 +536,10 @@ const DB_CLOSE_WITH_FIELDS: [&str; 1] = ["id"];
 const RANDOM_WITH_FIELDS: [&str; 3] = ["type", "min", "max"];
 const SLEEP_WITH_FIELDS: [&str; 2] = ["ms", "seconds"];
 const LOG_WITH_FIELDS: [&str; 1] = ["message"];
-const FILE_READ_WITH_FIELDS: [&str; 2] = ["path", "encoding"];
+const FILE_READ_WITH_FIELDS: [&str; 3] = ["path", "encoding", "query"];
 const PICK_WITH_FIELDS: [&str; 4] = ["from", "file", "index", "index_offset"];
-const FILE_WRITE_WITH_FIELDS: [&str; 4] = ["path", "content", "encoding", "append"];
+const FILE_WRITE_WITH_FIELDS: [&str; 5] = ["path", "content", "encoding", "append", "query"];
+const READ_JSON_WITH_FIELDS: [&str; 2] = ["file", "query"];
 const CHILD_PROCESS_WITH_FIELDS: [&str; 10] = [
     "command",
     "args",
@@ -544,6 +639,7 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
                     "std/sleep@v1",
                     "std/log@v1",
                     "std/file-read@v1",
+                    "std/read-json@v1",
                     "std/pick@v1",
                     "std/file-write@v1",
                     "std/child_process@v1",
@@ -555,7 +651,7 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             )
             .or_else(|| {
                 Some(
-                    "available actions: std/http@v1, std/graphql@v1, std/tcp@v1, std/udp@v1, std/pubsub@v1, std/llm@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/db-connect@v1, std/db-query@v1, std/db-tx-begin@v1, std/db-tx-commit@v1, std/db-tx-rollback@v1, std/db-close@v1, std/check@v1, std/random@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/pick@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1, std/thresholds@v1, std/set_shared_variable@v1, std/get_shared_variable@v1"
+                    "available actions: std/http@v1, std/graphql@v1, std/tcp@v1, std/udp@v1, std/pubsub@v1, std/llm@v1, std/ws@v1, std/ws-connect@v1, std/ws-send@v1, std/ws-recv@v1, std/ws-ping@v1, std/ws-close@v1, std/grpc@v1, std/grpc-connect@v1, std/grpc-call@v1, std/grpc-stream-open@v1, std/grpc-stream-send@v1, std/grpc-stream-recv@v1, std/grpc-stream-close@v1, std/db-connect@v1, std/db-query@v1, std/db-tx-begin@v1, std/db-tx-commit@v1, std/db-tx-rollback@v1, std/db-close@v1, std/check@v1, std/random@v1, std/sleep@v1, std/log@v1, std/file-read@v1, std/read-json@v1, std/pick@v1, std/file-write@v1, std/child_process@v1, std/kill_process@v1, std/thresholds@v1, std/set_shared_variable@v1, std/get_shared_variable@v1"
                         .into(),
                 )
             }),
@@ -598,6 +694,7 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
             "std/sleep@v1" | "sleep" => Some(&SLEEP_WITH_FIELDS),
             "std/log@v1" | "log" => Some(&LOG_WITH_FIELDS),
             "std/file-read@v1" | "file-read" => Some(&FILE_READ_WITH_FIELDS),
+            "std/read-json@v1" | "read-json" => Some(&READ_JSON_WITH_FIELDS),
             "std/pick@v1" | "pick" => Some(&PICK_WITH_FIELDS),
             "std/file-write@v1" | "file-write" => Some(&FILE_WRITE_WITH_FIELDS),
             "std/child_process@v1" | "child_process" => Some(&CHILD_PROCESS_WITH_FIELDS),
@@ -649,6 +746,16 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
         issues,
     );
 
+    // std/http@v1's `source_ips` list: every entry must parse and the
+    // expansion must stay under the cap — a typo'd address otherwise fails
+    // only at the first request.
+    lint_http_with(
+        action,
+        map.get("with").and_then(|v| v.as_object()),
+        loc,
+        issues,
+    );
+
     if let Some(check) = map.get("check").and_then(|v| v.as_object()) {
         unknown_field_issues(check, &CHECK_FIELDS, &format!("{loc}/check"), issues);
     }
@@ -656,8 +763,6 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
 
 fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
     let Some(map) = value.as_object() else { return };
-    unknown_field_issues(map, &CONFIG_TOP_FIELDS, "(root)", issues);
-
     if let Some(report) = map.get("report").and_then(|v| v.as_object()) {
         unknown_field_issues(report, &REPORT_FIELDS, "/report", issues);
         lint_reporters(report, issues);
@@ -981,10 +1086,21 @@ fn declared_libraries(value: &Value, kind: DocKind) -> (Vec<LintIssue>, Resolved
 /// parens/quotes) and the function name. Arguments are never evaluated, and
 /// `${{ … }}` interpolation is the engine's business, not lint's.
 fn library_token_checks(value: &Value, kind: DocKind) -> (Vec<LintIssue>, Vec<String>) {
+    let (issues, warnings, _) = library_checks(value, kind);
+    (issues, warnings)
+}
+
+/// Library declaration validation + token scanning, returning the resolved
+/// providers so other lint passes (config extensions, issue #10) don't load
+/// the components twice.
+fn library_checks(
+    value: &Value,
+    kind: DocKind,
+) -> (Vec<LintIssue>, Vec<String>, ResolvedProviders) {
     let (mut issues, aliases) = declared_libraries(value, kind);
     let mut warnings = Vec::new();
     if aliases.is_empty() {
-        return (issues, warnings);
+        return (issues, warnings, aliases);
     }
 
     let step_lists: &[&str] = match kind {
@@ -1007,7 +1123,7 @@ fn library_token_checks(value: &Value, kind: DocKind) -> (Vec<LintIssue>, Vec<St
             }
         }
     }
-    (issues, warnings)
+    (issues, warnings, aliases)
 }
 
 /// Recursive walk over a `with:` value — string leaves only, the same
@@ -1246,6 +1362,8 @@ fn is_known_action(action: &str) -> bool {
             | "std/log@v1"
             | "std/file-read@v1"
             | "file-read"
+            | "std/read-json@v1"
+            | "read-json"
             | "std/pick@v1"
             | "pick"
             | "std/file-write@v1"
@@ -1336,6 +1454,52 @@ fn lint_db_with(
                     suggestion: Some("expected postgres, mysql, or sqlite".into()),
                 });
             }
+        }
+    }
+}
+
+/// Value validation for `std/http@v1`: the `source_ips` list (every entry
+/// must parse, expansion under the cap) and the `pool` enum — a typo'd
+/// value otherwise fails only at the first request. Interpolated
+/// `${{ … }}` values resolve at runtime and skip the checks.
+fn lint_http_with(
+    action: &str,
+    with: Option<&serde_json::Map<String, Value>>,
+    loc: &str,
+    issues: &mut Vec<LintIssue>,
+) {
+    if !matches!(action, "std/http@v1" | "http") {
+        return;
+    }
+    let source_ips = with.and_then(|w| w.get("source_ips"));
+    // A template token resolves at runtime — lint only checks literal lists.
+    if let Some(value) = source_ips.filter(|v| !v.as_str().is_some_and(|s| s.contains("${"))) {
+        if let Err(msg) = crate::step::http::parse_source_ips(value) {
+            issues.push(LintIssue {
+                location: format!("{loc}/with/source_ips"),
+                problem: msg,
+                suggestion: Some(
+                    "e.g. `source_ips: [\"10.0.0.2\", \"10.0.0.16/28\"]` — bare IPs or CIDR prefixes"
+                        .into(),
+                ),
+            });
+        }
+    }
+    // A literal `pool` value is checkable here; the runtime parse otherwise
+    // fails only at the first request. Interpolated values skip the check.
+    if let Some(pool) = with
+        .and_then(|w| w.get("pool"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.contains("${"))
+    {
+        if let Err(msg) =
+            crate::step::http::ClientPool::from_params(&serde_json::json!({ "pool": pool }))
+        {
+            issues.push(LintIssue {
+                location: format!("{loc}/with/pool"),
+                problem: msg,
+                suggestion: Some("`pool: per-vu` (default), `shared`, or `dedicated`".into()),
+            });
         }
     }
 }
@@ -1480,6 +1644,57 @@ steps:
     outputs: resp
 "#;
         assert_eq!(lint(yaml, DocKind::Test), vec![]);
+    }
+
+    #[test]
+    fn http_pool_value_lints_literals() {
+        // All three modes lint clean.
+        for mode in ["per-vu", "shared", "dedicated"] {
+            let yaml = format!(
+                "steps:\n  - use: std/http@v1\n    with:\n      url: http://x\n      pool: {mode}\n"
+            );
+            assert_eq!(lint(&yaml, DocKind::Test), vec![], "pool: {mode}");
+        }
+        // An unknown value fails at lint, at the field location.
+        let yaml =
+            "steps:\n  - use: std/http@v1\n    with:\n      url: http://x\n      pool: global\n";
+        let issues = lint(yaml, DocKind::Test);
+        let issue = issues
+            .iter()
+            .find(|i| i.location == "/steps/0/with/pool")
+            .unwrap();
+        assert!(issue.problem.contains("invalid pool 'global'"), "{issue:?}");
+        assert!(issue.problem.contains("dedicated"), "{issue:?}");
+    }
+
+    #[test]
+    fn http_source_ips_lints_values() {
+        // A valid list (bare IPs + CIDRs, under the cap) lints clean.
+        let yaml = "steps:\n  - use: std/http@v1\n    with:\n      url: http://x\n      source_ips: [\"10.0.0.2\", \"10.0.0.16/28\", \"fd00::/126\"]\n";
+        assert_eq!(lint(yaml, DocKind::Test), vec![]);
+
+        // A typo'd entry fails at lint, at the field location.
+        let yaml = "steps:\n  - use: std/http@v1\n    with:\n      url: http://x\n      source_ips: [\"10.0.0.999\"]\n";
+        let issues = lint(yaml, DocKind::Test);
+        let issue = issues
+            .iter()
+            .find(|i| i.location == "/steps/0/with/source_ips")
+            .unwrap();
+        assert!(issue.problem.contains("10.0.0.999"), "{issue:?}");
+
+        // Over-cap CIDR fails with the narrowing advice.
+        let yaml = "steps:\n  - use: std/http@v1\n    with:\n      url: http://x\n      source_ips: [\"10.0.0.0/8\"]\n";
+        let issues = lint(yaml, DocKind::Test);
+        assert!(issues
+            .iter()
+            .any(|i| i.problem.contains("4096") && i.problem.contains("narrow")));
+
+        // An unknown typo near the field still gets the did-you-mean pass.
+        let yaml = "steps:\n  - use: std/http@v1\n    with:\n      url: http://x\n      source_ip: [\"10.0.0.2\"]\n";
+        let issues = lint(yaml, DocKind::Test);
+        assert!(issues
+            .iter()
+            .any(|i| i.problem.contains("unknown field 'source_ip'")));
     }
 
     #[test]

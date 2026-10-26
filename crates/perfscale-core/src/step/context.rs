@@ -293,7 +293,8 @@ impl Context {
         let mut gen = crate::generate::Gen::new(seed)
             .with_vu(self.vu_id, self.iteration_seq)
             .with_settings(Arc::clone(&self.settings_json))
-            .with_secrets(self.secrets.clone());
+            .with_secrets(self.secrets.clone())
+            .with_file_access(self.allow_file_actions, self.fs_root.clone());
         if let Some(metrics) = &self.library_metrics {
             gen = gen.with_library_metrics(Arc::clone(metrics));
         }
@@ -422,7 +423,11 @@ impl Context {
 
     /// Resolve an expression like `"resp"`, `"resp.status"`, or a nested
     /// path like `"resp.headers.x-request-id"` — each `.` descends one JSON
-    /// object level. Missing variables or fields resolve to an empty string.
+    /// object level. Bracket indexing works too (`resp.body.posts[0].id`),
+    /// numeric dot segments index arrays (`posts.0.id`), and a string leaf
+    /// holding JSON (an HTTP `body`) is parsed on demand when the path
+    /// continues past it. Missing variables or fields resolve to an empty
+    /// string.
     ///
     /// The `env.` prefix is special: `${{ env.NAME }}` reads the process
     /// environment variable `NAME` (everything after `env.` is the variable
@@ -442,8 +447,10 @@ impl Context {
                 .inspect(|value| self.secrets.record(value))
                 .map_err(|_| format!("env var '{name}' is not set"));
         }
-        let mut segments = expr.split('.');
-        let root = segments.next().unwrap_or("");
+        // The root variable runs to the first `.` or `[`; the rest is a
+        // json_path (dot and bracket syntax, normalized by the parser).
+        let split = expr.find(['.', '[']).unwrap_or(expr.len());
+        let (root, rest) = expr.split_at(split);
         let Some(current) = self.vars.get(root).map(|v| &**v) else {
             // Built-in VU identity, k6's `__VU` / `__ITER`: 1-based VU id and
             // the 0-based iteration of this VU. A stored output of the same
@@ -454,11 +461,10 @@ impl Context {
                 _ => String::new(),
             });
         };
-        // A string leaf holding JSON (an HTTP `body`) is parsed on demand when
-        // the path continues past it, so `${{ feed.body.posts.0.id }}` reads
-        // into the response without a separate extract step.
-        let segments: Vec<&str> = segments.collect();
-        Ok(walk_path(current, &segments)
+        let Ok(segments) = super::json_path::parse(rest) else {
+            return Ok(String::new());
+        };
+        Ok(super::json_path::walk(current, &segments)
             .map(|v| value_to_string(&v))
             .unwrap_or_default())
     }
@@ -544,33 +550,6 @@ impl TokenExpander<'_> {
     }
 }
 
-/// One path segment: an object key, or a decimal index into an array.
-fn descend<'a>(v: &'a Value, segment: &str) -> Option<&'a Value> {
-    match v {
-        Value::Array(items) => segment.parse::<usize>().ok().and_then(|i| items.get(i)),
-        other => other.get(segment),
-    }
-}
-
-/// Follow `segments` from `v`. Borrowed while the path stays inside the
-/// stored value; a string leaf with segments left is parsed as JSON (an HTTP
-/// `body`) and the walk continues in the parsed document.
-pub(crate) fn walk_path<'a>(
-    v: &'a Value,
-    segments: &[&str],
-) -> Option<std::borrow::Cow<'a, Value>> {
-    let mut current = v;
-    for (i, segment) in segments.iter().enumerate() {
-        if let Value::String(s) = current {
-            let parsed: Value = serde_json::from_str(s).ok()?;
-            return walk_path(&parsed, &segments[i..])
-                .map(|c| std::borrow::Cow::Owned(c.into_owned()));
-        }
-        current = descend(current, segment)?;
-    }
-    Some(std::borrow::Cow::Borrowed(current))
-}
-
 fn value_to_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -632,9 +611,12 @@ mod tests {
             json!({ "status": 200, "body": r#"{"posts":[{"id":7},{"id":9}]}"# }),
         );
         ctx.set("list", json!({ "items": ["a", "b"] }));
+        // Dot-number and bracket indexing are the same path.
         assert_eq!(ctx.interpolate("${{ feed.body.posts.1.id }}"), "9");
+        assert_eq!(ctx.interpolate("${{ feed.body.posts[0].id }}"), "7");
         assert_eq!(ctx.interpolate("${{ feed.body.posts.0 }}"), r#"{"id":7}"#);
-        assert_eq!(ctx.interpolate("${{ list.items.0 }}"), "a");
+        assert_eq!(ctx.interpolate("${{ list.items[0] }}"), "a");
+        assert_eq!(ctx.interpolate("${{ list.items.1 }}"), "b");
         // Out of range, non-numeric index, or a body that is not JSON → empty.
         assert_eq!(ctx.interpolate("${{ feed.body.posts.5.id }}"), "");
         assert_eq!(ctx.interpolate("${{ list.items.x }}"), "");

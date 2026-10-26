@@ -10,7 +10,7 @@ Full IDs carry a namespace and version (`std/http@v1`); the short aliases
 `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`,
 `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`,
 `check`, `random`, `sleep`,
-`log`, `file-read`, `pick`, `file-write`, `child_process`, `kill_process`,
+`log`, `file-read`, `read-json`, `pick`, `file-write`, `child_process`, `kill_process`,
 `set_shared_variable`, `get_shared_variable`) resolve to the
 same implementations.
 
@@ -27,7 +27,8 @@ Perform one HTTP request per iteration. Timing feeds the run's metrics.
 | `multipart` | array | — | Send `multipart/form-data` — see [Multipart uploads](#multipart-uploads). Mutually exclusive with `body` |
 | `timeout` | integer (ms) | `10000` | Per-request timeout |
 | `insecure` | boolean | `false` | Skip TLS certificate verification — for self-signed targets like `perfscale serve --tls`. Never use against hosts you don't control |
-| `pool` | string | `per-vu` | `per-vu` pins the step to the VU's HTTP client shard; `shared` puts every VU on one process-global client |
+| `pool` | string | `per-vu` | `per-vu` pins the step to the VU's HTTP client shard; `shared` puts every VU on one process-global client; `dedicated` gives every VU its own client, held until the VU exits — see [Dedicated per-VU connections](#dedicated-per-vu-connections) |
+| `source_ips` | string \| array | — | Local source addresses to bind outgoing connections to — see [Source IPs](#source-ips). VU `i` is pinned to `ips[(i-1) % n]` |
 
 **Output** (available via `outputs` / `__last__`):
 
@@ -53,6 +54,74 @@ sniffed: valid UTF-8 behaves as text, anything else as binary.
 
 Statuses ≥ 400, transport errors, and timeouts count as failed requests in
 `http_req_failed`. A timeout is logged distinctly (`→ TIMEOUT after ...ms`).
+
+### Dedicated per-VU connections
+
+`pool: dedicated` gives every VU its own HTTP client, created on the VU's
+first request and held until the VU exits — think time (`std/sleep@v1`)
+between steps does not close the connection. This is the mode for "N virtual
+users = N standing keep-alive connections" scenarios: the default shard
+pools cap idle connections at 64 per host per shard, so past
+~`shards × 64` VUs a VU's idle connection is evicted between its requests
+and every request reconnects (connect churn, TIME_WAIT buildup). Dedicated
+mode removes that ceiling.
+
+```yaml
+with:
+  url: http://target:8080/api
+  pool: dedicated
+```
+
+Semantics and costs:
+
+- Each VU's client lives in a run-scoped registry keyed
+  `(vu_id, insecure, source_ip)` and is dropped when the VU exits (fixed,
+  staged ramp-down, and arrival-rate workers alike) — connections close at
+  VU exit, not at iteration end and not at process exit.
+- Composes with `source_ips`: the VU's client is bound to its pinned source
+  address, so both pinnings hold simultaneously.
+- `http_req_duration` semantics are unchanged; note that with a dedicated
+  client the TCP/TLS connect happens once per VU — the VU's first request
+  includes it, subsequent ones don't (same as the other modes, but the
+  warm-up happens exactly once per VU now).
+- Connections idle longer than 60 s are recycled, like every pool mode — a
+  target that drops idle sockets sooner will surface as reconnects.
+- Memory: a client with one idle socket costs well under 100 KB; 5 000 VUs
+  in dedicated mode add a few hundred MB of process RSS total. The first
+  request of a run logs `pool: dedicated — one HTTP client per VU`.
+- `pool: dedicated` is an `std/http@v1` mode; `std/graphql@v1` accepts only
+  `per-vu` / `shared`.
+
+### Source IPs
+
+`source_ips` binds outgoing connections to local source addresses — the
+multiplier for the ~64k-concurrent-connections-per-endpoint budget: the
+ephemeral source-port space is per (source IP, destination IP, destination
+port) tuple, so one machine talking to one endpoint over one address caps
+out below 64k sockets. Entries are bare IPs or CIDR prefixes, IPv4 and IPv6:
+
+```yaml
+with:
+  url: http://target:8080/api
+  source_ips: ["10.0.0.2", "10.0.0.16/28", "fd00::/120"]
+```
+
+A CIDR expands to every address of the prefix (including network/broadcast —
+a non-bindable address fails loudly at connect time); the expanded list is
+capped at 4096 addresses, over which lint and run validation fail with a
+"narrow the prefix" error. Virtual user `i` is pinned to `ips[(i-1) % n]`,
+stable across iterations, so each VU keeps one warm keep-alive pool per its
+(shard, source IP) client. Clients are built lazily — a large list does not
+pre-allocate thousands of connection pools; a run creates at most as many
+source-IP clients as distinct (shard, address) pairs its VUs actually use.
+
+The addresses must exist on the load generator's interfaces (e.g. extra
+loopback aliases: `sudo ifconfig lo0 alias 127.0.0.2 up` on macOS; Linux
+routes all of 127/8 by default). The first request of a run logs how many
+source addresses are active. `source_ips` takes no `${{ … }}` interpolation —
+the list is validated at lint and cached. With `pool: dedicated` the VU's
+own client is bound to its pinned address — the key becomes
+(vu_id, address) instead of (shard, address).
 
 ### Multipart uploads
 
@@ -1132,12 +1201,16 @@ long-lived agent is picked up automatically.
 |---|---|---|---|
 | `path` | string | **required** | File to read |
 | `encoding` | string | `text` | `text` (file must be valid UTF-8) or `base64` (binary content) |
+| `query` | string | — | jq-style path (see [`std/read-json@v1`](#stdread-jsonv1)); the content is parsed as JSON and the subvalue at the path becomes the whole step output |
 
 **Output** (available via `outputs` / `__last__`):
 
 ```json
 { "content": "...", "size": 1024, "path": "./fixtures/payload.json" }
 ```
+
+With `query` set, the output is the extracted JSON subvalue directly (e.g.
+`${{ payload }}` *is* the value at the path).
 
 ```yaml
 steps:
@@ -1161,6 +1234,9 @@ Notes:
 
 - A non-UTF-8 file with `encoding: text` fails the step — use
   `encoding: base64` for binary content.
+- With `query`, content that is not valid JSON fails the step; a missing path
+  fails it too and names the failing segment — unless the segment carries a
+  `?` suffix, which resolves a miss to `null`.
 - Emits no per-iteration log lines: cache hits are the hot path.
 - Referencing `${{ payload.content }}` copies the content into the request —
   the cache saves disk reads, not the per-request copy. Keep fixtures small
@@ -1178,6 +1254,7 @@ Write content to a file — typically to persist a previous step's response.
 | `content` | string | **required** | Data to write; `${{ ... }}` placeholders make `${{ resp.body }}` the typical payload |
 | `encoding` | string | `text` | `text` writes the string as-is; `base64` decodes it first (the inverse of `file-read`'s base64) |
 | `append` | boolean | `false` | Append instead of overwrite |
+| `query` | string | — | jq-style path (see [`std/read-json@v1`](#stdread-jsonv1)): read-modify-write — load the JSON file, set `content` at the path, write the document back |
 
 **Output**: `{ "path": <string>, "size": <bytes written> }`
 
@@ -1201,7 +1278,58 @@ Notes:
   entry automatically — the read cache revalidates by `(mtime, size)`.
 - With `append: true` each call is a single `O_APPEND` write, so concurrent
   VUs do not interleave mid-content; ordering between VUs is unspecified.
+- With `query`, `content` that parses as JSON is stored as JSON (anything
+  else as a string); intermediate objects/arrays are created like jq, an
+  array index must be within bounds or exactly the array length (append), a
+  missing file starts from an empty document, and non-JSON existing content
+  fails the step. `query` does not combine with `append` or
+  `encoding: base64`.
 - Emits no per-iteration log lines.
+
+## `std/read-json@v1`
+
+Read and parse a JSON file — the structured sibling of `std/file-read@v1`.
+The **parsed document** is cached process-wide and revalidated against the
+file's `(mtime, size)` on every access, so iterations past the first skip
+both the disk read and the parse. Fail-closed like the other file actions:
+the run must opt in with `allow_file_actions: true`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `file` | string | **required** | JSON file to read |
+| `query` | string | — | jq-style path selecting a subvalue (see below) |
+
+**Output**: the parsed JSON document, or the subvalue at `query`.
+
+The `query` grammar is a jq *path* subset (no pipes/filters/functions): an
+optional leading `.`, then segments of `.key`, `["key"]`, or `[0]`; a dot
+segment that is all digits also indexes an array, so `posts.0.id` ≡
+`.posts[0].id`. A `?` suffix on a segment makes it tolerant — a miss resolves
+to `null` instead of failing the step. The same grammar drives the `query`
+parameter of `std/file-read@v1` / `std/file-write@v1` and the paths inside
+`${{ ... }}` interpolation.
+
+```yaml
+steps:
+  - name: users fixture
+    use: std/read-json@v1
+    with: { file: ./fixtures/users.json, query: ".users[0]" }
+    outputs: user
+
+  - name: log in
+    use: std/http@v1
+    with:
+      method: POST
+      url: "https://api.example.com/login"
+      body: '{"token": "${{ user.token }}"}'
+```
+
+Notes:
+
+- Invalid JSON fails the step with a clear message; so does a missing
+  `query` path (the error names the failing segment) unless the segment
+  carries `?`.
+- Emits no per-iteration log lines: cache hits are the hot path.
 
 ## `std/child_process@v1`
 

@@ -178,6 +178,79 @@ steps:
     server.verify().await;
 }
 
+/// `std/read-json@v1` + jq-style paths in interpolation: a fixture file feeds
+/// one step's output, and `${{ feed.body.posts[0].id }}` walks into the HTTP
+/// response body (parsed as JSON on demand) with bracket and dot indexing.
+#[tokio::test]
+#[file_serial(heavy_io)]
+async fn read_json_and_body_paths_flow_through_interpolation() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/feed"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"posts":[{"id":7},{"id":9}]}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = dir.path().join("users.json");
+    std::fs::write(&fixture, r#"{"users":[{"token":"tok-1"}]}"#).unwrap();
+
+    let test_yaml = format!(
+        r#"
+steps:
+  - name: users fixture
+    use: std/read-json@v1
+    with:
+      file: {}
+      query: ".users[0]"
+    outputs: user
+  - name: fetch feed
+    use: std/http@v1
+    with:
+      method: GET
+      url: {}/feed
+    outputs: feed
+  - name: stitch
+    use: std/log@v1
+    with:
+      message: "token=${{{{ user.token }}}} first=${{{{ feed.body.posts[0].id }}}} second=${{{{ feed.body.posts.1.id }}}}"
+"#,
+        fixture.display(),
+        server.uri()
+    );
+
+    let test = yaml::parse_test_file(&test_yaml).unwrap();
+    let config = RunConfig {
+        vus: 1,
+        duration: "250ms".into(),
+        allow_file_actions: true,
+        ..Default::default()
+    };
+
+    let rx = runner::execute(ExecutionPlan::NativeSteps {
+        test,
+        before: Vec::new(),
+        after: Vec::new(),
+        variables: serde_json::Map::new(),
+        shared_variables: serde_json::Map::new(),
+        libraries: Vec::new(),
+        config: Box::new(config),
+        quiet: false,
+        metrics_tx: None,
+    })
+    .await
+    .unwrap();
+    let lines = collect(rx).await;
+    let out = stdout_text(&lines);
+
+    assert!(
+        out.contains("token=tok-1 first=7 second=9"),
+        "stdout was:\n{out}"
+    );
+}
+
 #[tokio::test]
 #[file_serial(heavy_io)]
 async fn failing_backend_shows_up_in_error_rate_and_check_failures() {

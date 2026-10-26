@@ -814,6 +814,8 @@ mod tests {
             seed: 42,
             time_ms: 1_784_160_000_000, // 2026-07-16T00:00:00.000Z
             settings_json: "{}",
+            allow_file_actions: false,
+            fs_root: None,
         }
     }
 

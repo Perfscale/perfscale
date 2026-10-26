@@ -31,6 +31,8 @@ pub(crate) mod db;
 pub mod graphql;
 pub(crate) mod grpc;
 pub mod http;
+pub(crate) mod json_doc;
+pub(crate) mod json_path;
 pub mod llm;
 pub mod process;
 pub mod pubsub;
@@ -152,9 +154,10 @@ pub struct RunConfig {
     pub duration: String,
 
     /// Allow filesystem-touching steps: `std/file-read@v1`,
-    /// `std/file-write@v1`, and `file` parts in `std/http@v1` multipart
-    /// uploads. Fail-closed: defaults to `false` so a step list from an
-    /// untrusted source cannot read or write arbitrary paths.
+    /// `std/read-json@v1`, `std/file-write@v1`, and `file` parts in
+    /// `std/http@v1` multipart uploads. Fail-closed: defaults to `false` so a
+    /// step list from an untrusted source cannot read or write arbitrary
+    /// paths.
     #[serde(default)]
     pub allow_file_actions: bool,
 
@@ -250,6 +253,23 @@ pub struct RunConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(skip)]
     pub webrtc: Option<crate::yaml::WebRtcConfig>,
+
+    /// Resolved `${{ inputs.* }}` values (issue #11): populated by the
+    /// embedding process after precedence resolution (`-i` > env file >
+    /// `default:`); never parsed from YAML. The engine exposes them as the
+    /// `inputs` interpolation namespace.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub input_values: serde_json::Map<String, serde_json::Value>,
+
+    /// Library-claimed config extension blocks (issue #10): the config
+    /// document's unknown top-level keys, validated against the claiming
+    /// libraries' `config-schema` at run start and handed to guests through
+    /// the run settings' `extensions` object. Populated by the embedding
+    /// process; never parsed from YAML.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub config_extensions: serde_json::Map<String, serde_json::Value>,
 }
 
 /// One `stages:` entry — ramp the VU count linearly to `target` over
@@ -332,6 +352,8 @@ impl Default for RunConfig {
             report: None,
             fs_root: None,
             webrtc: None,
+            input_values: serde_json::Map::new(),
+            config_extensions: serde_json::Map::new(),
         }
     }
 }
