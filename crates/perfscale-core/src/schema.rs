@@ -14,7 +14,7 @@ use crate::yaml::ConfigFile;
 pub fn test_schema() -> serde_json::Value {
     let mut schema =
         serde_json::to_value(schema_for!(TestDef)).expect("TestDef schema is always valid JSON");
-    relax_use_alias(&mut schema);
+    relax_step_aliases(&mut schema);
     schema
 }
 
@@ -22,7 +22,7 @@ pub fn test_schema() -> serde_json::Value {
 pub fn config_schema() -> serde_json::Value {
     let mut schema = serde_json::to_value(schema_for!(ConfigFile))
         .expect("ConfigFile schema is always valid JSON");
-    relax_use_alias(&mut schema);
+    relax_step_aliases(&mut schema);
     close_config_top_level(&mut schema);
     schema
 }
@@ -46,18 +46,22 @@ pub fn compiled_config_schema() -> &'static jsonschema::JSONSchema {
     })
 }
 
-/// schemars emits `use` as the sole required property of a step, but the
-/// runtime also accepts the `uses` alias (`#[serde(alias = "uses")]`). Patch
-/// the generated `Step` definition so validation accepts either: add a `uses`
-/// property mirroring `use`, and require exactly one of the two. Both the test
-/// and config schemas reference the same `Step` definition.
-fn relax_use_alias(schema: &mut serde_json::Value) {
+/// schemars does not emit serde aliases. Patch the generated `Step`
+/// definition so validation accepts `use`/`uses` and `if`/`when`, mirroring
+/// each canonical property under its alias. Both test and config schemas
+/// reference the same `Step` definition.
+fn relax_step_aliases(schema: &mut serde_json::Value) {
     let Some(step) = schema.pointer_mut("/definitions/Step") else {
         return;
     };
     if let Some(use_prop) = step.get("properties").and_then(|p| p.get("use")).cloned() {
         if let Some(props) = step.get_mut("properties").and_then(|p| p.as_object_mut()) {
             props.entry("uses").or_insert(use_prop);
+        }
+    }
+    if let Some(condition) = step.get("properties").and_then(|p| p.get("if")).cloned() {
+        if let Some(props) = step.get_mut("properties").and_then(|p| p.as_object_mut()) {
+            props.entry("when").or_insert(condition);
         }
     }
     if let Some(obj) = step.as_object_mut() {

@@ -295,6 +295,17 @@ steps:
     }
 
     #[test]
+    fn when_is_an_alias_for_if() {
+        let test = parse_test_file("steps:\n  - use: std/log@v1\n    when: '1 == 1'\n").unwrap();
+        assert_eq!(test.steps[0].condition.as_deref(), Some("1 == 1"));
+
+        let err =
+            parse_test_file("steps:\n  - use: std/log@v1\n    if: '1 == 1'\n    when: '1 == 1'\n")
+                .unwrap_err();
+        assert!(err.contains("duplicate"), "unexpected error: {err}");
+    }
+
+    #[test]
     fn rejects_test_file_missing_use() {
         let yaml = r#"
 steps:

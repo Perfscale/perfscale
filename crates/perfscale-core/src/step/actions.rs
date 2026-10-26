@@ -213,6 +213,7 @@ pub async fn execute_action(
             super::db::db_close_action(&resolved, ctx, step_name).await
         }
         "std/check@v1" | "check" => check_action(&resolved, ctx, step_name),
+        "std/random@v1" | "random" => random_action(&resolved, step_name, ctx),
         "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name, ctx).await,
         "std/log@v1" | "log" => log_action(&resolved, step_name),
         "std/file-read@v1" | "file-read" => file_read_action(&resolved, step_name, ctx).await,
@@ -952,6 +953,60 @@ async fn file_read_action(params: &Value, step_name: &str, ctx: &Context) -> Act
 }
 
 // ---------------------------------------------------------------------------
+// std/random@v1
+// ---------------------------------------------------------------------------
+//
+// Parameters: type = integer|float, min/max = numeric bounds. Integer output
+// is inclusive on both ends; float output is in [min, max).
+// Output: the generated number itself.
+
+fn random_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
+    enum Range {
+        Integer(i64, i64),
+        Float(f64, f64),
+    }
+
+    let range = match params["type"].as_str() {
+        Some("integer") => match (params["min"].as_i64(), params["max"].as_i64()) {
+            (Some(min), Some(max)) if min <= max => Range::Integer(min, max),
+            (Some(_), Some(_)) => {
+                return err(step_name, "`min` must be less than or equal to `max`")
+            }
+            _ => return err(step_name, "`min` and `max` must be integers"),
+        },
+        Some("float") => match (params["min"].as_f64(), params["max"].as_f64()) {
+            (Some(min), Some(max)) if min.is_finite() && max.is_finite() && min <= max => {
+                Range::Float(min, max)
+            }
+            (Some(_), Some(_)) => {
+                return err(step_name, "`min` must be less than or equal to `max`")
+            }
+            _ => return err(step_name, "`min` and `max` must be finite numbers"),
+        },
+        _ => return err(step_name, "`type` must be `integer` or `float`"),
+    };
+    let mut generator = match ctx.new_generator() {
+        Ok(generator) => generator,
+        Err(msg) => return err(step_name, &msg),
+    };
+    let value = match range {
+        Range::Integer(min, max) => Value::from(generator.rand_range(min, max)),
+        Range::Float(min, max) => {
+            match serde_json::Number::from_f64(generator.rand_float(min, max)) {
+                Some(number) => Value::Number(number),
+                None => return err(step_name, "random result is not finite"),
+            }
+        }
+    };
+    ActionOutput {
+        value,
+        logs: Vec::new(),
+        success: true,
+        http_sample: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // std/pick@v1
 // ---------------------------------------------------------------------------
 //
@@ -961,6 +1016,7 @@ async fn file_read_action(params: &Value, step_name: &str, ctx: &Context) -> Act
 //           (mtime, size) like std/file-read@v1 (needs allow_file_actions)
 //   index – optional integer (or string: `${{ __vu__ }}`); wraps modulo the
 //           array length. Omitted → a uniformly random element.
+//   index_offset – optional signed integer added to index before wrapping.
 //
 // Output: the picked element itself, so `outputs: user` + `${{ user.token }}`.
 
@@ -1056,7 +1112,28 @@ async fn pick_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOu
             )
         }
     };
-    let picked = items[(index % items.len() as u64) as usize].clone();
+    let offset = match &params["index_offset"] {
+        Value::Null => 0,
+        Value::Number(n) if n.as_i64().is_some() => n.as_i64().unwrap_or_default(),
+        Value::String(s) => match s.trim().parse::<i64>() {
+            Ok(offset) => offset,
+            Err(_) => {
+                return err(
+                    step_name,
+                    &format!("`index_offset` must be an integer, got {s:?}"),
+                )
+            }
+        },
+        other => {
+            return err(
+                step_name,
+                &format!("`index_offset` must be an integer, got {other}"),
+            )
+        }
+    };
+    let adjusted =
+        (i128::from(index) + i128::from(offset)).rem_euclid(items.len() as i128) as usize;
+    let picked = items[adjusted].clone();
     ActionOutput {
         value: picked,
         logs: Vec::new(),
@@ -3174,6 +3251,77 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // std/random@v1
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn random_action_returns_numbers_in_bounds() {
+        let ctx = Context::new();
+        for _ in 0..50 {
+            let out = execute_action(
+                "std/random@v1",
+                &json!({ "type": "integer", "min": -2, "max": 2 }),
+                &ctx,
+                "step",
+            )
+            .await;
+            assert!(out.success, "{:?}", out.logs);
+            let value = out.value.as_i64().unwrap();
+            assert!((-2..=2).contains(&value));
+
+            let out = execute_action(
+                "std/random@v1",
+                &json!({ "type": "float", "min": -1, "max": 1 }),
+                &ctx,
+                "step",
+            )
+            .await;
+            assert!(out.success, "{:?}", out.logs);
+            let value = out.value.as_f64().unwrap();
+            assert!((-1.0..1.0).contains(&value));
+        }
+        let out = execute_action(
+            "std/random@v1",
+            &json!({ "type": "float", "min": 1, "max": 1 }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!(1.0));
+    }
+
+    #[tokio::test]
+    async fn random_action_is_deterministic_under_seed() {
+        let params = json!({ "type": "float", "min": 0, "max": 1 });
+        let mut left = Context::new();
+        left.run_seed = Some(42);
+        left.vu_id = 7;
+        let mut right = Context::new();
+        right.run_seed = Some(42);
+        right.vu_id = 7;
+        for _ in 0..4 {
+            let a = execute_action("std/random@v1", &params, &left, "step").await;
+            let b = execute_action("std/random@v1", &params, &right, "step").await;
+            assert_eq!(a.value, b.value);
+        }
+    }
+
+    #[tokio::test]
+    async fn random_action_rejects_invalid_type_and_bounds() {
+        let ctx = Context::new();
+        for params in [
+            json!({}),
+            json!({ "type": "decimal", "min": 0, "max": 1 }),
+            json!({ "type": "integer", "min": 0.5, "max": 2 }),
+            json!({ "type": "integer", "min": 2, "max": 1 }),
+            json!({ "type": "float", "min": 2, "max": 1 }),
+        ] {
+            let out = execute_action("std/random@v1", &params, &ctx, "step").await;
+            assert!(!out.success, "{params} should fail");
+        }
+    }
+
+    // -----------------------------------------------------------------
     // std/pick@v1
     // -----------------------------------------------------------------
 
@@ -3190,6 +3338,24 @@ mod tests {
         .await;
         assert!(out.success);
         assert_eq!(out.value, json!({ "id": 2 }));
+
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": from, "index": 4, "index_offset": -1 }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!({ "id": 1 }));
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": from, "index": 0, "index_offset": -1 }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!({ "id": 3 }));
+
         // A JSON string source (an interpolated response body) and a string index.
         let out = execute_action(
             "std/pick@v1",

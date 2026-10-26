@@ -166,7 +166,7 @@
           "description": "Post-execution assertions.  Keys are assertion names; values are expected values.  Example: `{ \"status\": 200, \"duration_ms_lt\": 500 }`."
         },
         "if": {
-          "description": "Run the step only when this condition holds (`if:` in YAML). Both `${{ … }}` placeholders and `${…}` generator tokens expand first, then the result is either a comparison (`a == b`, `!=`, `<`, `<=`, `>`, `>=` — numeric when both sides parse as numbers) or a bare value (false when empty, `false`, `0` or `null`); clauses combine with `&&` and `||`. A skipped step produces no output, no metrics and leaves `__last__` untouched.",
+          "description": "Run the step only when this condition holds (`if:` or `when:` in YAML; equivalent aliases, rejected together). Both `${{ … }}` placeholders and `${…}` generator tokens expand first, then the result is either a comparison (`a == b`, `!=`, `<`, `<=`, `>`, `>=` — numeric when both sides parse as numbers) or a bare value (false when empty, `false`, `0` or `null`); clauses combine with `&&` and `||`. A skipped step produces no output, no metrics and leaves `__last__` untouched.",
           "type": [
             "string",
             "null"
@@ -207,6 +207,13 @@
         "uses": {
           "description": "Action identifier, e.g. `\"std/http@v1\"`. Written as `use:` in YAML; `uses:` is accepted as an alias (GitHub-Actions muscle memory).",
           "type": "string"
+        },
+        "when": {
+          "description": "Run the step only when this condition holds (`if:` or `when:` in YAML; equivalent aliases, rejected together). Both `${{ … }}` placeholders and `${…}` generator tokens expand first, then the result is either a comparison (`a == b`, `!=`, `<`, `<=`, `>`, `>=` — numeric when both sides parse as numbers) or a bare value (false when empty, `false`, `0` or `null`); clauses combine with `&&` and `||`. A skipped step produces no output, no metrics and leaves `__last__` untouched.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "with": {
           "description": "Action-specific parameters (interpolation applied at runtime)."

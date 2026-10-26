@@ -41,13 +41,45 @@ steps:
 
 | Поле | Обязательно | Описание |
 |---|---|---|
-| `use` | да | Идентификатор действия: `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, `std/get_shared_variable@v1` (также работают короткие алиасы `http`, `graphql`, `tcp`, `udp`, `pubsub`, `llm`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`, `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`, `check`, `sleep`, `log`, `file-read`, `file-write`, `child_process`, `kill_process`, `thresholds`, `set_shared_variable`, `get_shared_variable`). `uses:` принимается как алиас для `use:` |
+| `use` | да | Идентификатор действия: `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/random@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/pick@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, `std/get_shared_variable@v1` (также работают короткие алиасы `http`, `graphql`, `tcp`, `udp`, `pubsub`, `llm`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`, `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`, `check`, `random`, `sleep`, `log`, `file-read`, `pick`, `file-write`, `child_process`, `kill_process`, `thresholds`, `set_shared_variable`, `get_shared_variable`). `uses:` принимается как алиас для `use:` |
 | `name` | нет | Человекочитаемая метка, отображаемая в строках лога |
 | `with` | нет | Параметры действия — см. [Действия](core/actions.md) |
 | `check` | нет | Проверки вывода этого шага — те же ключи, что у `std/check@v1` |
 | `outputs` | нет | Имя переменной, под которой сохраняется вывод шага |
 | `severity` | нет | Только для `std/thresholds@v1`: во что превращается нарушенный порог — `fail` (по умолчанию; запуск завершается с ненулевым кодом), `warn` или `info` |
 | `message` | нет | Только для `std/thresholds@v1`: пользовательская метка, добавляемая к сводке нарушений (интерполируется) |
+| `if` / `when` | нет | Выполнять шаг только при истинном условии — см. [Условные шаги](#условные-шаги-if--when) |
+
+### Условные шаги (`if:` / `when:`)
+
+`if:` и `when:` — эквивалентные алиасы; одновременное задание обоих на одном
+шаге является ошибкой разбора. Шаг пропускается, если условие ложно. Сначала
+раскрываются `${{ … }}` и `${…}`; результат — сравнение (`==`, `!=`, `<`,
+`<=`, `>`, `>=` — числовое, если обе стороны являются числами, иначе
+строковое; литералы можно заключать в `'…'`) или простое значение, ложное
+при пустой строке, `false`, `0` или `null`. Условия объединяются через `&&`
+и `||` (`&&` имеет приоритет, скобки не поддерживаются). Пропущенный шаг не
+создаёт результат и метрики и не меняет `__last__`.
+
+```yaml
+steps:
+  - use: std/random@v1
+    when: "${{ __iter__ }} == 0"
+    with: { type: float, min: 0, max: 5 }
+    outputs: startup_delay
+  - use: std/sleep@v1
+    when: "${{ __iter__ }} == 0"                 # только первая итерация
+    with: { seconds: "${{ startup_delay }}" }
+  - use: std/http@v1
+    with: { url: "https://api.example.com/feed" }
+    outputs: feed
+  - use: std/random@v1
+    with: { type: float, min: 0, max: 1 }
+    outputs: like_roll
+  - use: std/http@v1
+    when: "${{ feed.status }} == 200 && ${{ like_roll }} < 0.15"
+    with: { method: POST, url: "https://api.example.com/like" }
+```
 
 ### Переменные (`${{ ... }}`)
 
@@ -65,6 +97,7 @@ Actions. Шаг сохраняет свой вывод под именем, за
 | `${{ config.<name>.<field> }}` | Вывод шага инициализации `before:` из конфиг-файла (см. [Конфиг](#config--c-configyaml)) |
 | `${{ vars.<key> }}` | Статическое значение из блока `variables:` конфиг-файла |
 | `${{ env.NAME }}` | Переменная окружения процесса `NAME` — для секретов (`api_key`, токенов, DSN), которые не должны храниться в YAML |
+| `${{ __vu__ }}` / `${{ __iter__ }}` | 1-based id текущего VU и 0-based номер его итерации (аналоги `__VU` / `__ITER` в k6). Сохранённый результат с таким же именем имеет приоритет |
 
 Для `std/http@v1` сохранённый вывод имеет вид
 `{ "status": <int>, "body": <string>, "duration_ms": <float>, "headers": <object> }`

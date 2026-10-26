@@ -236,12 +236,21 @@ impl Gen {
     }
 
     /// Random integer in `[lo, hi]` inclusive (`lo` if the range is empty).
-    fn rand_range(&mut self, lo: i64, hi: i64) -> i64 {
+    pub(crate) fn rand_range(&mut self, lo: i64, hi: i64) -> i64 {
         if hi <= lo {
             return lo;
         }
         let span = (hi - lo + 1) as u64;
         lo + (self.next_u64() % span) as i64
+    }
+
+    /// Random float in `[lo, hi)` (`lo` if the range is empty).
+    pub(crate) fn rand_float(&mut self, lo: f64, hi: f64) -> f64 {
+        if hi <= lo {
+            return lo;
+        }
+        let unit = (self.next_u64() >> 11) as f64 / 9_007_199_254_740_992.0;
+        lo + unit * (hi - lo)
     }
 
     /// Expand every `${…}` token in `template`. Called once per payload per

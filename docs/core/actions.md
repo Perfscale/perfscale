@@ -9,8 +9,8 @@ Full IDs carry a namespace and version (`std/http@v1`); the short aliases
 `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`,
 `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`,
 `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`,
-`check`, `sleep`,
-`log`, `file-read`, `file-write`, `child_process`, `kill_process`,
+`check`, `random`, `sleep`,
+`log`, `file-read`, `pick`, `file-write`, `child_process`, `kill_process`,
 `set_shared_variable`, `get_shared_variable`) resolve to the
 same implementations.
 
@@ -1406,6 +1406,35 @@ via `on` (`on: got.messages.0`) — brittle on unordered streams.
 Each assertion logs `PASS`/`FAIL`; failures go to stderr but do not stop the
 run. Output: `{ "passed": true|false }`.
 
+## `std/random@v1`
+
+Generate one numeric value. The output is the number itself, ready for
+`${{ name }}` interpolation in later steps.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `type` | string | **required** | `integer` (inclusive `[min, max]`) or `float` (`[min, max)`) |
+| `min` | number | **required** | Lower bound; must not exceed `max` |
+| `max` | number | **required** | Upper bound; must not be below `min` |
+
+Equal bounds return that constant. A run `seed:` makes the sequence
+reproducible; each VU gets its own deterministic sequence.
+
+```yaml
+steps:
+  - use: std/random@v1
+    with: { type: float, min: 0, max: 1 }
+    outputs: like_roll
+  - use: std/http@v1
+    when: "${{ like_roll }} < 0.15"
+    with: { method: POST, url: "https://api.example.com/posts/1/like" }
+  - use: std/random@v1
+    with: { type: float, min: 3, max: 7 }
+    outputs: think_time
+  - use: std/sleep@v1
+    with: { seconds: "${{ think_time }}" }
+```
+
 ## `std/sleep@v1`
 
 Pause the current VU.
@@ -1416,8 +1445,10 @@ Pause the current VU.
 | `seconds` | number or string | — | Alternative to `ms` (fractions allowed) |
 
 A string value expands `${…}` tokens first, so `ms: "${rand(3000,7000)}"` is
-a random think time. A string that is not a number after expansion fails the
-step (it used to fall back to 1000ms silently).
+a random think time. Interpolated `${{ … }}` values are resolved before the
+action, so `seconds: "${{ think_time }}"` can use a `std/random@v1` output.
+A string that is not a number after expansion fails the step (it used to fall
+back to 1000ms silently).
 
 ## `std/pick@v1`
 
@@ -1428,20 +1459,29 @@ per-VU test user from a fixture file.
 |---|---|---|---|
 | `from` | array or string | one of from/file | The array, or a string holding a JSON array (`"${{ feed.body.posts }}"`) |
 | `file` | string (path) | one of from/file | A JSON array file, parsed once per process and cached by (mtime, size) like `std/file-read@v1`. Requires `allow_file_actions`, honours `fs_root` |
-| `index` | integer or string | random | Element index, wrapping modulo the length (`index: "${{ __vu__ }}"` gives each VU its own entry). Omitted → uniformly random |
+| `index` | integer or string | random | Element index, wrapping modulo the length. Omitted → uniformly random |
+| `index_offset` | integer or string | `0` | Signed offset applied to `index` before wrapping; negative values wrap too |
 
 **Output**: the picked element itself.
+
+`index: "${{ __vu__ }}"` with `index_offset: -1` maps 1-based VU ids to
+zero-based array entries, exactly `(VU-1) % length`. To choose a random array
+element through an explicit `std/random@v1` step, use an integer `index` from
+that step instead of leaving it to `pick`.
 
 ```yaml
 steps:
   - use: std/pick@v1
-    with: { file: fixtures/users.json, index: "${{ __vu__ }}" }
+    with: { file: fixtures/users.json, index: "${{ __vu__ }}", index_offset: -1 }
     outputs: user
   - use: std/http@v1
     with: { url: "https://api.example.com/feed" }
     outputs: feed
+  - use: std/random@v1
+    with: { type: integer, min: 0, max: 19 }
+    outputs: post_index
   - use: std/pick@v1
-    with: { from: "${{ feed.body.posts }}" }
+    with: { from: "${{ feed.body.posts }}", index: "${{ post_index }}" }
     outputs: post
   - use: std/http@v1
     with:

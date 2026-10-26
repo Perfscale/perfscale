@@ -39,35 +39,43 @@ steps:
 
 | Field | Required | Description |
 |---|---|---|
-| `use` | yes | Action ID: `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, `std/get_shared_variable@v1` (short aliases `http`, `graphql`, `tcp`, `udp`, `pubsub`, `llm`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`, `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`, `check`, `sleep`, `log`, `file-read`, `file-write`, `child_process`, `kill_process`, `thresholds`, `set_shared_variable`, `get_shared_variable` also work). `uses:` is accepted as an alias for `use:` |
+| `use` | yes | Action ID: `std/http@v1`, `std/graphql@v1`, `std/tcp@v1`, `std/udp@v1`, `std/pubsub@v1`, `std/llm@v1`, `std/ws@v1`, `std/ws-connect@v1`, `std/ws-send@v1`, `std/ws-recv@v1`, `std/ws-ping@v1`, `std/ws-close@v1`, `std/grpc@v1`, `std/grpc-connect@v1`, `std/grpc-call@v1`, `std/grpc-stream-open@v1`, `std/grpc-stream-send@v1`, `std/grpc-stream-recv@v1`, `std/grpc-stream-close@v1`, `std/db-connect@v1`, `std/db-query@v1`, `std/db-tx-begin@v1`, `std/db-tx-commit@v1`, `std/db-tx-rollback@v1`, `std/db-close@v1`, `std/check@v1`, `std/random@v1`, `std/sleep@v1`, `std/log@v1`, `std/file-read@v1`, `std/pick@v1`, `std/file-write@v1`, `std/child_process@v1`, `std/kill_process@v1`, `std/thresholds@v1`, `std/set_shared_variable@v1`, `std/get_shared_variable@v1` (short aliases `http`, `graphql`, `tcp`, `udp`, `pubsub`, `llm`, `ws`, `ws-connect`, `ws-send`, `ws-recv`, `ws-ping`, `ws-close`, `grpc`, `grpc-connect`, `grpc-call`, `grpc-stream-open`, `grpc-stream-send`, `grpc-stream-recv`, `grpc-stream-close`, `db-connect`, `db-query`, `db-tx-begin`, `db-tx-commit`, `db-tx-rollback`, `db-close`, `check`, `random`, `sleep`, `log`, `file-read`, `pick`, `file-write`, `child_process`, `kill_process`, `thresholds`, `set_shared_variable`, `get_shared_variable` also work). `uses:` is accepted as an alias for `use:` |
 | `name` | no | Human-readable label shown in log lines |
 | `with` | no | Action parameters — see [Actions](core/actions.md) |
 | `check` | no | Assertions on this step's output — same keys as `std/check@v1` |
 | `outputs` | no | Variable name to store the step output under |
 | `severity` | no | `std/thresholds@v1` only: what a violated gate becomes — `fail` (default; the run exits non-zero), `warn`, or `info` |
 | `message` | no | `std/thresholds@v1` only: custom label appended to the violation summary (interpolated) |
-| `if` | no | Run the step only when the condition holds — see [Conditional steps](#conditional-steps-if) |
+| `if` / `when` | no | Run the step only when the condition holds — see [Conditional steps](#conditional-steps-if--when) |
 
-### Conditional steps (`if:`)
+### Conditional steps (`if:` / `when:`)
 
-`if:` skips a step unless its condition holds. `${{ … }}` placeholders and
-`${…}` generator tokens expand first; the result is a comparison (`==`,
-`!=`, `<`, `<=`, `>`, `>=` — numeric when both sides are numbers, string
-otherwise; quote literals with `'…'` if you like) or a bare value, false when
-empty, `false`, `0` or `null`. Clauses combine with `&&` and `||` (`&&` binds
-tighter, no parentheses). A skipped step produces no output, records no
-metrics and leaves `__last__` untouched.
+`if:` and `when:` are equivalent aliases; declaring both on one step is a
+parse error. The step is skipped unless its condition holds. `${{ … }}`
+placeholders and `${…}` generator tokens expand first; the result is a
+comparison (`==`, `!=`, `<`, `<=`, `>`, `>=` — numeric when both sides are
+numbers, string otherwise; quote literals with `'…'` if you like) or a bare
+value, false when empty, `false`, `0` or `null`. Clauses combine with `&&`
+and `||` (`&&` binds tighter, no parentheses). A skipped step produces no
+output, records no metrics and leaves `__last__` untouched.
 
 ```yaml
 steps:
+  - use: std/random@v1
+    when: "${{ __iter__ }} == 0"
+    with: { type: float, min: 0, max: 5 }
+    outputs: startup_delay
   - use: std/sleep@v1
-    if: "${{ __iter__ }} == 0"                 # first iteration only
-    with: { ms: "${rand(0,5000)}" }
+    when: "${{ __iter__ }} == 0"                 # first iteration only
+    with: { seconds: "${{ startup_delay }}" }
   - use: std/http@v1
     with: { url: "https://api.example.com/feed" }
     outputs: feed
+  - use: std/random@v1
+    with: { type: float, min: 0, max: 1 }
+    outputs: like_roll
   - use: std/http@v1
-    if: "${{ feed.status }} == 200 && ${randf(0,1,4)} < 0.15"   # 15% of good iterations
+    when: "${{ feed.status }} == 200 && ${{ like_roll }} < 0.15"
     with: { method: POST, url: "https://api.example.com/like" }
 ```
 

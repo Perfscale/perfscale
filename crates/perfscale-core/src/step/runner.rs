@@ -1713,7 +1713,7 @@ async fn execute_step(
                 emit_lossy(
                     tx,
                     LogSource::from(LogTag::Err),
-                    &format!("{step_name}: `if` failed: {e}"),
+                    &format!("{step_name}: condition failed: {e}"),
                     &ctx.secrets,
                     &mut dropped,
                 );
