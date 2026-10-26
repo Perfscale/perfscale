@@ -50,6 +50,7 @@
 //! | `std/sleep@v1`   | Wait N milliseconds                              |
 //! | `std/log@v1`     | Emit a log line                                  |
 //! | `std/file-read@v1`  | Read a file (process-wide cached)            |
+//! | `std/read-json@v1`  | Read and parse a JSON file (process-wide cached) |
 //! | `std/file-write@v1` | Write content to a file                      |
 //! | `std/child_process@v1` | Spawn a managed OS process (restart, readiness gate, output capture) |
 //! | `std/kill_process@v1`  | Signal/stop a managed process by registry name or raw pid |
@@ -73,6 +74,7 @@ use std::time::Instant;
 use serde_json::{json, Value};
 use tokio::time::Duration;
 
+use super::json_path;
 use crate::step::context::Context;
 
 // ---------------------------------------------------------------------------
@@ -216,6 +218,7 @@ pub async fn execute_action(
         "std/sleep@v1" | "sleep" => sleep_action(&resolved, step_name).await,
         "std/log@v1" | "log" => log_action(&resolved, step_name),
         "std/file-read@v1" | "file-read" => file_read_action(&resolved, step_name, ctx).await,
+        "std/read-json@v1" | "read-json" => read_json_action(&resolved, step_name, ctx).await,
         "std/file-write@v1" | "file-write" => file_write_action(&resolved, step_name, ctx).await,
         "std/child_process@v1" | "child_process" => {
             child_process_action(&resolved, step_name, ctx).await
@@ -787,9 +790,13 @@ fn message_json_matches(pattern: &Value, m: &Value) -> bool {
 // Parameters:
 //   path     – required, file to read
 //   encoding – "text" (default; file must be valid UTF-8) or "base64"
+//   query    – optional jq-style path (see step::json_path); the content is
+//              parsed as JSON and the subvalue at the path becomes the whole
+//              step output. `?` on a segment turns a miss into null.
 //
 // Output:
 //   { "content": <string>, "size": <u64>, "path": <string> }
+//   — or, with `query`, the extracted JSON subvalue directly.
 //
 // Content is cached process-wide, keyed by (path, encoding) and validated
 // against the file's (mtime, len) on every access: the first iteration pays
@@ -940,10 +947,140 @@ async fn file_read_action(params: &Value, step_name: &str, ctx: &Context) -> Act
         }
     };
 
+    if let Some(query) = params["query"].as_str().filter(|q| !q.is_empty()) {
+        let segments = match json_path::parse(query) {
+            Ok(s) => s,
+            Err(msg) => return err(step_name, &msg),
+        };
+        let parsed: Value = match serde_json::from_str(content.as_str()) {
+            Ok(v) => v,
+            Err(e) => {
+                return err(
+                    step_name,
+                    &format!("file '{}' is not valid JSON: {e}", path.display()),
+                );
+            }
+        };
+        return match json_path::get(&parsed, &segments) {
+            Ok(Some(v)) => ActionOutput {
+                value: v.clone(),
+                logs: Vec::new(),
+                success: true,
+                http_sample: None,
+            },
+            // A tolerant (`?`) segment missed → null output, still a success.
+            Ok(None) => ActionOutput {
+                value: Value::Null,
+                logs: Vec::new(),
+                success: true,
+                http_sample: None,
+            },
+            Err(msg) => err(step_name, &msg),
+        };
+    }
+
     ActionOutput {
         value: json!({ "content": content.as_str(), "size": len, "path": path.to_string_lossy() }),
         // No per-iteration log line: cache hits are the hot path and a line
         // per request would spam the stream (see the yaml quiet story).
+        logs: Vec::new(),
+        success: true,
+        http_sample: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// std/read-json@v1
+// ---------------------------------------------------------------------------
+//
+// Parameters:
+//   file  – required, path to a JSON file
+//   query – optional jq-style path (see step::json_path) selecting a subvalue;
+//           `?` on a segment turns a miss into a null output (success)
+//
+// Output: the parsed JSON document, or the subvalue at `query`.
+//
+// The parsed document is cached process-wide, keyed by path and validated
+// against (mtime, len) on every access — the same contract as
+// `std/file-read@v1`, but the cache holds the parsed `Value`, so iterations
+// past the first skip both the disk read and the parse.
+//
+// File access is fail-closed like the other file actions (see
+// [`confine_fs_path`]).
+
+type JsonCacheEntry = (Option<std::time::SystemTime>, u64, std::sync::Arc<Value>);
+
+fn json_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, JsonCacheEntry>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, JsonCacheEntry>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Actual disk reads performed by `std/read-json@v1` — observable cache
+/// behaviour for tests (same idea as [`FILE_DISK_READS`]).
+static JSON_DISK_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+async fn read_json_file(path: &str, ctx: &Context) -> Result<std::sync::Arc<Value>, String> {
+    let path = confine_fs_path(ctx, path, false)?;
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| format!("cannot read file '{}': {e}", path.display()))?;
+    let (mtime, len) = (meta.modified().ok(), meta.len());
+    let key = path.to_string_lossy().into_owned();
+    // Never hold the lock across an await: check-release, read, insert.
+    let cached = {
+        let cache = json_cache().lock().unwrap();
+        cache
+            .get(&key)
+            .and_then(|(m, l, doc)| (*m == mtime && *l == len).then(|| std::sync::Arc::clone(doc)))
+    };
+    if let Some(doc) = cached {
+        return Ok(doc);
+    }
+    JSON_DISK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| format!("cannot read file '{}': {e}", path.display()))?;
+    let doc = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(v) => std::sync::Arc::new(v),
+        Err(e) => return Err(format!("file '{}' is not valid JSON: {e}", path.display())),
+    };
+    json_cache()
+        .lock()
+        .unwrap()
+        .insert(key, (mtime, len, std::sync::Arc::clone(&doc)));
+    Ok(doc)
+}
+
+async fn read_json_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
+    let Some(file) = params["file"].as_str() else {
+        return err(step_name, "'file' is required");
+    };
+    let doc = match read_json_file(file, ctx).await {
+        Ok(d) => d,
+        Err(msg) => return err(step_name, &msg),
+    };
+
+    let value = match params["query"].as_str().filter(|q| !q.is_empty()) {
+        None => (*doc).clone(),
+        Some(query) => {
+            let segments = match json_path::parse(query) {
+                Ok(s) => s,
+                Err(msg) => return err(step_name, &msg),
+            };
+            match json_path::get(&doc, &segments) {
+                Ok(Some(v)) => v.clone(),
+                // A tolerant (`?`) segment missed → null output, still a success.
+                Ok(None) => Value::Null,
+                Err(msg) => return err(step_name, &msg),
+            }
+        }
+    };
+
+    ActionOutput {
+        value,
+        // No per-iteration log line — same hot-path reasoning as file-read.
         logs: Vec::new(),
         success: true,
         http_sample: None,
@@ -961,6 +1098,14 @@ async fn file_read_action(params: &Value, step_name: &str, ctx: &Context) -> Act
 //   encoding – "text" (default: write the string as-is) or "base64"
 //              (decode before writing — the inverse of file-read's base64)
 //   append   – optional bool, default false (overwrite)
+//   query    – optional jq-style path (see step::json_path): read-modify-write
+//              instead of a plain write. The file (must be JSON, missing file
+//              starts from an empty document) is loaded, `content` — parsed as
+//              JSON when it parses, stored as a string otherwise — is set at
+//              the path creating intermediate objects/arrays like jq (an
+//              array index must be within bounds or equal to len = append),
+//              and the document is written back. `query` does not combine with
+//              `append` or `encoding: base64`.
 //
 // Output:
 //   { "path": <string>, "size": <u64> }   // bytes written this call
@@ -990,6 +1135,60 @@ async fn file_write_action(params: &Value, step_name: &str, ctx: &Context) -> Ac
     };
     let encoding = params["encoding"].as_str().unwrap_or("text");
     let append = params["append"].as_bool().unwrap_or(false);
+
+    if let Some(query) = params["query"].as_str().filter(|q| !q.is_empty()) {
+        if append {
+            return err(step_name, "`query` cannot be combined with `append`");
+        }
+        if encoding != "text" {
+            return err(step_name, "`query` requires `encoding: text`");
+        }
+        let segments = match json_path::parse(query) {
+            Ok(s) => s,
+            Err(msg) => return err(step_name, &msg),
+        };
+        let path = match confine_fs_path(ctx, path, true) {
+            Ok(p) => p,
+            Err(msg) => return err(step_name, &msg),
+        };
+        // Read-modify-write: a missing file starts from an empty document.
+        let mut doc = match tokio::fs::read(&path).await {
+            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                Ok(v) => v,
+                Err(e) => {
+                    return err(
+                        step_name,
+                        &format!("file '{}' is not valid JSON: {e}", path.display()),
+                    );
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Null,
+            Err(e) => {
+                return err(
+                    step_name,
+                    &format!("cannot read file '{}': {e}", path.display()),
+                );
+            }
+        };
+        // JSON content is stored as JSON; anything else as a string.
+        let new = serde_json::from_str::<Value>(&content).unwrap_or(Value::String(content));
+        if let Err(msg) = json_path::set(&mut doc, &segments, new) {
+            return err(step_name, &msg);
+        }
+        let bytes = serde_json::to_vec(&doc).expect("a Value always serializes");
+        if let Err(e) = tokio::fs::write(&path, &bytes).await {
+            return err(
+                step_name,
+                &format!("cannot write file '{}': {e}", path.display()),
+            );
+        }
+        return ActionOutput {
+            value: json!({ "path": path, "size": bytes.len() }),
+            logs: Vec::new(),
+            success: true,
+            http_sample: None,
+        };
+    }
 
     let bytes: Vec<u8> = match encoding {
         "text" => content.into_bytes(),
@@ -2975,6 +3174,277 @@ mod tests {
         .await;
         assert!(out.success, "logs: {:?}", out.logs);
         assert_eq!(std::fs::read_to_string(&new_path).unwrap(), "written");
+    }
+
+    // -----------------------------------------------------------------
+    // std/read-json@v1, and `query` on the file actions
+    // -----------------------------------------------------------------
+
+    fn json_disk_reads() -> u64 {
+        JSON_DISK_READS.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn read_json_parses_and_caches_by_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+        std::fs::write(&path, r#"{"posts":[{"id":7},{"id":9}]}"#).unwrap();
+
+        let ctx = file_ctx();
+        let params = json!({ "file": path.to_str().unwrap() });
+        let before = json_disk_reads();
+        let first = execute_action("std/read-json@v1", &params, &ctx, "step").await;
+        let second = execute_action("std/read-json@v1", &params, &ctx, "step").await;
+        assert!(first.success && second.success, "{:?}", first.logs);
+        assert_eq!(first.value, json!({ "posts": [{ "id": 7 }, { "id": 9 }] }));
+        assert_eq!(
+            json_disk_reads() - before,
+            1,
+            "the second call must be a cache hit"
+        );
+
+        // Touching the file (mtime/size change) revalidates the cache.
+        std::fs::write(&path, r#"{"posts":[]}"#).unwrap();
+        let third = execute_action("std/read-json@v1", &params, &ctx, "step").await;
+        assert_eq!(third.value, json!({ "posts": [] }));
+        assert_eq!(json_disk_reads() - before, 2);
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn read_json_query_extracts_and_tolerates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("feed.json");
+        std::fs::write(&path, r#"{"posts":[{"id":7},{"id":9}]}"#).unwrap();
+
+        let ctx = file_ctx();
+        let file = path.to_str().unwrap();
+        // Dot-number and bracket syntax are the same path.
+        for query in [".posts[1].id", "posts.1.id"] {
+            let out = execute_action(
+                "std/read-json@v1",
+                &json!({ "file": file, "query": query }),
+                &ctx,
+                "step",
+            )
+            .await;
+            assert!(out.success, "{query}: {:?}", out.logs);
+            assert_eq!(out.value, json!(9), "{query}");
+        }
+        // A mandatory miss names the failing segment and fails the step.
+        let out = execute_action(
+            "std/read-json@v1",
+            &json!({ "file": file, "query": ".users[0].id" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains(".users"), "{:?}", out.logs);
+        // A tolerant miss is a null output, still a success.
+        let out = execute_action(
+            "std/read-json@v1",
+            &json!({ "file": file, "query": ".users?[0].id" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(out.value, Value::Null);
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn read_json_rejects_invalid_json_and_requires_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.json");
+        std::fs::write(&path, "{not json").unwrap();
+
+        let ctx = file_ctx();
+        let out = execute_action(
+            "std/read-json@v1",
+            &json!({ "file": path.to_str().unwrap() }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("not valid JSON"), "{:?}", out.logs);
+
+        let out = execute_action("std/read-json@v1", &json!({}), &ctx, "step").await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("'file' is required"),
+            "{:?}",
+            out.logs
+        );
+
+        // Fail-closed without allow_file_actions, like the other file actions.
+        let out = execute_action(
+            "std/read-json@v1",
+            &json!({ "file": path.to_str().unwrap() }),
+            &Context::new(),
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("file actions disabled"),
+            "{:?}",
+            out.logs
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_read_query_extracts_from_json_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("payload.json");
+        std::fs::write(&path, r#"{"meta":{"total":3},"items":["a","b"]}"#).unwrap();
+
+        let ctx = file_ctx();
+        let out = execute_action(
+            "std/file-read@v1",
+            &json!({ "path": path.to_str().unwrap(), "query": ".meta.total" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(out.value, json!(3));
+        let out = execute_action(
+            "std/file-read@v1",
+            &json!({ "path": path.to_str().unwrap(), "query": ".items[1]" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!("b"));
+        // Missing mandatory path fails and names the segment.
+        let out = execute_action(
+            "std/file-read@v1",
+            &json!({ "path": path.to_str().unwrap(), "query": ".items[9]" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("[9]"), "{:?}", out.logs);
+
+        // Content that is not JSON fails the step when `query` is set.
+        let text = dir.path().join("plain.txt");
+        std::fs::write(&text, "not json").unwrap();
+        let out = execute_action(
+            "std/file-read@v1",
+            &json!({ "path": text.to_str().unwrap(), "query": ".x" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("not valid JSON"), "{:?}", out.logs);
+    }
+
+    #[tokio::test]
+    #[serial_test::file_serial(file_actions)]
+    async fn file_write_query_sets_at_path_read_modify_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, r#"{"users":[{"name":"ann"}],"count":1}"#).unwrap();
+
+        let ctx = file_ctx();
+        let p = path.to_str().unwrap();
+        // Overwrite a leaf in place; JSON content is stored as JSON.
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": p, "query": ".users[0].name", "content": "\"bob\"" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        // Create intermediate objects like jq.
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": p, "query": ".meta.tags[0]", "content": "fast" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        // Append at index == len.
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": p, "query": ".users[1]", "content": "{\"name\":\"cat\"}" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            doc,
+            json!({
+                "users": [{ "name": "bob" }, { "name": "cat" }],
+                "count": 1,
+                "meta": { "tags": ["fast"] },
+            })
+        );
+        // Non-JSON content is stored as a string.
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": p, "query": ".count", "content": "two" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["count"], json!("two"));
+
+        // Out of bounds beyond len errors; append/base64 combos are rejected.
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": p, "query": ".users[5]", "content": "1" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("out of bounds"), "{:?}", out.logs);
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": p, "query": ".count", "content": "1", "append": true }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(!out.success);
+
+        // A missing file starts from an empty document.
+        let fresh = dir.path().join("fresh.json");
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": fresh.to_str().unwrap(), "query": ".a.b", "content": "1" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&fresh).unwrap()).unwrap();
+        assert_eq!(doc, json!({ "a": { "b": 1 } }));
+
+        // Without `query` the write behavior is unchanged.
+        let out = execute_action(
+            "std/file-write@v1",
+            &json!({ "path": p, "content": "plain overwrite" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "plain overwrite");
     }
 
     // -----------------------------------------------------------------

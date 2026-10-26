@@ -422,7 +422,11 @@ impl Context {
 
     /// Resolve an expression like `"resp"`, `"resp.status"`, or a nested
     /// path like `"resp.headers.x-request-id"` — each `.` descends one JSON
-    /// object level. Missing variables or fields resolve to an empty string.
+    /// object level. Bracket indexing works too (`resp.body.posts[0].id`),
+    /// numeric dot segments index arrays (`posts.0.id`), and a string leaf
+    /// holding JSON (an HTTP `body`) is parsed on demand when the path
+    /// continues past it. Missing variables or fields resolve to an empty
+    /// string.
     ///
     /// The `env.` prefix is special: `${{ env.NAME }}` reads the process
     /// environment variable `NAME` (everything after `env.` is the variable
@@ -442,18 +446,19 @@ impl Context {
                 .inspect(|value| self.secrets.record(value))
                 .map_err(|_| format!("env var '{name}' is not set"));
         }
-        let mut segments = expr.split('.');
-        let root = segments.next().unwrap_or("");
-        let Some(mut current) = self.vars.get(root).map(|v| &**v) else {
+        // The root variable runs to the first `.` or `[`; the rest is a
+        // json_path (dot and bracket syntax, normalized by the parser).
+        let split = expr.find(['.', '[']).unwrap_or(expr.len());
+        let (root, rest) = expr.split_at(split);
+        let Some(current) = self.vars.get(root).map(|v| &**v) else {
             return Ok(String::new());
         };
-        for segment in segments {
-            match current.get(segment) {
-                Some(v) => current = v,
-                None => return Ok(String::new()),
-            }
-        }
-        Ok(value_to_string(current))
+        let Ok(segments) = super::json_path::parse(rest) else {
+            return Ok(String::new());
+        };
+        Ok(super::json_path::walk(current, &segments)
+            .map(|v| value_to_string(&v))
+            .unwrap_or_default())
     }
 
     /// Apply interpolation to every string leaf of a JSON `Value`.
@@ -588,6 +593,29 @@ mod tests {
         // A miss at any depth resolves to empty, same as one-level misses.
         assert_eq!(ctx.interpolate("${{ resp.headers.nope }}"), "");
         assert_eq!(ctx.interpolate("${{ resp.nope.deeper }}"), "");
+    }
+
+    #[test]
+    fn interpolate_descends_into_json_body_and_arrays() {
+        let mut ctx = Context::new();
+        ctx.set(
+            "feed",
+            json!({ "status": 200, "body": r#"{"posts":[{"id":7},{"id":9}]}"# }),
+        );
+        ctx.set("list", json!({ "items": ["a", "b"] }));
+        // Dot-number and bracket indexing are the same path.
+        assert_eq!(ctx.interpolate("${{ feed.body.posts.1.id }}"), "9");
+        assert_eq!(ctx.interpolate("${{ feed.body.posts[0].id }}"), "7");
+        assert_eq!(ctx.interpolate("${{ feed.body.posts.0 }}"), r#"{"id":7}"#);
+        assert_eq!(ctx.interpolate("${{ list.items[0] }}"), "a");
+        assert_eq!(ctx.interpolate("${{ list.items.1 }}"), "b");
+        // Out of range, non-numeric index, or a body that is not JSON → empty.
+        assert_eq!(ctx.interpolate("${{ feed.body.posts.5.id }}"), "");
+        assert_eq!(ctx.interpolate("${{ list.items.x }}"), "");
+        ctx.set("text", json!({ "body": "plain text" }));
+        assert_eq!(ctx.interpolate("${{ text.body.x }}"), "");
+        // The string itself is still returned verbatim when the path ends on it.
+        assert_eq!(ctx.interpolate("${{ text.body }}"), "plain text");
     }
 
     #[test]

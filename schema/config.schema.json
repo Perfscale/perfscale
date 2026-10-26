@@ -635,7 +635,7 @@
     },
     "allow_file_actions": {
       "default": false,
-      "description": "Allow filesystem-touching steps: `std/file-read@v1`, `std/file-write@v1`, and `file` parts in `std/http@v1` multipart uploads. Fail-closed: defaults to `false` so a step list from an untrusted source cannot read or write arbitrary paths.",
+      "description": "Allow filesystem-touching steps: `std/file-read@v1`, `std/read-json@v1`, `std/file-write@v1`, and `file` parts in `std/http@v1` multipart uploads. Fail-closed: defaults to `false` so a step list from an untrusted source cannot read or write arbitrary paths.",
       "type": "boolean"
     },
     "allow_library_capabilities": {
