@@ -19,6 +19,9 @@ on:
       suites:
         description: "Suites to run (see scripts/bench.sh)"
         default: "overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub"
+      graphql_duration:
+        description: "Run duration per GraphQL scenario (e.g. 10s, 30s)"
+        default: "10s"
       boundary_duration:
         description: "Ramp duration per boundary ladder rung (e.g. 30s, 5m)"
         default: "30s"
@@ -42,7 +45,8 @@ env:
   # Custom k6 for the db suite's `k6 (xk6-sql)` row: xk6 build tool + the
   # xk6-sql extension + its postgres driver, all pinned. The k6 core version
   # comes from xk6-sql's go.mod (v1.2.3 pins go.k6.io/k6/v2 v2.3.0) — the
-  # stock apt k6 is untouched and serves every other suite.
+  # stock apt k6 is untouched and serves every other suite (including the
+  # GraphQL over HTTP rows, which need no xk6 extension).
   XK6_VERSION: "1.4.14"
   XK6_SQL_VERSION: "1.2.3"
   XK6_SQL_PG_VERSION: "0.3.2"
@@ -291,6 +295,7 @@ jobs:
           RUNS: ${{ github.event.inputs.runs || '5' }}
           SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub' }}
           BOUNDARY_DURATION: ${{ github.event.inputs.boundary_duration || '30s' }}
+          GQL_DURATION: ${{ github.event.inputs.graphql_duration || '10s' }}
         run: ./scripts/bench.sh
 
       - name: Micro-benchmarks (criterion)

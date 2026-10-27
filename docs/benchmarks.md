@@ -38,7 +38,7 @@ wrapping overhead — not the underlying tool.
 | `tls` | The TLS tax: same workload against `perfscale serve --tls` (self-signed HTTPS, verification skipped) |
 | `library` | WASM value-generator cost: per-run compile (cold) vs burn-cache deserialize vs the `@std/random` builtin |
 | `grpc` | `std/grpc@v1` unary echo against the repo's `grpc_echo_server` example |
-| `graphql` | `std/graphql@v1` query against the repo's `graphql_server` example |
+| `graphql` | The same GraphQL POST from `std/graphql@v1`, transport-only `std/http@v1`, stock k6, and k6 wrapped by perfscale against the repo's `graphql_server` example — no xk6 required |
 | `db` | SQL: cold connect+query vs warm VU-scoped connections vs transactions (`std/db-*@v1`, PostgreSQL at `BENCH_PG_DSN` — every row drives the same real server), plus the warm shape from locust (psycopg2), JMeter (JDBC) and k6 — the k6 row is a **custom binary** built with the `xk6-sql` extension + postgres driver (stock k6 has no SQL module), used only by this row |
 | `pubsub` | Pub/sub: publish throughput and pub/sub roundtrip e2e latency (`std/pubsub@v1`) against a NATS broker (`BENCH_NATS_URL` — every row drives the same real broker) in `scope: exchange` (connect per iteration) and `scope: vu` (one connection per VU, with a fire-and-forget `flush: none` twin) postures, plus k6 rows via a **custom binary** built with the xk6-nats extension (stock k6 has no NATS module), in warm (connection per VU) and cold (connect per iteration — the fair twin of `scope: exchange`) postures |
 
@@ -46,6 +46,14 @@ JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
 console summary has no percentiles, so it stays out of the `throughput`
 table. Parsing its `.jtl` result files for full throughput metrics is future
 work.
+
+The `graphql` suite runs the same POST four ways so the comparison is fair:
+`perfscale (graphql)` (`std/graphql@v1` — document parse + schema validation,
+introspection fetched once per run), `perfscale (http)` (transport-only
+`std/http@v1`), `k6 (native)`, and `perfscale (k6)`. Stock k6 and the
+`std/http` row do no client-side schema validation; native Perfscale rows run
+with `--quiet` to match the k6 rows. Plain `http.post` needs no xk6 extension,
+so the rows use stock k6.
 
 Select suites with `SUITES="..."`. Scenarios whose engine (`k6`/`locust`/
 `jmeter`) isn't on `PATH` are skipped, not failed; `overhead`/`startup` need
@@ -210,7 +218,7 @@ The [`bench` workflow](../.github/workflows/bench.yml) runs on
 `ubuntu-latest` — a fixed runner class, which removes local-machine variance:
 
 - **manually**: GitHub → Actions → `bench` → *Run workflow* (inputs: `vus`,
-  `duration`, `runs`, `suites`)
+  `duration`, `runs`, `suites`, `graphql_duration`)
 - **weekly**: scheduled Monday 04:00 UTC as a perf-regression drift check
 
 The job summary carries an Environment table (OS/CPU/threads/RAM/swap) and a
