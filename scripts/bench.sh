@@ -37,8 +37,11 @@ set -euo pipefail
 #                 builtin baseline.
 #   grpc        – native `std/grpc@v1` unary calls against the repo's
 #                 grpc_echo_server example (reflection on, plaintext).
-#   graphql     – native `std/graphql@v1` query against the repo's
-#                 graphql_server example (introspection on).
+#   graphql     – the same GraphQL POST four ways against the repo's
+#                 graphql_server example: `std/graphql@v1` (document parse +
+#                 schema validation; introspection on, fetched once per run),
+#                 `std/http@v1` (transport only), and the stock k6 script
+#                 natively and wrapped.
 #   db          – SQL suite: native `std/db-*@v1` scenarios against PostgreSQL
 #                 at BENCH_PG_DSN (cold connect+query per iteration, warm
 #                 VU-scoped connections — one per VU, reused across iterations
@@ -801,8 +804,9 @@ steps:
 EOF
 fi
 
-# graphql suite: one schema-validated query per iteration; introspection is
-# cached per URL, so per-iteration cost is parse + validate + HTTP POST.
+# graphql suite: the same GraphQL POST for every engine. The std/http row is
+# the transport-only baseline for stock k6; std/graphql adds document parsing
+# and schema validation (introspection is cached once per URL per run).
 if [[ "$HAS_GQL" == 1 ]]; then
   cat >"$WORKDIR/yaml-gql.yaml" <<EOF
 steps:
@@ -813,6 +817,40 @@ steps:
       query: |
         query { viewer { id name } }
 EOF
+  cat >"$WORKDIR/yaml-gql-http.yaml" <<EOF
+steps:
+  - name: viewer query
+    use: std/http@v1
+    with:
+      method: POST
+      url: "http://${GQL_ADDR}/graphql"
+      headers:
+        Content-Type: application/json
+      body:
+        query: |
+          query { viewer { id name } }
+EOF
+  cat >"$WORKDIR/graphql.js" <<'EOF'
+import http from 'k6/http';
+
+export const options = {
+  vus: Number(__ENV.BENCH_VUS || 10),
+  duration: __ENV.BENCH_DURATION || '10s',
+};
+
+const body = JSON.stringify({ query: 'query { viewer { id name } }\n' });
+const params = { headers: { 'Content-Type': 'application/json' } };
+
+export default function () {
+  http.post(__ENV.BENCH_GQL_URL, body, params);
+}
+EOF
+  cmd_gql_k6_native() {
+    echo "env BENCH_VUS=$VUS BENCH_DURATION=$GQL_DURATION BENCH_GQL_URL=http://${GQL_ADDR}/graphql k6 run --quiet $WORKDIR/graphql.js"
+  }
+  cmd_gql_k6_wrapped() {
+    echo "env BENCH_VUS=$VUS BENCH_DURATION=$GQL_DURATION BENCH_GQL_URL=http://${GQL_ADDR}/graphql $BIN run --k6 $WORKDIR/graphql.js"
+  }
 fi
 
 # db suite, perfscale native scenarios:
@@ -1996,17 +2034,40 @@ if has_suite graphql && [[ "$HAS_GQL" == 1 ]]; then
     echo "| Scenario | Requests | RPS | p95 ms | Err | CPU per req | Peak RSS |"
     echo "|---|---:|---:|---:|---:|---:|---|"
   } >>"$OUTPUT"
-  echo "  perfscale (yaml)" >&2
-  measure "gql-query" "$(cmd_yaml "$VUS" "$GQL_DURATION" "$WORKDIR/yaml-gql.yaml")"
-  json_row graphql.json "perfscale (yaml)"
-  echo "| perfscale (yaml) | $requests | $rps | $p95_ms | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
+  # gql_row $1 label, $2 command — the same GraphQL POST for every engine.
+  # perfscale rows run with --quiet (per-step logging is pure overhead; the
+  # end-of-run summary the text parser reads is kept, and the k6 rows parse
+  # the same summary shape). A run that died early, parsed nothing, or
+  # returned errors would be misleading next to valid rows, so fail the suite
+  # (the nonzero return stops the script via set -e).
+  gql_row() {
+    local label="$1" cmd="$2"
+    echo "  $label" >&2
+    measure "$label" "$cmd"
+    if [[ "$parse_ok" != 1 || "$T_RC" != 0 ]] || \
+       ! awk "BEGIN{exit !($requests > 0 && $err_pct == 0)}"; then
+      echo "error: graphql row '$label' invalid (rc=$T_RC parse_ok=$parse_ok requests=$requests err=$err_pct) — failing" >&2
+      return 1
+    fi
+    json_row graphql.json "$label"
+    echo "| $label | $requests | $rps | $p95_ms | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
+  }
+  gql_row "perfscale (graphql)" \
+    "$(cmd_yaml "$VUS" "$GQL_DURATION" "$WORKDIR/yaml-gql.yaml" --quiet)"
+  gql_row "perfscale (http)" \
+    "$(cmd_yaml "$VUS" "$GQL_DURATION" "$WORKDIR/yaml-gql-http.yaml" --quiet)"
+  if [[ "$HAS_K6" == 1 ]]; then
+    gql_row "k6 (native)" "$(cmd_gql_k6_native)"
+    gql_row "perfscale (k6)" "$(cmd_gql_k6_wrapped)"
+  fi
   {
     echo
-    echo "_One \`std/graphql@v1\` query per iteration against the repo's"
-    echo "\`graphql_server\` example: document parse + schema validation"
-    echo "(introspection is fetched once per run, cached per URL) + HTTP POST."
-    echo "Compare against the throughput table for the GraphQL tax over plain"
-    echo "HTTP._"
+    echo "_The same GraphQL POST for every engine. Stock k6 and the"
+    echo "\`std/http@v1\` row have no client-side schema validation — they are"
+    echo "the transport-only baseline; \`std/graphql@v1\` pays document parse +"
+    echo "schema validation on top (introspection is fetched once per run,"
+    echo "cached per URL). Native Perfscale rows run with \`--quiet\` to match"
+    echo "the k6 rows. No k6 row without a k6 on PATH._"
   } >>"$OUTPUT"
 fi
 
