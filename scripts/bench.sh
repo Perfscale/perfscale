@@ -67,15 +67,6 @@ set -euo pipefail
 #                 connect cost is part of the measurement), so the k6 side
 #                 gets both a warm row (connection per VU) and a cold row
 #                 (connect per iteration, the fair twin).
-#   sytester    – not a table of its own: adds SyTester Community Edition
-#                 (gitverse.ru/sbertech/sytester) rows to the throughput,
-#                 saturation, grpc and db tables. SyTester has no VU model,
-#                 so its rows offer its maximum fixed rate (SYT_RATE, default
-#                 10000 TPS — the plan schema's ceiling). One JVM per row,
-#                 driven over its REST API (boot → warm-up → measured plan →
-#                 report → kill); CPU/RSS cover the whole JVM lifetime. Needs
-#                 Java 21+ (SYTESTER_JAVA) and the release jar (SYTESTER_JAR,
-#                 downloaded by the bench workflow); skipped otherwise.
 #
 # No llm suite: the engine's LLM driver needs a backing endpoint with
 # meaningful semantics, which doesn't fit a bench CI job cleanly. Add it
@@ -85,7 +76,18 @@ set -euo pipefail
 # console summary has no percentiles, so it is not part of the throughput
 # table.
 #
-# Scenarios whose engine isn't on PATH are skipped, not failed. hyperfine is
+# SyTester (gitverse.ru/sbertech/sytester) rows join the throughput,
+# saturation, grpc and db tables like any other competitor engine, whenever
+# Java 21+ (SYTESTER_JAVA) and the release jar (SYTESTER_JAR, downloaded by
+# the bench workflow) are available. SyTester has no VU model, so its rows
+# offer its maximum fixed rate (SYT_RATE, default 10000 TPS — the plan
+# schema's ceiling). One JVM per row, driven over its REST API (boot →
+# warm-up → measured plan → report → kill); CPU/RSS cover the JVM lifetime.
+#
+# APPS selects the competitor engines (default: all of "k6 jmeter locust
+# sytester"; perfscale's own rows always run). An unknown name is an error.
+# Scenarios whose engine isn't selected or isn't on PATH are skipped, not
+# failed. hyperfine is
 # required only for the overhead/startup suites.
 #
 # Outputs: $OUTPUT (markdown report) and $RESULTS (machine-readable JSON,
@@ -99,7 +101,11 @@ PORT="${PORT:-18999}"
 TLS_PORT="${TLS_PORT:-18998}"
 OUTPUT="${OUTPUT:-bench-report.md}"
 RESULTS="${RESULTS:-bench-results.json}"
-SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sytester}"
+SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub}"
+# Competitor engines whose rows join the tables, space-separated (perfscale's
+# own rows always run). k6 also gates its custom xk6-sql / xk6-nats builds.
+KNOWN_APPS="k6 jmeter locust sytester"
+APPS="${APPS:-$KNOWN_APPS}"
 
 STARTUP_DURATION="${STARTUP_DURATION:-1s}"
 STARTUP_RUNS="${STARTUP_RUNS:-5}"
@@ -184,17 +190,31 @@ TARGET="http://127.0.0.1:${PORT}"
 TLS_TARGET="https://127.0.0.1:${TLS_PORT}"
 
 has_suite() { case " $SUITES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
-HAS_K6=0
-HAS_LOCUST=0
-HAS_JMETER=0
+has_app() { case " $APPS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+# A typo in APPS would silently drop an engine from every table — fail fast.
+for app in $APPS; do
+  case " $KNOWN_APPS " in
+    *" $app "*) ;;
+    *) echo "unknown app '$app' in APPS (known: $KNOWN_APPS)" >&2; exit 2 ;;
+  esac
+done
 HAS_HYPERFINE=0
-command -v k6 >/dev/null 2>&1 && HAS_K6=1
-command -v locust >/dev/null 2>&1 && HAS_LOCUST=1
-command -v jmeter >/dev/null 2>&1 && HAS_JMETER=1
+# probe_app $1 app (= binary name) → 1 when selected in APPS and on PATH.
+probe_app() {
+  if ! has_app "$1"; then
+    echo "skipping $1 scenarios: not in APPS" >&2
+    echo 0
+  elif ! command -v "$1" >/dev/null 2>&1; then
+    echo "skipping $1 scenarios: $1 not on PATH" >&2
+    echo 0
+  else
+    echo 1
+  fi
+}
+HAS_K6=$(probe_app k6)
+HAS_LOCUST=$(probe_app locust)
+HAS_JMETER=$(probe_app jmeter)
 command -v hyperfine >/dev/null 2>&1 && HAS_HYPERFINE=1
-[[ "$HAS_K6" == 1 ]] || echo "skipping k6 scenarios: k6 not on PATH" >&2
-[[ "$HAS_LOCUST" == 1 ]] || echo "skipping locust scenarios: locust not on PATH" >&2
-[[ "$HAS_JMETER" == 1 ]] || echo "skipping jmeter scenarios: jmeter not on PATH" >&2
 
 # ---------------------------------------------------------------------------
 # Servers
@@ -371,7 +391,7 @@ fi
 # custom build's k6 core version may differ from the apt-installed one.
 HAS_K6_SQL=0
 K6_SQL_BIN="${K6_SQL_BIN:-$ROOT/target/xk6-sql/k6}"
-if [[ "$HAS_DB" == 1 ]]; then
+if [[ "$HAS_DB" == 1 ]] && has_app k6; then
   if [[ -x "$K6_SQL_BIN" ]]; then
     HAS_K6_SQL=1
   else
@@ -398,7 +418,7 @@ fi
 # matches the bench workflow's build, K6_NATS_BIN overrides it.
 HAS_K6_NATS=0
 K6_NATS_BIN="${K6_NATS_BIN:-$ROOT/target/xk6-nats/k6}"
-if [[ "$HAS_NATS" == 1 ]]; then
+if [[ "$HAS_NATS" == 1 ]] && has_app k6; then
   if [[ -x "$K6_NATS_BIN" ]]; then
     HAS_K6_NATS=1
   else
@@ -406,16 +426,20 @@ if [[ "$HAS_NATS" == 1 ]]; then
   fi
 fi
 
-# sytester suite: Java 21+ and the release jar (bench workflow downloads it
-# to target/sytester/). Probe the major version from `java -version`.
+# SyTester rows: like k6/locust/JMeter, they join every table that has a
+# SyTester shape whenever SyTester is available — Java 21+ and the release
+# jar (the bench workflow downloads it to target/sytester/). Probe the major
+# version from `java -version`.
 SYTESTER_JAR="${SYTESTER_JAR:-$ROOT/target/sytester/SyTester.jar}"
 HAS_SYTESTER=0
-if has_suite sytester; then
+if ! has_app sytester; then
+  echo "skipping sytester rows: not in APPS" >&2
+elif [[ ! -f "$SYTESTER_JAR" ]]; then
+  echo "skipping sytester rows: no jar at $SYTESTER_JAR (set SYTESTER_JAR)" >&2
+else
   syt_java_major="$("$SYTESTER_JAVA" -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -1)"
-  if [[ ! -f "$SYTESTER_JAR" ]]; then
-    echo "skipping sytester suite: no jar at $SYTESTER_JAR (set SYTESTER_JAR)" >&2
-  elif [[ "${syt_java_major:-0}" -lt 21 ]]; then
-    echo "skipping sytester suite: $SYTESTER_JAVA is Java ${syt_java_major:-?}, SyTester needs 21+ (set SYTESTER_JAVA)" >&2
+  if [[ "${syt_java_major:-0}" -lt 21 ]]; then
+    echo "skipping sytester rows: $SYTESTER_JAVA is Java ${syt_java_major:-?}, SyTester needs 21+ (set SYTESTER_JAVA)" >&2
   else
     HAS_SYTESTER=1
   fi
@@ -1532,10 +1556,11 @@ $METRICS setobj "$RESULTS_D/meta.json" \
 # generates a fixed TPS. Its rows join the throughput, saturation, grpc and
 # db tables offering its maximum rate (SYT_RATE, default 10000 — the plan
 # schema's tps ceiling), i.e. "as fast as SyTester goes", next to the other
-# engines' fixed-VU rows. Enabled by the `sytester` entry in SUITES.
+# engines' fixed-VU rows. On whenever SyTester is available (HAS_SYTESTER),
+# like the other competitor engines.
 
 SYT_ON=0
-if has_suite sytester && [[ "$HAS_SYTESTER" == 1 ]]; then
+if [[ "$HAS_SYTESTER" == 1 ]]; then
   SYT_ON=1
   # One SyTester row, start to finish: boot the JVM (fresh H2 db in a temp
   # dir), optionally upload a proto set (SYT_PROTO, gRPC rows), run the plan

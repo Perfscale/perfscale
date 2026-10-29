@@ -12,8 +12,11 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
-- Benchmarks: SyTester rows now sit in the throughput, saturation, grpc
-  and db tables next to k6/locust/JMeter (instead of a separate table),
+- Benchmarks: SyTester is now a default competitor engine — whenever its
+  jar and Java 21+ are available, its rows sit in the throughput,
+  saturation, grpc and db tables next to k6/locust/JMeter,
   offering SyTester's maximum fixed rate (`SYT_RATE`, 10000 TPS) since it
   has no VU model. The grpc row uses its gRPC generator (proto set uploaded
-  over the REST API), the db row its PgJDBC transport.
+  over the REST API), the db row its PgJDBC transport. A new `APPS` knob
+  (bench workflow input `apps`, default `k6 jmeter locust sytester`) picks
+  the competitor engines; perfscale's rows always run.

@@ -17,6 +17,7 @@ loopback, поэтому любая разница между строкой `pe
 | `locust (native)` | `locust`, вызванный напрямую — базовый уровень |
 | `k6 (native)` | `k6`, вызванный напрямую — базовый уровень |
 | `jmeter (native)` | `jmeter -n -t`, вызванный напрямую — базовый уровень (только наборы overhead/startup) |
+| `sytester (10000 TPS)` | [SyTester](https://gitverse.ru/sbertech/sytester) Community Edition через его REST API — базовая линия (таблицы throughput, saturation, grpc и db). VU-модели у него нет, поэтому он подаёт свою максимальную фиксированную интенсивность (`SYT_RATE`) |
 | `perfscale (k6)` | тот же скрипт k6 через `perfscale run --k6` |
 | `perfscale (locust)` | тот же locustfile через `perfscale run --locust` |
 | `perfscale (jmeter)` | тот же `.jmx`-план через `perfscale run --jmeter` (только наборы overhead/startup) |
@@ -41,7 +42,6 @@ loopback, поэтому любая разница между строкой `pe
 | `graphql` | Один и тот же GraphQL POST от `std/graphql@v1`, транспортного `std/http@v1`, стокового k6 и k6 через perfscale против примера `graphql_server` из репозитория — xk6 не нужен |
 | `db` | SQL: холодный connect+query против тёплых VU-scoped соединений против транзакций (`std/db-*@v1`, PostgreSQL по `BENCH_PG_DSN` — каждая строка ходит в тот же реальный сервер), плюс тёплая форма от locust (psycopg2), JMeter (JDBC) и k6 — строка k6 использует **кастомный бинарь**, собранный с расширением `xk6-sql` и postgres-драйвером (в стоковом k6 SQL-модуля нет), и только она его использует |
 | `pubsub` | Pub/sub: пропускная способность publish и e2e-латентность roundtrip pub/sub (`std/pubsub@v1`) против NATS-брокера (`BENCH_NATS_URL` — каждая строка ходит в тот же реальный брокер) в позициях `scope: exchange` (соединение на итерацию) и `scope: vu` (одно соединение на VU, с fire-and-forget двойником `flush: none`), плюс строки k6 через **кастомный бинарь** с расширением xk6-nats (в стоковом k6 NATS-модуля нет) в тёплой (соединение на VU) и холодной (соединение на итерацию — честный двойник `scope: exchange`) позициях |
-| `sytester` | Не отдельная таблица: добавляет строки [SyTester](https://gitverse.ru/sbertech/sytester) Community Edition в таблицы `throughput`, `saturation`, `grpc` и `db` рядом с k6/locust/JMeter. VU-модели у SyTester нет, поэтому его строки подают его максимальную фиксированную интенсивность (`SYT_RATE`, по умолчанию 10000 TPS) |
 
 JMeter участвует только в наборах hyperfine (`overhead`/`startup`): его
 консольная сводка в non-GUI режиме не содержит перцентилей, поэтому он не
@@ -161,7 +161,7 @@ v6.10.0 и сверяет sha256), гоняет незаписываемый п�
 поэтому `Err` считается из числа упавших запросов; латентности — в целых
 миллисекундах. Локально: скачайте jar со
 [страницы релизов](https://gitverse.ru/sbertech/sytester/releases) и
-запустите `SUITES="throughput sytester" SYTESTER_JAR=… SYTESTER_JAVA=… ./scripts/bench.sh`.
+запустите `SUITES=throughput SYTESTER_JAR=… SYTESTER_JAVA=… ./scripts/bench.sh`.
 
 Микробенчмарки горячих путей нативного движка (парсинг YAML, подстановка
 `${{ ... }}`, запись метрик / перцентильная сводка, захват вывода процессов
@@ -212,6 +212,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | Переменная | По умолчанию | Описание |
 |---|---|---|
 | `SUITES` | все | Список наборов через пробел (см. таблицу выше) |
+| `APPS` | `k6 jmeter locust sytester` | Движки-конкуренты, чьи строки попадают в таблицы (через пробел; строки perfscale идут всегда; `k6` также включает сборки xk6-sql / xk6-nats). Неизвестное имя — ошибка запуска |
 | `VUS` | `10` | Виртуальных пользователей на сценарий |
 | `DURATION` | `15s` | Длительность прогона для `overhead`/`throughput` |
 | `WARMUP` | `1` | Разогревочные прогоны hyperfine (отбрасываются, не показываются) |
