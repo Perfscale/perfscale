@@ -45,7 +45,7 @@
 //! steps) and the run still proceeds through `after:` and the summary; a
 //! second signal exits the process immediately.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -1222,10 +1222,13 @@ fn spawn_vu(
 /// iteration, wait again. The receiver lock is held only while waiting for a
 /// permit, never during an iteration. Workers exit when the dispatcher closes
 /// the permit channel at the end of the schedule (or on the global stop).
+/// `in_flight` counts permits handed out but not yet finished (queued or
+/// running); the worker releases its slot when the iteration ends.
 fn spawn_arrival_worker(
     vu_id: u32,
     shared: &VuShared,
     permits: Arc<tokio::sync::Mutex<mpsc::Receiver<Instant>>>,
+    in_flight: Arc<AtomicU32>,
     deadline: Instant,
 ) -> tokio::task::JoinHandle<()> {
     let mut ctx = shared.base_context(vu_id);
@@ -1249,6 +1252,7 @@ fn spawn_arrival_worker(
                 break; // dispatcher finished — channel closed
             };
             if Instant::now() >= deadline || stop.load(Ordering::Relaxed) {
+                in_flight.fetch_sub(1, Ordering::AcqRel);
                 break;
             }
             // Coordinated-omission tracking: the dispatcher knew when this
@@ -1279,6 +1283,7 @@ fn spawn_arrival_worker(
                 scheduled_at.elapsed().as_secs_f64() * 1000.0,
             );
             ctx.resources.drain();
+            in_flight.fetch_sub(1, Ordering::AcqRel);
         }
         // Worker exit (arrival workers are VUs): drop `scope: vu` DB
         // connections parked past the per-iteration drains.
@@ -1411,12 +1416,19 @@ async fn supervise_arrival(
     )
     .await;
 
-    // Permits queue in a 1-deep channel: a full channel means every worker is
-    // mid-iteration, which is exactly the grow-or-drop signal. Each permit
-    // carries its scheduled start instant, so the worker can measure the
-    // scheduled→actual delay (coordinated omission, see the engine family).
-    let (permit_tx, permit_rx) = mpsc::channel::<Instant>(1);
+    // The grow-or-drop signal is `in_flight` (permits queued or running), not
+    // channel fullness: the dispatcher wakes on a ~1ms timer and emits the
+    // permits due since its last wake back-to-back, faster than idle workers
+    // get scheduled to take them. A 1-deep channel read that burst as "every
+    // VU busy" and dropped permits with most of the pool idle. Now a permit
+    // is accepted while `in_flight <= pool`: one per worker plus a single
+    // waiting permit once the pool is saturated (the old 1-deep slot, so
+    // queue wait still surfaces saturation). Each permit carries its scheduled
+    // start instant, so the worker can measure the scheduled→actual delay
+    // (coordinated omission, see the engine family).
+    let (permit_tx, permit_rx) = mpsc::channel::<Instant>(max_vus.max(1) as usize + 1);
     let permit_rx = Arc::new(tokio::sync::Mutex::new(permit_rx));
+    let in_flight = Arc::new(AtomicU32::new(0));
     let mut workers = Vec::new();
     let mut next_vu_id = 1u32;
     for _ in 0..pre_allocated_vus.clamp(1, max_vus) {
@@ -1424,6 +1436,7 @@ async fn supervise_arrival(
             next_vu_id,
             shared,
             Arc::clone(&permit_rx),
+            Arc::clone(&in_flight),
             deadline,
         ));
         next_vu_id += 1;
@@ -1446,9 +1459,10 @@ async fn supervise_arrival(
             break;
         }
         sampler.sample();
-        // Pool not saturated yet → grow instead of dropping the permit.
-        let mut permit = permit_tx.try_send(at);
-        if permit.is_err() {
+        // Every worker already holds (or has queued) a permit → grow the
+        // pool; at `max_vus` one more permit may wait, the rest drop.
+        let mut accepted = false;
+        if (in_flight.load(Ordering::Acquire) as usize) >= workers.len() {
             // Reap finished workers only on the contention path (O(pool) per
             // permit is real cost at high arrival rates; the pool size only
             // matters here, when we must decide between grow and drop).
@@ -1458,13 +1472,21 @@ async fn supervise_arrival(
                     next_vu_id,
                     shared,
                     Arc::clone(&permit_rx),
+                    Arc::clone(&in_flight),
                     deadline,
                 ));
                 next_vu_id += 1;
-                permit = permit_tx.try_send(at);
             }
         }
-        if permit.is_err() {
+        if (in_flight.load(Ordering::Acquire) as usize) <= workers.len() {
+            in_flight.fetch_add(1, Ordering::AcqRel);
+            if permit_tx.try_send(at).is_ok() {
+                accepted = true;
+            } else {
+                in_flight.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+        if !accepted {
             dropped += 1;
             let due = last_drop_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(5));
             if due {
@@ -2960,6 +2982,42 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.text.contains("dropped iteration")),
             "throttled drop warning: {lines:?}"
+        );
+    }
+
+    /// Regression: the dispatcher wakes on a ~1ms timer and emits the permits
+    /// due since its last wake back-to-back. With a 1-deep permit channel the
+    /// second permit of each burst read as "every VU busy" and was dropped
+    /// while most of the pool sat idle (10k it/s served ~700/s). 2000 it/s
+    /// against 16 workers doing ~1ms iterations is well under capacity, so
+    /// almost nothing may drop.
+    #[tokio::test]
+    async fn arrival_bursts_under_capacity_are_not_dropped() {
+        let config = arrival(16, &[("1ms", 2000.0), ("400ms", 2000.0)]);
+        let lines = run_and_collect(vec![sleep_step(1)], config, false).await;
+        let line = lines
+            .iter()
+            .find(|l| l.text.starts_with("dropped_iterations"))
+            .unwrap_or_else(|| panic!("dropped_iterations in summary: {lines:?}"));
+        let dropped: u64 = line
+            .text
+            .split(':')
+            .nth(1)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let iters = iteration_count(&lines);
+        assert!(
+            iters >= 600,
+            "expected ≈800 served iterations, got {iters} ({dropped} dropped)"
+        );
+        assert!(
+            dropped * 20 <= iters,
+            "under-capacity run dropped {dropped} of {} permits",
+            iters + dropped
         );
     }
 
