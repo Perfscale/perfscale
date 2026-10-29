@@ -41,7 +41,7 @@ loopback, поэтому любая разница между строкой `pe
 | `graphql` | Один и тот же GraphQL POST от `std/graphql@v1`, транспортного `std/http@v1`, стокового k6 и k6 через perfscale против примера `graphql_server` из репозитория — xk6 не нужен |
 | `db` | SQL: холодный connect+query против тёплых VU-scoped соединений против транзакций (`std/db-*@v1`, PostgreSQL по `BENCH_PG_DSN` — каждая строка ходит в тот же реальный сервер), плюс тёплая форма от locust (psycopg2), JMeter (JDBC) и k6 — строка k6 использует **кастомный бинарь**, собранный с расширением `xk6-sql` и postgres-драйвером (в стоковом k6 SQL-модуля нет), и только она его использует |
 | `pubsub` | Pub/sub: пропускная способность publish и e2e-латентность roundtrip pub/sub (`std/pubsub@v1`) против NATS-брокера (`BENCH_NATS_URL` — каждая строка ходит в тот же реальный брокер) в позициях `scope: exchange` (соединение на итерацию) и `scope: vu` (одно соединение на VU, с fire-and-forget двойником `flush: none`), плюс строки k6 через **кастомный бинарь** с расширением xk6-nats (в стоковом k6 NATS-модуля нет) в тёплой (соединение на VU) и холодной (соединение на итерацию — честный двойник `scope: exchange`) позициях |
-| `sytester` | Открытая модель против [SyTester](https://gitverse.ru/sbertech/sytester) Community Edition: каждая строка подаёт одну и ту же фиксированную интенсивность (`SYT_RATE`, по умолчанию 10000/s — потолок TPS в схеме плана SyTester) на `/health` — `sytester (native)`, `k6 (constant-arrival-rate)` и движок perfscale `arrival:` (с логом и `--quiet`). Показывает реально выданный RPS, перцентили латентности, отброшенные итерации, время загрузки JVM SyTester, CPU на запрос и пиковый RSS |
+| `sytester` | Открытая модель против [SyTester](https://gitverse.ru/sbertech/sytester) Community Edition по сценариям из его примеров планов — **get** (`GET /health`), **post** (JSON POST с динамическими полями на каждый запрос и своим заголовком), **steps** (GET JSON → извлечь поле → передать дальше в POST, `STEPS` в SyTester), **grpc** (unary echo против `grpc_echo_server`) и **db** (`SELECT 1` на тёплом соединении с PostgreSQL, `BENCH_PG_DSN`). Внутри сценария все строки подают одинаковую фиксированную интенсивность: SyTester, движок perfscale `arrival:` (с логом и `--quiet`) и k6 `constant-arrival-rate` в HTTP-сценариях. Показывает выданный RPS, перцентили латентности, ошибки, отброшенные итерации, время загрузки JVM SyTester, CPU на запрос и пиковый RSS |
 
 JMeter участвует только в наборах hyperfine (`overhead`/`startup`): его
 консольная сводка в non-GUI режиме не содержит перцентилей, поэтому он не
@@ -150,8 +150,15 @@ k6 этим расширением не измеряется, поэтому e2e
 по умолчанию `target/sytester/SyTester.jar` — bench-workflow скачивает
 закреплённый jar v6.10.0 и сверяет sha256), гоняет незаписываемый прогрев
 `SYT_WARMUP` (по умолчанию 5s) с той же интенсивностью, чтобы замер шёл на
-прогретом JIT, затем `GENERATOR`-план с `tps.start == tps.max == SYT_RATE`
-на `SYT_DURATION`, читает `/action/lastReport` и гасит JVM. Поэтому CPU на
+прогретом JIT, затем план сценария (`GENERATOR` с `tps.start == tps.max`
+или `STEPS` с `TPS_LOADER` для steps/db) на `SYT_DURATION`, читает
+`/action/lastReport` и гасит JVM. Строка grpc сначала загружает `echo.proto`
+как proto set и ставит пул отправителей gRPC SyTester
+(`grpc.maxConnections`) равным `SYT_MAX_VUS` — потолку воркеров perfscale.
+Во всех планах большой `errorsToStop`: значение по умолчанию (100)
+обрывает план в первую же секунду проблем, а бенчу нужен процент ошибок.
+Отчёт `STEPS` идёт по шагам; строка суммирует шаги с запросами и берёт
+перцентили худшего шага. Поэтому CPU на
 запрос и пиковый RSS покрывают всю жизнь JVM; колонка `Boot` — время до
 ответа API. `failedPercentage` в SyTester остаётся 0 при транспортных
 ошибках (статус `-1`, например `Pending acquire queue has reached its
@@ -229,7 +236,8 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `PUBSUB_DURATION` / `PUBSUB_PAYLOAD_BYTES` | `10s` / `256` | длительность сценария набора pubsub / размер нагрузки сообщения в байтах |
 | `BENCH_NATS_URL` | `nats://127.0.0.1:4222` | URL NATS-брокера для nats-строк набора pubsub |
 | `K6_NATS_BIN` | `target/xk6-nats/k6` | Кастомный k6 с расширением xk6-nats для строк k6 набора pubsub (собирается bench-workflow) |
-| `SYT_RATE` / `SYT_DURATION` / `SYT_WARMUP` / `SYT_MAX_VUS` | `10000` / `10s` / `5s` / `256` | интенсивность набора sytester (для всех строк) / длительность замера / длительность прогрева SyTester / потолок воркеров строк perfscale и k6 |
+| `SYT_RATE` / `SYT_DURATION` / `SYT_WARMUP` / `SYT_MAX_VUS` | `10000` / `10s` / `5s` / `256` | интенсивность сценариев get/post набора sytester / длительность замера / длительность прогрева SyTester / потолок воркеров строк perfscale и k6 |
+| `SYT_STEPS_RATE` / `SYT_GRPC_RATE` / `SYT_DB_RATE` | `1000` / `2000` / `1000` | целевая интенсивность сценариев steps (потоков/s), grpc и db набора sytester |
 | `SYTESTER_JAR` / `SYTESTER_JAVA` / `SYT_PORT` | `target/sytester/SyTester.jar` / `java` / `18997` | релизный jar SyTester / бинарь Java 21+ / его REST-порт |
 | `PORT` / `TLS_PORT` | `18999` / `18998` | Порты для одноразовых целей serve |
 | `OUTPUT` | `bench-report.md` | Путь к Markdown-отчёту |
