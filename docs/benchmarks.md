@@ -205,7 +205,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 
 | Variable | Default | Description |
 |---|---|---|
-| `SUITES` | all | Space-separated suite list (see table above) |
+| `SUITES` | all | Space-separated suite list; an unknown name fails the run (see table above) |
 | `APPS` | `k6 jmeter locust sytester` | Competitor engines whose rows join the tables (space-separated; perfscale's own rows always run; `k6` also gates the xk6-sql / xk6-nats builds). An unknown name fails the run |
 | `VUS` | `10` | Virtual users per scenario |
 | `DURATION` | `15s` | Run length for `overhead`/`throughput` |

@@ -19,4 +19,6 @@ Release notes for the next release, written as features land.
   has no VU model. The grpc row uses its gRPC generator (proto set uploaded
   over the REST API), the db row its PgJDBC transport. A new `APPS` knob
   (bench workflow input `apps`, default `k6 jmeter locust sytester`) picks
-  the competitor engines; perfscale's rows always run.
+  the competitor engines; perfscale's rows always run. Unknown names in
+  `SUITES` or `APPS` now fail the run (exit 2) instead of being silently
+  skipped.

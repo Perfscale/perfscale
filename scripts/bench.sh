@@ -85,7 +85,8 @@ set -euo pipefail
 # warm-up → measured plan → report → kill); CPU/RSS cover the JVM lifetime.
 #
 # APPS selects the competitor engines (default: all of "k6 jmeter locust
-# sytester"; perfscale's own rows always run). An unknown name is an error.
+# sytester"; perfscale's own rows always run). An unknown suite or app name
+# is an error (exit 2).
 # Scenarios whose engine isn't selected or isn't on PATH are skipped, not
 # failed. hyperfine is
 # required only for the overhead/startup suites.
@@ -101,7 +102,8 @@ PORT="${PORT:-18999}"
 TLS_PORT="${TLS_PORT:-18998}"
 OUTPUT="${OUTPUT:-bench-report.md}"
 RESULTS="${RESULTS:-bench-results.json}"
-SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub}"
+KNOWN_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub"
+SUITES="${SUITES:-$KNOWN_SUITES}"
 # Competitor engines whose rows join the tables, space-separated (perfscale's
 # own rows always run). k6 also gates its custom xk6-sql / xk6-nats builds.
 KNOWN_APPS="k6 jmeter locust sytester"
@@ -191,13 +193,20 @@ TLS_TARGET="https://127.0.0.1:${TLS_PORT}"
 
 has_suite() { case " $SUITES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 has_app() { case " $APPS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
-# A typo in APPS would silently drop an engine from every table — fail fast.
-for app in $APPS; do
-  case " $KNOWN_APPS " in
-    *" $app "*) ;;
-    *) echo "unknown app '$app' in APPS (known: $KNOWN_APPS)" >&2; exit 2 ;;
-  esac
-done
+# A typo in SUITES/APPS would silently drop a suite or an engine from the
+# report — fail fast. $1 variable name, $2 its value, $3 known names,
+# $4 what one name is (for the message).
+check_names() {
+  local name
+  for name in $2; do
+    case " $3 " in
+      *" $name "*) ;;
+      *) echo "unknown $4 '$name' in $1 (known: $3)" >&2; exit 2 ;;
+    esac
+  done
+}
+check_names SUITES "$SUITES" "$KNOWN_SUITES" suite
+check_names APPS "$APPS" "$KNOWN_APPS" app
 HAS_HYPERFINE=0
 # probe_app $1 app (= binary name) → 1 when selected in APPS and on PATH.
 probe_app() {
