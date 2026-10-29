@@ -12,6 +12,23 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- Arrival-rate runs keep their schedule at high rates: the dispatcher emits
+  the permits due since its last ~1ms timer wake back-to-back, and a 1-deep
+  permit slot read each burst as "every VU busy" — permits were dropped
+  while most of the pool sat idle (10k it/s against 256 VUs served ~721/s,
+  ~85% in `dropped_iterations`). Drops are now decided by the in-flight
+  permit count, so they happen only when `max_vus` workers are genuinely
+  busy; the same run now serves ~10k/s with ~0 drops. Under real saturation
+  one permit still waits beyond the pool, so
+  `engine_arrival_queue_wait_ms` keeps showing it.
+- Benchmarks: new `sytester` suite compares the open model against
+  [SyTester](https://gitverse.ru/sbertech/sytester) Community Edition — every
+  row offers the same fixed arrival rate (`SYT_RATE`, default 10000/s) to
+  the same endpoint: SyTester (REST-driven JVM, warm-up before the measured
+  run), k6 `constant-arrival-rate`, and the perfscale `arrival:` engine.
+  Reports delivered RPS, latency percentiles, dropped iterations, SyTester's
+  boot time, CPU per request and peak RSS. Runs in the bench workflow
+  (pinned v6.10.0 jar, sha256-checked); see `docs/benchmarks.md`.
 - JSON steps and paths: new `std/read-json@v1` reads and parses a JSON file
   into the step output (process-wide cache keyed by `(mtime, size)`, so
   iterations past the first skip both the disk read and the parse), and a new
