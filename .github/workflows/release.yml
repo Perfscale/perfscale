@@ -56,9 +56,13 @@ jobs:
           toolchain: 1.99.0
           targets: ${{ matrix.target }}
 
+      # Restore-only: a tag run's cache is scoped to that tag's ref, which no
+      # later run can read — saving it only spent ~2.9 GB of the repo's 10 GB
+      # Actions cache per release and evicted main's CI cache.
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          save-if: false
 
       - name: Setup
         if: matrix.setup != ''
