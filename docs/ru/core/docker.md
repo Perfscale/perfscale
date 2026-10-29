@@ -18,15 +18,17 @@ docker run --rm -v "$PWD:/work" -w /work ghcr.io/perfscale/perfscale:latest \
 | Образ | Состав | Для чего использовать |
 |---|---|---|
 | `ghcr.io/perfscale/perfscale:<version>` | только perfscale (~50 МБ) | Сценарии на нативном движке шагов (`-f`/`-c`) |
-| `ghcr.io/perfscale/perfscale:<version>-k6` | + k6 | Существующие скрипты k6 (`--k6`) |
-| `ghcr.io/perfscale/perfscale:<version>-jmeter` | + JMeter (headless JRE) | Существующие `.jmx`-планы (`--jmeter`) |
-| `ghcr.io/perfscale/perfscale:<version>-locust` | + locust (Python) | Существующие locust-файлы (`--locust`) |
-| `ghcr.io/perfscale/perfscale:<version>-full` | + k6, JMeter, locust | Всё сразу |
+| `ghcr.io/perfscale/perfscale-k6:<version>` | + k6 | Существующие скрипты k6 (`--k6`) |
+| `ghcr.io/perfscale/perfscale-jmeter:<version>` | + JMeter (headless JRE) | Существующие `.jmx`-планы (`--jmeter`) |
+| `ghcr.io/perfscale/perfscale-locust:<version>` | + locust (Python) | Существующие locust-файлы (`--locust`) |
+| `ghcr.io/perfscale/perfscale-full:<version>` | + k6, JMeter, locust | Всё сразу |
 
 Все варианты мультиархитектурные (`linux/amd64` и `linux/arm64`) и помечаются
-тегами `X.Y.Z`, `X.Y` и `latest` (варианты с раннерами используют те же теги
-со своим суффиксом: `latest-k6`, `latest-jmeter`, `latest-locust`,
-`latest-full`). Версии раннеров зафиксированы в образе (k6, JMeter, locust —
+тегами `X.Y.Z`, `X.Y` и `latest`. Каждый вариант — отдельный пакет, поэтому
+для запуска только на k6 скачивается `perfscale-k6` и ничего лишнего. Старые
+теги с суффиксом в пакете `perfscale` (`perfscale:latest-k6`,
+`perfscale:X.Y.Z-full`, …), как было до 0.30, по-прежнему публикуются для тех
+же образов, но в новых настройках используйте отдельные пакеты. Версии раннеров зафиксированы в образе (k6, JMeter, locust —
 точные версии см. в `docker/image.Dockerfile`). В CI фиксируйте точную версию
 perfscale — считайте `latest` удобством для локального использования.
 
@@ -126,15 +128,15 @@ perfscale burn -f test.yaml -c config.yaml -o perfscale+libs
 ```sh
 # k6
 docker run --rm -v "$PWD:/work" -w /work \
-  ghcr.io/perfscale/perfscale:latest-k6 run --k6 script.js
+  ghcr.io/perfscale/perfscale-k6:latest run --k6 script.js
 
 # JMeter (.jmx plans)
 docker run --rm -v "$PWD:/work" -w /work \
-  ghcr.io/perfscale/perfscale:latest-jmeter run --jmeter plan.jmx
+  ghcr.io/perfscale/perfscale-jmeter:latest run --jmeter plan.jmx
 
 # locust
 docker run --rm -v "$PWD:/work" -w /work \
-  ghcr.io/perfscale/perfscale:latest-locust run --locust locustfile.py --host https://example.com
+  ghcr.io/perfscale/perfscale-locust:latest run --locust locustfile.py --host https://example.com
 ```
 
 Образ `-full` содержит все три — используйте его, когда в одной задаче
@@ -154,7 +156,7 @@ jobs:
       - name: Run load test
         run: |
           docker run --rm -v "$PWD:/work" -w /work \
-            ghcr.io/perfscale/perfscale:0.17.0 \
+            ghcr.io/perfscale/perfscale:0.30.0 \
             run -f load.test.yaml -c load.config.yaml
 ```
 
@@ -175,7 +177,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: perfscale
-          image: ghcr.io/perfscale/perfscale:0.17.0
+          image: ghcr.io/perfscale/perfscale:0.30.0
           args: ["run", "-f", "/scenarios/load.test.yaml", "-c", "/scenarios/load.config.yaml"]
           volumeMounts:
             - name: scenarios
@@ -193,7 +195,7 @@ spec:
 базовый — бинарники остаются на месте, вы добавляете то, что нужно:
 
 ```dockerfile
-FROM ghcr.io/perfscale/perfscale:0.17.0-jmeter
+FROM ghcr.io/perfscale/perfscale-jmeter:0.30.0
 
 USER root
 # Example: JMeter plugins land in lib/ext of the installation
@@ -211,8 +213,8 @@ GitHub Releases, а релизный workflow перед публикацией 
 `locust --version`) в его варианте и в `-full`. Чтобы перепроверить локально:
 
 ```sh
-docker run --rm ghcr.io/perfscale/perfscale:0.17.0 --version
-docker run --rm --entrypoint k6 ghcr.io/perfscale/perfscale:0.17.0-k6 version
+docker run --rm ghcr.io/perfscale/perfscale:0.30.0 --version
+docker run --rm --entrypoint k6 ghcr.io/perfscale/perfscale-k6:0.30.0 version
 ```
 
 ## Kubernetes

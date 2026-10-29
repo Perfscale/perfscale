@@ -11,3 +11,12 @@ Release notes for the next release, written as features land.
 - If this file has no entries at tag time, the release falls back to
   auto-generated notes and the workflow prints a warning.
 -->
+
+- Docker: every image flavor is now its own GHCR package —
+  `ghcr.io/perfscale/perfscale` (perfscale only), `perfscale-k6`,
+  `perfscale-jmeter`, `perfscale-locust`, and `perfscale-full` (all three
+  runners), each tagged `X.Y.Z` / `X.Y` / `latest`. Pick exactly the engine
+  you need (`docker pull ghcr.io/perfscale/perfscale-k6:latest`) instead of
+  finding the right suffix tag in one package. The old suffix tags
+  (`perfscale:latest-k6`, `perfscale:X.Y.Z-full`, …) keep being published
+  for the same images, so existing pulls don't break.
