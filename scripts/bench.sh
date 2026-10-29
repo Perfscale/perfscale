@@ -67,6 +67,16 @@ set -euo pipefail
 #                 connect cost is part of the measurement), so the k6 side
 #                 gets both a warm row (connection per VU) and a cold row
 #                 (connect per iteration, the fair twin).
+#   sytester    – open-model HTTP GET at a fixed arrival rate (SYT_RATE,
+#                 default 10000/s — SyTester's own TPS ceiling) against SyTester
+#                 Community Edition (gitverse.ru/sbertech/sytester), next to
+#                 the perfscale `arrival:` engine and k6 constant-arrival-rate
+#                 at the same rate. SyTester is a JVM server driven over its
+#                 REST API, so one row = boot JVM → upload plan → start → wait
+#                 → read the report → kill; boot time is reported in its own
+#                 column and CPU/RSS cover the whole JVM lifetime. Needs Java
+#                 21+ (SYTESTER_JAVA) and the release jar (SYTESTER_JAR,
+#                 downloaded by the bench workflow); skipped otherwise.
 #
 # No llm suite: the engine's LLM driver needs a backing endpoint with
 # meaningful semantics, which doesn't fit a bench CI job cleanly. Add it
@@ -90,7 +100,7 @@ PORT="${PORT:-18999}"
 TLS_PORT="${TLS_PORT:-18998}"
 OUTPUT="${OUTPUT:-bench-report.md}"
 RESULTS="${RESULTS:-bench-results.json}"
-SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub}"
+SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sytester}"
 
 STARTUP_DURATION="${STARTUP_DURATION:-1s}"
 STARTUP_RUNS="${STARTUP_RUNS:-5}"
@@ -134,6 +144,19 @@ PUBSUB_DURATION="${PUBSUB_DURATION:-10s}"
 PUBSUB_PAYLOAD_BYTES="${PUBSUB_PAYLOAD_BYTES:-256}"
 BENCH_NATS_URL="${BENCH_NATS_URL:-nats://127.0.0.1:4222}"
 K6_NATS_BIN="${K6_NATS_BIN:-}"
+# sytester suite: shared arrival rate for every row (SyTester's plan schema
+# caps tps at 10000), run length, the SyTester REST port, and the worker
+# ceiling for the perfscale/k6 open-model rows. SYTESTER_JAR is resolved
+# after ROOT below.
+SYT_RATE="${SYT_RATE:-10000}"
+SYT_DURATION="${SYT_DURATION:-10s}"
+SYT_PORT="${SYT_PORT:-18997}"
+SYT_MAX_VUS="${SYT_MAX_VUS:-256}"
+# SyTester warm-up run at the same rate before the measured one (JIT, lazy
+# init); 0s disables it. Its CPU still lands in the row's resource columns.
+SYT_WARMUP="${SYT_WARMUP:-5s}"
+SYTESTER_JAR="${SYTESTER_JAR:-}"
+SYTESTER_JAVA="${SYTESTER_JAVA:-java}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${PERFSCALE_BIN:-$ROOT/target/release/perfscale}"
@@ -383,6 +406,21 @@ if [[ "$HAS_NATS" == 1 ]]; then
     HAS_K6_NATS=1
   else
     echo "skipping k6 (xk6-nats) pubsub scenarios: no custom binary at $K6_NATS_BIN (built by the bench workflow)" >&2
+  fi
+fi
+
+# sytester suite: Java 21+ and the release jar (bench workflow downloads it
+# to target/sytester/). Probe the major version from `java -version`.
+SYTESTER_JAR="${SYTESTER_JAR:-$ROOT/target/sytester/SyTester.jar}"
+HAS_SYTESTER=0
+if has_suite sytester; then
+  syt_java_major="$("$SYTESTER_JAVA" -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -1)"
+  if [[ ! -f "$SYTESTER_JAR" ]]; then
+    echo "skipping sytester suite: no jar at $SYTESTER_JAR (set SYTESTER_JAR)" >&2
+  elif [[ "${syt_java_major:-0}" -lt 21 ]]; then
+    echo "skipping sytester suite: $SYTESTER_JAVA is Java ${syt_java_major:-?}, SyTester needs 21+ (set SYTESTER_JAVA)" >&2
+  else
+    HAS_SYTESTER=1
   fi
 fi
 
@@ -2336,6 +2374,169 @@ if has_suite pubsub; then
     echo "Metrics share names on both sides (\`pubsub_msgs_published\`,"
     echo "\`pubsub_publish_ms\`, \`pubsub_e2e_ms\`, \`pubsub_errors\`), parsed"
     echo "by one pubsub-text parser._"
+  } >>"$OUTPUT"
+fi
+
+# --- sytester ------------------------------------------------------------------
+
+if has_suite sytester && [[ "$HAS_SYTESTER" == 1 ]]; then
+  echo "suite: sytester" >&2
+
+  # One SyTester run, start to finish: boot the JVM (fresh H2 db in a temp
+  # dir), run an unrecorded warm-up GENERATOR plan, then the measured one,
+  # both at a fixed TPS (start == max, no ramp); wait for the report to
+  # leave `running`, print one JSON line
+  # for the sytester-json parser, then stop the JVM. $1 rate, $2 duration,
+  # $3 target URL. Port/java/jar come from the environment.
+  cat >"$WORKDIR/sytester_run.sh" <<'EOF'
+#!/usr/bin/env bash
+set -u
+rate="$1" dur="$2" url="$3"
+api="http://127.0.0.1:${SYT_PORT}"
+now() { python3 -c 'import time; print(time.time())'; }
+dir="$(mktemp -d)"
+cd "$dir" || exit 1
+t0="$(now)"
+"$SYTESTER_JAVA" -Dserver.port="$SYT_PORT" -jar "$SYTESTER_JAR" >"$dir/syt.log" 2>&1 &
+pid=$!
+trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$dir"' EXIT
+up=0
+for _ in $(seq 1 600); do
+  curl -fs -o /dev/null "$api/show/loadedTestplans" && { up=1; break; }
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 0.5
+done
+if [[ "$up" != 1 ]]; then
+  echo "sytester never came up:" >&2
+  tail -20 "$dir/syt.log" >&2
+  exit 1
+fi
+boot_s="$(python3 -c "print(round($(now) - $t0, 2))")"
+# $1 plan name, $2 duration → prints the final lastReport JSON.
+run_plan() {
+  local name="$1" d="$2" report="" status=""
+  cat >"$dir/$name.yaml" <<PLAN
+name: ${name}
+type: GENERATOR
+logLevel: ERROR
+testDuration: ${d}
+generator:
+  tps:
+    start: ${rate}
+    max: ${rate}
+  testdata:
+    - data
+  transportIn:
+    - http
+transports:
+  - name: http
+    protocol: HTTP
+    host: "${url}"
+    http:
+      method: GET
+testdatas:
+  - name: data
+    body: ""
+PLAN
+  curl -fs -o /dev/null -X POST -H 'Content-Type: application/yaml' \
+    --data-binary @"$dir/$name.yaml" "$api/action/uploadTestplan" \
+    || { echo "sytester: plan upload failed" >&2; return 1; }
+  curl -fs -o /dev/null -X POST -H 'Content-Type: application/json' \
+    -d "{\"testplanName\":\"$name\"}" "$api/action/start" \
+    || { echo "sytester: start failed" >&2; return 1; }
+  sleep "${d%s}"
+  for _ in $(seq 1 120); do
+    report="$(curl -fs "$api/action/lastReport?testplanName=$name" || true)"
+    status="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)"
+    [[ -n "$status" && "$status" != running ]] && break
+    sleep 0.5
+  done
+  printf '%s' "${report:-null}"
+}
+# Warm-up at the same rate first: a freshly booted JVM is still JIT-compiling
+# and finishing lazy init, and would be measured at a fraction of its speed.
+[[ "${SYT_WARMUP%s}" -gt 0 ]] && { run_plan bench-warmup "$SYT_WARMUP" >/dev/null || exit 1; }
+report="$(run_plan bench-health "$dur")" || exit 1
+printf '{"configured_s": %s, "boot_s": %s, "report": %s}\n' "${dur%s}" "$boot_s" "${report:-null}"
+EOF
+  chmod +x "$WORKDIR/sytester_run.sh"
+
+  # k6 twin of the open model: constant-arrival-rate, workers pre-allocated
+  # up to the same ceiling as the perfscale row.
+  cat >"$WORKDIR/script_arrival.js" <<'EOF'
+import http from 'k6/http';
+export const options = {
+  scenarios: {
+    arrival: {
+      executor: 'constant-arrival-rate',
+      rate: Number(__ENV.BENCH_RATE),
+      timeUnit: '1s',
+      duration: __ENV.BENCH_DURATION,
+      preAllocatedVUs: Number(__ENV.BENCH_MAX_VUS),
+      maxVUs: Number(__ENV.BENCH_MAX_VUS),
+    },
+  },
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(50)', 'p(90)', 'p(95)', 'p(99)'],
+};
+export default function () {
+  http.get(__ENV.BENCH_TARGET);
+}
+EOF
+
+  # perfscale open model at the same rate: a 1ms ramp to the rate, then hold
+  # (an arrival stage interpolates from the previous rate, starting at 0).
+  printf 'arrival:\n  max_vus: %s\n  pre_allocated_vus: %s\n  stages:\n    - { duration: 1ms, rate: %s }\n    - { duration: %s, rate: %s }\n' \
+    "$SYT_MAX_VUS" "$SYT_MAX_VUS" "$SYT_RATE" "$SYT_DURATION" "$SYT_RATE" \
+    >"$WORKDIR/config-arrival.yaml"
+
+  syt_names=("sytester (native)")
+  syt_cmds=("env SYT_PORT=$SYT_PORT SYT_WARMUP=$SYT_WARMUP SYTESTER_JAVA=$SYTESTER_JAVA SYTESTER_JAR=$SYTESTER_JAR $WORKDIR/sytester_run.sh $SYT_RATE $SYT_DURATION $TARGET/health")
+  syt_kinds=("sytester-json")
+  if [[ "$HAS_K6" == 1 ]]; then
+    syt_names+=("k6 (constant-arrival-rate)")
+    syt_cmds+=("env BENCH_RATE=$SYT_RATE BENCH_DURATION=$SYT_DURATION BENCH_MAX_VUS=$SYT_MAX_VUS BENCH_TARGET=$TARGET/health k6 run --quiet $WORKDIR/script_arrival.js")
+    syt_kinds+=("text")
+  fi
+  syt_names+=("perfscale (yaml arrival)")
+  syt_cmds+=("$BIN run -f $WORKDIR/yaml-get.yaml -c $WORKDIR/config-arrival.yaml")
+  syt_kinds+=("text")
+  if [[ "$HAS_QUIET" == 1 ]]; then
+    syt_names+=("perfscale (yaml arrival quiet)")
+    syt_cmds+=("$BIN run -f $WORKDIR/yaml-get.yaml -c $WORKDIR/config-arrival.yaml --quiet")
+    syt_kinds+=("text")
+  fi
+
+  syt_rows=""
+  for i in "${!syt_names[@]}"; do
+    name="${syt_names[$i]}"
+    echo "  $name" >&2
+    boot_s=0
+    measure "$name" "${syt_cmds[$i]}" "${syt_kinds[$i]}"
+    json_row sytester.json "$name"
+    dropped="$(grep -m1 -E '^ *dropped_iterations' "$WORKDIR/out.$$" | sed -E 's/^[^:]*:[[:space:]]*([0-9]+).*/\1/' || true)"
+    boot="—"
+    [[ "${syt_kinds[$i]}" == sytester-json ]] && boot="${boot_s}s"
+    syt_rows="$syt_rows| $name | $requests | $rps | $avg_ms | $p50_ms | $p95_ms | $p99_ms | $err_pct% | ${dropped:-—} | $boot | $(cpu_per_req "$requests") µs | $T_RSS |
+"
+  done
+
+  section "SyTester: open model at ${SYT_RATE}/s (${SYT_DURATION})"
+  {
+    echo "| Scenario | Requests | RPS | avg ms | p50 ms | p95 ms | p99 ms | Err | Dropped | Boot | CPU per req | Peak RSS |"
+    echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+    printf '%s' "$syt_rows"
+    echo
+    echo "_Every row offers the same fixed arrival rate (${SYT_RATE}/s — SyTester's"
+    echo "plan schema caps \`tps\` at 10000) to the same \`/health\` endpoint; RPS"
+    echo "below the target means the engine could not keep the schedule. The"
+    echo "perfscale and k6 rows cap their worker pool at ${SYT_MAX_VUS} VUs and"
+    echo "count permits they could not start as Dropped. SyTester is a JVM server"
+    echo "driven over its REST API: CPU per req and Peak RSS cover the whole JVM"
+    echo "lifetime (boot + a ${SYT_WARMUP} warm-up at the same rate + the run), and"
+    echo "Boot is the time until its API answered. Its latency percentiles come from the report's"
+    echo "\`sytester_metrics\` and are recorded in whole milliseconds. perfscale's \`http_req_duration\` is pure"
+    echo "request time — the coordinated-omission-corrected view is"
+    echo "\`engine_arrival_iteration_ms\` in the raw output._"
   } >>"$OUTPUT"
 fi
 
