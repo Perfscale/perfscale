@@ -31,8 +31,6 @@ ROW_METRICS = [
     ("db", "rps", True),
     ("pubsub", "rps", True),
     ("pubsub", "p95_ms", False),
-    ("sytester", "rps", True),
-    ("sytester", "p95_ms", False),
     ("startup", "overhead_vs_ideal_ms", False),
 ]
 

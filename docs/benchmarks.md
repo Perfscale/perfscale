@@ -41,7 +41,7 @@ wrapping overhead — not the underlying tool.
 | `graphql` | The same GraphQL POST from `std/graphql@v1`, transport-only `std/http@v1`, stock k6, and k6 wrapped by perfscale against the repo's `graphql_server` example — no xk6 required |
 | `db` | SQL: cold connect+query vs warm VU-scoped connections vs transactions (`std/db-*@v1`, PostgreSQL at `BENCH_PG_DSN` — every row drives the same real server), plus the warm shape from locust (psycopg2), JMeter (JDBC) and k6 — the k6 row is a **custom binary** built with the `xk6-sql` extension + postgres driver (stock k6 has no SQL module), used only by this row |
 | `pubsub` | Pub/sub: publish throughput and pub/sub roundtrip e2e latency (`std/pubsub@v1`) against a NATS broker (`BENCH_NATS_URL` — every row drives the same real broker) in `scope: exchange` (connect per iteration) and `scope: vu` (one connection per VU, with a fire-and-forget `flush: none` twin) postures, plus k6 rows via a **custom binary** built with the xk6-nats extension (stock k6 has no NATS module), in warm (connection per VU) and cold (connect per iteration — the fair twin of `scope: exchange`) postures |
-| `sytester` | Open model vs [SyTester](https://gitverse.ru/sbertech/sytester) Community Edition across scenarios mirroring its example plans — **get** (`GET /health`), **post** (JSON POST with per-request dynamic fields and a custom header), **steps** (GET JSON → extract a field → POST it on, SyTester `STEPS`), **grpc** (unary echo against `grpc_echo_server`) and **db** (`SELECT 1` on a warm PostgreSQL connection, `BENCH_PG_DSN`). Inside a scenario every row offers the same fixed arrival rate: SyTester, the perfscale `arrival:` engine (logged and `--quiet`), and k6 `constant-arrival-rate` on the HTTP scenarios. Reports delivered RPS, latency percentiles, errors, dropped iterations, SyTester's JVM boot time, CPU per request and peak RSS |
+| `sytester` | Not a table of its own: adds [SyTester](https://gitverse.ru/sbertech/sytester) Community Edition rows to the `throughput`, `saturation`, `grpc` and `db` tables, next to k6/locust/JMeter. SyTester has no VU model, so its rows offer its maximum fixed rate (`SYT_RATE`, default 10000 TPS) |
 
 JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
 console summary has no percentiles, so it stays out of the `throughput`
@@ -140,26 +140,23 @@ k6 e2e is not measurable with this extension, so e2e latency is native-only.
 k6 latencies are `Date.now()`-grained (1ms), so sub-millisecond publish
 samples read as 0 — compare Msg/s there, and the native rows for latency.
 
-The `sytester` suite drives SyTester over its REST API: each run boots the
-JVM (`SYTESTER_JAVA`, Java 21+) from the release jar (`SYTESTER_JAR`, default
+SyTester rows drive SyTester over its REST API: each row boots the JVM
+(`SYTESTER_JAVA`, Java 21+) from the release jar (`SYTESTER_JAR`, default
 `target/sytester/SyTester.jar` — the bench workflow downloads the pinned
 v6.10.0 jar and checks its sha256), runs an unrecorded `SYT_WARMUP` (default
-5s) plan at the same rate so the measured run is JIT-warm, then the
-scenario's plan (`GENERATOR` with `tps.start == tps.max`, or a `STEPS`
-`TPS_LOADER` for steps/db) for `SYT_DURATION`, reads `/action/lastReport`
-and stops the JVM. The grpc row uploads `echo.proto` as a proto set first
-and sizes SyTester's gRPC sender pool (`grpc.maxConnections`) to
-`SYT_MAX_VUS`, the perfscale worker ceiling. Every plan sets a huge
-`errorsToStop` — the default (100) aborts a plan within a second of
-trouble, and the bench wants the error rate. `STEPS` reports are per step;
-the row sums the request steps and takes the worst step's percentiles. CPU per request and peak RSS
-therefore cover the whole JVM lifetime; the `Boot` column is the time until
-its API answered. SyTester's `failedPercentage` stays 0 on transport
-failures (status `-1`, e.g. `Pending acquire queue has reached its limit`),
-so `Err` is derived from `requestsFailed`. Its latencies are whole
-milliseconds. Locally: download the jar from the
-[releases page](https://gitverse.ru/sbertech/sytester/releases) and run
-`SUITES=sytester SYTESTER_JAR=… SYTESTER_JAVA=… ./scripts/bench.sh`.
+5s) plan at the same rate so the measured run is JIT-warm, then the plan
+for the table's duration, reads `/action/lastReport` and stops the JVM.
+Plans follow SyTester's example plans: a `GENERATOR` GET for
+throughput/saturation, a `GENERATOR` gRPC unary call for grpc (`echo.proto`
+uploaded as a proto set; sender pool `grpc.maxConnections` =
+`SYT_MAX_VUS`), and a `STEPS` `TPS_LOADER` with a PgJDBC `SELECT 1` for db.
+Every plan sets a huge `errorsToStop` — the default (100) aborts a plan
+within a second of trouble, and the bench wants the error rate. CPU per
+request and peak RSS cover the whole JVM lifetime. `failedPercentage` stays
+0 on transport failures (status `-1`), so `Err` is derived from failed
+requests; latencies are whole milliseconds. Locally: download the jar from
+the [releases page](https://gitverse.ru/sbertech/sytester/releases) and run
+`SUITES="throughput sytester" SYTESTER_JAR=… SYTESTER_JAVA=… ./scripts/bench.sh`.
 
 Micro-benchmarks for the native engine's hot paths (YAML parse, `${{ ... }}`
 interpolation, metrics recording / percentile summary, `RingBuf` process-output
@@ -229,8 +226,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `PUBSUB_DURATION` / `PUBSUB_PAYLOAD_BYTES` | `10s` / `256` | pubsub-suite per-scenario length / message payload size in bytes |
 | `BENCH_NATS_URL` | `nats://127.0.0.1:4222` | NATS broker URL for the pubsub suite's nats rows |
 | `K6_NATS_BIN` | `target/xk6-nats/k6` | Custom k6 with the xk6-nats extension for the pubsub-suite k6 rows (built by the bench workflow) |
-| `SYT_RATE` / `SYT_DURATION` / `SYT_WARMUP` / `SYT_MAX_VUS` | `10000` / `10s` / `5s` / `256` | sytester-suite rate of the get/post scenarios / measured run length / SyTester warm-up length / worker ceiling of the perfscale and k6 rows |
-| `SYT_STEPS_RATE` / `SYT_GRPC_RATE` / `SYT_DB_RATE` | `1000` / `2000` / `1000` | sytester-suite target rate of the steps (flows/s), grpc and db scenarios |
+| `SYT_RATE` / `SYT_WARMUP` / `SYT_MAX_VUS` | `10000` / `5s` / `256` | TPS the SyTester rows offer / its warm-up length / its gRPC sender pool |
 | `SYTESTER_JAR` / `SYTESTER_JAVA` / `SYT_PORT` | `target/sytester/SyTester.jar` / `java` / `18997` | SyTester release jar / Java 21+ binary / its REST port |
 | `PORT` / `TLS_PORT` | `18999` / `18998` | Ports for the throwaway serve targets |
 | `OUTPUT` | `bench-report.md` | Markdown report path |

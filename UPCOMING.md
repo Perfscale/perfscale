@@ -12,9 +12,8 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
-- Benchmarks: the `sytester` suite now compares SyTester across five
-  scenarios modelled on its own example plans — `get`, `post` (JSON POST
-  with per-request dynamic fields), `steps` (GET → extract → POST), `grpc`
-  (unary echo) and `db` (`SELECT 1` on a warm PostgreSQL connection) —
-  each at a fixed arrival rate against perfscale's `arrival:` engine (and
-  k6 on the HTTP scenarios). Select scenarios with `SYT_SCENARIOS`.
+- Benchmarks: SyTester rows now sit in the throughput, saturation, grpc
+  and db tables next to k6/locust/JMeter (instead of a separate table),
+  offering SyTester's maximum fixed rate (`SYT_RATE`, 10000 TPS) since it
+  has no VU model. The grpc row uses its gRPC generator (proto set uploaded
+  over the REST API), the db row its PgJDBC transport.
