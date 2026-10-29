@@ -4,7 +4,7 @@
 Subcommands:
   parse <kind> <file>            kind: text | locust-csv | ws-text |
                                  grpc-text | db-text | pubsub-text |
-                                 jmeter-summary
+                                 jmeter-summary | sytester-json
                                  prints shell-evalable `key=value` lines
   append <json> <label> [k=v..]  append a row object to a JSON array file
   boundary <kind> <file> <max-vus> <duration-s> <err-pct>
@@ -238,6 +238,52 @@ def parse_jmeter_summary(content):
     return out
 
 
+def parse_sytester_json(content):
+    """Parse the sytester suite wrapper's output: one JSON line
+    `{"configured_s": N, "boot_s": N, "report": <GET /action/lastReport>}`.
+    SyTester reports latencies in ms; percentiles live in `sytester_metrics`
+    (`{"sytester_p95": {"value": "865.20", ...}}`). RPS is computed over the
+    plan's configured `testDuration` — the report's `durationInSeconds` is
+    rounded to whole seconds and includes the stop."""
+    out = zeroed()
+    extra = {"boot_s": 0.0}
+    line = next((l for l in content.splitlines() if l.startswith("{")), None)
+    if line is None:
+        out["parse_ok"] = 0
+        return out, extra
+    doc = json.loads(line)
+    rep = doc.get("report") or {}
+    sm = rep.get("sytester_metrics") or {}
+
+    def metric(name):
+        try:
+            return float(sm[name]["value"])
+        except (KeyError, TypeError, ValueError):
+            return 0.0
+
+    out["requests"] = int(rep.get("requestsTotal") or metric("sytester_requests_total"))
+    secs = float(doc.get("configured_s") or rep.get("durationInSeconds") or 0)
+    if secs > 0:
+        out["rps"] = out["requests"] / secs
+    try:
+        out["avg_ms"] = float((rep.get("latencies") or {}).get("avg", 0))
+    except ValueError:
+        out["avg_ms"] = metric("sytester_latency_avg")
+    for key, name in (("p50_ms", "sytester_p50"), ("p90_ms", "sytester_p90"),
+                      ("p95_ms", "sytester_p95"), ("p99_ms", "sytester_p99"),
+                      ("min_ms", "sytester_latency_min"),
+                      ("max_ms", "sytester_latency_max")):
+        out[key] = metric(name)
+    # `failedPercentage` stays 0 even with transport failures (status -1,
+    # e.g. "Pending acquire queue has reached its limit") — derive it.
+    failed = int(rep.get("requestsFailed") or metric("sytester_requests_failed"))
+    if out["requests"]:
+        out["err_pct"] = failed * 100.0 / out["requests"]
+    extra["boot_s"] = float(doc.get("boot_s") or 0)
+    out["parse_ok"] = 1 if out["requests"] else 0
+    return out, extra
+
+
 def parse_locust_csv(path):
     """Parse the `Aggregated` row of locust's `--csv` stats output —
     the same source perfscale's locust runner reads."""
@@ -289,13 +335,16 @@ def cmd_parse(kind, path):
         elif kind == "pubsub-text":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics, extra = parse_pubsub_text(f.read())
+        elif kind == "sytester-json":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics, extra = parse_sytester_json(f.read())
         elif kind == "jmeter-summary":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_jmeter_summary(f.read())
         else:
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_text(f.read())
-    except OSError as e:
+    except (OSError, ValueError) as e:
         print(f"bench_metrics: {e}", file=sys.stderr)
         metrics = zeroed()
         metrics["parse_ok"] = 0
