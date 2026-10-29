@@ -1442,10 +1442,12 @@ cpu_per_req() { # $1 requests → µs of CPU per request, or —
 # drain below 1000. Up to ~2 min.
 tw_timewait() { # $1 port
   local port="$1"
+  # Whole-port match only: a bare ":$port" substring would also count
+  # ephemeral ports that start with it (":5432" in ":54321").
   if command -v ss >/dev/null 2>&1; then
-    ss -tan state time-wait 2>/dev/null | grep -c ":$port" || true
+    ss -tan state time-wait 2>/dev/null | grep -cE ":$port([[:space:]]|$)" || true
   elif command -v netstat >/dev/null 2>&1; then
-    netstat -an -p tcp 2>/dev/null | grep TIME_WAIT | grep -c "[.:]$port[ .]" || true
+    netstat -an -p tcp 2>/dev/null | grep TIME_WAIT | grep -cE "[.:]$port([[:space:]]|$)" || true
   else
     echo 0
   fi
@@ -1464,12 +1466,29 @@ tw_settle() { # $1 port, $2 target name (for the log lines)
   echo "warning: still $tw TIME_WAIT sockets against port $port after 120s — the next cold row may hit EADDRNOTAVAIL" >&2
 }
 
+# Every row starts from drained ports, not just the connection-churning
+# suites: a row that reconnects per call (std/grpc@v1, cold db/nats, a
+# high-rate open-model row) leaves thousands of TIME_WAIT sockets, and the
+# NEXT row — whatever engine — would otherwise be measured against a
+# half-exhausted ephemeral range. Cheap when clean (one ss/netstat call per
+# target port); the ports are the serve targets plus whichever fixture
+# servers this run uses.
+settle_ports() {
+  local port
+  for port in "$PORT" "$TLS_PORT" "${GRPC_ADDR##*:}" "${GQL_ADDR##*:}" \
+    "${DB_HOSTPORT##*:}" "${NATS_HOSTPORT##*:}"; do
+    [[ -n "$port" ]] && tw_settle "$port" "target"
+  done
+  return 0
+}
+
 # Instrumented run + metric parse into shell vars. $1 label, $2 cmd,
 # $3 parse kind (text|locust-csv), $4 file to parse (defaults to stdout log).
 requests=0 rps=0 avg_ms=0 p50_ms=0 p90_ms=0 p95_ms=0 p99_ms=0 min_ms=0 max_ms=0 err_pct=0 parse_ok=0
 measure() {
   local label="$1" cmd="$2" kind="${3:-text}" parse_file="${4:-}"
   local out="$WORKDIR/out.$$"
+  settle_ports
   run_timed "$out" "$cmd"
   eval "$($METRICS parse "$kind" "${parse_file:-$out}")"
   if [[ "$parse_ok" != 1 ]]; then
@@ -1539,6 +1558,7 @@ build_cmd() { # $1 builder, $2 vus, $3 duration, $4 csv prefix (locust native)
 }
 
 run_hyperfine() { # $1 vus, $2 duration, $3 runs, $4 md out, $5 json out
+  settle_ports
   local args=(--warmup "$WARMUP" --runs "$3" --export-markdown "$4" --export-json "$5")
   local i
   for i in "${!hf_names[@]}"; do
