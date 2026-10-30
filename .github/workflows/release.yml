@@ -175,12 +175,15 @@ jobs:
 
   # ── Publish Docker images to ghcr.io ─────────────────────────────────────
   # Five flavors from docker/image.Dockerfile (multi-arch, binaries come from
-  # the build matrix — nothing is recompiled here):
-  #   perfscale:X.Y.Z[/X.Y/latest]            — perfscale only (native engine)
-  #   perfscale:X.Y.Z-k6[/…-k6]               — + k6
-  #   perfscale:X.Y.Z-jmeter[/…-jmeter]       — + JMeter (headless JRE)
-  #   perfscale:X.Y.Z-locust[/…-locust]       — + locust
-  #   perfscale:X.Y.Z-full[/…-full]           — + k6 + JMeter + locust
+  # the build matrix — nothing is recompiled here), one package each, tagged
+  # X.Y.Z / X.Y / latest:
+  #   perfscale         — perfscale only (native engine)
+  #   perfscale-k6      — + k6
+  #   perfscale-jmeter  — + JMeter (headless JRE)
+  #   perfscale-locust  — + locust
+  #   perfscale-full    — + k6 + JMeter + locust
+  # Legacy suffix tags on the perfscale package (perfscale:X.Y.Z-k6, …) are
+  # still pushed for the same digests so existing pulls keep working.
   docker:
     name: Publish Docker images
     needs: build
@@ -216,14 +219,20 @@ jobs:
       - name: Build & push all flavors
         run: |
           for flavor in "" k6 jmeter locust full; do
-            target="base"; suffix=""
-            if [ -n "$flavor" ]; then target="$flavor"; suffix="-$flavor"; fi
-            echo "── flavor: ${flavor:-slim} (target $target)"
+            target="base"; image="ghcr.io/perfscale/perfscale"; legacy=()
+            if [ -n "$flavor" ]; then
+              target="$flavor"; image="ghcr.io/perfscale/perfscale-$flavor"
+              for t in "$VERSION" "$MAJOR_MINOR" latest; do
+                legacy+=(-t "ghcr.io/perfscale/perfscale:${t}-$flavor")
+              done
+            fi
+            echo "── flavor: ${flavor:-slim} (target $target) → $image"
             docker buildx build -f docker/image.Dockerfile --target "$target" \
               --platform linux/amd64,linux/arm64 \
-              -t "ghcr.io/perfscale/perfscale:${VERSION}${suffix}" \
-              -t "ghcr.io/perfscale/perfscale:${MAJOR_MINOR}${suffix}" \
-              -t "ghcr.io/perfscale/perfscale:latest${suffix}" \
+              -t "$image:${VERSION}" \
+              -t "$image:${MAJOR_MINOR}" \
+              -t "$image:latest" \
+              "${legacy[@]}" \
               --push .
           done
 
@@ -246,18 +255,18 @@ jobs:
       - name: Smoke test runner flavors
         run: |
           docker run --rm --entrypoint k6 \
-            "ghcr.io/perfscale/perfscale:${VERSION}-k6" version
+            "ghcr.io/perfscale/perfscale-k6:${VERSION}" version
           docker run --rm --entrypoint jmeter \
-            "ghcr.io/perfscale/perfscale:${VERSION}-jmeter" --version
+            "ghcr.io/perfscale/perfscale-jmeter:${VERSION}" --version
           docker run --rm --entrypoint locust \
-            "ghcr.io/perfscale/perfscale:${VERSION}-locust" --version
-          docker run --rm "ghcr.io/perfscale/perfscale:${VERSION}-full" --version
+            "ghcr.io/perfscale/perfscale-locust:${VERSION}" --version
+          docker run --rm "ghcr.io/perfscale/perfscale-full:${VERSION}" --version
           docker run --rm --entrypoint k6 \
-            "ghcr.io/perfscale/perfscale:${VERSION}-full" version
+            "ghcr.io/perfscale/perfscale-full:${VERSION}" version
           docker run --rm --entrypoint jmeter \
-            "ghcr.io/perfscale/perfscale:${VERSION}-full" --version
+            "ghcr.io/perfscale/perfscale-full:${VERSION}" --version
           docker run --rm --entrypoint locust \
-            "ghcr.io/perfscale/perfscale:${VERSION}-full" --version
+            "ghcr.io/perfscale/perfscale-full:${VERSION}" --version
           echo "all runner flavors functional ✓"
 
   # ── Reset UPCOMING.md for the next cycle ────────────────────────────────────
