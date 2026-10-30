@@ -1467,6 +1467,67 @@ mod tests {
         assert_eq!(ctx.interpolate("got ${{ resp.body }}"), "got hello body");
     }
 
+    // -----------------------------------------------------------------
+    // gzip response decoding (reqwest `gzip` feature)
+    // -----------------------------------------------------------------
+
+    /// A server that answers `Accept-Encoding: gzip` with a gzipped body gets
+    /// its response transparently decoded by reqwest: the step succeeds, the
+    /// decoded JSON is valid, and `std/pick@v1` can select from
+    /// `${{ feed.body.posts }}` — the million-users feed flow.
+    #[tokio::test]
+    async fn gzip_encoded_json_feed_decodes_and_feeds_pick() {
+        use std::io::Write as _;
+        let body = r#"{"posts":[{"id":1,"title":"hello"},{"id":2,"title":"world"}]}"#;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(body.as_bytes()).unwrap();
+        let gzipped = enc.finish().unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/feed"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .insert_header("content-encoding", "gzip")
+                    .set_body_bytes(gzipped),
+            )
+            .mount(&server)
+            .await;
+
+        let mut ctx = Context::new();
+        let out = http_action(
+            &json!({
+                "method": "GET",
+                "url": format!("{}/feed", server.uri()),
+                "headers": { "Accept-Encoding": "gzip" },
+            }),
+            "feed",
+            &ctx,
+        )
+        .await;
+
+        assert!(out.success, "gzipped feed must succeed: {:?}", out.logs);
+        assert_eq!(out.value["body"], body);
+        assert!(
+            out.value.get("body_base64").is_none(),
+            "decoded JSON is textual, not binary"
+        );
+
+        // The decoded body drives the JSON-path interpolation and std/pick.
+        ctx.set("feed", out.value);
+        let posts = ctx.interpolate("${{ feed.body.posts }}");
+        let picked = super::super::actions::execute_action(
+            "std/pick@v1",
+            &json!({ "from": posts, "index": 1 }),
+            &ctx,
+            "pick a post",
+        )
+        .await;
+        assert!(picked.success, "pick failed: {:?}", picked.logs);
+        assert_eq!(picked.value, json!({"id": 2, "title": "world"}));
+    }
+
     #[test]
     fn binary_content_types_are_not_textual() {
         for ct in [
