@@ -14,6 +14,13 @@ Full IDs carry a namespace and version (`std/http@v1`); the short aliases
 `set_shared_variable`, `get_shared_variable`) resolve to the
 same implementations.
 
+Two further namespaces sit outside the built-ins: `pro/*` actions are
+proprietary modules registered by the agent build, and `lib/<alias>/<step>`
+(RFC 009) invokes a **custom step exported by a WASM library** declared in
+`libraries:` — the component receives the interpolated `with:` params and
+returns the same success/output/logs/metrics shape built-ins produce. See
+[Libraries](libraries.md#custom-steps-libaliasstep).
+
 ## `std/http@v1`
 
 Perform one HTTP request per iteration. Timing feeds the run's metrics.

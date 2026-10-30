@@ -1,6 +1,6 @@
 # RFC 009: Custom SDK steps — wasm components as `use:` actions
 
-- **Status**: Draft
+- **Status**: Implemented (engine-side; SDK sugar pending in the SDK repos)
 - **Author**: Perfscale Team
 - **Created**: 2026-10-05
 - **Requires**: RFC 005 (libraries — the wasmtime runtime, capability model,
@@ -220,6 +220,7 @@ v1 grants for step-exporting components are the RFC 005 set minus `net`:
 | *(none)* / `pure` marker | nothing beyond the call context | the common case: compute, transform, assert |
 | `fs` | `wasi:filesystem` preopens under `fs_root`, read-only | corpora, fixtures, templates |
 | `clock` | `wasi:clocks` monotonic | wall time already arrives via context |
+| `process` | `perfscale:step/host-exec` — one-shot bounded exec | decided during implementation (see "Resolved"): trusted-arbitrary-code hatch, triple-gated (`capabilities: [process]` + `allow_library_capabilities` + `allow_process_actions`), never raw WASI process imports |
 
 **No network in v1.** Two reasons, stated plainly:
 
@@ -344,19 +345,25 @@ interface step {
         -> result<string, string>;
 }
 
-world perfscale-step {
+world perfscale-steps {
+    export perfscale:library/library@0.3.0;
     export step;
     // WASI imports are connected by the host only per granted capabilities
     // (v1: filesystem, clocks — never sockets, never wasi:http for steps).
+    // perfscale-steps-exec additionally imports the gated host-exec
+    // interface (the `process` capability).
 }
 ```
 
-The component exports `world perfscale-step` **in addition to** (not instead
-of) `world perfscale-library`. `info()` stays on the library interface and
-is the single manifest: it gains `steps`, so a steps-only component exports
-both worlds with `functions: []`. Host dispatch by ABI major is unchanged:
-a 0.1 `perfscale:step` component on a newer engine just works; an
-unsupported major fails to load naming both versions.
+The component exports `world perfscale-steps` **in addition to** (not
+instead of) the plain library world — the step world *re-exports* the 0.3
+library interface by reference, so one component carries both
+(`wit/step/step.wit`; the exec variant is `perfscale-steps-exec` with the
+gated `host-exec` import). `info()` stays on the library interface and is
+the single manifest: it gains `steps`, so a steps-only component declares
+`functions: []`. Host dispatch by ABI major is unchanged: a 0.1
+`perfscale:step` component on a newer engine just works; an unsupported
+major fails to load naming both versions.
 
 `result-json` — the serialized `ActionOutput` (RFC 008), all keys optional
 except `success`:
@@ -580,3 +587,54 @@ as `FunctionInfo.secret`.
   `perfscale:step` and `perfscale:library` package versions are allowed to
   drift or must bump in lockstep; the exact Rust SDK API shape (deferred to
   implementation, TS/Go sketches above are the contract of intent).
+
+*(Implemented 2026-10-28 — the resolved-on-implementation deltas:)*
+
+- **The WIT surface landed as specified, in one additive package**:
+  `wit/step/step.wit` (`perfscale:step@0.1.0`) with the combined world
+  `perfscale-steps` (re-exports `perfscale:library/library@0.3.0` by
+  reference — the library ABI is untouched) and `perfscale-steps-config`.
+  The step package resolves the library package through
+  `wit/step/deps/perfscale-library/library.wit`, a vendored copy pinned
+  byte-identical to `wit/library.wit` by a test. The library `info()`
+  manifest gained `steps: [{name, description}]`; a steps-only component
+  declares `functions: []`, and a manifest/ABI disagreement (either
+  direction) is a hard load error.
+- **`secret_output_paths` is a flat list of dot-separated output keys**
+  resolved against the output object; each resolved value is recorded in
+  the run's `SecretRegistry`.
+- **Step fuel budget instead of a new wall-time mechanism**: `run` gets a
+  500M-fuel budget (10× the value-call budget) — still a trap bound, not a
+  fairness mechanism; the runtime deliberately has no epoch interruption,
+  same as library calls. The 30 s wall-time idea is dropped for v1.
+- **Metric-name hygiene decided**: guest metrics must match
+  `[a-z][a-z0-9_]*` and may not collide with any registered metrics-family
+  name (or the reserved `metrics` key itself); violations fail the step
+  with the name in the error.
+- **Per-library metrics**: the `libraries:` summary gains additive
+  `step_calls` / `step_errors` / `step_p95_ms` fields, omitted when zero so
+  pre-009 consumers see the same shape.
+- **Explicit `process` exception** (decided against the strict v1
+  pure/fs/clock line): step components may import
+  `perfscale:step/host-exec` (`perfscale-steps-exec` world) — host-mediated
+  **one-shot** process execution (explicit argv, replacement environment,
+  piped + 1 MiB-capped stdio, 30 s default / 600 s max timeout,
+  process-tree kill on timeout). Granted only by `capabilities: [process]`
+  AND `allow_library_capabilities: true` AND `allow_process_actions: true`;
+  this is trusted-arbitrary-code, not a sandbox boundary, and gives guests
+  no ambient WASI process imports. `std/child_process@v1` stays the
+  long-running supervisor; `host-exec` is deliberately the bounded
+  request/response counterpart, not a shortcut to it.
+- **Dispatch order**: `execute_action` resolves `lib/` before registered
+  `ActionHandler`s, and `register_action` panics on a handler matching
+  `lib/` probes — the user namespace cannot be squatted.
+- **SDK repo/package rename NOT done here**: `sdk-libraries` /
+  `@perfscale/library-sdk` / `perfscale-library-sdk` keep their names in
+  this change; the rename rides the SDK repos and an engine minor, as
+  staged above. The Rust SDK trait surface for steps is likewise deferred —
+  the engine fixtures
+  (`crates/perfscale-library-sdk/examples/steps`, `stepexec`,
+  `stepsmismatch`) author the worlds with raw `wit-bindgen` meanwhile.
+- **Package versions drift independently**: `perfscale:step` starts at
+  0.1.0 while `perfscale:library` is at 0.3.0; both are checked and named
+  separately in load errors.

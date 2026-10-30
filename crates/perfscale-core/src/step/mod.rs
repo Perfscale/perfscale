@@ -33,6 +33,7 @@ pub(crate) mod grpc;
 pub mod http;
 pub(crate) mod json_doc;
 pub(crate) mod json_path;
+pub(crate) mod libstep;
 pub mod llm;
 pub mod process;
 pub mod pubsub;
