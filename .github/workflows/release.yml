@@ -3,6 +3,14 @@ name: Build & Release perfscale
 on:
   push:
     tags: ["v*"]
+  # Re-run ONLY the npm publish for an already-released tag (e.g. after a
+  # transient registry/sigstore failure mid-loop). Binaries come from the
+  # tag's GitHub Release assets; build/release/docker/reset don't run.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)publish to npm, e.g. v0.30.0"
+        required: true
 
 # Default for jobs without their own block (build); publish jobs declare the
 # elevated scopes they need (contents: write, packages: write, id-token).
@@ -13,6 +21,7 @@ jobs:
   # ── Build ────────────────────────────────────────────────────────────────────
   build:
     name: Build (${{ matrix.artifact }})
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -138,18 +147,37 @@ jobs:
   npm:
     name: Publish to npm
     needs: release
+    # On a tag push: after the GitHub Release. On workflow_dispatch: alone
+    # (release is skipped), from the existing release's assets.
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write # npm --provenance
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
 
       - uses: actions/download-artifact@v5
+        if: github.event_name == 'push'
         with:
           path: dist/
           merge-multiple: true
+
+      - name: Download binaries from the GitHub Release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
+            --pattern 'perfscale-*'
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir . \
+            --pattern sha256sums.txt --clobber
+          (cd dist && sha256sum -c ../sha256sums.txt --ignore-missing)
 
       - uses: actions/setup-node@v4
         with:
@@ -157,7 +185,7 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Assemble packages
-        run: node npm/build-npm-packages.mjs "${GITHUB_REF_NAME#v}" dist npm/out
+        run: node npm/build-npm-packages.mjs "${TAG#v}" dist npm/out
 
       # Platform packages first — the meta package's optionalDependencies
       # must be resolvable the moment @perfscale/exe lands.
@@ -166,11 +194,24 @@ jobs:
       # carry provenance attestations. The binding lives on npmjs.com →
       # package settings → Trusted Publisher → GitHub Actions.
       # Requires npm ≥ 11.5.1 (hence the npm@latest upgrade).
+      # Idempotent: a version already on the registry is skipped, so a run
+      # that died mid-loop (v0.30.0: sigstore answered 409 "equivalent entry
+      # already exists" on the third package) can simply be re-run. A failed
+      # publish is retried once — the tlog 409 is transient.
       - name: Publish
         run: |
           npm install -g npm@latest
           for pkg in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64 exe; do
-            npm publish "npm/out/$pkg" --access public --provenance
+            name=$(node -p "require('./npm/out/$pkg/package.json').name")
+            version=$(node -p "require('./npm/out/$pkg/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "skip $name@$version — already published"
+              continue
+            fi
+            npm publish "npm/out/$pkg" --access public --provenance \
+              || { echo "retrying $name@$version once"; sleep 20; \
+                   npm view "$name@$version" version >/dev/null 2>&1 \
+                   || npm publish "npm/out/$pkg" --access public --provenance; }
           done
 
   # ── Publish Docker images to ghcr.io ─────────────────────────────────────
