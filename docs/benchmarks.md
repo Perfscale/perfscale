@@ -41,6 +41,7 @@ wrapping overhead — not the underlying tool.
 | `grpc` | `std/grpc@v1` unary echo against the repo's `grpc_echo_server` example |
 | `graphql` | The same GraphQL POST from `std/graphql@v1`, transport-only `std/http@v1`, stock k6, and k6 wrapped by perfscale against the repo's `graphql_server` example — no xk6 required |
 | `db` | SQL: cold connect+query vs warm VU-scoped connections vs transactions (`std/db-*@v1`, PostgreSQL at `BENCH_PG_DSN` — every row drives the same real server), plus the warm shape from locust (psycopg2), JMeter (JDBC) and k6 — the k6 row is a **custom binary** built with the `xk6-sql` extension + postgres driver (stock k6 has no SQL module), used only by this row |
+| `sourceips` | Does `source_ips` lift the per-endpoint connection wall? `SRC_VUS` (default 6000) VUs each hold one keep-alive connection (`pool: dedicated` + 1s think time) against an ephemeral port range narrowed to `SRC_PORT_RANGE` (default `50000 53999` — 4000 ports; machine-wide sysctl, restored after), once from one source IP and once over `SRC_IPS_COUNT` (default 4) loopback addresses. Reports peak established connections (`ss`), connect errors, RPS. Linux + passwordless sudo (the CI runner); skipped elsewhere |
 | `pubsub` | Pub/sub: publish throughput and pub/sub roundtrip e2e latency (`std/pubsub@v1`) against a NATS broker (`BENCH_NATS_URL` — every row drives the same real broker) in `scope: exchange` (connect per iteration) and `scope: vu` (one connection per VU, with a fire-and-forget `flush: none` twin) postures, plus k6 rows via a **custom binary** built with the xk6-nats extension (stock k6 has no NATS module), in warm (connection per VU) and cold (connect per iteration — the fair twin of `scope: exchange`) postures |
 
 JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
@@ -229,6 +230,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `K6_NATS_BIN` | `target/xk6-nats/k6` | Custom k6 with the xk6-nats extension for the pubsub-suite k6 rows (built by the bench workflow) |
 | `SYT_RATE` / `SYT_WARMUP` / `SYT_MAX_VUS` | `10000` / `5s` / `256` | TPS the SyTester rows offer / its warm-up length / its gRPC sender pool |
 | `SYTESTER_JAR` / `SYTESTER_JAVA` / `SYT_PORT` | `target/sytester/SyTester.jar` / `java` / `18997` | SyTester release jar / Java 21+ binary / its REST port |
+| `SRC_VUS` / `SRC_DURATION` / `SRC_PORT_RANGE` / `SRC_IPS_COUNT` | `6000` / `20s` / `50000 53999` / `4` | sourceips-suite VUs (one standing connection each) / run length / narrowed ephemeral range / loopback source addresses of the multi-IP row |
 | `PORT` / `TLS_PORT` | `18999` / `18998` | Ports for the throwaway serve targets |
 | `OUTPUT` | `bench-report.md` | Markdown report path |
 | `RESULTS` | `bench-results.json` | Machine-readable results (regression tracking input) |

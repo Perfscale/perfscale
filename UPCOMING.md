@@ -12,6 +12,12 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- Benchmarks: new `sourceips` suite measures `std/http@v1` `source_ips`
+  against the per-endpoint connection wall — standing keep-alive
+  connections (`pool: dedicated`) under a narrowed ephemeral port range,
+  from one source IP vs several loopback addresses (peak established
+  connections, connect errors). Linux CI only (it narrows the port range
+  via sysctl for the suite and restores it).
 - Docker: every image flavor is now its own GHCR package —
   `ghcr.io/perfscale/perfscale` (perfscale only), `perfscale-k6`,
   `perfscale-jmeter`, `perfscale-locust`, and `perfscale-full` (all three
