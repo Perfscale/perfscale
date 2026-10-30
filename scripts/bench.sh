@@ -67,16 +67,6 @@ set -euo pipefail
 #                 connect cost is part of the measurement), so the k6 side
 #                 gets both a warm row (connection per VU) and a cold row
 #                 (connect per iteration, the fair twin).
-#   sytester    – open-model HTTP GET at a fixed arrival rate (SYT_RATE,
-#                 default 10000/s — SyTester's own TPS ceiling) against SyTester
-#                 Community Edition (gitverse.ru/sbertech/sytester), next to
-#                 the perfscale `arrival:` engine and k6 constant-arrival-rate
-#                 at the same rate. SyTester is a JVM server driven over its
-#                 REST API, so one row = boot JVM → upload plan → start → wait
-#                 → read the report → kill; boot time is reported in its own
-#                 column and CPU/RSS cover the whole JVM lifetime. Needs Java
-#                 21+ (SYTESTER_JAVA) and the release jar (SYTESTER_JAR,
-#                 downloaded by the bench workflow); skipped otherwise.
 #
 # No llm suite: the engine's LLM driver needs a backing endpoint with
 # meaningful semantics, which doesn't fit a bench CI job cleanly. Add it
@@ -86,7 +76,19 @@ set -euo pipefail
 # console summary has no percentiles, so it is not part of the throughput
 # table.
 #
-# Scenarios whose engine isn't on PATH are skipped, not failed. hyperfine is
+# SyTester (gitverse.ru/sbertech/sytester) rows join the throughput,
+# saturation, grpc and db tables like any other competitor engine, whenever
+# Java 21+ (SYTESTER_JAVA) and the release jar (SYTESTER_JAR, downloaded by
+# the bench workflow) are available. SyTester has no VU model, so its rows
+# offer its maximum fixed rate (SYT_RATE, default 10000 TPS — the plan
+# schema's ceiling). One JVM per row, driven over its REST API (boot →
+# warm-up → measured plan → report → kill); CPU/RSS cover the JVM lifetime.
+#
+# APPS selects the competitor engines (default: all of "k6 jmeter locust
+# sytester"; perfscale's own rows always run). An unknown suite or app name
+# is an error (exit 2).
+# Scenarios whose engine isn't selected or isn't on PATH are skipped, not
+# failed. hyperfine is
 # required only for the overhead/startup suites.
 #
 # Outputs: $OUTPUT (markdown report) and $RESULTS (machine-readable JSON,
@@ -100,7 +102,12 @@ PORT="${PORT:-18999}"
 TLS_PORT="${TLS_PORT:-18998}"
 OUTPUT="${OUTPUT:-bench-report.md}"
 RESULTS="${RESULTS:-bench-results.json}"
-SUITES="${SUITES:-overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sytester}"
+KNOWN_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub"
+SUITES="${SUITES:-$KNOWN_SUITES}"
+# Competitor engines whose rows join the tables, space-separated (perfscale's
+# own rows always run). k6 also gates its custom xk6-sql / xk6-nats builds.
+KNOWN_APPS="k6 jmeter locust sytester"
+APPS="${APPS:-$KNOWN_APPS}"
 
 STARTUP_DURATION="${STARTUP_DURATION:-1s}"
 STARTUP_RUNS="${STARTUP_RUNS:-5}"
@@ -144,12 +151,10 @@ PUBSUB_DURATION="${PUBSUB_DURATION:-10s}"
 PUBSUB_PAYLOAD_BYTES="${PUBSUB_PAYLOAD_BYTES:-256}"
 BENCH_NATS_URL="${BENCH_NATS_URL:-nats://127.0.0.1:4222}"
 K6_NATS_BIN="${K6_NATS_BIN:-}"
-# sytester suite: shared arrival rate for every row (SyTester's plan schema
-# caps tps at 10000), run length, the SyTester REST port, and the worker
-# ceiling for the perfscale/k6 open-model rows. SYTESTER_JAR is resolved
+# SyTester rows: the TPS SyTester offers (its plan schema caps tps at
+# 10000), its REST port, and its gRPC sender pool size. SYTESTER_JAR is resolved
 # after ROOT below.
 SYT_RATE="${SYT_RATE:-10000}"
-SYT_DURATION="${SYT_DURATION:-10s}"
 SYT_PORT="${SYT_PORT:-18997}"
 SYT_MAX_VUS="${SYT_MAX_VUS:-256}"
 # SyTester warm-up run at the same rate before the measured one (JIT, lazy
@@ -187,17 +192,38 @@ TARGET="http://127.0.0.1:${PORT}"
 TLS_TARGET="https://127.0.0.1:${TLS_PORT}"
 
 has_suite() { case " $SUITES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
-HAS_K6=0
-HAS_LOCUST=0
-HAS_JMETER=0
+has_app() { case " $APPS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+# A typo in SUITES/APPS would silently drop a suite or an engine from the
+# report — fail fast. $1 variable name, $2 its value, $3 known names,
+# $4 what one name is (for the message).
+check_names() {
+  local name
+  for name in $2; do
+    case " $3 " in
+      *" $name "*) ;;
+      *) echo "unknown $4 '$name' in $1 (known: $3)" >&2; exit 2 ;;
+    esac
+  done
+}
+check_names SUITES "$SUITES" "$KNOWN_SUITES" suite
+check_names APPS "$APPS" "$KNOWN_APPS" app
 HAS_HYPERFINE=0
-command -v k6 >/dev/null 2>&1 && HAS_K6=1
-command -v locust >/dev/null 2>&1 && HAS_LOCUST=1
-command -v jmeter >/dev/null 2>&1 && HAS_JMETER=1
+# probe_app $1 app (= binary name) → 1 when selected in APPS and on PATH.
+probe_app() {
+  if ! has_app "$1"; then
+    echo "skipping $1 scenarios: not in APPS" >&2
+    echo 0
+  elif ! command -v "$1" >/dev/null 2>&1; then
+    echo "skipping $1 scenarios: $1 not on PATH" >&2
+    echo 0
+  else
+    echo 1
+  fi
+}
+HAS_K6=$(probe_app k6)
+HAS_LOCUST=$(probe_app locust)
+HAS_JMETER=$(probe_app jmeter)
 command -v hyperfine >/dev/null 2>&1 && HAS_HYPERFINE=1
-[[ "$HAS_K6" == 1 ]] || echo "skipping k6 scenarios: k6 not on PATH" >&2
-[[ "$HAS_LOCUST" == 1 ]] || echo "skipping locust scenarios: locust not on PATH" >&2
-[[ "$HAS_JMETER" == 1 ]] || echo "skipping jmeter scenarios: jmeter not on PATH" >&2
 
 # ---------------------------------------------------------------------------
 # Servers
@@ -374,7 +400,7 @@ fi
 # custom build's k6 core version may differ from the apt-installed one.
 HAS_K6_SQL=0
 K6_SQL_BIN="${K6_SQL_BIN:-$ROOT/target/xk6-sql/k6}"
-if [[ "$HAS_DB" == 1 ]]; then
+if [[ "$HAS_DB" == 1 ]] && has_app k6; then
   if [[ -x "$K6_SQL_BIN" ]]; then
     HAS_K6_SQL=1
   else
@@ -401,7 +427,7 @@ fi
 # matches the bench workflow's build, K6_NATS_BIN overrides it.
 HAS_K6_NATS=0
 K6_NATS_BIN="${K6_NATS_BIN:-$ROOT/target/xk6-nats/k6}"
-if [[ "$HAS_NATS" == 1 ]]; then
+if [[ "$HAS_NATS" == 1 ]] && has_app k6; then
   if [[ -x "$K6_NATS_BIN" ]]; then
     HAS_K6_NATS=1
   else
@@ -409,16 +435,20 @@ if [[ "$HAS_NATS" == 1 ]]; then
   fi
 fi
 
-# sytester suite: Java 21+ and the release jar (bench workflow downloads it
-# to target/sytester/). Probe the major version from `java -version`.
+# SyTester rows: like k6/locust/JMeter, they join every table that has a
+# SyTester shape whenever SyTester is available — Java 21+ and the release
+# jar (the bench workflow downloads it to target/sytester/). Probe the major
+# version from `java -version`.
 SYTESTER_JAR="${SYTESTER_JAR:-$ROOT/target/sytester/SyTester.jar}"
 HAS_SYTESTER=0
-if has_suite sytester; then
+if ! has_app sytester; then
+  echo "skipping sytester rows: not in APPS" >&2
+elif [[ ! -f "$SYTESTER_JAR" ]]; then
+  echo "skipping sytester rows: no jar at $SYTESTER_JAR (set SYTESTER_JAR)" >&2
+else
   syt_java_major="$("$SYTESTER_JAVA" -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -1)"
-  if [[ ! -f "$SYTESTER_JAR" ]]; then
-    echo "skipping sytester suite: no jar at $SYTESTER_JAR (set SYTESTER_JAR)" >&2
-  elif [[ "${syt_java_major:-0}" -lt 21 ]]; then
-    echo "skipping sytester suite: $SYTESTER_JAVA is Java ${syt_java_major:-?}, SyTester needs 21+ (set SYTESTER_JAVA)" >&2
+  if [[ "${syt_java_major:-0}" -lt 21 ]]; then
+    echo "skipping sytester rows: $SYTESTER_JAVA is Java ${syt_java_major:-?}, SyTester needs 21+ (set SYTESTER_JAVA)" >&2
   else
     HAS_SYTESTER=1
   fi
@@ -1412,10 +1442,12 @@ cpu_per_req() { # $1 requests → µs of CPU per request, or —
 # drain below 1000. Up to ~2 min.
 tw_timewait() { # $1 port
   local port="$1"
+  # Whole-port match only: a bare ":$port" substring would also count
+  # ephemeral ports that start with it (":5432" in ":54321").
   if command -v ss >/dev/null 2>&1; then
-    ss -tan state time-wait 2>/dev/null | grep -c ":$port" || true
+    ss -tan state time-wait 2>/dev/null | grep -cE ":$port([[:space:]]|$)" || true
   elif command -v netstat >/dev/null 2>&1; then
-    netstat -an -p tcp 2>/dev/null | grep TIME_WAIT | grep -c "[.:]$port[ .]" || true
+    netstat -an -p tcp 2>/dev/null | grep TIME_WAIT | grep -cE "[.:]$port([[:space:]]|$)" || true
   else
     echo 0
   fi
@@ -1434,12 +1466,29 @@ tw_settle() { # $1 port, $2 target name (for the log lines)
   echo "warning: still $tw TIME_WAIT sockets against port $port after 120s — the next cold row may hit EADDRNOTAVAIL" >&2
 }
 
+# Every row starts from drained ports, not just the connection-churning
+# suites: a row that reconnects per call (std/grpc@v1, cold db/nats, a
+# high-rate open-model row) leaves thousands of TIME_WAIT sockets, and the
+# NEXT row — whatever engine — would otherwise be measured against a
+# half-exhausted ephemeral range. Cheap when clean (one ss/netstat call per
+# target port); the ports are the serve targets plus whichever fixture
+# servers this run uses.
+settle_ports() {
+  local port
+  for port in "$PORT" "$TLS_PORT" "${GRPC_ADDR##*:}" "${GQL_ADDR##*:}" \
+    "${DB_HOSTPORT##*:}" "${NATS_HOSTPORT##*:}"; do
+    [[ -n "$port" ]] && tw_settle "$port" "target"
+  done
+  return 0
+}
+
 # Instrumented run + metric parse into shell vars. $1 label, $2 cmd,
 # $3 parse kind (text|locust-csv), $4 file to parse (defaults to stdout log).
 requests=0 rps=0 avg_ms=0 p50_ms=0 p90_ms=0 p95_ms=0 p99_ms=0 min_ms=0 max_ms=0 err_pct=0 parse_ok=0
 measure() {
   local label="$1" cmd="$2" kind="${3:-text}" parse_file="${4:-}"
   local out="$WORKDIR/out.$$"
+  settle_ports
   run_timed "$out" "$cmd"
   eval "$($METRICS parse "$kind" "${parse_file:-$out}")"
   if [[ "$parse_ok" != 1 ]]; then
@@ -1509,6 +1558,7 @@ build_cmd() { # $1 builder, $2 vus, $3 duration, $4 csv prefix (locust native)
 }
 
 run_hyperfine() { # $1 vus, $2 duration, $3 runs, $4 md out, $5 json out
+  settle_ports
   local args=(--warmup "$WARMUP" --runs "$3" --export-markdown "$4" --export-json "$5")
   local i
   for i in "${!hf_names[@]}"; do
@@ -1529,6 +1579,175 @@ $METRICS setobj "$RESULTS_D/meta.json" \
   vus="$VUS" duration="$DURATION" runs="$RUNS" \
   git="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
   timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# --- SyTester rows ------------------------------------------------------------
+# SyTester (gitverse.ru/sbertech/sytester) has no closed (VU) model: it
+# generates a fixed TPS. Its rows join the throughput, saturation, grpc and
+# db tables offering its maximum rate (SYT_RATE, default 10000 — the plan
+# schema's tps ceiling), i.e. "as fast as SyTester goes", next to the other
+# engines' fixed-VU rows. On whenever SyTester is available (HAS_SYTESTER),
+# like the other competitor engines.
+
+SYT_ON=0
+if [[ "$HAS_SYTESTER" == 1 ]]; then
+  SYT_ON=1
+  # One SyTester row, start to finish: boot the JVM (fresh H2 db in a temp
+  # dir), optionally upload a proto set (SYT_PROTO, gRPC rows), run the plan
+  # template once as an unrecorded warm-up and once measured, wait for each
+  # report to leave `running`, print one JSON line for the sytester-json
+  # parser, then stop the JVM. $1 plan template (@NAME@ / @DUR@ are filled
+  # in here), $2 measured duration. Port/java/jar come from the environment.
+  cat >"$WORKDIR/sytester_run.sh" <<'EOF'
+#!/usr/bin/env bash
+set -u
+tpl="$1" dur="$2"
+api="http://127.0.0.1:${SYT_PORT}"
+now() { python3 -c 'import time; print(time.time())'; }
+dir="$(mktemp -d)"
+cd "$dir" || exit 1
+t0="$(now)"
+"$SYTESTER_JAVA" -Dserver.port="$SYT_PORT" -jar "$SYTESTER_JAR" >"$dir/syt.log" 2>&1 &
+pid=$!
+trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$dir"' EXIT
+up=0
+for _ in $(seq 1 600); do
+  curl -fs -o /dev/null "$api/show/loadedTestplans" && { up=1; break; }
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 0.5
+done
+if [[ "$up" != 1 ]]; then
+  echo "sytester never came up:" >&2
+  tail -20 "$dir/syt.log" >&2
+  exit 1
+fi
+boot_s="$(python3 -c "print(round($(now) - $t0, 2))")"
+if [[ -n "${SYT_PROTO:-}" ]]; then
+  curl -fs -o /dev/null -X POST -F protoSetName=bench -F protofiles=@"$SYT_PROTO" \
+    "$api/action/uploadProtofiles" || { echo "sytester: proto upload failed" >&2; exit 1; }
+fi
+# $1 plan name, $2 duration → prints the final lastReport JSON.
+run_plan() {
+  local name="$1" d="$2" report="" status=""
+  sed -e "s/@NAME@/$name/g" -e "s/@DUR@/$d/g" "$tpl" >"$dir/$name.yaml"
+  curl -fs -o /dev/null -X POST -H 'Content-Type: application/yaml' \
+    --data-binary @"$dir/$name.yaml" "$api/action/uploadTestplan" \
+    || { echo "sytester: plan upload failed" >&2; return 1; }
+  curl -fs -o /dev/null -X POST -H 'Content-Type: application/json' \
+    -d "{\"testplanName\":\"$name\"}" "$api/action/start" \
+    || { echo "sytester: start failed" >&2; return 1; }
+  sleep "${d%s}"
+  for _ in $(seq 1 120); do
+    report="$(curl -fs "$api/action/lastReport?testplanName=$name" || true)"
+    status="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)"
+    # `running`/`online` = still going; anything else (finish, stopped,
+    # error) is final.
+    case "$status" in ""|running|online) ;; *) break ;; esac
+    sleep 0.5
+  done
+  printf '%s' "${report:-null}"
+}
+# Warm-up at the same rate first: a freshly booted JVM is still JIT-compiling
+# and finishing lazy init, and would be measured at a fraction of its speed.
+[[ "${SYT_WARMUP%s}" -gt 0 ]] && { run_plan bench-warmup "$SYT_WARMUP" >/dev/null || exit 1; }
+report="$(run_plan bench-measured "$dur")" || exit 1
+printf '{"configured_s": %s, "boot_s": %s, "report": %s}\n' "${dur%s}" "$boot_s" "${report:-null}"
+EOF
+  chmod +x "$WORKDIR/sytester_run.sh"
+
+  # Every SyTester plan sets a huge errorsToStop: the default (100) aborts a
+  # plan within a second of trouble, and the bench wants the error rate, not
+  # an early stop.
+
+  # get: GET /health (GENERATOR).
+  cat >"$WORKDIR/syt-get.yaml" <<EOF
+name: @NAME@
+type: GENERATOR
+logLevel: ERROR
+testDuration: @DUR@
+generator:
+  tps: { start: ${SYT_RATE}, max: ${SYT_RATE} }
+  testdata: [data]
+  transportIn: [http]
+  errorsToStop: 1000000000
+transports:
+  - name: http
+    protocol: HTTP
+    host: "${TARGET}/health"
+    http: { method: GET }
+testdatas:
+  - name: data
+    body: ""
+EOF
+
+  # grpc: unary echo against the repo's grpc_echo_server — SyTester's
+  # gen-grpc-unary example (proto set uploaded over the REST API). Its
+  # sender pool defaults to maxTPS/100 threads; give it SYT_MAX_VUS.
+  cat >"$WORKDIR/syt-grpc.yaml" <<EOF
+name: @NAME@
+type: GENERATOR
+logLevel: ERROR
+testDuration: @DUR@
+generator:
+  tps: { start: ${SYT_RATE}, max: ${SYT_RATE} }
+  testdata: [data]
+  transportIn: [grpc]
+  errorsToStop: 1000000000
+  grpc: { maxConnections: ${SYT_MAX_VUS} }
+transports:
+  - name: grpc
+    protocol: GRPC
+    host: "http://${GRPC_ADDR}"
+    request: "perfscale.test.v1.Echo.Unary"
+testdatas:
+  - name: data
+    body: "{'message': 'bench-\${rq_uid}'}"
+EOF
+  # db: SELECT 1 on a warm connection — SyTester's PgJDBC transport in a
+  # STEPS TPS_LOADER, perfscale's std/db-query on a VU-scoped connection.
+  cat >"$WORKDIR/syt-db.yaml" <<EOF
+name: @NAME@
+type: STEPS
+logLevel: ERROR
+testDuration: @DUR@
+steps:
+  entry: tps
+  steps:
+    - name: tps
+      type: TPS_LOADER
+      tpsLoader:
+        tps: { start: "${SYT_RATE}" }
+        duration: "@DUR@"
+        workload: query
+        asyncMode: false
+        errorsToStop: 1000000000
+    - name: query
+      type: PUT
+      transport: pg
+      testdata: sel
+      timeout: 5s
+transports:
+  - name: pg
+    protocol: POSTGRES
+    host: "jdbc:postgresql://${DB_HOSTPORT}/${DB_NAME}"
+    login: ${DB_USER}
+    password: ${DB_PASS}
+testdatas:
+  - name: sel
+    body: "SELECT 1"
+EOF
+fi
+
+# syt_measure $1 scenario (get|grpc), $2 duration (the table's) — one
+# SyTester row via measure();
+# sets the usual metric vars plus boot_s. Prints nothing.
+syt_measure() {
+  local proto=""
+  [[ "$1" == grpc ]] && proto="SYT_PROTO=$ROOT/crates/perfscale-core/proto/echo.proto"
+  boot_s=0
+  measure "sytester-$1" "env SYT_PORT=$SYT_PORT SYT_WARMUP=$SYT_WARMUP SYTESTER_JAVA=$SYTESTER_JAVA SYTESTER_JAR=$SYTESTER_JAR $proto $WORKDIR/sytester_run.sh $WORKDIR/syt-$1.yaml $2" sytester-json
+}
+SYT_LABEL="sytester (${SYT_RATE} TPS)"
+SYT_NOTE="_\`$SYT_LABEL\`: SyTester Community Edition has no VU model — it offers a fixed rate, here its maximum (\`SYT_RATE\`). One JVM per row (REST-driven, ${SYT_WARMUP} warm-up first), so its CPU and RSS cover the whole JVM lifetime; latencies are whole milliseconds._"
 
 # --- overhead ---------------------------------------------------------------
 
@@ -1566,6 +1785,16 @@ if has_suite throughput; then
 "
   done
 
+  if [[ "$SYT_ON" == 1 ]]; then
+    echo "  $SYT_LABEL" >&2
+    syt_measure get "$DURATION"
+    json_row throughput.json "$SYT_LABEL"
+    tputs_rows="$tputs_rows| $SYT_LABEL | $requests | $rps | $avg_ms | $p50_ms | $p95_ms | $p99_ms | $err_pct% |
+"
+    res_rows="$res_rows| $SYT_LABEL | $T_WALL | $T_USER | $T_SYS | $(cpu_per_req "$requests") µs | $T_RSS | $T_IO |
+"
+  fi
+
   section "Throughput & latency (${VUS} VUs, ${DURATION})"
   {
     echo "| Scenario | Requests | RPS | avg ms | p50 ms | p95 ms | p99 ms | Err |"
@@ -1573,6 +1802,7 @@ if has_suite throughput; then
     printf '%s' "$tputs_rows"
     echo
     echo "_Same fixed duration for every scenario — compare RPS, not wall time._"
+    [[ "$SYT_ON" == 1 ]] && { echo; echo "$SYT_NOTE"; }
   } >>"$OUTPUT"
 
   section "Resources (same runs as throughput)"
@@ -1668,11 +1898,19 @@ if has_suite saturation; then
     cpu_total=$(awk "BEGIN{printf \"%.1fs\", ${T_USER_S:-0}+${T_SYS_S:-0}}")
     echo "| $engine | $requests | $rps | $p95_ms | $p99_ms | $err_pct% | $cpu_total |" >>"$OUTPUT"
   done
+  if [[ "$SYT_ON" == 1 ]]; then
+    echo "  $SYT_LABEL" >&2
+    syt_measure get "$SAT_DURATION"
+    json_row saturation.json "$SYT_LABEL"
+    cpu_total=$(awk "BEGIN{printf \"%.1fs\", ${T_USER_S:-0}+${T_SYS_S:-0}}")
+    echo "| $SYT_LABEL | $requests | $rps | $p95_ms | $p99_ms | $err_pct% | $cpu_total |" >>"$OUTPUT"
+  fi
   {
     echo
     echo "_Load generator and \`perfscale serve\` share this machine's CPU, so these"
     echo "ceilings include the target's cost. If two engines plateau at a similar"
     echo "RPS, the serve target (or the CPU) is likely the bottleneck, not the engine._"
+    [[ "$SYT_ON" == 1 ]] && { echo; echo "$SYT_NOTE"; }
   } >>"$OUTPUT"
 fi
 
@@ -2053,6 +2291,13 @@ if has_suite grpc && [[ "$HAS_GRPC" == 1 ]]; then
   measure "grpc-unary" "$(cmd_yaml "$VUS" "$GRPC_DURATION" "$WORKDIR/yaml-grpc.yaml")" grpc-text
   json_row grpc.json "perfscale (yaml)"
   echo "| perfscale (yaml) | $requests | $rps | $p95_ms | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
+  if [[ "$SYT_ON" == 1 ]]; then
+    tw_settle "${GRPC_ADDR##*:}" grpc
+    echo "  $SYT_LABEL" >&2
+    syt_measure grpc "$GRPC_DURATION"
+    json_row grpc.json "$SYT_LABEL"
+    echo "| $SYT_LABEL | $requests | $rps | $p95_ms | $err_pct% | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
+  fi
   {
     echo
     echo "_One-shot \`std/grpc@v1\` unary call per iteration (connect → call →"
@@ -2060,6 +2305,14 @@ if has_suite grpc && [[ "$HAS_GRPC" == 1 ]]; then
     echo "server reflection — fetched once per run, cached per URL). Compare"
     echo "against the throughput table for the HTTP/2 + protobuf tax over plain"
     echo "HTTP. No k6 row: k6's gRPC module would measure k6, not this engine._"
+    if [[ "$SYT_ON" == 1 ]]; then
+      echo
+      echo "_SyTester's gRPC row (gen-grpc-unary plan, echo.proto uploaded as a"
+      echo "proto set) keeps pooled channels (sender pool = ${SYT_MAX_VUS}), while"
+      echo "\`std/grpc@v1\` connects per call._"
+      echo
+      echo "$SYT_NOTE"
+    fi
   } >>"$OUTPUT"
 fi
 
@@ -2210,6 +2463,13 @@ if has_suite db; then
       db_row "jmeter (JDBC, warm pool)" \
         "cd $WORKDIR && jmeter -n -t $WORKDIR/plan-db.jmx" jmeter-summary
     fi
+  fi
+
+  if [[ "$SYT_ON" == 1 ]]; then
+    # SyTester's PgJDBC transport, SELECT 1 per PUT step in a STEPS
+    # TPS_LOADER (its step-jdbc example shape).
+    db_settle
+    db_row "$SYT_LABEL" "env SYT_PORT=$SYT_PORT SYT_WARMUP=$SYT_WARMUP SYTESTER_JAVA=$SYTESTER_JAVA SYTESTER_JAR=$SYTESTER_JAR $WORKDIR/sytester_run.sh $WORKDIR/syt-db.yaml $DB_DURATION" sytester-json
   fi
 
   {
@@ -2374,169 +2634,6 @@ if has_suite pubsub; then
     echo "Metrics share names on both sides (\`pubsub_msgs_published\`,"
     echo "\`pubsub_publish_ms\`, \`pubsub_e2e_ms\`, \`pubsub_errors\`), parsed"
     echo "by one pubsub-text parser._"
-  } >>"$OUTPUT"
-fi
-
-# --- sytester ------------------------------------------------------------------
-
-if has_suite sytester && [[ "$HAS_SYTESTER" == 1 ]]; then
-  echo "suite: sytester" >&2
-
-  # One SyTester run, start to finish: boot the JVM (fresh H2 db in a temp
-  # dir), run an unrecorded warm-up GENERATOR plan, then the measured one,
-  # both at a fixed TPS (start == max, no ramp); wait for the report to
-  # leave `running`, print one JSON line
-  # for the sytester-json parser, then stop the JVM. $1 rate, $2 duration,
-  # $3 target URL. Port/java/jar come from the environment.
-  cat >"$WORKDIR/sytester_run.sh" <<'EOF'
-#!/usr/bin/env bash
-set -u
-rate="$1" dur="$2" url="$3"
-api="http://127.0.0.1:${SYT_PORT}"
-now() { python3 -c 'import time; print(time.time())'; }
-dir="$(mktemp -d)"
-cd "$dir" || exit 1
-t0="$(now)"
-"$SYTESTER_JAVA" -Dserver.port="$SYT_PORT" -jar "$SYTESTER_JAR" >"$dir/syt.log" 2>&1 &
-pid=$!
-trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$dir"' EXIT
-up=0
-for _ in $(seq 1 600); do
-  curl -fs -o /dev/null "$api/show/loadedTestplans" && { up=1; break; }
-  kill -0 "$pid" 2>/dev/null || break
-  sleep 0.5
-done
-if [[ "$up" != 1 ]]; then
-  echo "sytester never came up:" >&2
-  tail -20 "$dir/syt.log" >&2
-  exit 1
-fi
-boot_s="$(python3 -c "print(round($(now) - $t0, 2))")"
-# $1 plan name, $2 duration → prints the final lastReport JSON.
-run_plan() {
-  local name="$1" d="$2" report="" status=""
-  cat >"$dir/$name.yaml" <<PLAN
-name: ${name}
-type: GENERATOR
-logLevel: ERROR
-testDuration: ${d}
-generator:
-  tps:
-    start: ${rate}
-    max: ${rate}
-  testdata:
-    - data
-  transportIn:
-    - http
-transports:
-  - name: http
-    protocol: HTTP
-    host: "${url}"
-    http:
-      method: GET
-testdatas:
-  - name: data
-    body: ""
-PLAN
-  curl -fs -o /dev/null -X POST -H 'Content-Type: application/yaml' \
-    --data-binary @"$dir/$name.yaml" "$api/action/uploadTestplan" \
-    || { echo "sytester: plan upload failed" >&2; return 1; }
-  curl -fs -o /dev/null -X POST -H 'Content-Type: application/json' \
-    -d "{\"testplanName\":\"$name\"}" "$api/action/start" \
-    || { echo "sytester: start failed" >&2; return 1; }
-  sleep "${d%s}"
-  for _ in $(seq 1 120); do
-    report="$(curl -fs "$api/action/lastReport?testplanName=$name" || true)"
-    status="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)"
-    [[ -n "$status" && "$status" != running ]] && break
-    sleep 0.5
-  done
-  printf '%s' "${report:-null}"
-}
-# Warm-up at the same rate first: a freshly booted JVM is still JIT-compiling
-# and finishing lazy init, and would be measured at a fraction of its speed.
-[[ "${SYT_WARMUP%s}" -gt 0 ]] && { run_plan bench-warmup "$SYT_WARMUP" >/dev/null || exit 1; }
-report="$(run_plan bench-health "$dur")" || exit 1
-printf '{"configured_s": %s, "boot_s": %s, "report": %s}\n' "${dur%s}" "$boot_s" "${report:-null}"
-EOF
-  chmod +x "$WORKDIR/sytester_run.sh"
-
-  # k6 twin of the open model: constant-arrival-rate, workers pre-allocated
-  # up to the same ceiling as the perfscale row.
-  cat >"$WORKDIR/script_arrival.js" <<'EOF'
-import http from 'k6/http';
-export const options = {
-  scenarios: {
-    arrival: {
-      executor: 'constant-arrival-rate',
-      rate: Number(__ENV.BENCH_RATE),
-      timeUnit: '1s',
-      duration: __ENV.BENCH_DURATION,
-      preAllocatedVUs: Number(__ENV.BENCH_MAX_VUS),
-      maxVUs: Number(__ENV.BENCH_MAX_VUS),
-    },
-  },
-  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(50)', 'p(90)', 'p(95)', 'p(99)'],
-};
-export default function () {
-  http.get(__ENV.BENCH_TARGET);
-}
-EOF
-
-  # perfscale open model at the same rate: a 1ms ramp to the rate, then hold
-  # (an arrival stage interpolates from the previous rate, starting at 0).
-  printf 'arrival:\n  max_vus: %s\n  pre_allocated_vus: %s\n  stages:\n    - { duration: 1ms, rate: %s }\n    - { duration: %s, rate: %s }\n' \
-    "$SYT_MAX_VUS" "$SYT_MAX_VUS" "$SYT_RATE" "$SYT_DURATION" "$SYT_RATE" \
-    >"$WORKDIR/config-arrival.yaml"
-
-  syt_names=("sytester (native)")
-  syt_cmds=("env SYT_PORT=$SYT_PORT SYT_WARMUP=$SYT_WARMUP SYTESTER_JAVA=$SYTESTER_JAVA SYTESTER_JAR=$SYTESTER_JAR $WORKDIR/sytester_run.sh $SYT_RATE $SYT_DURATION $TARGET/health")
-  syt_kinds=("sytester-json")
-  if [[ "$HAS_K6" == 1 ]]; then
-    syt_names+=("k6 (constant-arrival-rate)")
-    syt_cmds+=("env BENCH_RATE=$SYT_RATE BENCH_DURATION=$SYT_DURATION BENCH_MAX_VUS=$SYT_MAX_VUS BENCH_TARGET=$TARGET/health k6 run --quiet $WORKDIR/script_arrival.js")
-    syt_kinds+=("text")
-  fi
-  syt_names+=("perfscale (yaml arrival)")
-  syt_cmds+=("$BIN run -f $WORKDIR/yaml-get.yaml -c $WORKDIR/config-arrival.yaml")
-  syt_kinds+=("text")
-  if [[ "$HAS_QUIET" == 1 ]]; then
-    syt_names+=("perfscale (yaml arrival quiet)")
-    syt_cmds+=("$BIN run -f $WORKDIR/yaml-get.yaml -c $WORKDIR/config-arrival.yaml --quiet")
-    syt_kinds+=("text")
-  fi
-
-  syt_rows=""
-  for i in "${!syt_names[@]}"; do
-    name="${syt_names[$i]}"
-    echo "  $name" >&2
-    boot_s=0
-    measure "$name" "${syt_cmds[$i]}" "${syt_kinds[$i]}"
-    json_row sytester.json "$name"
-    dropped="$(grep -m1 -E '^ *dropped_iterations' "$WORKDIR/out.$$" | sed -E 's/^[^:]*:[[:space:]]*([0-9]+).*/\1/' || true)"
-    boot="—"
-    [[ "${syt_kinds[$i]}" == sytester-json ]] && boot="${boot_s}s"
-    syt_rows="$syt_rows| $name | $requests | $rps | $avg_ms | $p50_ms | $p95_ms | $p99_ms | $err_pct% | ${dropped:-—} | $boot | $(cpu_per_req "$requests") µs | $T_RSS |
-"
-  done
-
-  section "SyTester: open model at ${SYT_RATE}/s (${SYT_DURATION})"
-  {
-    echo "| Scenario | Requests | RPS | avg ms | p50 ms | p95 ms | p99 ms | Err | Dropped | Boot | CPU per req | Peak RSS |"
-    echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
-    printf '%s' "$syt_rows"
-    echo
-    echo "_Every row offers the same fixed arrival rate (${SYT_RATE}/s — SyTester's"
-    echo "plan schema caps \`tps\` at 10000) to the same \`/health\` endpoint; RPS"
-    echo "below the target means the engine could not keep the schedule. The"
-    echo "perfscale and k6 rows cap their worker pool at ${SYT_MAX_VUS} VUs and"
-    echo "count permits they could not start as Dropped. SyTester is a JVM server"
-    echo "driven over its REST API: CPU per req and Peak RSS cover the whole JVM"
-    echo "lifetime (boot + a ${SYT_WARMUP} warm-up at the same rate + the run), and"
-    echo "Boot is the time until its API answered. Its latency percentiles come from the report's"
-    echo "\`sytester_metrics\` and are recorded in whole milliseconds. perfscale's \`http_req_duration\` is pure"
-    echo "request time — the coordinated-omission-corrected view is"
-    echo "\`engine_arrival_iteration_ms\` in the raw output._"
   } >>"$OUTPUT"
 fi
 

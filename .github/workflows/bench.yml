@@ -18,10 +18,13 @@ on:
         default: "5"
       suites:
         description: "Suites to run (see scripts/bench.sh)"
-        default: "overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sytester"
+        default: "overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub"
       graphql_duration:
         description: "Run duration per GraphQL scenario (e.g. 10s, 30s)"
         default: "10s"
+      apps:
+        description: "Competitor engines next to perfscale (always on): any of k6 jmeter locust sytester"
+        default: "k6 jmeter locust sytester"
       boundary_duration:
         description: "Ramp duration per boundary ladder rung (e.g. 30s, 5m)"
         default: "30s"
@@ -67,7 +70,8 @@ env:
   XK6_NATS_K6_VERSION: "1.3.0"
   # xk6-sql v1.2.3 / driver v0.3.2 declare `go 1.26.0` / `toolchain go1.26.8`.
   XK6_GO_VERSION: "1.26.8"
-  # SyTester Community Edition for the sytester suite: the release jar
+  # SyTester Community Edition (a competitor engine, like k6/locust/JMeter —
+  # its rows join throughput/saturation/grpc/db): the release jar
   # (gitverse.ru/sbertech/sytester, v6.10.0) is pinned by its attachment id
   # and sha256. It needs Java 21+ (JMeter keeps the 17 JRE).
   SYTESTER_VERSION: "6.10.0"
@@ -321,7 +325,8 @@ jobs:
           VUS: ${{ github.event.inputs.vus || '10' }}
           DURATION: ${{ github.event.inputs.duration || '30s' }}
           RUNS: ${{ github.event.inputs.runs || '5' }}
-          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sytester' }}
+          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub' }}
+          APPS: ${{ github.event.inputs.apps || 'k6 jmeter locust sytester' }}
           SYTESTER_JAR: ${{ github.workspace }}/target/sytester/SyTester.jar
           SYTESTER_JAVA: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
           BOUNDARY_DURATION: ${{ github.event.inputs.boundary_duration || '30s' }}

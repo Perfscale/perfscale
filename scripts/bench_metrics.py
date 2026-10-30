@@ -261,6 +261,19 @@ def parse_sytester_json(content):
         except (KeyError, TypeError, ValueError):
             return 0.0
 
+    # STEPS plans report per step (`stepStates`: JSON strings); GENERATOR
+    # plans report totals. Steps carrying `latencies` are the ones that made
+    # requests (PUT); loaders and SERIAL containers only count completions.
+    steps = []
+    for raw in (rep.get("stepStates") or {}).values():
+        try:
+            st = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            continue
+        if isinstance(st, dict) and "latencies" in st:
+            steps.append(st)
+    if steps and not rep.get("requestsTotal"):
+        return _sytester_steps(out, extra, doc, steps)
     out["requests"] = int(rep.get("requestsTotal") or metric("sytester_requests_total"))
     secs = float(doc.get("configured_s") or rep.get("durationInSeconds") or 0)
     if secs > 0:
@@ -277,6 +290,33 @@ def parse_sytester_json(content):
     # `failedPercentage` stays 0 even with transport failures (status -1,
     # e.g. "Pending acquire queue has reached its limit") — derive it.
     failed = int(rep.get("requestsFailed") or metric("sytester_requests_failed"))
+    if out["requests"]:
+        out["err_pct"] = failed * 100.0 / out["requests"]
+    extra["boot_s"] = float(doc.get("boot_s") or 0)
+    out["parse_ok"] = 1 if out["requests"] else 0
+    return out, extra
+
+
+def _sytester_steps(out, extra, doc, steps):
+    """Fold a STEPS report's request steps into one row: requests and
+    failures summed, avg weighted by count, percentiles from the worst step
+    (per-step histograms cannot be merged — the worst step bounds the
+    aggregate from above)."""
+    done = sum(int(st.get("completed") or 0) for st in steps)
+    failed = sum(int(st.get("failed") or 0) for st in steps)
+    out["requests"] = done + failed
+    secs = float(doc.get("configured_s") or 0)
+    if secs > 0:
+        out["rps"] = out["requests"] / secs
+    total_ms = sum(float(st["latencies"].get("totalMs") or 0) for st in steps)
+    count = sum(int(st["latencies"].get("count") or 0) for st in steps)
+    if count:
+        out["avg_ms"] = total_ms / count
+    for key, name in (("p50_ms", "sytester_p50"), ("p90_ms", "sytester_p90"),
+                      ("p95_ms", "sytester_p95"), ("p99_ms", "sytester_p99")):
+        out[key] = max(float((st.get("percentiles") or {}).get(name) or 0) for st in steps)
+    out["min_ms"] = min(float(st["latencies"].get("minMs") or 0) for st in steps)
+    out["max_ms"] = max(float(st["latencies"].get("maxMs") or 0) for st in steps)
     if out["requests"]:
         out["err_pct"] = failed * 100.0 / out["requests"]
     extra["boot_s"] = float(doc.get("boot_s") or 0)
