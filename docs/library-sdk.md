@@ -207,6 +207,32 @@ components keep loading: 0.1 has no settings field, while declaring
 `config-schema` requires rebuilding against 0.3. Minors are additive-only;
 an unsupported major fails to load with both versions named in the error.
 
+### Custom steps (RFC 009, `perfscale:step@0.1.0`)
+
+A component may also export **steps** — actions dispatchable from `use:` as
+`lib/<alias>/<step>`. The additive `perfscale:step@0.1.0` package
+(`wit/step/step.wit` in this repo, resolved against a byte-pinned vendored
+copy of `library.wit` in `wit/step/deps/`) defines the worlds:
+
+```wit
+// world perfscale-steps = perfscale-library (0.3) plus:
+run: func(ctx: step-context, step-id: string, params-json: string)
+    -> result<string, string>;
+```
+
+`info()` stays the single manifest: it gains `steps: [{name, description}]`
+(a steps-only component sets `functions: []`), and the manifest must agree
+with the exported ABI or the component fails to load. The `Ok` payload is
+the serialized action result: `success` (required), `output`, `logs`
+(`out`/`err`/`sys`), `metrics` (counters / duration-sample arrays — folded
+like a native step's), optional `http_sample`, and optional
+`secret_output_paths` (output keys the engine masks in logs). The
+`perfscale-steps-exec` world adds the `host-exec` import — host-mediated
+one-shot process execution, granted by `capabilities: [process]` plus
+`allow_process_actions: true`. The engine fixtures
+(`crates/perfscale-library-sdk/examples/steps`, `stepexec`) show both
+shapes with raw `wit-bindgen`; SDK-level helpers ride the SDK repos.
+
 ### Run settings delivery
 
 The `info()` manifest may also declare `"settings_once": true`. The Rust SDK

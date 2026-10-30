@@ -349,6 +349,79 @@ impl Context {
         Ok(gen)
     }
 
+    /// The live instance for a library alias, for `lib/<alias>/<step>`
+    /// dispatch (RFC 009). Providers opting into `share_per_context` (WASM —
+    /// instantiation is expensive) hand back the context's cached instance,
+    /// minted on first use and parked for the VU's whole life — the same
+    /// instance `${alias.fn(...)}` tokens use; every other provider mints a
+    /// fresh instance per call (the historical per-generator lifecycle).
+    pub(crate) fn library_step_instance(
+        &self,
+        alias: &str,
+    ) -> Result<crate::generate::SharedInstance, String> {
+        let set = self.libraries.as_ref().ok_or_else(|| {
+            format!("unknown library alias '{alias}' — no libraries are declared")
+        })?;
+        let lib = set
+            .libraries
+            .iter()
+            .find(|l| l.alias == alias)
+            .ok_or_else(|| {
+                let known: Vec<&str> = set.libraries.iter().map(|l| l.alias.as_str()).collect();
+                format!(
+                    "unknown library alias '{alias}' in step id — declared aliases: {}",
+                    known.join(", ")
+                )
+            })?;
+        if lib.provider.share_per_context() {
+            let mut cache = self.shared_lib_instances.lock().unwrap();
+            if let Some(entry) = cache.iter().find(|e| e.alias == alias) {
+                return Ok(std::sync::Arc::clone(&entry.instance));
+            }
+            let conn_seq = self
+                .gen_counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            let seed = match self.run_seed {
+                Some(run_seed) => crate::library::derive_seed(run_seed, self.vu_id, conn_seq),
+                None => (*self
+                    .unseeded_gen_base
+                    .get_or_init(|| uuid::Uuid::new_v4().as_u128() as u64))
+                .wrapping_add(conn_seq),
+            };
+            let instance = lib
+                .provider
+                .instantiate(lib.config.clone(), seed)
+                .map_err(|e| format!("library '{}' ({}): {e}", lib.alias, lib.provider.id()))?;
+            let instance: crate::generate::SharedInstance =
+                std::sync::Arc::new(std::sync::Mutex::new(instance));
+            cache.push(crate::generate::SharedLibEntry {
+                alias: lib.alias.clone(),
+                rules: lib.rules.clone(),
+                functions: lib.provider.functions().to_vec(),
+                instance: std::sync::Arc::clone(&instance),
+            });
+            Ok(instance)
+        } else {
+            let conn_seq = self
+                .gen_counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            let seed = match self.run_seed {
+                Some(run_seed) => crate::library::derive_seed(run_seed, self.vu_id, conn_seq),
+                None => (*self
+                    .unseeded_gen_base
+                    .get_or_init(|| uuid::Uuid::new_v4().as_u128() as u64))
+                .wrapping_add(conn_seq),
+            };
+            let instance = lib
+                .provider
+                .instantiate(lib.config.clone(), seed)
+                .map_err(|e| format!("library '{}' ({}): {e}", lib.alias, lib.provider.id()))?;
+            Ok(std::sync::Arc::new(std::sync::Mutex::new(instance)))
+        }
+    }
+
     /// A lazily-built `${…}` expander for one-shot actions (http, tcp/udp,
     /// llm, pub/sub, file-write): every expansion done through it shares one
     /// message context — one `begin_message`, so `${seq}` reads 1 and library
@@ -1040,5 +1113,29 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(expand(), expand(), "same seed → same values");
+    }
+
+    /// `library_step_instance` (RFC 009) parks the instance of a
+    /// share_per_context provider on the context: same VU → same instance,
+    /// different VU → a fresh one.
+    #[test]
+    fn library_step_instance_parks_one_instance_per_context() {
+        let (ctx, instantiated, _seen) = ctx_with_counting_library(true);
+        let a = ctx.library_step_instance("c").unwrap();
+        let b = ctx.library_step_instance("c").unwrap();
+        assert!(
+            std::sync::Arc::ptr_eq(&a, &b),
+            "same context, same instance"
+        );
+        let (other, _, _) = ctx_with_counting_library(true);
+        let c = other.library_step_instance("c").unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&a, &c), "each VU gets its own");
+        assert_eq!(instantiated.load(AtomicOrdering::Relaxed), 1);
+        // Unknown alias is actionable.
+        let err = ctx.library_step_instance("nope").map(|_| ()).unwrap_err();
+        assert!(err.contains("unknown library alias 'nope'"), "{err}");
+        let bare = Context::new();
+        let err = bare.library_step_instance("c").map(|_| ()).unwrap_err();
+        assert!(err.contains("no libraries are declared"), "{err}");
     }
 }

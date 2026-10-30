@@ -213,6 +213,34 @@ WIT `perfscale:library@0.1.x`, `@0.2.x` и `@0.3.x`. ABI 0.2 добавил
 строго аддитивные; неподдерживаемая мажорная версия не загружается, и в
 ошибке называются обе версии.
 
+### Пользовательские шаги (RFC 009, `perfscale:step@0.1.0`)
+
+Компонент может также экспортировать **шаги** — действия, вызываемые из
+`use:` как `lib/<alias>/<step>`. Аддитивный пакет `perfscale:step@0.1.0`
+(`wit/step/step.wit` в этом репозитории, разрешается через побайтово
+закреплённую копию `library.wit` в `wit/step/deps/`) определяет world'ы:
+
+```wit
+// world perfscale-steps = perfscale-library (0.3) плюс:
+run: func(ctx: step-context, step-id: string, params-json: string)
+    -> result<string, string>;
+```
+
+`info()` остаётся единственным манифестом: он получает
+`steps: [{name, description}]` (компонент только с шагами задаёт
+`functions: []`), и манифест обязан совпадать с экспортируемым ABI, иначе
+компонент не загружается. Payload `Ok` — сериализованный результат
+действия: `success` (обязателен), `output`, `logs` (`out`/`err`/`sys`),
+`metrics` (счётчики / массивы сэмплов длительности — сворачиваются, как у
+встроенного шага), опциональный `http_sample` и опциональный
+`secret_output_paths` (ключи вывода, которые движок маскирует в логах).
+World `perfscale-steps-exec` добавляет импорт `host-exec` —
+опосредованное хостом одноразовое выполнение процессов, выдаваемое через
+`capabilities: [process]` плюс `allow_process_actions: true`. Фикстуры
+движка (`crates/perfscale-library-sdk/examples/steps`, `stepexec`)
+показывают обе формы на сыром `wit-bindgen`; SDK-обёртки поставляются
+репозиториями SDK.
+
 ### Передача настроек прогона
 
 Манифест `info()` может также содержать `"settings_once": true`. Rust SDK

@@ -104,6 +104,38 @@ mod bindings_v1 {
     });
 }
 
+/// Bindings for the RFC 009 step world (`wit/step/step.wit`,
+/// `perfscale-steps`): a component that is a library AND a step provider —
+/// the world re-exports the 0.3 library interface and adds
+/// `perfscale:step/step`. The package resolves `perfscale:library@0.3.0`
+/// through `wit/step/deps/` (a vendored copy pinned byte-identical by the
+/// `vendored_library_wit_matches` test).
+mod bindings_steps {
+    wasmtime::component::bindgen!({
+        path: "../../wit/step",
+        world: "perfscale-steps",
+    });
+}
+
+/// Same, with the config-schema export (`perfscale-steps-config`).
+mod bindings_steps_config {
+    wasmtime::component::bindgen!({
+        path: "../../wit/step",
+        world: "perfscale-steps-config",
+    });
+}
+
+/// The `perfscale-steps-exec` world, used only for its `host-exec` *import*
+/// (`add_to_linker`): components are always instantiated through
+/// [`bindings_steps`]/[`bindings_steps_config`], whose exports are a strict
+/// subset of the exec worlds'.
+mod bindings_steps_exec {
+    wasmtime::component::bindgen!({
+        path: "../../wit/step",
+        world: "perfscale-steps-exec",
+    });
+}
+
 /// The WIT package versions this host implements. A component built against
 /// another major fails to load with both versions named.
 const SUPPORTED_WIT: &str = "perfscale:library/library@0.1.x, @0.2.x and @0.3.x";
@@ -113,6 +145,12 @@ const SUPPORTED_WIT: &str = "perfscale:library/library@0.1.x, @0.2.x and @0.3.x"
 /// formatting, JSON parsing, small corpora lookups measure in the low
 /// thousands) and traps infinite loops long before they hurt tail latency.
 pub(crate) const PER_CALL_FUEL: u64 = 50_000_000;
+
+/// Fuel budget per custom-step `run` (RFC 009): steps do real work (parse a
+/// `with:` block, transform, exec mediation) where the value-call budget
+/// would be tight; still a trap bound, not a fairness mechanism — a runaway
+/// step traps and fails like any other.
+pub(crate) const STEP_CALL_FUEL: u64 = 500_000_000;
 
 /// Per-instance linear-memory cap: one instance per (library × generator
 /// owner), so this multiplies — keep it tight (RFC 005 pitfall 5).
@@ -464,6 +502,8 @@ struct Needed {
     fs: bool,
     clock: bool,
     net: bool,
+    /// The `perfscale:step/host-exec` import (RFC 009 `process` capability).
+    process: bool,
 }
 
 /// Parsed YAML grant (`capabilities: [...]` of a `libraries:` entry).
@@ -473,6 +513,10 @@ struct Grants {
     clock: bool,
     /// Host allowlist, parsed at load (fail-fast on malformed entries).
     net: Vec<net_allowlist::AllowEntry>,
+    /// RFC 009 one-shot process execution (`host-exec`); additionally gated
+    /// by the run config's `allow_process_actions` (checked in
+    /// [`check_grants`]).
+    process: bool,
 }
 
 impl Grants {
@@ -482,9 +526,10 @@ impl Grants {
             match cap {
                 Capability::Simple(s) if s == "fs" => g.fs = true,
                 Capability::Simple(s) if s == "clock" => g.clock = true,
+                Capability::Simple(s) if s == "process" => g.process = true,
                 Capability::Simple(s) => {
                     return Err(format!(
-                        "unknown capability '{s}' — supported grants: fs, clock, net: [hosts]"
+                        "unknown capability '{s}' — supported grants: fs, clock, process, net: [hosts]"
                     ));
                 }
                 Capability::Net { net } => {
@@ -504,6 +549,9 @@ impl Grants {
         }
         if self.clock {
             out.push("clock".to_string());
+        }
+        if self.process {
+            out.push("process".to_string());
         }
         if !self.net.is_empty() {
             let entries = self
@@ -533,6 +581,18 @@ impl Grants {
 /// they keep requiring the matching grant.
 fn import_capability(name: &str) -> Result<Option<&'static str>, String> {
     let base = name.split('@').next().unwrap_or(name);
+    // Engine-provided interfaces (RFC 009): the one-shot process escape
+    // hatch. Host-mediated and triple-gated (YAML grant +
+    // allow_process_actions + allow_library_capabilities); guests never get
+    // arbitrary WASI process imports.
+    if let Some(rest) = base.strip_prefix("perfscale:step/") {
+        return match rest {
+            "host-exec" => Ok(Some("process")),
+            other => Err(format!(
+                "'{name}' — unknown import; perfscale:step provides only host-exec, not '{other}'"
+            )),
+        };
+    }
     if let Some(rest) = base.strip_prefix("wasi:") {
         let ns = rest.split('/').next().unwrap_or(rest);
         return Ok(match ns {
@@ -564,7 +624,7 @@ fn import_capability(name: &str) -> Result<Option<&'static str>, String> {
         });
     }
     Err(format!(
-        "'{name}' — unknown import; only wasi:filesystem, wasi:clocks, wasi:http (and their wasi:io plumbing) are supportable"
+        "'{name}' — unknown import; only wasi:filesystem, wasi:clocks, wasi:http, perfscale:step/host-exec (and their wasi:io plumbing) are supportable"
     ))
 }
 
@@ -598,6 +658,17 @@ pub struct WasmLibraryProvider {
     pure: bool,
     /// The component retains settings when later calls carry an empty string.
     settings_once: bool,
+    /// The component exports `perfscale:step/step` (RFC 009,
+    /// `perfscale-steps*` worlds): its `info()` manifest lists `steps` and the
+    /// instance handles expose `run`.
+    has_steps: bool,
+    /// Step metadata from the `info()` probe (RFC 009). Leaked `'static` like
+    /// the function names — the set is tiny and load is once per run.
+    steps: Vec<super::StepInfo>,
+    /// Routing flag: `pure` OR-ed with the process grant — a `process`
+    /// component's `host-exec` hostcall blocks (a child process wait), so it
+    /// must take the blocking-pool path like any capability guest.
+    may_block: bool,
 }
 
 impl WasmLibraryProvider {
@@ -613,9 +684,10 @@ impl WasmLibraryProvider {
         path: &Path,
         capabilities: Option<&[Capability]>,
         fs_root: Option<&Path>,
+        allow_process_actions: bool,
     ) -> Result<Self, String> {
         let display = || path.display().to_string();
-        let grants = check_grants(&display(), capabilities)?;
+        let grants = check_grants(&display(), capabilities, allow_process_actions)?;
 
         let bytes = std::fs::read(path)
             .map_err(|e| format!("library '{}': failed to read: {e}", display()))?;
@@ -667,8 +739,9 @@ impl WasmLibraryProvider {
         component: Component,
         capabilities: Option<&[Capability]>,
         fs_root: Option<&Path>,
+        allow_process_actions: bool,
     ) -> Result<Self, String> {
-        let grants = check_grants(use_, capabilities)?;
+        let grants = check_grants(use_, capabilities, allow_process_actions)?;
         Self::assemble(PathBuf::from(use_), component, grants, fs_root)
     }
 
@@ -690,6 +763,7 @@ impl WasmLibraryProvider {
         let ty = component.component_type();
         let mut exported_wit: Option<String> = None;
         let mut has_config_schema = false;
+        let mut step_wit: Option<String> = None;
         for (name, _) in ty.exports(engine) {
             if let Some(rest) = name.strip_prefix("perfscale:library/library") {
                 exported_wit = Some(rest.trim_start_matches('@').to_string());
@@ -697,6 +771,28 @@ impl WasmLibraryProvider {
             if name.starts_with("perfscale:library/config-schema") {
                 has_config_schema = true;
             }
+            if let Some(rest) = name.strip_prefix("perfscale:step/step") {
+                step_wit = Some(rest.trim_start_matches('@').to_string());
+            }
+        }
+        if let Some(v) = step_wit.as_deref() {
+            if !v.starts_with("0.1.") {
+                return Err(format!(
+                    "library '{}': unsupported perfscale:step ABI version — this build supports perfscale:step/step@0.1.x, the component exports @{v}",
+                    display()
+                ));
+            }
+        }
+        let has_steps = step_wit.is_some();
+        if has_steps
+            && exported_wit
+                .as_deref()
+                .is_some_and(|v| !v.starts_with("0.3."))
+        {
+            return Err(format!(
+                "library '{}': the step world requires the 0.3 library ABI — rebuild the component against wit/library.wit 0.3.0 + wit/step/step.wit 0.1.0",
+                display()
+            ));
         }
         if has_config_schema
             && exported_wit
@@ -733,6 +829,7 @@ impl WasmLibraryProvider {
                 Ok(Some("fs")) => needed.fs = true,
                 Ok(Some("clock")) => needed.clock = true,
                 Ok(Some("net")) => needed.net = true,
+                Ok(Some("process")) => needed.process = true,
                 Ok(Some(_)) | Ok(None) => {} // wasi:io/* plumbing
                 Err(e) => unsupported.push(format!("{name} ({e})")),
             }
@@ -755,6 +852,17 @@ impl WasmLibraryProvider {
                 grants.describe(),
             ));
         }
+        // process (RFC 009): fail-closed exactly like net — the host-exec
+        // interface is connected only when granted, so without the YAML grant
+        // the component cannot even instantiate. (The allow_process_actions
+        // half of the gate is enforced in `check_grants` at load.)
+        if needed.process && !grants.process {
+            return Err(format!(
+                "library '{}': the component needs capabilities the YAML does not grant — needed: process; granted: {}. Add `- process` to the libraries: entry's capabilities (requires allow_library_capabilities: true and allow_process_actions: true)",
+                display(),
+                grants.describe(),
+            ));
+        }
 
         // The linker connects wasi:io + wasi:cli (sink form), wasi:clocks
         // and wasi:filesystem unconditionally — jco/StarlingMonkey-built
@@ -764,7 +872,7 @@ impl WasmLibraryProvider {
         // only when the YAML grants `fs`, so an ungranted guest that touches
         // the filesystem fails at runtime. wasi:http, in contrast, is linked
         // only with a net grant, and its hooks hold the allowlist.
-        let linker = build_linker(engine, &display(), !grants.net.is_empty())?;
+        let linker = build_linker(engine, &display(), !grants.net.is_empty(), grants.process)?;
 
         // The fs preopen: confined to the run's fs_root; without one, the
         // directory containing the .wasm (the smallest sensible root).
@@ -787,6 +895,9 @@ impl WasmLibraryProvider {
             config_schema: None,
             pure: false,
             settings_once: false,
+            has_steps,
+            steps: Vec::new(),
+            may_block: false,
         };
 
         // `info()` once at load, BEFORE grant enforcement: populates
@@ -795,6 +906,17 @@ impl WasmLibraryProvider {
         // fuel-limited like any other call. A malformed or trapping `info()`
         // is a load error.
         let info = provider.probe_info()?;
+        // The manifest and the ABI may not disagree (RFC 009): a component
+        // listing steps it does not export — or exporting the step world with
+        // an empty `steps` manifest — is a load error, not a runtime surprise.
+        if info.steps.is_empty() != !has_steps {
+            return Err(format!(
+                "library '{}': manifest/ABI mismatch — info() lists {} steps but the component {} the perfscale:step export; rebuild the component so both agree",
+                display(),
+                info.steps.len(),
+                if has_steps { "has" } else { "lacks" },
+            ));
+        }
         if has_config_schema {
             provider.probe_config_schema()?;
         }
@@ -843,6 +965,9 @@ impl WasmLibraryProvider {
         if !grants.net.is_empty() && !needed.net {
             unused.push("net");
         }
+        if grants.process && !needed.process {
+            unused.push("process");
+        }
         if !unused.is_empty() {
             tracing::warn!(
                 "library '{}': capabilities granted but not imported by the component: {} — the grant is inert; drop it",
@@ -856,6 +981,11 @@ impl WasmLibraryProvider {
         provider.id = format!("{}@v{}", info.name, info.version);
         provider.name = info.name;
         provider.functions = info.functions;
+        provider.steps = info.steps;
+        // A `process`-granted component's host-exec hostcall blocks on a child
+        // process — route its guest calls like a capability guest even when
+        // the info() pure marker waives its WASI imports.
+        provider.may_block = !provider.pure || grants.process;
         Ok(provider)
     }
 
@@ -913,8 +1043,8 @@ impl WasmLibraryProvider {
         store
             .set_fuel(PER_CALL_FUEL)
             .map_err(|e| format!("library '{}': {e}", self.path.display()))?;
-        let instance = match (self.wit_major, self.has_config_schema) {
-            (1, _) => Instantiated::V1(
+        let instance = match (self.wit_major, self.has_steps, self.has_config_schema) {
+            (1, _, _) => Instantiated::V1(
                 bindings_v1::PerfscaleLibrary::instantiate(
                     &mut store,
                     &self.component,
@@ -927,7 +1057,7 @@ impl WasmLibraryProvider {
                     )
                 })?,
             ),
-            (2, _) => Instantiated::V2(
+            (2, _, _) => Instantiated::V2(
                 bindings_v2::PerfscaleLibrary::instantiate(
                     &mut store,
                     &self.component,
@@ -940,7 +1070,33 @@ impl WasmLibraryProvider {
                     )
                 })?,
             ),
-            (_, true) => Instantiated::V3Config(
+            (_, true, true) => Instantiated::StepsConfig(
+                bindings_steps_config::PerfscaleStepsConfig::instantiate(
+                    &mut store,
+                    &self.component,
+                    &self.linker,
+                )
+                .map_err(|e| {
+                    format!(
+                        "library '{}': failed to instantiate: {e}",
+                        self.path.display()
+                    )
+                })?,
+            ),
+            (_, true, false) => Instantiated::Steps(
+                bindings_steps::PerfscaleSteps::instantiate(
+                    &mut store,
+                    &self.component,
+                    &self.linker,
+                )
+                .map_err(|e| {
+                    format!(
+                        "library '{}': failed to instantiate: {e}",
+                        self.path.display()
+                    )
+                })?,
+            ),
+            (_, false, true) => Instantiated::V3Config(
                 bindings_v3_config::PerfscaleLibraryConfig::instantiate(
                     &mut store,
                     &self.component,
@@ -978,6 +1134,8 @@ impl WasmLibraryProvider {
             Instantiated::V2(i) => i.perfscale_library_library().call_info(&mut store),
             Instantiated::V3(i) => i.perfscale_library_library().call_info(&mut store),
             Instantiated::V3Config(i) => i.perfscale_library_library().call_info(&mut store),
+            Instantiated::Steps(i) => i.perfscale_library_library().call_info(&mut store),
+            Instantiated::StepsConfig(i) => i.perfscale_library_library().call_info(&mut store),
         })
         .map_err(|e| {
             format!(
@@ -997,9 +1155,11 @@ impl WasmLibraryProvider {
                 self.path.display()
             ));
         }
-        if parsed.functions.is_empty() {
+        // A steps-only component (RFC 009) declares `functions: []` — the
+        // manifest is the union; a component exporting neither is useless.
+        if parsed.functions.is_empty() && parsed.steps.is_empty() {
             return Err(format!(
-                "library '{}': info() exports no functions",
+                "library '{}': info() exports no functions and no steps",
                 self.path.display()
             ));
         }
@@ -1016,12 +1176,24 @@ impl WasmLibraryProvider {
                 secret: f.secret,
             })
             .collect();
+        let steps = parsed
+            .steps
+            .into_iter()
+            .map(|s| {
+                // Same leak discipline as the function names above.
+                super::StepInfo {
+                    name: Box::leak(s.name.into_boxed_str()),
+                    description: Box::leak(s.description.into_boxed_str()),
+                }
+            })
+            .collect();
         Ok(WasmLibraryInfo {
             name: parsed.name,
             version: parsed.version,
             pure: parsed.pure,
             settings_once: parsed.settings_once,
             functions,
+            steps,
         })
     }
 
@@ -1100,6 +1272,9 @@ enum Instantiated {
     V2(bindings_v2::PerfscaleLibrary),
     V3(bindings_v3::PerfscaleLibrary),
     V3Config(bindings_v3_config::PerfscaleLibraryConfig),
+    /// RFC 009 step components (0.3 library interface + `perfscale:step/step`).
+    Steps(bindings_steps::PerfscaleSteps),
+    StepsConfig(bindings_steps_config::PerfscaleStepsConfig),
 }
 
 impl Instantiated {
@@ -1113,6 +1288,10 @@ impl Instantiated {
             Instantiated::V2(i) => i.perfscale_library_library().call_init(store, config_json),
             Instantiated::V3(i) => i.perfscale_library_library().call_init(store, config_json),
             Instantiated::V3Config(i) => {
+                i.perfscale_library_library().call_init(store, config_json)
+            }
+            Instantiated::Steps(i) => i.perfscale_library_library().call_init(store, config_json),
+            Instantiated::StepsConfig(i) => {
                 i.perfscale_library_library().call_init(store, config_json)
             }
         }
@@ -1129,6 +1308,42 @@ impl Instantiated {
                 i.perfscale_library_config_schema()
                     .call_config_schema(store),
             ),
+            Instantiated::StepsConfig(i) => Some(
+                i.perfscale_library_config_schema()
+                    .call_config_schema(store),
+            ),
+            _ => None,
+        }
+    }
+
+    /// The RFC 009 `run` export — present only on step components (the
+    /// dispatch checks the manifest first, so `None` here is unreachable).
+    fn call_run(
+        &self,
+        store: &mut Store<HostState>,
+        ctx: bindings_steps::exports::perfscale::step::step::StepContext,
+        step_id: &str,
+        params_json: &str,
+    ) -> Option<Result<Result<String, String>, wasmtime::Error>> {
+        match self {
+            Instantiated::Steps(i) => {
+                Some(
+                    i.perfscale_step_step()
+                        .call_run(store, &ctx, step_id, params_json),
+                )
+            }
+            Instantiated::StepsConfig(i) => Some(i.perfscale_step_step().call_run(
+                store,
+                &bindings_steps_config::exports::perfscale::step::step::StepContext {
+                    iteration_seq: ctx.iteration_seq,
+                    vu_id: ctx.vu_id,
+                    time_ms: ctx.time_ms,
+                    settings_json: ctx.settings_json,
+                    step_name: ctx.step_name,
+                },
+                step_id,
+                params_json,
+            )),
             _ => None,
         }
     }
@@ -1192,6 +1407,30 @@ impl Instantiated {
                 i.perfscale_library_library()
                     .call_call(store, &wctx, func, args_json)
             }
+            Instantiated::Steps(i) => {
+                let wctx = bindings_steps::exports::perfscale::library::library::Context {
+                    message_seq: ctx.message_seq,
+                    iteration_seq: ctx.iteration_seq,
+                    vu_id: ctx.vu_id,
+                    seed: ctx.seed,
+                    time_ms: ctx.time_ms,
+                    settings_json,
+                };
+                i.perfscale_library_library()
+                    .call_call(store, &wctx, func, args_json)
+            }
+            Instantiated::StepsConfig(i) => {
+                let wctx = bindings_steps_config::exports::perfscale::library::library::Context {
+                    message_seq: ctx.message_seq,
+                    iteration_seq: ctx.iteration_seq,
+                    vu_id: ctx.vu_id,
+                    seed: ctx.seed,
+                    time_ms: ctx.time_ms,
+                    settings_json,
+                };
+                i.perfscale_library_library()
+                    .call_call(store, &wctx, func, args_json)
+            }
         }
     }
 }
@@ -1213,6 +1452,17 @@ struct WasmLibraryInfoJson {
     #[serde(default)]
     settings_once: bool,
     functions: Vec<WasmFunctionInfoJson>,
+    /// Custom steps the component exports (RFC 009). Optional: value-only
+    /// libraries omit it; a steps-only component sets `functions: []`.
+    #[serde(default)]
+    steps: Vec<WasmStepInfoJson>,
+}
+
+#[derive(serde::Deserialize)]
+struct WasmStepInfoJson {
+    name: String,
+    #[serde(default)]
+    description: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -1230,6 +1480,7 @@ struct WasmLibraryInfo {
     pure: bool,
     settings_once: bool,
     functions: Vec<FunctionInfo>,
+    steps: Vec<super::StepInfo>,
 }
 
 impl LibraryProvider for WasmLibraryProvider {
@@ -1243,6 +1494,10 @@ impl LibraryProvider for WasmLibraryProvider {
 
     fn functions(&self) -> &[FunctionInfo] {
         &self.functions
+    }
+
+    fn steps(&self) -> &[super::StepInfo] {
+        &self.steps
     }
 
     fn instantiate(
@@ -1265,6 +1520,7 @@ impl LibraryProvider for WasmLibraryProvider {
             args_buf: Vec::new(),
             id: Arc::from(self.id.as_str()),
             pure: self.pure,
+            may_block: self.may_block,
             settings_once: self.settings_once,
             settings_sent: false,
         }))
@@ -1288,6 +1544,10 @@ struct WasmLibraryInstance {
     /// From the component's `info()`: pure guests make no blocking WASI
     /// hostcalls and may run inline on a current-thread runtime.
     pure: bool,
+    /// Routing: the guest may block the calling thread (non-pure, or a
+    /// `process` grant — a `host-exec` call waits on a child process).
+    /// Current-thread runtimes route such calls through the blocking pool.
+    may_block: bool,
     /// The bindgen handles are not `Clone`, so the call path moves the whole
     /// handle to the blocking thread and back (see `call`).
     instance: Option<Instantiated>,
@@ -1310,6 +1570,55 @@ impl WasmLibraryInstance {
             String::new()
         } else {
             ctx.settings_json.to_string()
+        }
+    }
+
+    /// Route one step call (`run`) through the same runtime plumbing
+    /// [`LibraryInstance::call`] uses: inline with no ambient runtime,
+    /// `block_in_place` on multi-thread runtimes, inline on current-thread
+    /// runtimes when the guest cannot block, and the blocking pool otherwise
+    /// (store/instance move over and back through a channel). Returns `Err`
+    /// only when the blocking worker died — the instance is then unusable.
+    fn dispatch<R, F>(&mut self, f: F) -> Result<R, String>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut Store<HostState>, &Instantiated) -> R + Send + 'static,
+    {
+        let handle = match tokio::runtime::Handle::try_current() {
+            Err(_) => {
+                let store = self.store.as_mut().expect("store present between calls");
+                let instance = self.instance.as_ref().expect("instance present");
+                return Ok(f(store, instance));
+            }
+            Ok(h) => h,
+        };
+        if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+            let store = self.store.as_mut().expect("store present between calls");
+            let instance = self.instance.as_ref().expect("instance present");
+            return Ok(tokio::task::block_in_place(|| f(store, instance)));
+        }
+        if !self.may_block {
+            let store = self.store.as_mut().expect("store present between calls");
+            let instance = self.instance.as_ref().expect("instance present");
+            return Ok(f(store, instance));
+        }
+        let mut store = self.store.take().expect("store present between calls");
+        let instance = self.instance.take().expect("instance present");
+        let (tx, rx) = std::sync::mpsc::channel();
+        tokio::task::spawn_blocking(move || {
+            let r = f(&mut store, &instance);
+            let _ = tx.send((store, instance, r));
+        });
+        match rx.recv() {
+            Ok((store, instance, r)) => {
+                self.store = Some(store);
+                self.instance = Some(instance);
+                Ok(r)
+            }
+            Err(_) => Err(format!(
+                "{}: the library call worker died — this instance is unusable",
+                self.id
+            )),
         }
     }
 }
@@ -1460,6 +1769,70 @@ impl LibraryInstance for WasmLibraryInstance {
             )),
         }
     }
+
+    fn run_step(
+        &mut self,
+        ctx: &super::StepCtx<'_>,
+        step: &str,
+        params_json: &str,
+    ) -> Result<String, String> {
+        let wctx = bindings_steps::exports::perfscale::step::step::StepContext {
+            iteration_seq: ctx.iteration_seq,
+            vu_id: ctx.vu_id,
+            time_ms: ctx.time_ms,
+            // Steps honor the same settings-once contract as value calls.
+            settings_json: if self.settings_once && self.settings_sent {
+                String::new()
+            } else {
+                ctx.settings_json.to_string()
+            },
+            step_name: ctx.step_name.to_string(),
+        };
+        let id = Arc::clone(&self.id);
+        let step = step.to_string();
+        let params = params_json.to_string();
+        let (completed, result) = self.dispatch(move |store, instance| {
+            step_guest(store, instance, &id, wctx, &step, &params)
+        })?;
+        if completed {
+            self.settings_sent = true;
+        }
+        result
+    }
+}
+
+/// One guest `run` (RFC 009 step) with a fresh step fuel budget, mapping the
+/// outcome to the engine's error contract exactly like [`call_guest`]. The
+/// bool reports a completed call (no trap) so the caller can advance the
+/// settings-once marker.
+fn step_guest(
+    store: &mut Store<HostState>,
+    instance: &Instantiated,
+    id: &str,
+    ctx: bindings_steps::exports::perfscale::step::step::StepContext,
+    step: &str,
+    params_json: &str,
+) -> (bool, Result<String, String>) {
+    if let Err(e) = store.set_fuel(STEP_CALL_FUEL) {
+        return (false, Err(format!("{id}::{step}: {e}")));
+    }
+    let Some(result) = instance.call_run(store, ctx, step, params_json) else {
+        return (
+            false,
+            Err(format!(
+                "{id}::{step}: the component exports no perfscale:step interface"
+            )),
+        );
+    };
+    let completed = result.is_ok();
+    let mapped = match result {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => Err(format!("{id}::{step}: {e}")),
+        Err(e) => Err(format!(
+            "{id}::{step}: the WASM guest trapped or exhausted its fuel budget: {e}"
+        )),
+    };
+    (completed, mapped)
 }
 
 /// One guest `call` with a fresh fuel budget, mapping the outcome to the
@@ -1525,8 +1898,23 @@ fn link_err(file: &str, e: wasmtime::Error) -> String {
 }
 
 /// Parse the YAML grant — shared by the file and embedded load paths.
-fn check_grants(display: &str, capabilities: Option<&[Capability]>) -> Result<Grants, String> {
-    Grants::parse(capabilities.unwrap_or(&[])).map_err(|e| format!("library '{display}': {e}"))
+/// `allow_process_actions` is the run config's gate for the RFC 009
+/// `process` capability: granting it without the config gate is a hard load
+/// error (fail-closed, exactly like a grant without
+/// `allow_library_capabilities`, which the caller enforces).
+fn check_grants(
+    display: &str,
+    capabilities: Option<&[Capability]>,
+    allow_process_actions: bool,
+) -> Result<Grants, String> {
+    let grants = Grants::parse(capabilities.unwrap_or(&[]))
+        .map_err(|e| format!("library '{display}': {e}"))?;
+    if grants.process && !allow_process_actions {
+        return Err(format!(
+            "library '{display}': the `process` capability additionally requires `allow_process_actions: true` in the run config (fail-closed, like std/child_process@v1)"
+        ));
+    }
+    Ok(grants)
 }
 
 /// Build the per-provider linker: wasi:io plumbing and wasi:cli in sink form
@@ -1543,11 +1931,14 @@ fn check_grants(display: &str, capabilities: Option<&[Capability]>) -> Result<Gr
 /// net-importing component without a grant is already a hard load error, and
 /// leaving the interfaces out removes the runtime boundary question
 /// entirely). When linked, [`net_allowlist::NetHooks`] mediates every
-/// request.
+/// request. `perfscale:step/host-exec` (RFC 009 `process`) follows the same
+/// rule: connected only when `process_granted` — the grant additionally
+/// requires `allow_process_actions: true`, enforced before this runs.
 pub(crate) fn build_linker(
     engine: &Engine,
     display: &str,
     net_granted: bool,
+    process_granted: bool,
 ) -> Result<Linker<HostState>, String> {
     use wasmtime_wasi::cli::{WasiCli, WasiCliView};
 
@@ -1629,7 +2020,63 @@ pub(crate) fn build_linker(
     if net_granted {
         add_only_http_to_linker_sync(l).map_err(|e| link_err(display, e))?;
     }
+
+    // perfscale:step/host-exec only when the YAML grants `process` (RFC 009):
+    // the import is the boundary — without it linked, the component cannot
+    // even instantiate. The host function itself is a bounded one-shot spawn
+    // (see `super::exec`); HostState carries no further policy.
+    if process_granted {
+        bindings_steps_exec::perfscale::step::host_exec::add_to_linker::<HostState, HasStepExec>(
+            l,
+            |h| h,
+        )
+        .map_err(|e| link_err(display, e))?;
+    }
     Ok(linker)
+}
+
+/// Marker wiring `HostState` into the host-exec linker entry (same pattern as
+/// the reporter's host interface in `crate::report::wasm`).
+struct HasStepExec;
+
+impl wasmtime::component::HasData for HasStepExec {
+    type Data<'a> = &'a mut HostState;
+}
+
+impl bindings_steps_exec::perfscale::step::host_exec::Host for &mut HostState {
+    fn exec(
+        &mut self,
+        request: bindings_steps_exec::perfscale::step::host_exec::ExecRequest,
+    ) -> Result<bindings_steps_exec::perfscale::step::host_exec::ExecResult, String> {
+        super::exec::run(request.into()).map(Into::into)
+    }
+}
+
+impl From<bindings_steps_exec::perfscale::step::host_exec::ExecRequest>
+    for super::exec::ExecRequest
+{
+    fn from(r: bindings_steps_exec::perfscale::step::host_exec::ExecRequest) -> Self {
+        Self {
+            executable: r.executable,
+            argv: r.argv,
+            env: r.env,
+            cwd: r.cwd,
+            stdin: r.stdin,
+            timeout_ms: r.timeout_ms,
+        }
+    }
+}
+
+impl From<super::exec::ExecOutcome>
+    for bindings_steps_exec::perfscale::step::host_exec::ExecResult
+{
+    fn from(o: super::exec::ExecOutcome) -> Self {
+        Self {
+            exit_code: o.exit_code,
+            stdout: o.stdout,
+            stderr: o.stderr,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1649,6 +2096,9 @@ mod tests {
         purefs: PathBuf,
         memhog: PathBuf,
         netfetch: PathBuf,
+        steps: PathBuf,
+        stepsmismatch: PathBuf,
+        stepexec: PathBuf,
     }
 
     fn wasip2_installed() -> bool {
@@ -1709,6 +2159,9 @@ mod tests {
                     purefs: build("purefs", "perfscale_purefs_library")?,
                     memhog: build("memhog", "perfscale_memhog_library")?,
                     netfetch: build("netfetch", "perfscale_netfetch_library")?,
+                    steps: build("steps", "perfscale_steps_library")?,
+                    stepsmismatch: build("stepsmismatch", "perfscale_stepsmismatch_library")?,
+                    stepexec: build("stepexec", "perfscale_stepexec_library")?,
                 })
             })
             .as_ref()
@@ -1749,7 +2202,7 @@ mod tests {
     }
 
     fn hello_provider(path: &Path) -> WasmLibraryProvider {
-        let provider = WasmLibraryProvider::load(path, None, None).unwrap();
+        let provider = WasmLibraryProvider::load(path, None, None, false).unwrap();
         assert!(
             provider.settings_once,
             "SDK-built hello fixture must advertise settings_once"
@@ -1786,6 +2239,21 @@ mod tests {
     }
 
     // --- pure checks (no fixtures needed) -----------------------------------
+
+    /// `wit/step/deps/perfscale-library/library.wit` is the vendored copy the
+    /// step package resolves `perfscale:library@0.3.0` through — it must stay
+    /// byte-identical to `wit/library.wit` (single source of truth, RFC 005).
+    #[test]
+    fn vendored_library_wit_matches_the_source_of_truth() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let source = std::fs::read(root.join("wit/library.wit")).unwrap();
+        let vendored =
+            std::fs::read(root.join("wit/step/deps/perfscale-library/library.wit")).unwrap();
+        assert_eq!(
+            source, vendored,
+            "wit/step/deps/perfscale-library/library.wit drifted from wit/library.wit"
+        );
+    }
 
     #[test]
     fn info_settings_once_is_optional_and_defaults_off() {
@@ -2575,7 +3043,7 @@ mod tests {
             "a guest-level error still completes the settings handoff"
         );
 
-        let spin = WasmLibraryProvider::load(&f.spin, None, None).unwrap();
+        let spin = WasmLibraryProvider::load(&f.spin, None, None, false).unwrap();
         assert!(spin.settings_once);
         let (mut store, instance) = spin.instantiate_store().unwrap();
         let mut settings_sent = false;
@@ -2624,9 +3092,14 @@ mod tests {
         let artifact = super::super::burn::burn_component(&bytes).unwrap();
         let component = super::super::burn::load_burned(&artifact, &sha)
             .expect("the burn artifact deserializes");
-        let burned =
-            WasmLibraryProvider::load_embedded(&f.hello.to_string_lossy(), component, None, None)
-                .unwrap();
+        let burned = WasmLibraryProvider::load_embedded(
+            &f.hello.to_string_lossy(),
+            component,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         let resolved = validate_libraries(&[lib_ref(&f.hello)], false, None).unwrap();
 
         let args = [Value::from("order")];
@@ -2721,6 +3194,510 @@ mod tests {
         assert_eq!(
             inst.call(&ctx(), "greet", &[Value::from("world")]).unwrap(),
             "hello, world!"
+        );
+    }
+
+    // --- custom steps (RFC 009, lib/<alias>/<step>) --------------------------
+
+    /// A libraries entry for a step component under the alias `sig`.
+    fn step_ref(path: &Path) -> LibraryRef {
+        LibraryRef {
+            r#as: Some("sig".into()),
+            ..lib_ref(path)
+        }
+    }
+
+    /// A hand-built VU context with the libraries wired (VU 7, iteration 3),
+    /// plus the run-scoped library metrics recorder.
+    fn ctx_with_libraries(
+        refs: &[LibraryRef],
+        allow_capabilities: bool,
+        allow_process: bool,
+    ) -> crate::step::context::Context {
+        let mut ctx = crate::step::context::Context::new();
+        ctx.vu_id = 7;
+        ctx.iteration_seq = 3;
+        let libraries = crate::library::validate_libraries_with_policy(
+            refs,
+            allow_capabilities,
+            allow_process,
+            None,
+        )
+        .unwrap();
+        ctx.library_metrics = Some(Arc::new(crate::library::LibraryMetrics::new(
+            libraries.iter().map(|l| l.alias.clone()),
+        )));
+        ctx.libraries = Some(Arc::new(crate::library::LibrarySet { libraries }));
+        ctx
+    }
+
+    /// The steps-only fixture: `functions: []`, step metadata probed from the
+    /// manifest, and the step export verified against it.
+    #[test]
+    fn steps_component_loads_with_empty_functions_and_step_metadata() {
+        let Some(f) = fixtures() else { return };
+        let resolved = validate_libraries(&[step_ref(&f.steps)], false, None).unwrap();
+        assert_eq!(resolved[0].provider.id(), "steps@v0.1.0");
+        assert!(
+            resolved[0].provider.functions().is_empty(),
+            "steps-only component lists no functions"
+        );
+        let names: Vec<_> = resolved[0]
+            .provider
+            .steps()
+            .iter()
+            .map(|s| s.name)
+            .collect();
+        for expected in ["echo", "work", "fail", "err", "ctx", "secret"] {
+            assert!(
+                names.contains(&expected),
+                "missing step {expected}: {names:?}"
+            );
+        }
+        // Value-only components report no steps.
+        let resolved = validate_libraries(&[lib_ref(&f.hello)], false, None).unwrap();
+        assert!(resolved[0].provider.steps().is_empty());
+    }
+
+    /// Manifest and ABI must agree (RFC 009): the stepsmismatch fixture
+    /// exports the step world but lists no `steps` in `info()`.
+    #[test]
+    fn manifest_abi_mismatch_is_a_load_error() {
+        let Some(f) = fixtures() else { return };
+        let err = validate_libraries(&[step_ref(&f.stepsmismatch)], false, None).unwrap_err();
+        assert!(err.contains("manifest/ABI mismatch"), "{err}");
+    }
+
+    /// The happy path through `execute_lib_step`: success, `output` stored,
+    /// tagged logs, guest metrics folded into the output's reserved
+    /// `metrics` key, and the library metrics recorder counting the step.
+    #[test]
+    fn lib_step_dispatch_success_output_logs_and_metrics() {
+        let Some(f) = fixtures() else { return };
+        let ctx = ctx_with_libraries(&[step_ref(&f.steps)], false, false);
+        let out = crate::step::libstep::execute_lib_step(
+            "lib/sig/echo",
+            &serde_json::json!({ "who": "world" }),
+            &ctx,
+            "my step",
+        );
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(out.value["echo"]["who"], serde_json::json!("world"));
+        assert_eq!(
+            out.value["metrics"]["steps_echo_total"],
+            serde_json::json!(1),
+            "guest metrics folded into the reserved output key"
+        );
+        assert_eq!(out.logs.len(), 3, "{:?}", out.logs);
+        let summary = ctx
+            .library_metrics
+            .as_ref()
+            .unwrap()
+            .summary()
+            .expect("step call recorded");
+        let sig = &summary["sig"];
+        assert_eq!(sig.step_calls, 1);
+        assert_eq!(sig.step_errors, 0);
+        assert!(sig.step_p95_ms.is_some());
+        assert_eq!(sig.calls, 0, "steps do not count as token calls");
+
+        // The instance is the context's parked one: a second call reuses it
+        // and the counter keeps climbing.
+        let out = crate::step::libstep::execute_lib_step(
+            "lib/sig/work",
+            &serde_json::json!({}),
+            &ctx,
+            "w",
+        );
+        assert!(out.success);
+        let sample = out.http_sample.expect("work emits an http_sample");
+        assert_eq!(sample.status, 200);
+        let summary = ctx.library_metrics.as_ref().unwrap().summary().unwrap();
+        assert_eq!(summary["sig"].step_calls, 2);
+    }
+
+    /// Guest failures map to step failures with actionable messages: guest
+    /// `success: false`, guest `Err`, malformed result JSON, unknown step,
+    /// unknown alias, malformed step id, reserved metric name.
+    #[test]
+    fn lib_step_failures_are_actionable() {
+        let Some(f) = fixtures() else { return };
+        let ctx = ctx_with_libraries(&[step_ref(&f.steps)], false, false);
+        let run = |id: &str| {
+            crate::step::libstep::execute_lib_step(id, &serde_json::json!({}), &ctx, "s")
+        };
+
+        let out = run("lib/sig/fail");
+        assert!(!out.success);
+        assert!(out.logs.iter().any(|(_, l)| l == "boom"), "{:?}", out.logs);
+
+        let out = run("lib/sig/err");
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("guest-reported error"),
+            "{:?}",
+            out.logs
+        );
+
+        let out = run("lib/sig/badjson");
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("malformed result JSON"),
+            "{:?}",
+            out.logs
+        );
+
+        let out = run("lib/sig/nope");
+        assert!(!out.success);
+        assert!(
+            out.logs[0]
+                .1
+                .contains("unknown step 'nope' for library 'sig'")
+                && out.logs[0].1.contains("exported steps: "),
+            "{:?}",
+            out.logs
+        );
+
+        let out = run("lib/nope/echo");
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("unknown library alias 'nope'"),
+            "{:?}",
+            out.logs
+        );
+
+        let out = run("lib/sig");
+        assert!(!out.success);
+        assert!(out.logs[0].1.contains("invalid step id"), "{:?}", out.logs);
+
+        let out = run("lib/sig/reservedmetrics");
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("reserved by the engine"),
+            "{:?}",
+            out.logs
+        );
+
+        // Failures count in the per-library step metrics — but only the
+        // calls that actually reached the guest (unknown alias/step and
+        // malformed ids are dispatch errors, unattributable to the library).
+        let summary = ctx.library_metrics.as_ref().unwrap().summary().unwrap();
+        assert_eq!(summary["sig"].step_calls, 4);
+        assert_eq!(summary["sig"].step_errors, 4);
+    }
+
+    /// The step context carries the VU identity; a step declaring
+    /// `secret_output_paths` gets its minted token registered for masking.
+    #[test]
+    fn lib_step_ctx_and_secret_outputs() {
+        let Some(f) = fixtures() else { return };
+        let ctx = ctx_with_libraries(&[step_ref(&f.steps)], false, false);
+        let out = crate::step::libstep::execute_lib_step(
+            "lib/sig/ctx",
+            &serde_json::json!({}),
+            &ctx,
+            "whoami",
+        );
+        assert!(out.success);
+        assert_eq!(out.value["vu"], serde_json::json!(7));
+        assert_eq!(out.value["iteration"], serde_json::json!(3));
+        assert_eq!(out.value["step_name"], serde_json::json!("whoami"));
+
+        let out = crate::step::libstep::execute_lib_step(
+            "lib/sig/secret",
+            &serde_json::json!({}),
+            &ctx,
+            "login",
+        );
+        assert!(out.success);
+        assert_eq!(
+            ctx.secrets.mask("saw s3cr3t-t0ken in a header"),
+            "saw *** in a header"
+        );
+    }
+
+    /// Full-run integration: `lib/` steps in `before:` (vu/iteration 0) and
+    /// in the VU loop, with the per-library step metrics landing in the
+    /// `libraries:` summary line.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lib_steps_run_in_before_and_vu_loops() {
+        let Some(f) = fixtures() else { return };
+        use crate::step::runner;
+        let step = |name: &str, action: &str, with: Value| crate::step::Step {
+            name: Some(name.into()),
+            action: action.into(),
+            with: Some(with),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+            condition: None,
+        };
+        let before = vec![step("setup ctx", "lib/sig/ctx", serde_json::json!({}))];
+        let steps = vec![
+            step("echo", "lib/sig/echo", serde_json::json!({ "n": 1 })),
+            step("work", "lib/sig/work", serde_json::json!({})),
+        ];
+        let config = crate::step::RunConfig {
+            vus: 2,
+            duration: "150ms".into(),
+            ..Default::default()
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(512);
+        let libraries = vec![step_ref(&f.steps)];
+        let handle = tokio::spawn(runner::run_native(
+            steps,
+            before,
+            Vec::new(),
+            config,
+            serde_json::Map::new(),
+            serde_json::Map::new(),
+            libraries,
+            false,
+            tx,
+            None,
+        ));
+        let mut lines = Vec::new();
+        while let Some(line) = rx.recv().await {
+            lines.push(line.text);
+        }
+        let outcome = handle.await.unwrap();
+        assert!(outcome.config_error.is_none(), "{:?}", outcome.config_error);
+        // before ran the step once (its output includes vu 0).
+        assert!(
+            lines.iter().any(|l| l.contains("Running 1 setup step")),
+            "{lines:?}"
+        );
+        // Guest log lines reached the run log.
+        assert!(lines.iter().any(|l| l == "echo ran"), "{lines:?}");
+        // Guest metrics folded into the run summary (reserved-key path).
+        assert!(
+            lines.iter().any(|l| l.starts_with("steps_echo_total: ")),
+            "{lines:?}"
+        );
+        // Per-library step metrics land in the libraries summary.
+        let line = lines
+            .iter()
+            .find(|l| l.starts_with("libraries: "))
+            .expect("libraries summary line emitted");
+        let parsed = crate::summary::parse_libraries_summary(line).expect("line parses");
+        let sig = &parsed["sig"];
+        assert!(sig.step_calls > 0, "{sig:?}");
+        assert_eq!(sig.step_errors, 0, "{sig:?}");
+        assert!(sig.step_p95_ms.is_some(), "{sig:?}");
+        assert_eq!(sig.calls, 0);
+    }
+
+    /// `${alias.fn(...)}` tokens in step params expand through the same
+    /// component/runtime as payload tokens before the guest runs.
+    #[test]
+    fn lib_step_params_expand_generator_tokens() {
+        let Some(f) = fixtures() else { return };
+        let ctx = ctx_with_libraries(&[step_ref(&f.steps), lib_ref(&f.hello)], false, false);
+        let out = crate::step::libstep::execute_lib_step(
+            "lib/sig/echo",
+            &serde_json::json!({ "who": "${hello.greet(world)}" }),
+            &ctx,
+            "s",
+        );
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(
+            out.value["echo"]["who"],
+            serde_json::json!("hello, world!"),
+            "the guest received the expanded value, not the literal token"
+        );
+    }
+
+    /// Lint checks `lib/` step ids against the probed manifest: a valid
+    /// reference passes; unknown alias/step and malformed ids are issues.
+    #[test]
+    fn lint_validates_lib_step_references() {
+        let Some(f) = fixtures() else { return };
+        let yaml = |use_: &str| {
+            format!(
+                "libraries:\n  - use: '{}'\n    capabilities: []\n    as: sig\nsteps:\n  - use: {use_}\n    with: {{}}\n",
+                f.steps.display()
+            )
+        };
+        let issues = crate::lint::lint(&yaml("lib/sig/echo"), crate::lint::DocKind::Test);
+        assert!(issues.is_empty(), "{issues:?}");
+
+        let issues = crate::lint::lint(&yaml("lib/sig/nope"), crate::lint::DocKind::Test);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.problem.contains("unknown step 'nope'")),
+            "{issues:?}"
+        );
+
+        let issues = crate::lint::lint(&yaml("lib/nope/echo"), crate::lint::DocKind::Test);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.problem.contains("unknown library alias 'nope'")),
+            "{issues:?}"
+        );
+
+        let issues = crate::lint::lint(&yaml("lib/sig"), crate::lint::DocKind::Test);
+        assert!(
+            issues.iter().any(|i| i.problem.contains("invalid step id")),
+            "{issues:?}"
+        );
+    }
+
+    // --- process capability (RFC 009 host-exec) ------------------------------
+
+    /// Multi-document lint: a component declared in the CONFIG validates
+    /// `lib/` steps in the TEST, and vice versa (the runtime concatenates
+    /// both documents' `libraries:`).
+    #[test]
+    fn lint_multi_validates_lib_steps_across_test_and_config() {
+        let Some(f) = fixtures() else { return };
+        let decl = format!(
+            "  - use: '{}'\n    capabilities: []\n    as: sig\n",
+            f.steps.display()
+        );
+        let config = format!("libraries:\n{decl}vus: 1\nduration: 1s\n");
+        let test = "steps:\n  - use: lib/sig/echo\n    with: {}\n".to_string();
+        // Library in the config, step in the test.
+        let results = crate::lint::lint_multi(&[
+            (test.clone(), crate::lint::DocKind::Test),
+            (config.clone(), crate::lint::DocKind::Config),
+        ]);
+        assert!(results[0].0.is_empty(), "{:?}", results[0]);
+        assert!(results[1].0.is_empty(), "{:?}", results[1]);
+
+        // The reverse direction: declared in the test, used in the config's
+        // `before:` block.
+        let config2 =
+            "before:\n  - use: lib/sig/echo\n    with: {}\nvus: 1\nduration: 1s\n".to_string();
+        let test2 = format!(
+            "libraries:\n{decl}steps:\n  - use: std/log@v1\n    with:\n      message: ok\n"
+        );
+        let results = crate::lint::lint_multi(&[
+            (test2, crate::lint::DocKind::Test),
+            (config2, crate::lint::DocKind::Config),
+        ]);
+        assert!(results[0].0.is_empty(), "{:?}", results[0]);
+        assert!(results[1].0.is_empty(), "{:?}", results[1]);
+
+        // An unknown step is still flagged against the shared manifest.
+        let bad = "steps:\n  - use: lib/sig/nope\n    with: {}\n".to_string();
+        let results = crate::lint::lint_multi(&[
+            (bad, crate::lint::DocKind::Test),
+            (config, crate::lint::DocKind::Config),
+        ]);
+        assert!(
+            results[0]
+                .0
+                .iter()
+                .any(|i| i.problem.contains("unknown step 'nope'")),
+            "{:?}",
+            results[0]
+        );
+    }
+
+    fn exec_ref(path: &Path, with_grant: bool) -> LibraryRef {
+        let mut r = step_ref(path);
+        if with_grant {
+            r.capabilities = Some(vec![Capability::Simple("process".into())]);
+        }
+        r
+    }
+
+    /// The stepexec fixture imports host-exec: without the YAML grant the
+    /// load is a hard error naming the missing capability (fail-closed).
+    #[test]
+    fn process_import_without_grant_is_a_hard_load_error() {
+        let Some(f) = fixtures() else { return };
+        let err = validate_libraries(&[exec_ref(&f.stepexec, false)], true, None).unwrap_err();
+        assert!(
+            err.contains("needed: process") && err.contains("does not grant"),
+            "{err}"
+        );
+    }
+
+    /// The grant alone is not enough: `allow_process_actions: true` in the
+    /// run config is the second half of the gate.
+    #[test]
+    fn process_grant_needs_allow_process_actions() {
+        let Some(f) = fixtures() else { return };
+        let r = exec_ref(&f.stepexec, true);
+        let err = validate_libraries(&[r.clone()], true, None).unwrap_err();
+        assert!(err.contains("allow_process_actions"), "{err}");
+        crate::library::validate_libraries_with_policy(&[r], true, true, None)
+            .expect("both gates open → loads");
+    }
+
+    /// Fully gated: exec a command, capture stdout/exit code; a non-zero exit
+    /// is a step failure carrying the guest's report.
+    #[test]
+    fn process_step_executes_a_bounded_command() {
+        let Some(f) = fixtures() else { return };
+        let ctx = ctx_with_libraries(&[exec_ref(&f.stepexec, true)], true, true);
+        let out = crate::step::libstep::execute_lib_step(
+            "lib/sig/run",
+            &serde_json::json!({ "executable": "sh", "argv": ["-c", "echo hi; echo oops >&2"] }),
+            &ctx,
+            "exec",
+        );
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(out.value["stdout"], serde_json::json!("hi\n"));
+        assert_eq!(out.value["stderr"], serde_json::json!("oops\n"));
+        assert_eq!(out.value["exit_code"], serde_json::json!(0));
+
+        let out = crate::step::libstep::execute_lib_step(
+            "lib/sig/run",
+            &serde_json::json!({ "executable": "sh", "argv": ["-c", "exit 7"] }),
+            &ctx,
+            "exec",
+        );
+        assert!(!out.success, "non-zero exit fails the step");
+        assert_eq!(out.value["exit_code"], serde_json::json!(7));
+    }
+
+    /// A command past its timeout is tree-killed and fails the step.
+    #[test]
+    fn process_step_timeout_kills_the_tree() {
+        let Some(f) = fixtures() else { return };
+        let ctx = ctx_with_libraries(&[exec_ref(&f.stepexec, true)], true, true);
+        let out = crate::step::libstep::execute_lib_step(
+            "lib/sig/run",
+            &serde_json::json!({
+                "executable": "sh",
+                "argv": ["-c", "sleep 30 & sleep 30"],
+                "timeout_ms": 150
+            }),
+            &ctx,
+            "exec",
+        );
+        assert!(!out.success);
+        assert!(
+            out.logs.iter().any(|(_, l)| l.contains("timeout")),
+            "{:?}",
+            out.logs
+        );
+    }
+
+    /// stdout is capped host-side; the child still finishes (drain, not
+    /// deadlock).
+    #[test]
+    fn process_step_output_is_capped() {
+        let Some(f) = fixtures() else { return };
+        let ctx = ctx_with_libraries(&[exec_ref(&f.stepexec, true)], true, true);
+        let out = crate::step::libstep::execute_lib_step(
+            "lib/sig/run",
+            &serde_json::json!({
+                "executable": "sh",
+                "argv": ["-c", format!("yes | head -c {}", crate::library::exec::EXEC_OUTPUT_CAP * 3)]
+            }),
+            &ctx,
+            "exec",
+        );
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(
+            out.value["stdout"].as_str().unwrap().len(),
+            crate::library::exec::EXEC_OUTPUT_CAP
         );
     }
 }
