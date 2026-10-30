@@ -18,7 +18,7 @@ on:
         default: "5"
       suites:
         description: "Suites to run (see scripts/bench.sh)"
-        default: "overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub"
+        default: "overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sourceips"
       graphql_duration:
         description: "Run duration per GraphQL scenario (e.g. 10s, 30s)"
         default: "10s"
@@ -325,7 +325,7 @@ jobs:
           VUS: ${{ github.event.inputs.vus || '10' }}
           DURATION: ${{ github.event.inputs.duration || '30s' }}
           RUNS: ${{ github.event.inputs.runs || '5' }}
-          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub' }}
+          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sourceips' }}
           APPS: ${{ github.event.inputs.apps || 'k6 jmeter locust sytester' }}
           SYTESTER_JAR: ${{ github.workspace }}/target/sytester/SyTester.jar
           SYTESTER_JAVA: /usr/lib/jvm/java-21-openjdk-amd64/bin/java

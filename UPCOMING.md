@@ -12,6 +12,13 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- Benchmarks: new `sourceips` suite measures `std/http@v1` `source_ips`
+  against the per-endpoint connection wall — standing keep-alive
+  connections (`pool: dedicated`) under a narrowed ephemeral port range,
+  from one source IP vs several loopback addresses (peak established
+  connections, connect errors). Linux CI only (it narrows the port range
+  via sysctl for the suite and restores it).
+
 - Benchmarks: SyTester is now a default competitor engine — whenever its
   jar and Java 21+ are available, its rows sit in the throughput,
   saturation, grpc and db tables next to k6/locust/JMeter,

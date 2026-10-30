@@ -123,6 +123,12 @@ the list is validated at lint and cached. With `pool: dedicated` the VU's
 own client is bound to its pinned address — the key becomes
 (vu_id, address) instead of (shard, address).
 
+The effect is measured by the bench `sourceips` suite (see
+[Benchmarks](../benchmarks.md#suites)): VUs holding standing keep-alive
+connections against a narrowed ephemeral port range, from one source IP
+vs several loopback addresses — one IP tops out at the port budget and the
+remaining VUs fail to connect (`EADDRNOTAVAIL`), several IPs hold them all.
+
 ### Multipart uploads
 
 `multipart` sends `multipart/form-data` (file uploads, HTML-form-style

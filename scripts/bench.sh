@@ -55,6 +55,12 @@ set -euo pipefail
 #                 Every row drives the same real PostgreSQL — no in-process
 #                 engine-only baselines: the suite is a comparison against
 #                 the competitors, and those must share the dependency.
+#   sourceips   – std/http@v1 `source_ips`: standing keep-alive connections
+#                 (SRC_VUS, `pool: dedicated`) against a narrowed ephemeral
+#                 port range (SRC_PORT_RANGE, machine-wide sysctl, restored
+#                 after) from 1 source IP vs SRC_IPS_COUNT loopback
+#                 addresses — peak established connections and connect
+#                 errors. Linux + passwordless sudo (CI); skipped otherwise.
 #   pubsub      – pub/sub: native `std/pubsub@v1` publish and pub/sub
 #                 roundtrip (e2e latency) against a NATS broker at
 #                 BENCH_NATS_URL, plus k6 rows via a custom binary with
@@ -102,7 +108,7 @@ PORT="${PORT:-18999}"
 TLS_PORT="${TLS_PORT:-18998}"
 OUTPUT="${OUTPUT:-bench-report.md}"
 RESULTS="${RESULTS:-bench-results.json}"
-KNOWN_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub"
+KNOWN_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sourceips"
 SUITES="${SUITES:-$KNOWN_SUITES}"
 # Competitor engines whose rows join the tables, space-separated (perfscale's
 # own rows always run). k6 also gates its custom xk6-sql / xk6-nats builds.
@@ -132,6 +138,14 @@ LIB_STARTUP_DURATION="${LIB_STARTUP_DURATION:-1s}"
 LIB_RUNS="${LIB_RUNS:-5}"
 GRPC_DURATION="${GRPC_DURATION:-10s}"
 GQL_DURATION="${GQL_DURATION:-10s}"
+# sourceips suite: standing keep-alive connections (one per VU) against a
+# deliberately narrowed ephemeral port range, from 1 source IP vs
+# SRC_IPS_COUNT loopback addresses. SRC_VUS must exceed the range for the
+# 1-IP row to hit the ceiling; SRC_PORT_RANGE is "first last".
+SRC_VUS="${SRC_VUS:-6000}"
+SRC_DURATION="${SRC_DURATION:-20s}"
+SRC_PORT_RANGE="${SRC_PORT_RANGE:-50000 53999}"
+SRC_IPS_COUNT="${SRC_IPS_COUNT:-4}"
 DB_DURATION="${DB_DURATION:-10s}"
 # Warm db scenarios: queries per iteration after one persistent connect, and
 # tx cycles (begin+query+commit) per iteration.
@@ -179,7 +193,10 @@ SERVE_PID=""
 TLS_SERVE_PID=""
 GRPC_SERVE_PID=""
 GQL_SERVE_PID=""
+SRC_ORIG_RANGE=""
 cleanup() {
+  # sourceips suite narrows a machine-wide sysctl — always put it back.
+  [[ -n "$SRC_ORIG_RANGE" ]] && sudo -n sysctl -qw net.ipv4.ip_local_port_range="$SRC_ORIG_RANGE" 2>/dev/null || true
   [[ -n "$SERVE_PID" ]] && kill "$SERVE_PID" 2>/dev/null || true
   [[ -n "$TLS_SERVE_PID" ]] && kill "$TLS_SERVE_PID" 2>/dev/null || true
   [[ -n "$GRPC_SERVE_PID" ]] && kill "$GRPC_SERVE_PID" 2>/dev/null || true
@@ -2314,6 +2331,104 @@ if has_suite grpc && [[ "$HAS_GRPC" == 1 ]]; then
       echo "$SYT_NOTE"
     fi
   } >>"$OUTPUT"
+fi
+
+# --- sourceips ------------------------------------------------------------------
+#
+# The ~64k-connections-per-endpoint wall: a TCP connection is the 4-tuple
+# (src ip, src port, dst ip, dst port), so one source address talking to one
+# endpoint can hold at most as many connections as there are ephemeral
+# ports. std/http@v1 `source_ips` multiplies that budget by the number of
+# addresses. The suite makes the wall cheap to hit: it narrows the
+# ephemeral range to SRC_PORT_RANGE (machine-wide sysctl, restored after),
+# then SRC_VUS VUs each hold one keep-alive connection (`pool: dedicated` +
+# 1s think time) — once from 127.0.0.1 alone, once spread over
+# SRC_IPS_COUNT loopback addresses (Linux routes all of 127/8). Needs Linux
+# and passwordless sudo for the sysctl (the CI runner); skipped otherwise.
+
+if has_suite sourceips; then
+  src_ok=0
+  if [[ "$(uname -s)" != Linux ]]; then
+    echo "skipping sourceips suite: needs Linux (ip_local_port_range sysctl, 127/8 loopback)" >&2
+  elif ! command -v ss >/dev/null 2>&1; then
+    echo "skipping sourceips suite: ss not found" >&2
+  elif ! SRC_ORIG_RANGE="$(sysctl -n net.ipv4.ip_local_port_range 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/ $//')" \
+    || ! sudo -n sysctl -qw net.ipv4.ip_local_port_range="$SRC_PORT_RANGE" 2>/dev/null; then
+    SRC_ORIG_RANGE=""
+    echo "skipping sourceips suite: cannot set net.ipv4.ip_local_port_range (needs passwordless sudo)" >&2
+  else
+    src_ok=1
+  fi
+
+  if [[ "$src_ok" == 1 ]]; then
+    echo "suite: sourceips" >&2
+    read -r src_first src_last <<<"$SRC_PORT_RANGE"
+    src_ports=$((src_last - src_first + 1))
+    src_ips=""
+    for i in $(seq 1 "$SRC_IPS_COUNT"); do src_ips="$src_ips${src_ips:+, }\"127.0.0.$i\""; done
+    for n in 1 "$SRC_IPS_COUNT"; do
+      list="\"127.0.0.1\""
+      [[ "$n" == 1 ]] || list="$src_ips"
+      cat >"$WORKDIR/yaml-src-$n.yaml" <<EOF
+steps:
+  - name: hold connection
+    use: std/http@v1
+    with:
+      url: "${TARGET}/health"
+      pool: dedicated
+      timeout: 5000
+      source_ips: [${list}]
+  - name: think
+    use: std/sleep@v1
+    with:
+      ms: 1000
+EOF
+    done
+
+    section "Source IPs: standing connections vs the port range (${SRC_VUS} VUs, ${SRC_DURATION})"
+    {
+      echo "| Source IPs | Ports per IP | Port budget | Peak established | Requests | RPS | Err | p95 ms |"
+      echo "|---:|---:|---:|---:|---:|---:|---:|---:|"
+    } >>"$OUTPUT"
+    for n in 1 "$SRC_IPS_COUNT"; do
+      echo "  $n source IP(s)" >&2
+      # Sample client-side ESTABLISHED sockets to the target once a second;
+      # the peak is how many standing connections the run actually held.
+      peak_file="$WORKDIR/src-peak-$n"
+      echo 0 >"$peak_file"
+      (
+        peak=0
+        while :; do
+          c=$(ss -Htn state established "( dport = :$PORT )" 2>/dev/null | wc -l)
+          if [[ "$c" -gt "$peak" ]]; then peak=$c; echo "$peak" >"$peak_file"; fi
+          sleep 1
+        done
+      ) &
+      sampler=$!
+      measure "src-$n" "$(cmd_yaml "$SRC_VUS" "$SRC_DURATION" "$WORKDIR/yaml-src-$n.yaml" --quiet)"
+      kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null || true
+      peak="$(cat "$peak_file")"
+      $METRICS append "$RESULTS_D/sourceips.json" "$n source IP(s)" \
+        requests="$requests" rps="$rps" p95_ms="$p95_ms" err_pct="$err_pct" \
+        peak_established="$peak" source_ips="$n" port_budget="$((src_ports * n))" \
+        user_s="${T_USER_S:-0}" sys_s="${T_SYS_S:-0}" rss_mib="$T_RSS_MIB"
+      echo "| $n | $src_ports | $((src_ports * n)) | $peak | $requests | $rps | $err_pct% | $p95_ms |" >>"$OUTPUT"
+    done
+    sudo -n sysctl -qw net.ipv4.ip_local_port_range="$SRC_ORIG_RANGE" 2>/dev/null || true
+    SRC_ORIG_RANGE=""
+    {
+      echo
+      echo "_The ephemeral port range is narrowed to ${SRC_PORT_RANGE} (${src_ports}"
+      echo "ports) for this suite only, so the per-endpoint connection wall is cheap"
+      echo "to hit; production machines have ~28-64k ports, the shape is the same."
+      echo "Every VU holds one keep-alive connection (\`pool: dedicated\`, 1s think"
+      echo "time). From one source IP at most ~${src_ports} connections fit, the"
+      echo "remaining VUs fail to connect (EADDRNOTAVAIL — counted in Err) on every"
+      echo "iteration; spreading the same VUs over ${SRC_IPS_COUNT} addresses with"
+      echo "\`source_ips\` multiplies the budget. Peak established = client-side"
+      echo "ESTABLISHED sockets to the target, sampled once a second (\`ss\`)._"
+    } >>"$OUTPUT"
+  fi
 fi
 
 # --- graphql -----------------------------------------------------------------
