@@ -59,6 +59,11 @@ FileDescriptorSet flows into a gRPC step:
 `descriptor_set: "${{ fetch.body_base64 }}"`. A missing content type is
 sniffed: valid UTF-8 behaves as text, anything else as binary.
 
+Responses the server compresses (`Content-Encoding: gzip`) are transparently
+decoded before any of this, so `body` and `${{ feed.body.posts }}` paths see
+the plain payload — request `Accept-Encoding: gzip` explicitly via `headers`
+to opt in. Decoding is response-only: request bodies are never compressed.
+
 Statuses ≥ 400, transport errors, and timeouts count as failed requests in
 `http_req_failed`. A timeout is logged distinctly (`→ TIMEOUT after ...ms`).
 

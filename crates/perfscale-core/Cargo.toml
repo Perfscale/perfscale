@@ -26,8 +26,12 @@ tokio = { version = "1", features = ["time", "sync", "rt", "macros", "process", 
 regex = "1"
 
 # HTTP client for std/http@v1. `stream` enables `Response::bytes_stream`,
-# used by the SSE parsing of `std/llm@v1`.
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart", "stream"], default-features = false }
+# used by the SSE parsing of `std/llm@v1`. `gzip` transparently decodes
+# `Content-Encoding: gzip` responses (reqwest then strips the content-length/
+# content-encoding headers) so explicit `Accept-Encoding: gzip` requests feed
+# parseable bodies into checks/std/pick; the max_response_body_bytes cap
+# applies to the decoded bytes.
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart", "stream", "gzip"], default-features = false }
 
 # CSV parsing for locust's --csv stats output
 csv = "1"
@@ -161,6 +165,8 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 async-graphql = { version = "7", default-features = false }
 async-graphql-axum = "7"
 axum = "0.7"
+# Produce gzipped response bodies in the std/http@v1 gzip tests.
+flate2 = "1"
 
 [[bench]]
 name = "engine"
