@@ -1,0 +1,122 @@
+// perfscale step ABI, version 0.1 (RFC 009: custom SDK steps).
+//
+// A component exporting one of the `perfscale-steps*` worlds is both a value
+// library (RFC 005, `perfscale:library@0.3.0` — `info`/`init`/`call`, where
+// `info()` may list `functions: []` for a steps-only component) and a step
+// provider: each step its `info()` manifest lists under `steps` becomes
+// dispatchable from a test's `use:` slot as `lib/<alias>/<step>`.
+//
+// Single source of truth, shared between the engine (host,
+// `crates/perfscale-core/src/library/wasm.rs`) and the SDKs (guests). This
+// package is additive on top of `perfscale:library@0.3.0` — it re-exports
+// those interfaces by reference and does NOT redefine them; the library ABI
+// keeps versioning independently.
+package perfscale:step@0.1.0;
+
+/// Custom steps dispatched as `lib/<alias>/<step>` (RFC 009).
+interface step {
+    /// The context every step invocation receives. Same shape as the library
+    /// call context (RFC 005) minus the value-generation fields (message-seq,
+    /// seed — a step is not a token), plus the step's identity. One-shot
+    /// `before:`/`after:` steps run with `vu-id`/`iteration-seq` = 0.
+    record step-context {
+        /// VU loop iteration (0 in `before:`/`after:`).
+        iteration-seq: u64,
+        /// Virtual-user id (0 in `before:`/`after:`).
+        vu-id: u64,
+        /// Wall clock, unix milliseconds (only time source).
+        time-ms: u64,
+        /// Run settings, frozen at run start (same JSON shape as the library
+        /// context's `settings-json`).
+        settings-json: string,
+        /// The YAML step's `name:` (for log lines).
+        step-name: string,
+    }
+
+    /// Invoke one exported step. `step-id` is the manifest step name (the
+    /// `<step>` part of `lib/<alias>/<step>`). `params-json` is the step's
+    /// `with:` block as a JSON object with `${{ }}` interpolation already
+    /// applied by the host.
+    ///
+    /// The `Ok` payload is the serialized `ActionOutput` (RFC 008):
+    /// `{ "success": bool,                      // required
+    ///    "output": <any JSON>,                 // stored under `outputs:`
+    ///    "logs": [{ "tag": "out|err|sys", "line": "…" }],
+    ///    "metrics": { "name": 1 | "name": [ms, …] },
+    ///    "http_sample": { "duration_ms", "status", "failed" },
+    ///    "secret_output_paths": ["key", …] }`  // output keys to log-mask
+    /// All keys except `success` are optional. Metric names must be
+    /// lowercase `[a-z0-9_]` and must not collide with engine-reserved
+    /// series; violations fail the step with the name in the error.
+    run: func(ctx: step-context, step-id: string, params-json: string) -> result<string, string>;
+}
+
+/// One-shot process execution for step components (RFC 009 "process"
+/// capability). This is deliberately NOT a WASI interface: the guest gets
+/// nothing ambient (no argv/env/stdin inheritance, no shell) — every call
+/// is an explicit, bounded host-mediated spawn.
+///
+/// The host runs the executable directly (no shell interpolation) with the
+/// given arguments, a REPLACEMENT environment (exactly `env`, nothing
+/// inherited), an optional working directory and stdin payload, and a
+/// timeout (default 30s, capped by the host). `stdout`/`stderr` are
+/// captured with a host-side byte cap (trailing bytes are discarded, not
+/// spilled to disk). On timeout the host kills the whole process tree and
+/// returns an error naming the timeout. A trusted-code escape hatch: the
+/// component is declared with `capabilities: [process]` AND the run config
+/// must set `allow_process_actions: true` (plus the
+/// `allow_library_capabilities` gate every non-empty grant needs).
+interface host-exec {
+    record exec-request {
+        /// Program to spawn (resolved against the host PATH or absolute).
+        executable: string,
+        /// Arguments, passed through verbatim (no shell).
+        argv: list<string>,
+        /// The child's FULL environment (host variables are never inherited).
+        env: list<tuple<string, string>>,
+        /// Working directory; host default when absent.
+        cwd: option<string>,
+        /// Bytes piped to the child's stdin; closed immediately when absent.
+        stdin: option<string>,
+        /// Wall-clock budget; absent/0 → host default (30s).
+        timeout-ms: option<u64>,
+    }
+
+    record exec-result {
+        /// Process exit code; -1 when the child died by signal.
+        exit-code: s32,
+        stdout: string,
+        stderr: string,
+    }
+
+    exec: func(request: exec-request) -> result<exec-result, string>;
+}
+
+/// A step component without a config extension: the RFC 005 library
+/// interface (its `info()` is the single manifest for both functions and
+/// steps) plus the step interface.
+world perfscale-steps {
+    export perfscale:library/library@0.3.0;
+    export step;
+}
+
+/// A step component that also declares a config extension (issue #10).
+world perfscale-steps-config {
+    export perfscale:library/library@0.3.0;
+    export perfscale:library/config-schema@0.3.0;
+    export step;
+}
+
+/// A step component granted the `process` capability: the host connects
+/// `host-exec` only when the YAML grants it (and the config gates it), so
+/// the component fails to even load otherwise — fail-closed, like `net`.
+world perfscale-steps-exec {
+    include perfscale-steps;
+    import host-exec;
+}
+
+/// Config extension + process capability.
+world perfscale-steps-config-exec {
+    include perfscale-steps-config;
+    import host-exec;
+}

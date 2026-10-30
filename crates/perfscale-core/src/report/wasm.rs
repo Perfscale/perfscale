@@ -407,7 +407,7 @@ impl WasmReporter {
 
         // Reporters never get `net`; the WASI sink set lets toolchain-noise
         // imports (jco/StarlingMonkey fs/clocks) link with zero preopens.
-        let mut linker = build_linker(engine, &display(), false)?;
+        let mut linker = build_linker(engine, &display(), false, false)?;
         bindings::perfscale::reporter::host::add_to_linker::<HostState, HasReporter>(
             &mut linker,
             |s| s,

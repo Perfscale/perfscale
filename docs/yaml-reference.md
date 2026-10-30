@@ -232,7 +232,7 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `variables` | `{}` | Static values exposed to steps as `${{ vars.* }}`. Keep secrets out of this block — it is plain YAML, checked into repos and shown in diffs; use `${{ env.NAME }}` (process environment, masked in run logs) for those |
 | `shared_variables` | `{}` | Mutable cross-VU shared state for `std/set_shared_variable@v1` / `std/get_shared_variable@v1`: a map of name → initial JSON value (the type is inferred from it). Declaring is mandatory — a step referencing an undeclared name, or an `op` incompatible with the declared type, fails validation before the run starts. See [Shared variables guide](core/shared-variables.md). Native engine only |
 | `allow_process_actions` | `false` | Let steps spawn/signal OS processes (`std/child_process@v1`, `std/kill_process@v1`). Fail-closed: a step list from an untrusted source cannot touch processes until you opt in |
-| `allow_library_capabilities` | `false` | Let `libraries:` entries carry non-empty `capabilities:` grants. Fail-closed, same pattern as `allow_file_actions` |
+| `allow_library_capabilities` | `false` | Let `libraries:` entries carry non-empty `capabilities:` grants. Fail-closed, same pattern as `allow_file_actions`. The `process` grant (RFC 009 host-mediated exec from a WASM step) additionally requires `allow_process_actions: true` |
 | `seed` | — | Run-level determinism seed: every `${…}` generator and library instance derives its seed as `hash(seed, vu_id, conn_seq)`, so a seeded run reproduces the same generated values. Wall-clock time stays non-deterministic |
 | `max_response_body_bytes` | `16777216` (16 MiB) | Response body cap for `std/http@v1` / `std/graphql@v1`. A larger response fails the step with a clear error (never silently truncated — a truncated body could pass a `check:`). Native engine only |
 | `libraries` | — | Value-generator libraries for `${alias.fn(...)}` tokens — see [Libraries](#libraries-libraries) |
@@ -424,14 +424,25 @@ Rules:
   derive as `hash(seed, vu_id, conn_seq)`.
 - `capabilities:` is **required on every entry** — an explicit empty list
   (`capabilities: []`) means "no grants"; omitting the key is a validation
-  error at load, `lint`, and run. Non-empty grants (`fs`, `clock`, or
-  `{ net: [hosts] }`) require
+  error at load, `lint`, and run. Non-empty grants (`fs`, `clock`,
+  `process`, or `{ net: [hosts] }`) require
   `allow_library_capabilities: true` (fail-closed, same pattern as
-  `allow_file_actions`). `@std/random@v1` declares no capabilities —
+  `allow_file_actions`). The `process` grant (RFC 009: a WASM step's
+  host-mediated one-shot `exec`) additionally requires
+  `allow_process_actions: true`. `@std/random@v1` declares no capabilities —
   granting it any is a validation error. A library whose `info()` reports
   `"pure": true` needs no grant for its `wasi:filesystem` /
   `wasi:clocks/wall-clock` imports (jco toolchain noise) — and gets no
   preopens, so real file access fails at runtime.
+
+A WASM library may also export **custom steps** (RFC 009): when its
+`info()` manifest lists `steps: [{name, description}]`, each becomes
+dispatchable in `use:` as `lib/<alias>/<step>` — see
+[Libraries](core/libraries.md#custom-steps-libaliasstep). The step's
+`with:` block is interpolated first, the component's result is the standard
+action shape (success / output / logs / metrics / http_sample), and the run
+summary's `libraries:` line reports `step_calls` / `step_errors` /
+`step_p95_ms` next to the token-call counters.
 
 #### Run settings (`CallCtx.settings_json`)
 

@@ -237,6 +237,11 @@ pub async fn execute_action(
         "std/get_shared_variable@v1" | "get_shared_variable" => {
             super::shared_variable::get_shared_variable_action(&resolved, step_name).await
         }
+        unknown if unknown.starts_with("lib/") => {
+            // RFC 009 custom SDK steps — resolved BEFORE registered (pro)
+            // handlers so a handler can never shadow the user namespace.
+            super::libstep::execute_lib_step(unknown, &resolved, ctx, step_name)
+        }
         unknown => {
             // No built-in match — hand off to a downstream-registered handler
             // (proprietary `pro/*` actions live outside this OSS crate). The
@@ -252,7 +257,9 @@ pub async fn execute_action(
                     value: Value::Null,
                     logs: vec![(
                         LogTag::Err,
-                        format!("{step_name}: unknown action '{unknown}'"),
+                        format!(
+                            "{step_name}: unknown action '{unknown}' — expected std/*, a registered pro/* handler, or lib/<alias>/<step>"
+                        ),
                     )],
                     success: false,
                     http_sample: None,
@@ -297,7 +304,20 @@ fn action_registry() -> &'static RwLock<Vec<Arc<dyn ActionHandler>>> {
 /// Register a custom [`ActionHandler`]. Handlers are consulted in registration
 /// order. Typically called once at startup (e.g. a paid agent build enabling
 /// `pro/fix@v1`); registering the same action twice just shadows the later one.
+///
+/// Panics when the handler claims the reserved `lib/` namespace (RFC 009):
+/// that namespace belongs to user-declared WASM steps, dispatched before any
+/// registered handler. Registration is startup code; a startup lie is worse
+/// than a startup crash.
 pub fn register_action(handler: Arc<dyn ActionHandler>) {
+    for probe in ["lib/", "lib/x/y"] {
+        assert!(
+            !handler.matches(probe),
+            "a registered action handler must not match the reserved `lib/` namespace (RFC 009) — \
+             lib/<alias>/<step> belongs to user-declared WASM libraries and is dispatched before \
+             registered handlers"
+        );
+    }
     action_registry().write().unwrap().push(handler);
 }
 
@@ -2577,11 +2597,66 @@ mod tests {
         let out = execute_action("pro/echo@v1", &json!({ "msg": "hi" }), &ctx, "step").await;
         assert!(out.success);
         assert_eq!(out.value["echoed"], "hi");
-
         // An action no handler matches still reports the clear built-in error.
         let miss = execute_action("pro/nope@v1", &json!({}), &ctx, "step").await;
         assert!(!miss.success);
         assert!(miss.logs[0].1.contains("unknown action"));
+    }
+
+    /// RFC 009: `lib/` is the user-WASM-step namespace, dispatched before any
+    /// registered handler — a handler claiming it is a startup lie, so
+    /// registration panics before the registry is touched.
+    #[test]
+    fn register_action_rejects_the_reserved_lib_namespace() {
+        struct LibSquatter;
+        impl ActionHandler for LibSquatter {
+            fn matches(&self, id: &str) -> bool {
+                id.starts_with("lib/")
+            }
+            fn call<'a>(
+                &'a self,
+                _id: &'a str,
+                _params: &'a Value,
+                _ctx: &'a Context,
+                _step: &'a str,
+            ) -> ActionFuture<'a> {
+                unreachable!()
+            }
+        }
+        let result = std::panic::catch_unwind(|| register_action(Arc::new(LibSquatter)));
+        assert!(result.is_err(), "lib/ squatting must panic at registration");
+        // The registry is intact: a non-matching handler still registers.
+        struct Fine;
+        impl ActionHandler for Fine {
+            fn matches(&self, id: &str) -> bool {
+                id == "pro/fine@v1"
+            }
+            fn call<'a>(
+                &'a self,
+                _id: &'a str,
+                _params: &'a Value,
+                _ctx: &'a Context,
+                _step: &'a str,
+            ) -> ActionFuture<'a> {
+                unreachable!()
+            }
+        }
+        register_action(Arc::new(Fine));
+        assert!(action_registered("pro/fine@v1"));
+    }
+
+    /// A `lib/` id without any declared libraries fails with the lib dispatch
+    /// error, not the generic unknown-action one.
+    #[tokio::test]
+    async fn lib_step_without_libraries_fails_actionably() {
+        let ctx = Context::new();
+        let out = execute_action("lib/sig/login", &json!({}), &ctx, "step").await;
+        assert!(!out.success);
+        assert!(
+            out.logs[0].1.contains("unknown library alias 'sig'"),
+            "{:?}",
+            out.logs
+        );
     }
 
     // -----------------------------------------------------------------

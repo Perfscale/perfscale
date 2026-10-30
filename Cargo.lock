@@ -6331,3 +6331,7 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "perfscale-core"
+version = "0.27.0"
