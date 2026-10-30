@@ -31,11 +31,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.0
-          components: rustfmt, clippy
+          # llvm-tools-preview: the coverage step (no extra rustup call).
+          components: rustfmt, clippy, llvm-tools-preview
           # wasm32-wasip2: the WASM-library tests build the SDK example
           # components (RFC 005 phase 2); without the target they skip.
           targets: wasm32-wasip2
+      # Only main writes the cache (~2 GB per entry): PRs restore main's
+      # entry instead of saving their own copies, which crowded the repo's
+      # 10 GB Actions cache limit and evicted main's entry — so the next PR
+      # compiled everything from scratch.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Prebuilt binary (seconds) instead of `cargo install` compiling
+      # cargo-llvm-cov from source on every run (~1.5-2 min).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
 
       # k6 + locust — several tests exercise the real binaries end-to-end
       # (happy-path tests skip gracefully if a binary is missing, but CI
@@ -59,10 +71,7 @@ jobs:
 
       # Informational — not a merge gate, just visibility on where coverage is thin.
       - name: Coverage summary
-        run: |
-          rustup component add llvm-tools-preview
-          cargo install cargo-llvm-cov --locked
-          cargo llvm-cov --all-features --workspace --summary-only
+        run: cargo llvm-cov --all-features --workspace --summary-only
 
   # The serve dashboard (crates/perfscale-cli/ui) is committed as a prebuilt
   # single-file HTML because the release workflow has no Node — this job

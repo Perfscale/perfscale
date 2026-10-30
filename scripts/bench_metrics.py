@@ -4,7 +4,7 @@
 Subcommands:
   parse <kind> <file>            kind: text | locust-csv | ws-text |
                                  grpc-text | db-text | pubsub-text |
-                                 jmeter-summary
+                                 jmeter-summary | sytester-json
                                  prints shell-evalable `key=value` lines
   append <json> <label> [k=v..]  append a row object to a JSON array file
   boundary <kind> <file> <max-vus> <duration-s> <err-pct>
@@ -238,6 +238,92 @@ def parse_jmeter_summary(content):
     return out
 
 
+def parse_sytester_json(content):
+    """Parse the sytester suite wrapper's output: one JSON line
+    `{"configured_s": N, "boot_s": N, "report": <GET /action/lastReport>}`.
+    SyTester reports latencies in ms; percentiles live in `sytester_metrics`
+    (`{"sytester_p95": {"value": "865.20", ...}}`). RPS is computed over the
+    plan's configured `testDuration` — the report's `durationInSeconds` is
+    rounded to whole seconds and includes the stop."""
+    out = zeroed()
+    extra = {"boot_s": 0.0}
+    line = next((l for l in content.splitlines() if l.startswith("{")), None)
+    if line is None:
+        out["parse_ok"] = 0
+        return out, extra
+    doc = json.loads(line)
+    rep = doc.get("report") or {}
+    sm = rep.get("sytester_metrics") or {}
+
+    def metric(name):
+        try:
+            return float(sm[name]["value"])
+        except (KeyError, TypeError, ValueError):
+            return 0.0
+
+    # STEPS plans report per step (`stepStates`: JSON strings); GENERATOR
+    # plans report totals. Steps carrying `latencies` are the ones that made
+    # requests (PUT); loaders and SERIAL containers only count completions.
+    steps = []
+    for raw in (rep.get("stepStates") or {}).values():
+        try:
+            st = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            continue
+        if isinstance(st, dict) and "latencies" in st:
+            steps.append(st)
+    if steps and not rep.get("requestsTotal"):
+        return _sytester_steps(out, extra, doc, steps)
+    out["requests"] = int(rep.get("requestsTotal") or metric("sytester_requests_total"))
+    secs = float(doc.get("configured_s") or rep.get("durationInSeconds") or 0)
+    if secs > 0:
+        out["rps"] = out["requests"] / secs
+    try:
+        out["avg_ms"] = float((rep.get("latencies") or {}).get("avg", 0))
+    except ValueError:
+        out["avg_ms"] = metric("sytester_latency_avg")
+    for key, name in (("p50_ms", "sytester_p50"), ("p90_ms", "sytester_p90"),
+                      ("p95_ms", "sytester_p95"), ("p99_ms", "sytester_p99"),
+                      ("min_ms", "sytester_latency_min"),
+                      ("max_ms", "sytester_latency_max")):
+        out[key] = metric(name)
+    # `failedPercentage` stays 0 even with transport failures (status -1,
+    # e.g. "Pending acquire queue has reached its limit") — derive it.
+    failed = int(rep.get("requestsFailed") or metric("sytester_requests_failed"))
+    if out["requests"]:
+        out["err_pct"] = failed * 100.0 / out["requests"]
+    extra["boot_s"] = float(doc.get("boot_s") or 0)
+    out["parse_ok"] = 1 if out["requests"] else 0
+    return out, extra
+
+
+def _sytester_steps(out, extra, doc, steps):
+    """Fold a STEPS report's request steps into one row: requests and
+    failures summed, avg weighted by count, percentiles from the worst step
+    (per-step histograms cannot be merged — the worst step bounds the
+    aggregate from above)."""
+    done = sum(int(st.get("completed") or 0) for st in steps)
+    failed = sum(int(st.get("failed") or 0) for st in steps)
+    out["requests"] = done + failed
+    secs = float(doc.get("configured_s") or 0)
+    if secs > 0:
+        out["rps"] = out["requests"] / secs
+    total_ms = sum(float(st["latencies"].get("totalMs") or 0) for st in steps)
+    count = sum(int(st["latencies"].get("count") or 0) for st in steps)
+    if count:
+        out["avg_ms"] = total_ms / count
+    for key, name in (("p50_ms", "sytester_p50"), ("p90_ms", "sytester_p90"),
+                      ("p95_ms", "sytester_p95"), ("p99_ms", "sytester_p99")):
+        out[key] = max(float((st.get("percentiles") or {}).get(name) or 0) for st in steps)
+    out["min_ms"] = min(float(st["latencies"].get("minMs") or 0) for st in steps)
+    out["max_ms"] = max(float(st["latencies"].get("maxMs") or 0) for st in steps)
+    if out["requests"]:
+        out["err_pct"] = failed * 100.0 / out["requests"]
+    extra["boot_s"] = float(doc.get("boot_s") or 0)
+    out["parse_ok"] = 1 if out["requests"] else 0
+    return out, extra
+
+
 def parse_locust_csv(path):
     """Parse the `Aggregated` row of locust's `--csv` stats output —
     the same source perfscale's locust runner reads."""
@@ -289,13 +375,16 @@ def cmd_parse(kind, path):
         elif kind == "pubsub-text":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics, extra = parse_pubsub_text(f.read())
+        elif kind == "sytester-json":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics, extra = parse_sytester_json(f.read())
         elif kind == "jmeter-summary":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_jmeter_summary(f.read())
         else:
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_text(f.read())
-    except OSError as e:
+    except (OSError, ValueError) as e:
         print(f"bench_metrics: {e}", file=sys.stderr)
         metrics = zeroed()
         metrics["parse_ok"] = 0
