@@ -3623,7 +3623,7 @@ mod tests {
     fn process_grant_needs_allow_process_actions() {
         let Some(f) = fixtures() else { return };
         let r = exec_ref(&f.stepexec, true);
-        let err = validate_libraries(&[r.clone()], true, None).unwrap_err();
+        let err = validate_libraries(std::slice::from_ref(&r), true, None).unwrap_err();
         assert!(err.contains("allow_process_actions"), "{err}");
         crate::library::validate_libraries_with_policy(&[r], true, true, None)
             .expect("both gates open → loads");
