@@ -13,6 +13,8 @@
 # Build (from repo root):
 #   docker buildx build -f docker/image.Dockerfile --target base \
 #     --platform linux/amd64,linux/arm64 -t ghcr.io/perfscale/perfscale:latest .
+# Runner flavors are published as their own packages:
+# perfscale-k6, perfscale-jmeter, perfscale-locust, perfscale-full.
 
 FROM alpine:3.21 AS base
 

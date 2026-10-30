@@ -18,14 +18,17 @@ same as a local install: `run`, `lint`, `serve`, `man`, `--help`.
 | Image | Contents | Use it for |
 |---|---|---|
 | `ghcr.io/perfscale/perfscale:<version>` | perfscale only (~50 MB) | Native step-engine scenarios (`-f`/`-c`) |
-| `ghcr.io/perfscale/perfscale:<version>-k6` | + k6 | Existing k6 scripts (`--k6`) |
-| `ghcr.io/perfscale/perfscale:<version>-jmeter` | + JMeter (headless JRE) | Existing `.jmx` plans (`--jmeter`) |
-| `ghcr.io/perfscale/perfscale:<version>-locust` | + locust (Python) | Existing locust files (`--locust`) |
-| `ghcr.io/perfscale/perfscale:<version>-full` | + k6, JMeter, locust | Everything |
+| `ghcr.io/perfscale/perfscale-k6:<version>` | + k6 | Existing k6 scripts (`--k6`) |
+| `ghcr.io/perfscale/perfscale-jmeter:<version>` | + JMeter (headless JRE) | Existing `.jmx` plans (`--jmeter`) |
+| `ghcr.io/perfscale/perfscale-locust:<version>` | + locust (Python) | Existing locust files (`--locust`) |
+| `ghcr.io/perfscale/perfscale-full:<version>` | + k6, JMeter, locust | Everything |
 
 All flavors are multi-arch (`linux/amd64` and `linux/arm64`) and are tagged
-`X.Y.Z`, `X.Y`, and `latest` (runner flavors use the same tags with their
-suffix: `latest-k6`, `latest-jmeter`, `latest-locust`, `latest-full`).
+`X.Y.Z`, `X.Y`, and `latest`. Each flavor is its own package, so a k6-only
+run pulls `perfscale-k6` and nothing else. The pre-0.30 suffix tags on the
+`perfscale` package (`perfscale:latest-k6`, `perfscale:X.Y.Z-full`, …) are
+still published for the same images, but new setups should use the
+per-flavor packages.
 Runner versions are pinned in the image (k6, JMeter, locust — see
 `docker/image.Dockerfile` for the exact pins). Pin an exact perfscale
 version in CI — treat `latest` as a convenience for local use.
@@ -122,15 +125,15 @@ run without any host install:
 ```sh
 # k6
 docker run --rm -v "$PWD:/work" -w /work \
-  ghcr.io/perfscale/perfscale:latest-k6 run --k6 script.js
+  ghcr.io/perfscale/perfscale-k6:latest run --k6 script.js
 
 # JMeter (.jmx plans)
 docker run --rm -v "$PWD:/work" -w /work \
-  ghcr.io/perfscale/perfscale:latest-jmeter run --jmeter plan.jmx
+  ghcr.io/perfscale/perfscale-jmeter:latest run --jmeter plan.jmx
 
 # locust
 docker run --rm -v "$PWD:/work" -w /work \
-  ghcr.io/perfscale/perfscale:latest-locust run --locust locustfile.py --host https://example.com
+  ghcr.io/perfscale/perfscale-locust:latest run --locust locustfile.py --host https://example.com
 ```
 
 The `-full` image carries all three — use it when one job runs several
@@ -149,7 +152,7 @@ jobs:
       - name: Run load test
         run: |
           docker run --rm -v "$PWD:/work" -w /work \
-            ghcr.io/perfscale/perfscale:0.17.0 \
+            ghcr.io/perfscale/perfscale:0.30.0 \
             run -f load.test.yaml -c load.config.yaml
 ```
 
@@ -169,7 +172,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: perfscale
-          image: ghcr.io/perfscale/perfscale:0.17.0
+          image: ghcr.io/perfscale/perfscale:0.30.0
           args: ["run", "-f", "/scenarios/load.test.yaml", "-c", "/scenarios/load.config.yaml"]
           volumeMounts:
             - name: scenarios
@@ -187,7 +190,7 @@ certificates, another k6 build? Use any flavor as a base — the binaries
 stay put, you add what you need:
 
 ```dockerfile
-FROM ghcr.io/perfscale/perfscale:0.17.0-jmeter
+FROM ghcr.io/perfscale/perfscale-jmeter:0.30.0
 
 USER root
 # Example: JMeter plugins land in lib/ext of the installation
@@ -205,8 +208,8 @@ starting (`k6 version`, `jmeter --version`, `locust --version`) in its
 flavor and in `-full`. To double-check locally:
 
 ```sh
-docker run --rm ghcr.io/perfscale/perfscale:0.17.0 --version
-docker run --rm --entrypoint k6 ghcr.io/perfscale/perfscale:0.17.0-k6 version
+docker run --rm ghcr.io/perfscale/perfscale:0.30.0 --version
+docker run --rm --entrypoint k6 ghcr.io/perfscale/perfscale-k6:0.30.0 version
 ```
 
 ## Kubernetes
