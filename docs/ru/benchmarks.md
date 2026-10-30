@@ -17,6 +17,7 @@ loopback, поэтому любая разница между строкой `pe
 | `locust (native)` | `locust`, вызванный напрямую — базовый уровень |
 | `k6 (native)` | `k6`, вызванный напрямую — базовый уровень |
 | `jmeter (native)` | `jmeter -n -t`, вызванный напрямую — базовый уровень (только наборы overhead/startup) |
+| `sytester (10000 TPS)` | [SyTester](https://gitverse.ru/sbertech/sytester) Community Edition через его REST API — базовая линия (таблицы throughput, saturation, grpc и db). VU-модели у него нет, поэтому он подаёт свою максимальную фиксированную интенсивность (`SYT_RATE`) |
 | `perfscale (k6)` | тот же скрипт k6 через `perfscale run --k6` |
 | `perfscale (locust)` | тот же locustfile через `perfscale run --locust` |
 | `perfscale (jmeter)` | тот же `.jmx`-план через `perfscale run --jmeter` (только наборы overhead/startup) |
@@ -144,6 +145,24 @@ k6 этим расширением не измеряется, поэтому e2e
 субмиллисекундные publish-замеры читаются как 0 — там сравнивайте Msg/s, а
 латентность — по нативным строкам.
 
+Строки SyTester управляют им через REST API: каждая строка поднимает JVM
+(`SYTESTER_JAVA`, Java 21+) из релизного jar (`SYTESTER_JAR`, по умолчанию
+`target/sytester/SyTester.jar` — bench-workflow скачивает закреплённый jar
+v6.10.0 и сверяет sha256), гоняет незаписываемый прогрев `SYT_WARMUP` (по
+умолчанию 5s) с той же интенсивностью, затем план на длительность таблицы,
+читает `/action/lastReport` и гасит JVM. Планы повторяют примеры SyTester:
+`GENERATOR` GET для throughput/saturation, `GENERATOR` gRPC unary для grpc
+(`echo.proto` загружается как proto set; пул отправителей
+`grpc.maxConnections` = `SYT_MAX_VUS`) и `STEPS` `TPS_LOADER` с PgJDBC
+`SELECT 1` для db. Во всех планах большой `errorsToStop`: значение по
+умолчанию (100) обрывает план в первую же секунду проблем, а бенчу нужен
+процент ошибок. CPU на запрос и пиковый RSS покрывают всю жизнь JVM.
+`failedPercentage` остаётся 0 при транспортных ошибках (статус `-1`),
+поэтому `Err` считается из числа упавших запросов; латентности — в целых
+миллисекундах. Локально: скачайте jar со
+[страницы релизов](https://gitverse.ru/sbertech/sytester/releases) и
+запустите `SUITES=throughput SYTESTER_JAR=… SYTESTER_JAVA=… ./scripts/bench.sh`.
+
 Микробенчмарки горячих путей нативного движка (парсинг YAML, подстановка
 `${{ ... }}`, запись метрик / перцентильная сводка, захват вывода процессов
 через `RingBuf`, матчеры готовности `waitUntil`) находятся в
@@ -192,7 +211,8 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
-| `SUITES` | все | Список наборов через пробел (см. таблицу выше) |
+| `SUITES` | все | Список наборов через пробел; неизвестное имя — ошибка запуска (см. таблицу выше) |
+| `APPS` | `k6 jmeter locust sytester` | Движки-конкуренты, чьи строки попадают в таблицы (через пробел; строки perfscale идут всегда; `k6` также включает сборки xk6-sql / xk6-nats). Неизвестное имя — ошибка запуска |
 | `VUS` | `10` | Виртуальных пользователей на сценарий |
 | `DURATION` | `15s` | Длительность прогона для `overhead`/`throughput` |
 | `WARMUP` | `1` | Разогревочные прогоны hyperfine (отбрасываются, не показываются) |
@@ -213,6 +233,8 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `PUBSUB_DURATION` / `PUBSUB_PAYLOAD_BYTES` | `10s` / `256` | длительность сценария набора pubsub / размер нагрузки сообщения в байтах |
 | `BENCH_NATS_URL` | `nats://127.0.0.1:4222` | URL NATS-брокера для nats-строк набора pubsub |
 | `K6_NATS_BIN` | `target/xk6-nats/k6` | Кастомный k6 с расширением xk6-nats для строк k6 набора pubsub (собирается bench-workflow) |
+| `SYT_RATE` / `SYT_WARMUP` / `SYT_MAX_VUS` | `10000` / `5s` / `256` | TPS, который подают строки SyTester / длительность его прогрева / пул отправителей gRPC |
+| `SYTESTER_JAR` / `SYTESTER_JAVA` / `SYT_PORT` | `target/sytester/SyTester.jar` / `java` / `18997` | релизный jar SyTester / бинарь Java 21+ / его REST-порт |
 | `PORT` / `TLS_PORT` | `18999` / `18998` | Порты для одноразовых целей serve |
 | `OUTPUT` | `bench-report.md` | Путь к Markdown-отчёту |
 | `RESULTS` | `bench-results.json` | Машиночитаемые результаты (вход для отслеживания регрессий) |
