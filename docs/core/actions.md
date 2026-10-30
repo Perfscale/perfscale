@@ -14,6 +14,13 @@ Full IDs carry a namespace and version (`std/http@v1`); the short aliases
 `set_shared_variable`, `get_shared_variable`) resolve to the
 same implementations.
 
+Two further namespaces sit outside the built-ins: `pro/*` actions are
+proprietary modules registered by the agent build, and `lib/<alias>/<step>`
+(RFC 009) invokes a **custom step exported by a WASM library** declared in
+`libraries:` — the component receives the interpolated `with:` params and
+returns the same success/output/logs/metrics shape built-ins produce. See
+[Libraries](libraries.md#custom-steps-libaliasstep).
+
 ## `std/http@v1`
 
 Perform one HTTP request per iteration. Timing feeds the run's metrics.
@@ -51,6 +58,11 @@ Binary payloads (e.g. `application/octet-stream`) instead return an empty
 FileDescriptorSet flows into a gRPC step:
 `descriptor_set: "${{ fetch.body_base64 }}"`. A missing content type is
 sniffed: valid UTF-8 behaves as text, anything else as binary.
+
+Responses the server compresses (`Content-Encoding: gzip`) are transparently
+decoded before any of this, so `body` and `${{ feed.body.posts }}` paths see
+the plain payload — request `Accept-Encoding: gzip` explicitly via `headers`
+to opt in. Decoding is response-only: request bodies are never compressed.
 
 Statuses ≥ 400, transport errors, and timeouts count as failed requests in
 `http_req_failed`. A timeout is logged distinctly (`→ TIMEOUT after ...ms`).

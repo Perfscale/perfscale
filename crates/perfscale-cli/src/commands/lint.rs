@@ -31,36 +31,54 @@ pub async fn run(args: LintArgs) -> Result<(), CliError> {
         ..Default::default()
     };
 
+    // Load and import-resolve every file FIRST: library declarations in one
+    // document (e.g. the config) validate `lib/<alias>/<step>` steps and
+    // `${alias.fn(...)}` tokens in another (the runtime concatenates config +
+    // test libraries, RFC 005/009) — per-file linting would report false
+    // unknown aliases.
+    let mut prepared = Vec::new();
     for path in &args.files {
-        match lint_file(path, args.schema, &import_opts).await {
-            Ok((kind, effective, issues)) if issues.is_empty() => {
-                // Advisory findings never affect the exit code.
-                for warning in perfscale_core::lint::lint_warnings(&effective, kind) {
-                    println!("  warning: {warning}");
-                }
-                // The offline pass is clean; the GraphQL network pass may
-                // still find schema-level problems. It runs on the merged
-                // text so imported steps are covered too.
-                let (remote, notes) = graphql_remote_pass(&effective, kind, args.offline).await;
-                for note in &notes {
-                    println!("  note: {note}");
-                }
-                if remote.is_empty() {
-                    println!("✓ {} ({}) — ok", path.display(), kind_label(kind));
-                    print_effective_inputs(&effective, kind, &args)?;
-                } else {
-                    any_problems = true;
-                    print_issues(path, kind, &remote);
-                }
+        prepared.push((path, prepare_file(path, args.schema, &import_opts).await?));
+    }
+    let docs: Vec<(String, DocKind)> = prepared
+        .iter()
+        .map(|(_, (kind, effective, _))| (effective.clone(), *kind))
+        .collect();
+    let results: Vec<(Vec<LintIssue>, Vec<String>)> = if docs.len() == 1 {
+        vec![(
+            lint(&docs[0].0, docs[0].1),
+            perfscale_core::lint::lint_warnings(&docs[0].0, docs[0].1),
+        )]
+    } else {
+        perfscale_core::lint::lint_multi(&docs)
+    };
+
+    for ((path, (kind, effective, pre_issues)), (mut issues, warnings)) in
+        prepared.into_iter().zip(results)
+    {
+        issues.extend(pre_issues);
+        // Advisory findings never affect the exit code.
+        for warning in warnings {
+            println!("  warning: {warning}");
+        }
+        if issues.is_empty() {
+            // The offline pass is clean; the GraphQL network pass may
+            // still find schema-level problems. It runs on the merged
+            // text so imported steps are covered too.
+            let (remote, notes) = graphql_remote_pass(&effective, kind, args.offline).await;
+            for note in &notes {
+                println!("  note: {note}");
             }
-            Ok((kind, effective, issues)) => {
-                for warning in perfscale_core::lint::lint_warnings(&effective, kind) {
-                    println!("  warning: {warning}");
-                }
+            if remote.is_empty() {
+                println!("✓ {} ({}) — ok", path.display(), kind_label(kind));
+                print_effective_inputs(&effective, kind, &args)?;
+            } else {
                 any_problems = true;
-                print_issues(path, kind, &issues);
+                print_issues(path, kind, &remote);
             }
-            Err(e) => return Err(e),
+        } else {
+            any_problems = true;
+            print_issues(path, kind, &issues);
         }
     }
 
@@ -74,9 +92,10 @@ pub async fn run(args: LintArgs) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Lint one file. Returns the effective document kind, the effective
-/// (import-merged) text, and any findings.
-async fn lint_file(
+/// Load one file and resolve its imports. Returns the effective document
+/// kind, the effective (import-merged) text, and any findings that arose
+/// before linting proper (import resolution failures).
+async fn prepare_file(
     path: &Path,
     schema: SchemaKind,
     import_opts: &ImportOptions,
@@ -125,8 +144,9 @@ async fn lint_file(
         SchemaKind::Test => DocKind::Test,
         SchemaKind::Config => DocKind::Config,
     };
-    let issues = lint(&effective, kind);
-    Ok((kind, effective, issues))
+    // Linting proper happens after every file is prepared, so library
+    // declarations combine across documents (see `run`).
+    Ok((kind, effective, Vec::new()))
 }
 
 /// The GraphQL schema pass: steps with a `schema_file` validate against the

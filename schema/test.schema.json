@@ -90,7 +90,7 @@
           ]
         },
         "capabilities": {
-          "description": "Explicit capability grants, fail-closed: any non-empty grant requires `allow_library_capabilities: true` in the config. `fs` / `clock` are bare strings; network egress is an object with a host allowlist (`net: [\"api.example.com\"]`) — raw sockets are never granted.\n\n**Required key.** Serde keeps the field optional only so a missing key yields a targeted validation error (see [`require_explicit_capabilities`]) instead of a generic schema complaint: declare `capabilities: []` explicitly when the library needs no grants — omitting the key is an error.",
+          "description": "Explicit capability grants, fail-closed: any non-empty grant requires `allow_library_capabilities: true` in the config. `fs` / `clock` / `process` are bare strings; network egress is an object with a host allowlist (`net: [\"api.example.com\"]`) — raw sockets are never granted. `process` (RFC 009) additionally requires `allow_process_actions: true` in the config.\n\n**Required key.** Serde keeps the field optional only so a missing key yields a targeted validation error (see [`require_explicit_capabilities`]) instead of a generic schema complaint: declare `capabilities: []` explicitly when the library needs no grants — omitting the key is an error.",
           "items": {
             "$ref": "#/definitions/Capability"
           },

@@ -50,6 +50,8 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "wasm-libs")]
 pub mod burn;
+#[cfg(feature = "wasm-libs")]
+pub(crate) mod exec;
 pub mod lockfile;
 pub mod metrics;
 pub mod std_json;
@@ -113,9 +115,11 @@ pub struct LibraryRef {
     pub r#as: Option<String>,
 
     /// Explicit capability grants, fail-closed: any non-empty grant requires
-    /// `allow_library_capabilities: true` in the config. `fs` / `clock` are
-    /// bare strings; network egress is an object with a host allowlist
-    /// (`net: ["api.example.com"]`) — raw sockets are never granted.
+    /// `allow_library_capabilities: true` in the config. `fs` / `clock` /
+    /// `process` are bare strings; network egress is an object with a host
+    /// allowlist (`net: ["api.example.com"]`) — raw sockets are never granted.
+    /// `process` (RFC 009) additionally requires `allow_process_actions:
+    /// true` in the config.
     ///
     /// **Required key.** Serde keeps the field optional only so a missing
     /// key yields a targeted validation error (see
@@ -280,6 +284,35 @@ pub struct FunctionInfo {
     pub secret: bool,
 }
 
+/// One exported custom step (RFC 009), as listed by
+/// [`LibraryProvider::steps`]. Dispatchable as `use: lib/<alias>/<name>`.
+#[derive(Debug, Clone, Copy)]
+pub struct StepInfo {
+    /// Step name as used in `lib/<alias>/<name>`.
+    pub name: &'static str,
+    /// One-line description for docs/lint output.
+    pub description: &'static str,
+}
+
+/// The context every custom-step invocation receives (RFC 009): the library
+/// call context minus the value-generation fields (no message-seq/seed — a
+/// step is not a token), plus the step's YAML `name:`. One-shot
+/// `before:`/`after:` steps run with `vu_id`/`iteration_seq` = 0.
+#[derive(Debug, Clone, Copy)]
+pub struct StepCtx<'a> {
+    /// VU loop iteration (0 in `before:`/`after:`).
+    pub iteration_seq: u64,
+    /// Virtual-user id (0 in `before:`/`after:`).
+    pub vu_id: u64,
+    /// Wall clock, unix milliseconds.
+    pub time_ms: u64,
+    /// Run settings JSON, frozen at run start (same shape as
+    /// [`CallCtx::settings_json`]).
+    pub settings_json: &'a str,
+    /// The YAML step's `name:` (for log lines).
+    pub step_name: &'a str,
+}
+
 /// A library as declared — mints instances. Instances are per generator
 /// owner, or per context (VU) when the provider opts into
 /// [`LibraryProvider::share_per_context`].
@@ -289,6 +322,12 @@ pub trait LibraryProvider: Send + Sync {
 
     /// Exported functions, for docs and lint-time token validation.
     fn functions(&self) -> &[FunctionInfo];
+
+    /// Exported custom steps (RFC 009), for `lib/<alias>/<step>` dispatch and
+    /// lint-time step-id validation. `&[]` for value-only libraries.
+    fn steps(&self) -> &[StepInfo] {
+        &[]
+    }
 
     /// The config extension this library declares (issue #10): the claimed
     /// top-level config key plus its JSON Schema. `None` for libraries
@@ -338,6 +377,23 @@ pub trait LibraryInstance: Send {
         func: &str,
         args: &[serde_json::Value],
     ) -> Result<String, String>;
+
+    /// Invoke one custom step (RFC 009): `step` is the manifest step name,
+    /// `params_json` the interpolated `with:` block. The `Ok` payload is the
+    /// serialized ActionOutput (`wit/step.wit`). The default errors — the
+    /// dispatch path checks [`LibraryProvider::steps`] first, so reaching this
+    /// default means the manifest and the ABI disagreed.
+    fn run_step(
+        &mut self,
+        ctx: &StepCtx<'_>,
+        step: &str,
+        params_json: &str,
+    ) -> Result<String, String> {
+        let _ = (ctx, params_json);
+        Err(format!(
+            "step '{step}': this library does not export steps (no perfscale:step world)"
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -433,9 +489,10 @@ pub fn builtin_provider(id: &str) -> Option<Arc<dyn LibraryProvider>> {
 fn resolve_wasm(
     lib: &LibraryRef,
     fs_root: Option<&std::path::Path>,
+    allow_process_actions: bool,
 ) -> Result<(Arc<dyn LibraryProvider>, String), String> {
     if let Some(embedded) = burn::embedded().as_ref().and_then(|s| s.get(&lib.use_)) {
-        return resolve_embedded(lib, embedded, fs_root);
+        return resolve_embedded(lib, embedded, fs_root, allow_process_actions);
     }
     let path = std::path::Path::new(&lib.use_);
     if !path.exists() {
@@ -450,7 +507,12 @@ fn resolve_wasm(
             lib.use_
         ));
     }
-    let provider = wasm::WasmLibraryProvider::load(path, lib.capabilities.as_deref(), fs_root)?;
+    let provider = wasm::WasmLibraryProvider::load(
+        path,
+        lib.capabilities.as_deref(),
+        fs_root,
+        allow_process_actions,
+    )?;
     let name = provider.library_name().to_string();
     Ok((Arc::new(provider), name))
 }
@@ -464,6 +526,7 @@ fn resolve_embedded(
     lib: &LibraryRef,
     embedded: &burn::EmbeddedLibrary,
     fs_root: Option<&std::path::Path>,
+    allow_process_actions: bool,
 ) -> Result<(Arc<dyn LibraryProvider>, String), String> {
     let component = burn::load_burned(&embedded.artifact, &embedded.source_sha256).ok_or_else(|| {
         format!(
@@ -476,6 +539,7 @@ fn resolve_embedded(
         component,
         lib.capabilities.as_deref(),
         fs_root,
+        allow_process_actions,
     )?;
     let name = provider.library_name().to_string();
     Ok((Arc::new(provider), name))
@@ -487,6 +551,7 @@ fn resolve_embedded(
 fn resolve_wasm(
     lib: &LibraryRef,
     _fs_root: Option<&std::path::Path>,
+    _allow_process_actions: bool,
 ) -> Result<(Arc<dyn LibraryProvider>, String), String> {
     Err(format!(
         "library '{}': this perfscale build has no WASM support (feature wasm-libs) — use a perfscale CLI binary, which ships it",
@@ -526,6 +591,22 @@ pub fn require_explicit_capabilities(refs: &[LibraryRef]) -> Result<(), String> 
 pub fn validate_libraries(
     refs: &[LibraryRef],
     allow_capabilities: bool,
+    fs_root: Option<&std::path::Path>,
+) -> Result<Vec<ResolvedLibrary>, String> {
+    // Historical entry point: no `allow_process_actions` known, so the
+    // `process` capability (RFC 009) stays fail-closed.
+    validate_libraries_with_policy(refs, allow_capabilities, false, fs_root)
+}
+
+/// [`validate_libraries`] plus the run's `allow_process_actions` policy: the
+/// `process` capability (RFC 009) requires it on top of
+/// `allow_library_capabilities`. The runner passes the real config value;
+/// lint passes it from the config document (test documents lint with the
+/// gate open, same posture as `allow_library_capabilities`).
+pub fn validate_libraries_with_policy(
+    refs: &[LibraryRef],
+    allow_capabilities: bool,
+    allow_process_actions: bool,
     fs_root: Option<&std::path::Path>,
 ) -> Result<Vec<ResolvedLibrary>, String> {
     require_explicit_capabilities(refs)?;
@@ -580,7 +661,7 @@ pub fn validate_libraries(
                         lib.use_
                     ));
             }
-            resolve_wasm(lib, fs_root)?
+            resolve_wasm(lib, fs_root, allow_process_actions)?
         };
 
         let alias = lib.r#as.clone().unwrap_or(default_alias);
@@ -1138,7 +1219,7 @@ mod tests {
             artifact,
         };
         let r = std_random_ref();
-        match resolve_embedded(&r, &forged, None) {
+        match resolve_embedded(&r, &forged, None, false) {
             Ok(_) => panic!("forged embedded entry must not resolve"),
             Err(err) => assert!(err.contains("perfscale burn"), "{err}"),
         }

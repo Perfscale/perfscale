@@ -39,30 +39,145 @@ pub fn detect_kind(yaml: &str) -> DocKind {
 pub fn lint(yaml: &str, kind: DocKind) -> Vec<LintIssue> {
     let value: Value = match serde_yaml::from_str(yaml) {
         Ok(v) => v,
-        Err(e) => {
-            return vec![LintIssue {
-                location: "(file)".into(),
-                problem: format!("invalid YAML: {e}"),
-                suggestion: Some(
-                    "check indentation and quoting — every step list item starts with `- `".into(),
-                ),
-            }];
+        Err(e) => return vec![invalid_yaml_issue(&e)],
+    };
+    lint_value(&value, kind, None).0
+}
+
+fn invalid_yaml_issue(e: &serde_yaml::Error) -> LintIssue {
+    LintIssue {
+        location: "(file)".into(),
+        problem: format!("invalid YAML: {e}"),
+        suggestion: Some(
+            "check indentation and quoting — every step list item starts with `- `".into(),
+        ),
+    }
+}
+
+/// Lint several documents of one command together (RFC 009): `libraries:`
+/// declared in ANY document are visible to every document's
+/// `lib/<alias>/<step>` steps and `${alias.fn(...)}` tokens — the runtime
+/// concatenates the declarations (config + test), so linting a test against
+/// only its own libraries would report false unknown aliases. Returns
+/// `(issues, warnings)` per document, in input order. Components load once
+/// for the whole set, not once per document.
+pub fn lint_multi(docs: &[(String, DocKind)]) -> Vec<(Vec<LintIssue>, Vec<String>)> {
+    let parsed: Vec<Result<Value, LintIssue>> = docs
+        .iter()
+        .map(|(yaml, _)| serde_yaml::from_str(yaml).map_err(|e| invalid_yaml_issue(&e)))
+        .collect();
+
+    // One combined validation of every declared library (the runtime's
+    // concatenation semantics). The gate posture mirrors the per-document
+    // rule: a test document lints with the capability gates open (the config
+    // it will run with is unknown); a config enforces its own keys.
+    let any_test = docs.iter().any(|(_, k)| *k == DocKind::Test);
+    let gate = |key: &str| {
+        any_test
+            || parsed
+                .iter()
+                .flatten()
+                .any(|v| v.get(key).and_then(Value::as_bool).unwrap_or(false))
+    };
+    let mut refs = Vec::new();
+    for value in parsed.iter().flatten() {
+        if let Some(entries) = value.get("libraries").and_then(|v| v.as_array()) {
+            for e in entries {
+                if let Ok(r) = serde_json::from_value::<crate::library::LibraryRef>(e.clone()) {
+                    refs.push(r);
+                }
+            }
         }
+    }
+    let combined: Result<ResolvedProviders, String> = if refs.is_empty() {
+        Ok(Vec::new())
+    } else {
+        crate::library::validate_libraries_with_policy(
+            &refs,
+            gate("allow_library_capabilities"),
+            gate("allow_process_actions"),
+            None,
+        )
+        .map(|resolved| {
+            resolved
+                .into_iter()
+                .map(|r| (r.alias, r.provider, r.rules))
+                .collect()
+        })
     };
 
+    docs.iter()
+        .enumerate()
+        .map(|(i, (_, kind))| {
+            let value = match &parsed[i] {
+                Ok(v) => v,
+                Err(issue) => return (vec![issue.clone()], Vec::new()),
+            };
+            let (mut issues, mut warnings) = lint_value(value, *kind, combined.as_ref().ok());
+            // A combined declaration failure lands at /libraries of every
+            // document that declares libraries (the run would fail on it).
+            if let Err(msg) = &combined {
+                if value.get("libraries").is_some() {
+                    issues.push(LintIssue {
+                        location: "/libraries".into(),
+                        problem: msg.clone(),
+                        suggestion: None,
+                    });
+                }
+            }
+            if *kind == DocKind::Config {
+                warnings.extend(profile_warnings(value));
+            }
+            (issues, warnings)
+        })
+        .collect()
+}
+
+/// The per-document pass. `shared` providers come from [`lint_multi`]'s
+/// combined library resolution; `None` resolves the document's own
+/// `libraries:` (the single-document behavior).
+fn lint_value(
+    value: &Value,
+    kind: DocKind,
+    shared: Option<&ResolvedProviders>,
+) -> (Vec<LintIssue>, Vec<String>) {
     let mut issues = Vec::new();
-    schema_issues(&value, kind, &mut issues);
+    schema_issues(value, kind, &mut issues);
     match kind {
-        DocKind::Test => lint_test_fields(&value, &mut issues),
-        DocKind::Config => lint_config_fields(&value, &mut issues),
+        DocKind::Test => lint_test_fields(value, &mut issues),
+        DocKind::Config => lint_config_fields(value, &mut issues),
     }
-    let (lib_issues, _, providers) = library_checks(&value, kind);
+    let (lib_issues, token_warnings, providers) = match shared {
+        Some(providers) => {
+            let (i, w) = scan_tokens_with(value, kind, providers);
+            (i, w, providers.clone())
+        }
+        None => library_checks(value, kind),
+    };
     issues.extend(lib_issues);
+    lint_lib_step_refs(value, kind, &providers, &mut issues);
     if kind == DocKind::Config {
-        lint_inputs(&value, &mut issues);
-        lint_config_extensions(&value, &providers, &mut issues);
+        lint_inputs(value, &mut issues);
+        lint_config_extensions(value, &providers, &mut issues);
     }
-    issues
+    (issues, token_warnings)
+}
+
+/// The config-only load-profile advisory (moved out of `lint_warnings` so
+/// the multi-document pass reuses it).
+fn profile_warnings(value: &Value) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if let Some(map) = value.as_object() {
+        let has_profile = map.contains_key("stages") || map.contains_key("arrival");
+        let has_fixed = map.contains_key("vus") || map.contains_key("duration");
+        if has_profile && has_fixed {
+            warnings.push(
+                "`stages`/`arrival` override `vus`/`duration` — the fixed fields are ignored; remove them to avoid confusion"
+                    .into(),
+            );
+        }
+    }
+    warnings
 }
 
 /// The `inputs:` block (issue #11): the shape is enforced by the config
@@ -601,8 +716,14 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
         .unwrap_or("");
 
     // `pro/*` actions are proprietary and registered at runtime, so the linter
-    // can't know them statically — never flag them as unknown.
-    if !action.is_empty() && !action.starts_with("pro/") && !is_known_action(action) {
+    // can't know them statically — never flag them as unknown. `lib/` step ids
+    // (RFC 009) are checked against the declared libraries' probed manifests
+    // by `lint_lib_step_refs` (the `library_checks` pass in `lint`), not here.
+    if !action.is_empty()
+        && !action.starts_with("pro/")
+        && !action.starts_with("lib/")
+        && !is_known_action(action)
+    {
         issues.push(LintIssue {
             location: format!("{loc}/{use_key}"),
             problem: format!("unknown action '{action}'"),
@@ -1003,16 +1124,7 @@ pub fn lint_warnings(yaml: &str, kind: DocKind) -> Vec<String> {
     };
     let mut warnings = Vec::new();
     if kind == DocKind::Config {
-        if let Some(map) = value.as_object() {
-            let has_profile = map.contains_key("stages") || map.contains_key("arrival");
-            let has_fixed = map.contains_key("vus") || map.contains_key("duration");
-            if has_profile && has_fixed {
-                warnings.push(
-                    "`stages`/`arrival` override `vus`/`duration` — the fixed fields are ignored; remove them to avoid confusion"
-                        .into(),
-                );
-            }
-        }
+        warnings.extend(profile_warnings(&value));
     }
     let (_, lib_warnings) = library_token_checks(&value, kind);
     warnings.extend(lib_warnings);
@@ -1053,7 +1165,12 @@ fn declared_libraries(value: &Value, kind: DocKind) -> (Vec<LintIssue>, Resolved
             .get("allow_library_capabilities")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-    match crate::library::validate_libraries(&refs, allow, None) {
+    let allow_process = kind == DocKind::Test
+        || value
+            .get("allow_process_actions")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    match crate::library::validate_libraries_with_policy(&refs, allow, allow_process, None) {
         Ok(resolved) => (
             Vec::new(),
             resolved
@@ -1098,9 +1215,23 @@ fn library_checks(
     kind: DocKind,
 ) -> (Vec<LintIssue>, Vec<String>, ResolvedProviders) {
     let (mut issues, aliases) = declared_libraries(value, kind);
+    let (token_issues, warnings) = scan_tokens_with(value, kind, &aliases);
+    issues.extend(token_issues);
+    (issues, warnings, aliases)
+}
+
+/// The `${alias.fn(...)}` token scan over the document's step lists against
+/// the given providers — shared by the single-document pass (providers from
+/// the document itself) and [`lint_multi`] (the combined set).
+fn scan_tokens_with(
+    value: &Value,
+    kind: DocKind,
+    aliases: &ResolvedProviders,
+) -> (Vec<LintIssue>, Vec<String>) {
+    let mut issues = Vec::new();
     let mut warnings = Vec::new();
     if aliases.is_empty() {
-        return (issues, warnings, aliases);
+        return (issues, warnings);
     }
 
     let step_lists: &[&str] = match kind {
@@ -1116,14 +1247,14 @@ fn library_checks(
                 scan_library_tokens(
                     with,
                     &format!("/{key}/{i}/with"),
-                    &aliases,
+                    aliases,
                     &mut issues,
                     &mut warnings,
                 );
             }
         }
     }
-    (issues, warnings, aliases)
+    (issues, warnings)
 }
 
 /// Recursive walk over a `with:` value — string leaves only, the same
@@ -1256,6 +1387,76 @@ fn lint_library_token(
                 .map(|c| format!("did you mean '{c}'?"))
                 .or_else(|| Some(format!("available functions: {}", names.join(", ")))),
         });
+    }
+}
+
+/// `lib/<alias>/<step>` step ids (RFC 009): lint validates every reference
+/// against the probed manifests of the document's declared libraries — a
+/// typo'd alias or step name fails before the run, same standard as
+/// `${alias.fn(...)}` tokens. Skipped when the `libraries:` block failed to
+/// validate (its own issue is already reported at `/libraries`).
+fn lint_lib_step_refs(
+    value: &Value,
+    kind: DocKind,
+    providers: &ResolvedProviders,
+    issues: &mut Vec<LintIssue>,
+) {
+    let step_lists: &[&str] = match kind {
+        DocKind::Test => &["steps"],
+        DocKind::Config => &["before", "after"],
+    };
+    for key in step_lists {
+        let Some(steps) = value.get(key).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for (i, step) in steps.iter().enumerate() {
+            let loc = format!("/{key}/{i}");
+            let Some(action) = step
+                .as_object()
+                .and_then(|m| m.get("use").or_else(|| m.get("uses")))
+                .and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+            if !action.starts_with("lib/") {
+                continue;
+            }
+            let (alias, step_name) = match crate::step::libstep::parse_step_id(action) {
+                Ok(parts) => parts,
+                Err(msg) => {
+                    issues.push(LintIssue {
+                        location: format!("{loc}/use"),
+                        problem: msg,
+                        suggestion: Some("use `lib/<alias>/<step>` with the library's alias and a step from its manifest".into()),
+                    });
+                    continue;
+                }
+            };
+            let Some((_, provider, _)) = providers.iter().find(|(a, _, _)| a == alias) else {
+                let known: Vec<&str> = providers.iter().map(|(a, _, _)| a.as_str()).collect();
+                issues.push(LintIssue {
+                    location: format!("{loc}/use"),
+                    problem: format!(
+                        "unknown library alias '{alias}' in step id '{action}' — declared aliases: {}",
+                        if known.is_empty() { "(none)".into() } else { known.join(", ") }
+                    ),
+                    suggestion: Some("add the library to `libraries:` (or fix the alias)".into()),
+                });
+                continue;
+            };
+            if !provider.steps().iter().any(|s| s.name == step_name) {
+                let exported: Vec<&str> = provider.steps().iter().map(|s| s.name).collect();
+                issues.push(LintIssue {
+                    location: format!("{loc}/use"),
+                    problem: format!("unknown step '{step_name}' for library '{alias}'"),
+                    suggestion: Some(if exported.is_empty() {
+                        "this component exports no steps (its info() lists none)".into()
+                    } else {
+                        format!("exported steps: {}", exported.join(", "))
+                    }),
+                });
+            }
+        }
     }
 }
 
@@ -2722,6 +2923,115 @@ before:
         let yaml = "steps:\n  - use: std/log@v1\n    with:\n      message: \"${faker.email()}\"\n";
         assert_eq!(lint(yaml, DocKind::Test), vec![]);
         assert!(lint_warnings(yaml, DocKind::Test).is_empty());
+    }
+
+    // --- multi-document lint (RFC 009 shared library context) ---------------
+
+    /// Libraries declared in the config validate tokens in the test (and vice
+    /// versa): the runtime concatenates both documents' `libraries:`.
+    #[test]
+    fn lint_multi_shares_libraries_across_documents() {
+        let config = "libraries:\n  - use: '@std/random@v1'\n    capabilities: []\n    as: ids\nvus: 1\nduration: 1s\n";
+        let test = "steps:\n  - use: std/log@v1\n    with:\n      message: \"${ids.ulid()}\"\n";
+        let results = lint_multi(&[
+            (test.to_string(), DocKind::Test),
+            (config.to_string(), DocKind::Config),
+        ]);
+        assert!(results[0].0.is_empty(), "{:?}", results[0]);
+        assert!(
+            results[0].1.is_empty(),
+            "no false unknown-alias warning: {:?}",
+            results[0].1
+        );
+        assert!(results[1].0.is_empty(), "{:?}", results[1]);
+
+        // The reverse direction: declared in the test, used in the config's
+        // `before:` block.
+        let config2 = "before:\n  - use: std/log@v1\n    with:\n      message: \"${ids.ulid()}\"\nvus: 1\nduration: 1s\n";
+        let test2 = "libraries:\n  - use: '@std/random@v1'\n    capabilities: []\n    as: ids\nsteps:\n  - use: std/log@v1\n    with:\n      message: ok\n";
+        let results = lint_multi(&[
+            (test2.to_string(), DocKind::Test),
+            (config2.to_string(), DocKind::Config),
+        ]);
+        assert!(results[0].0.is_empty(), "{:?}", results[0]);
+        assert!(results[1].0.is_empty(), "{:?}", results[1]);
+        assert!(results[1].1.is_empty(), "{:?}", results[1].1);
+    }
+
+    /// A duplicate alias across documents is the run's hard validation error
+    /// (declarations concatenate), reported at /libraries of both.
+    #[test]
+    fn lint_multi_flags_duplicate_aliases_across_documents() {
+        let decl = "  - use: '@std/random@v1'\n    capabilities: []\n    as: ids\n";
+        let config = format!("libraries:\n{decl}vus: 1\nduration: 1s\n");
+        let test = format!(
+            "libraries:\n{decl}steps:\n  - use: std/log@v1\n    with:\n      message: ok\n"
+        );
+        let results = lint_multi(&[(test, DocKind::Test), (config, DocKind::Config)]);
+        for (i, (issues, _)) in results.iter().enumerate() {
+            assert!(
+                issues
+                    .iter()
+                    .any(|i| i.problem.contains("duplicate library alias 'ids'")),
+                "doc {i}: {issues:?}"
+            );
+        }
+    }
+
+    /// An unknown alias still warns in the multi pass (the alias is declared
+    /// in neither document).
+    #[test]
+    fn lint_multi_still_warns_on_unknown_aliases() {
+        let config =
+            "libraries:\n  - use: '@std/random@v1'\n    capabilities: []\nvus: 1\nduration: 1s\n";
+        let test = "steps:\n  - use: std/log@v1\n    with:\n      message: \"${faker.email()}\"\n";
+        let results = lint_multi(&[
+            (test.to_string(), DocKind::Test),
+            (config.to_string(), DocKind::Config),
+        ]);
+        assert!(
+            results[0]
+                .1
+                .iter()
+                .any(|w| w.contains("unknown library alias 'faker'")),
+            "{:?}",
+            results[0]
+        );
+    }
+
+    /// Config-extension validation (issue #10) keeps working in the multi
+    /// pass: an unclaimed top-level key is the typo guard's error.
+    #[test]
+    fn lint_multi_keeps_config_extension_checks() {
+        let config = "frobnicate: 1\nvus: 1\nduration: 1s\n";
+        let test = "steps:\n  - use: std/log@v1\n    with:\n      message: ok\n";
+        let results = lint_multi(&[
+            (test.to_string(), DocKind::Test),
+            (config.to_string(), DocKind::Config),
+        ]);
+        assert!(
+            results[1]
+                .0
+                .iter()
+                .any(|i| i.problem.contains("unknown field 'frobnicate'")),
+            "{:?}",
+            results[1]
+        );
+    }
+
+    /// The single-document entry point is unchanged: without the *document's
+    /// own* libraries the token stays a doc-local unknown-alias warning.
+    #[test]
+    fn single_document_lint_behavior_is_unchanged() {
+        let test = "libraries:\n  - use: '@std/random@v1'\n    capabilities: []\nsteps:\n  - use: std/log@v1\n    with:\n      message: \"${ids.ulid()}\"\n";
+        assert!(lint(test, DocKind::Test).is_empty());
+        let warnings = lint_warnings(test, DocKind::Test);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("unknown library alias 'ids'")),
+            "{warnings:?}"
+        );
     }
 
     #[test]

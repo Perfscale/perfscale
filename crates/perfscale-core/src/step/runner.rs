@@ -337,9 +337,10 @@ pub async fn run_native(
     // Library declarations are validated before anything runs (RFC 005):
     // unknown refs, capability grants without `allow_library_capabilities`,
     // and alias collisions are configuration errors, not mid-run surprises.
-    let library_set = match crate::library::validate_libraries(
+    let library_set = match crate::library::validate_libraries_with_policy(
         &libraries,
         config.allow_library_capabilities,
+        config.allow_process_actions,
         config.fs_root.as_deref(),
     ) {
         Ok(v) if v.is_empty() => None,

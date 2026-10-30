@@ -1,11 +1,13 @@
-# Libraries — custom value generators (WASM)
+# Libraries — custom value generators and steps (WASM)
 
 Every perfscale payload can embed `${...}` generator tokens — `${seq}`,
 `${uuid}`, `${rand(1,100)}` — that the engine expands when a message is
 sent. **Libraries** are the extension point: a library contributes its own
 functions, callable from any payload as `${alias.fn(...)}` with the same
 syntax across every protocol (HTTP, WebSocket, gRPC, GraphQL, raw TCP/UDP,
-LLM prompts, DB parameters).
+LLM prompts, DB parameters). A WASM library can additionally export
+**custom steps**, dispatchable from a test's `use:` slot as
+[`lib/<alias>/<step>`](#custom-steps-libaliasstep) (RFC 009).
 
 A library is either a **built-in** shipped with the engine (`@std/random`)
 or a **WASM component** you wrote yourself — this page covers both, with a
@@ -168,6 +170,7 @@ any actual file access fails at runtime.
 | `fs` | `wasi:filesystem` preopens | only paths under `fs_root`, read-only |
 | `clock` | `wasi:clocks` | wall time also arrives via the call context |
 | `net: [hosts]` | `wasi:http` outgoing-handler | destination host/port checked against the allowlist on every request |
+| `process` | `perfscale:step/host-exec` (RFC 009) | one-shot spawn only: explicit argv, replacement environment (nothing inherited), piped+capped stdio (1 MiB per stream), 30 s default / 600 s max timeout, process-tree kill on timeout. Additionally requires `allow_process_actions: true` in the config |
 
 `net` takes a host allowlist instead of a bare flag:
 
@@ -208,6 +211,62 @@ libraries:
     log:
       secret: true         # mask every result of this library in the run log
 ```
+
+## Custom steps (`lib/<alias>/<step>`)
+
+A WASM component can go beyond value generation and export **steps** (RFC
+009): each step its `info()` manifest lists under `steps` becomes an action
+in `use:`:
+
+```yaml
+libraries:
+  - use: ./libs/acme-signer.wasm
+    capabilities: [clock]
+    as: sig
+
+steps:
+  - name: login
+    use: lib/sig/login          # the component's `login` step
+    outputs: auth
+    with:
+      user: "trader-${{ vu }}"
+      password: ${{ env.DESK_PASSWORD }}
+  - name: verify
+    use: std/check@v1
+    with:
+      on: auth.session
+```
+
+Everything around the step is the usual machinery: `${{ }}` interpolation
+(secrets resolved and masked) happens **before** the component is called,
+`${sig.token(...)}` tokens in other payloads still resolve through the same
+component, `check:` asserts on the step's output, and a failed wasm step is
+a failed step in every report exactly like a failed `std/http`. `lib/` is a
+reserved namespace — it can never shadow `std/*` or `pro/*`, and
+`perfscale lint` validates every `lib/` reference against the declared
+components' probed manifests. Steps are dispatchable in `steps:` and in the
+`before:`/`after:` blocks (which run them with VU/iteration 0).
+
+The component receives the interpolated `with:` block as JSON plus the step
+context (VU id, iteration, wall time, run settings, step name) and returns
+the standard action result: `success`, an `output` value (stored under
+`outputs:`), tagged `logs`, a `metrics` map (folded like any native step's
+metrics — a number is a counter, an array is duration samples in
+milliseconds, and a `<name>_duration`/`_rtt` histogram mints the
+`<name>_failed` rate), an optional `http_sample`, and optional
+`secret_output_paths` naming output keys the engine must mask in logs.
+Metric names must be lowercase `[a-z0-9_]` and may not collide with
+engine-owned series (`http_req_duration`, the registered family metrics, …)
+— violations fail the step with the name in the error. Per-component step
+cost is visible in the run summary's `libraries:` line (`step_calls`,
+`step_errors`, `step_p95_ms`, alongside the token-call fields).
+
+Steps run on the same per-VU parked instance as value calls — one instance
+per component per VU, no extra pooling. Capabilities are unchanged (`fs`,
+`clock`, plus `process` for host-mediated one-shot exec); **no network
+egress for steps** — protocol I/O stays with `std/*`/`pro/*` steps, wasm
+steps do the parts those can't (transform, sign, correlate, assert, emit
+metrics).
 
 ## Writing your own library
 
@@ -297,5 +356,6 @@ from the CLI and on your machines. The `@std/random` built-in needs no
 files at all; custom WASM components must be present on the load generator
 (relative paths resolve against the declaring file, remote refs come from
 the install cache). `perfscale lint` loads declared libraries and validates
-every `${alias.fn(...)}` token against the functions they actually export —
-typos are caught before the run.
+every `${alias.fn(...)}` token — and every `lib/<alias>/<step>` reference —
+against the functions and steps they actually export — typos are caught
+before the run.
