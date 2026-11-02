@@ -172,6 +172,16 @@
             "null"
           ]
         },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Step-level metric labels (issue #12): stamped on every series this step emits; merge priority over reporter and run labels. Values must be scalars and support `${{ inputs.* }}` / `${{ env.* }}` interpolation, resolved once before the run. `run_id` and `worker` are reserved (engine-set).",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "message": {
           "description": "Custom message for `std/thresholds@v1` steps (interpolated, appended to the auto-generated violation summary). Meaningless for other actions.",
           "type": [

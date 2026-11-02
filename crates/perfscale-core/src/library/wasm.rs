@@ -3432,6 +3432,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         };
         let before = vec![step("setup ctx", "lib/sig/ctx", serde_json::json!({}))];
         let steps = vec![

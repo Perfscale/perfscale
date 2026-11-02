@@ -35,6 +35,21 @@ perfscale cache        Manage the local import/library cache (~/.cache/perfscale
 | `--allow-remote-import` | — | Разрешить `import:` в документах `-f`/`-c` загружаться по сети (http(s) URL, git-репозитории). По умолчанию запрещено (fail-closed) — документ не может сам себе выдать доступ к сети. См. [импорты](../core/imports.md) |
 | `--refresh-imports` | — | Повторно загрузить кэшированные git-импорты по тегу/ветке вместо доверия кэшу (импорты по SHA коммита неизменяемы и никогда не перезагружаются) |
 
+### Стриминг-репортеры (Prometheus remote write, OTLP)
+
+Блок `report.reporters` конфига умеет также стримить живые метрики **во время**
+прогона в подключаемые приёмники: `std/report/serve@v1` (путь `report.url` как
+репортер), `std/report/prometheus-rw@v1` (remote write со Snappy+protobuf) и
+`std/report/otel@v1` (OTLP/gRPC). Каждый репортер задаёт `during_run: true` и
+ключи движка (`interval_ms`, `labels`, `max_series`) рядом с `use:` — см.
+[Стриминг-репортеры](../core/metrics.md#streaming-репортеры-prometheus-remote-write-и-otlp)
+для полной конфигурации и политики доставки (ограниченные очереди с потерей
+старейших, повторы с backoff, финальный сброс с пределом `final_timeout`;
+ошибки репортера предупреждают, но никогда не фейлят прогон, а потери
+считаются в `perfscale_report_dropped_snapshots_total` /
+`perfscale_report_dropped_series_total` / `perfscale_report_errors_total` и
+сводятся в stderr в конце запуска).
+
 ### Семантика кодов выхода
 
 - `0` — прогон завершён, **даже если запросы или проверки завершались неудачей**. Провалившиеся

@@ -46,6 +46,7 @@ steps:
 | `outputs` | no | Variable name to store the step output under |
 | `severity` | no | `std/thresholds@v1` only: what a violated gate becomes — `fail` (default; the run exits non-zero), `warn`, or `info` |
 | `message` | no | `std/thresholds@v1` only: custom label appended to the violation summary (interpolated) |
+| `labels` | no | Step-level metric labels (scalars; `${{ inputs.* }}` / `${{ env.* }}` interpolated once before the run): stamped on every metric series the step emits for the streaming reporters, with merge priority step > reporter > run. `run_id` and `worker` are reserved (engine-set) |
 | `if` / `when` | no | Run the step only when the condition holds — see [Conditional steps](#conditional-steps-if--when) |
 
 ### Conditional steps (`if:` / `when:`)
@@ -204,6 +205,23 @@ report:          # optional — serve forwarding + end-of-run reports
       with:
         output: ./reports      # where the guest's emit-file writes land (default ./perfscale-report-<module>)
         config: { style: short }  # free-form, handed to the guest verbatim
+    - use: std/report/prometheus-rw@v1     # streaming: Prometheus remote write
+      during_run: true          # engine-owned keys sit next to use:
+      interval_ms: 5000
+      labels: { env: staging }  # reporter labels (step > reporter > run)
+      max_series: 10000         # cardinality guard (default 10000)
+      with:
+        url: http://alloy:8429/api/v1/metrics/write
+        histogram: classic      # classic (_bucket{le}) | native
+        retry: { max_attempts: 5, backoff: 1s..30s }
+        max_pending: 24         # bounded queue; overflow drops the OLDEST snapshot
+        final_timeout: 30s      # bound on the synchronous final flush
+    - use: std/report/otel@v1             # streaming: OTLP/gRPC collector
+      during_run: true
+      with: { endpoint: http://otel-collector:4317 }
+    - use: std/report/serve@v1            # streaming: a perfscale serve target
+      during_run: true
+      with: { url: http://localhost:7999 }
 
 gpu:             # optional — GPU metrics during the run (native engine)
   enabled: true
@@ -221,10 +239,10 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `report.during_run` | `false` | Also stream cumulative metric snapshots during the run (batched POSTs to `<url>/api/v1/metrics`), not just the summary at the end — see [During-run metrics](core/metrics.md#during-run-metrics-reportduring_run). Native engine only |
 | `report.interval_ms` | `5000` | During-run snapshot/flush interval, milliseconds (min 1000) |
 | `report.batch_size` | `500` | Flush a batch once it holds this many samples |
-| `report.max_cpu_percent` | `90` | CPU gate: while host CPU% ≥ this, batches are held (no POSTs) and snapshots queued — never dropped — until the gate opens; `0` disables; inert off-Linux |
-| `report.max_pending` | `24` | Soft cap on undelivered batches — crossing it warns, but batches are kept and delivered in order, never dropped mid-run |
+| `report.max_cpu_percent` | `90` | CPU gate (serve streaming): while host CPU% ≥ this, delivery pauses and snapshots pile into the bounded queue (drop-oldest past `max_pending`); `0` disables; inert off-Linux |
+| `report.max_pending` | `24` | Bounded backlog for the legacy serve stream: overflow drops the OLDEST snapshot/batch and counts it in `perfscale_report_dropped_snapshots_total` (values are cumulative — the next snapshot restores them) |
 | `report.labels` | — | Run labels (key → value) stamped on the `report@v1` run identity |
-| `report.reporters` | — | End-of-run reporters (`report@v1`): `[{ use, with }]`. Built-ins: `std/report/json@v1` (canonical JSON), `std/report/junit@v1` (JUnit XML — testsuite = run, testcase per step, failures from threshold verdicts) and `std/report/html@v1` (a single self-contained HTML page — dark theme, run identity, verdicts, per-step table with samples sparklines, metric families; all CSS/JS inlined, opens offline). Destination: exactly one of `with.path` (file) or `with.url` (HTTP push; `with.headers` values may embed `${VAR}` env references, resolved host-side and never logged). `with.max_samples` caps raw per-step samples (default 100000, `0` omits them; a step that recorded more is flagged `truncated: true`). `use: wasm:./path.wasm` loads a WASM reporter component (`perfscale:reporter@0.1.0`, see `wit/reporter/reporter.wit`; relative paths anchor to the declaring file): the guest gets the `report@v1` document plus its `with.config` and writes output only through the host's `emit-file` into `with.output` (path traversal is refused; no WASI fs/net is granted). Config errors (unknown reporter, missing destination, unset `${VAR}`, an unloadable WASM module) fail at lint/validate before the run; delivery errors are best-effort — logged and counted (`engine_report_errors`), the run completes |
+| `report.reporters` | — | Reporters: `[{ use, during_run?, interval_ms?, labels?, max_series?, max_samples?, with }]`. The engine keys sit next to `use:`: `during_run` opts a streaming reporter into during-run export (final-only reporters reject it), `interval_ms` overrides the snapshot interval per reporter, `labels` are reporter-level labels, `max_series` (default 10000) caps output series (overflow counted in `perfscale_report_dropped_series_total{reporter}`), `max_samples` caps raw per-step samples (moved out of `with:`; the legacy `with.max_samples` still reads). Streaming built-ins: `std/report/serve@v1` (the `report.url` path as a reporter), `std/report/prometheus-rw@v1` (`with.url`, `with.histogram: classic|native`) and `std/report/otel@v1` (`with.endpoint`, OTLP/gRPC) — see [Streaming reporters](core/metrics.md#streaming-reporters-prometheus-remote-write-and-otlp). Delivery knobs in `with:` (streaming only — rejected on final-only reporters): `retry: { max_attempts, backoff: "1s..30s" }`, `batch_size` (default the run-level `report.batch_size`; batches never exceed it — an oversized snapshot splits), `max_pending`, `final_timeout: "30s"` (at close the backlog coalesces to the terminal cumulative snapshot — only it is delivered). Final reporters (`report@v1`): `[{ use, with }]`. Built-ins: `std/report/json@v1` (canonical JSON), `std/report/junit@v1` (JUnit XML — testsuite = run, testcase per step, failures from threshold verdicts) and `std/report/html@v1` (a single self-contained HTML page — dark theme, run identity, verdicts, per-step table with samples sparklines, metric families; all CSS/JS inlined, opens offline). Destination: exactly one of `with.path` (file) or `with.url` (HTTP push; `with.headers` values may embed `${VAR}` env references, resolved host-side and never logged). `with.max_samples` caps raw per-step samples (default 100000, `0` omits them; a step that recorded more is flagged `truncated: true`). `use: wasm:./path.wasm` loads a WASM reporter component (`perfscale:reporter@0.1.0`, see `wit/reporter/reporter.wit`; relative paths anchor to the declaring file): the guest gets the `report@v1` document plus its `with.config` and writes output only through the host's `emit-file` into `with.output` (path traversal is refused; no WASI fs/net is granted). Config errors (unknown reporter, missing destination, unset `${VAR}`, an unloadable WASM module) fail at lint/validate before the run; delivery errors are best-effort — logged and counted (`engine_report_errors`), the run completes |
 | `gpu` | — | GPU metrics collection — see [GPU metrics](#gpu-metrics-gpu). Native engine only |
 | `engine_metrics` | — | Engine self-observability — see [Engine self-metrics](#engine-self-metrics-engine_metrics). Native engine only |
 | `before` | `[]` | One-time setup steps — see [Setup and variables](#setup-and-variables) |

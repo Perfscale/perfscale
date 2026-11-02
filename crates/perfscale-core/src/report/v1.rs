@@ -342,7 +342,9 @@ fn build_metrics(
     let mut out = Vec::new();
     // Registered families first, in registration order.
     for (family, def) in catalog() {
-        let series = lookup_series(m, def.name, ctx);
+        let series = labeled_series(m, def.name)
+            .map(|s| (true, s))
+            .or_else(|| lookup_series(m, def.name, ctx).map(|s| (true, vec![s])));
         out.push(MetricFamilyReport {
             name: def.name.to_string(),
             family: family.to_string(),
@@ -350,7 +352,7 @@ fn build_metrics(
             unit: def.unit.to_string(),
             description: def.description.to_string(),
             recorded: series.is_some(),
-            series: series.into_iter().collect(),
+            series: series.map(|(_, s)| s).unwrap_or_default(),
         });
     }
     // Recorded but unregistered names (implicit custom metrics) follow,
@@ -359,6 +361,20 @@ fn build_metrics(
         catalog().iter().map(|(_, d)| d.name).collect();
     let mut custom = |name: &str, kind: MetricKind, series: MetricSeries| {
         if registered.contains(name) {
+            return;
+        }
+        // Step labels (issue #12) split the family into labeled series;
+        // label-less metrics keep the single aggregate series.
+        if let Some(labeled) = labeled_series(m, name) {
+            out.push(MetricFamilyReport {
+                name: name.to_string(),
+                family: "custom".to_string(),
+                kind: kind_str(kind).to_string(),
+                unit: String::new(),
+                description: String::new(),
+                recorded: true,
+                series: labeled,
+            });
             return;
         }
         out.push(MetricFamilyReport {
@@ -452,6 +468,45 @@ fn build_metrics(
         gauge("gpu_power_w", "W", |s| s.power_w);
     }
     out
+}
+
+/// Labeled per-step series for a metric name (issue #12): `Some` when any
+/// series of the metric carries a non-empty label set — one
+/// [`MetricSeries`] per label set, values from the label-aware store. `None`
+/// keeps the historical single aggregate series.
+fn labeled_series(m: &Metrics, name: &str) -> Option<Vec<MetricSeries>> {
+    let entries: Vec<(_, _)> = m
+        .labeled_series()
+        .iter()
+        .filter(|((n, _), _)| n == name)
+        .collect();
+    if entries.is_empty() || entries.iter().all(|((_, l), _)| l.is_empty()) {
+        return None;
+    }
+    Some(
+        entries
+            .into_iter()
+            .map(|((_, labels), s)| {
+                let mut series = match (s.kind, &s.hist) {
+                    (crate::step::thresholds::MetricKind::Sample, Some(h)) => sample_series(h),
+                    (crate::step::thresholds::MetricKind::Rate, _) => MetricSeries {
+                        total: Some(s.rate.0 as f64),
+                        failed: Some(s.rate.1 as f64),
+                        ..MetricSeries::default()
+                    },
+                    _ => MetricSeries {
+                        value: Some(s.counter),
+                        ..MetricSeries::default()
+                    },
+                };
+                series.labels = labels
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                    .collect();
+                series
+            })
+            .collect(),
+    )
 }
 
 /// The recorded series of a registered family, or `None` when nothing was

@@ -76,14 +76,21 @@ futures-util = { version = "0.3.32", default-features = false, features = ["sink
 
 # gRPC client for the `std/grpc*@v1` action family. Dynamic calls only — the
 # message schema arrives at run time (`descriptor_set` / server reflection),
-# so no codegen/prost features of tonic are needed. TLS stays on rustls/ring
-# with webpki roots, matching the WebSocket family. 0.14.6 is the floor:
-# `Endpoint::tls_config_with_verifier` (used for `skipTLSVerify`) was added
-# in that release.
+# so no codegen/prost features of tonic are needed for the actions; the OTLP
+# reporter (report/otel.rs) drives `tonic::client::Grpc` with a small
+# hand-written prost codec. TLS stays on rustls/ring with webpki roots.
+# 0.14.6 is the floor: `Endpoint::tls_config_with_verifier` (used for
+# `skipTLSVerify`) was added in that release.
 tonic = { version = "0.14.6", default-features = false, features = ["channel", "tls-ring", "tls-webpki-roots"] }
 prost = "0.14"
 prost-types = "0.14"
 prost-reflect = { version = "0.16", default-features = false, features = ["serde"] }
+# Prometheus remote write (report/prometheus_rw.rs) uses the *block* Snappy
+# format (snap::raw) over the protobuf WriteRequest — pure Rust, no protoc.
+snap = "1"
+# Codec buffers for the hand-written OTLP gRPC codec (already in the tree
+# via tonic; made direct because report/otel.rs names the types).
+bytes = "1"
 # Client-only (server reflection protocol for `reflection: true`); the test
 # server pulls the default `server` feature back in as a dev-dependency.
 tonic-reflection = { version = "0.14.6", default-features = false }
@@ -116,7 +123,7 @@ wasmtime-wasi-http = { version = "49", optional = true, default-features = false
 
 # wasmtime-wasi-http's body/HTTP types, for the net capability's host-side
 # hooks (allowlist check, timeout clamp, request/response body caps).
-bytes = { version = "1", optional = true }
+# `bytes` itself is an unconditional dependency (the OTLP codec uses it).
 http-body = { version = "1", optional = true }
 http-body-util = { version = "0.1", optional = true }
 
@@ -126,7 +133,6 @@ wasm-libs = [
     "dep:wasmtime",
     "dep:wasmtime-wasi",
     "dep:wasmtime-wasi-http",
-    "dep:bytes",
     "dep:http-body",
     "dep:http-body-util",
 ]
@@ -153,10 +159,14 @@ wiremock   = "0.6"
 serial_test = { version = "3", features = ["file_locks"] }
 criterion  = { version = "0.5", default-features = false }
 rcgen = "0.13"
-# Test gRPC server (unary + all streaming shapes + reflection).
+# Test gRPC server (unary + all streaming shapes + reflection), plus the
+# hand-rolled OTLP collector service of the report/otel wire tests.
 tonic = { version = "0.14.6", features = ["transport"] }
 tonic-prost = "0.14.6"
 tonic-reflection = "0.14.6"
+tower = "0.5"
+http-body = "1"
+http-body-util = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 # Real GraphQL test server for `std/graphql@v1` integration tests (query/
 # mutation resolvers + introspection), served over axum. Default features are

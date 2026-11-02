@@ -8,9 +8,10 @@ identical workload:
 SUITES="throughput startup" ./scripts/bench.sh
 ```
 
-Every scenario hits the same `perfscale serve` instance on loopback, so any
-gap between a `perfscale (*)` row and its native counterpart is perfscale's
-wrapping overhead — not the underlying tool.
+Every engine-comparison scenario hits the same `perfscale serve` instance on
+loopback, so any gap between a `perfscale (*)` row and its native counterpart
+is perfscale's wrapping overhead — not the underlying tool. The standalone
+`specjbb` and `renaissance` suites run their own JVM benchmarks instead.
 
 | Scenario | What it runs |
 |---|---|
@@ -43,6 +44,8 @@ wrapping overhead — not the underlying tool.
 | `db` | SQL: cold connect+query vs warm VU-scoped connections vs transactions (`std/db-*@v1`, PostgreSQL at `BENCH_PG_DSN` — every row drives the same real server), plus the warm shape from locust (psycopg2), JMeter (JDBC) and k6 — the k6 row is a **custom binary** built with the `xk6-sql` extension + postgres driver (stock k6 has no SQL module), used only by this row |
 | `sourceips` | Does `source_ips` lift the per-endpoint connection wall? `SRC_VUS` (default 6000) VUs each hold one keep-alive connection (`pool: dedicated` + 1s think time) against an ephemeral port range narrowed to `SRC_PORT_RANGE` (default `50000 53999` — 4000 ports; machine-wide sysctl, restored after), once from one source IP and once over `SRC_IPS_COUNT` (default 4) loopback addresses. Reports peak established connections (`ss`), connect errors, RPS. Linux + passwordless sudo (the CI runner); skipped elsewhere |
 | `pubsub` | Pub/sub: publish throughput and pub/sub roundtrip e2e latency (`std/pubsub@v1`) against a NATS broker (`BENCH_NATS_URL` — every row drives the same real broker) in `scope: exchange` (connect per iteration) and `scope: vu` (one connection per VU, with a fire-and-forget `flush: none` twin) postures, plus k6 rows via a **custom binary** built with the xk6-nats extension (stock k6 has no NATS module), in warm (connection per VU) and cold (connect per iteration — the fair twin of `scope: exchange`) postures |
+| `specjbb` | **Opt-in** (never in the default suite list): [SPECjbb2015](https://www.spec.org/jbb2015/), a separate commercial Java benchmark — not an HTTP target and not a load-generator competitor. Reports the native max-jOPS / critical-jOPS (Java operations/s — **not** HTTP RPS) plus mode, duration, CPU and peak RSS |
+| `renaissance` | [Renaissance](https://renaissance.dev/) MIT suite (JVM workloads; default `finagle-http`): benchmark operation throughput (ops/s — **not** HTTP RPS) and per-operation time, plus duration, CPU and peak RSS. Runs in the daily CI default from the pinned, checksum-verified release jar |
 
 JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
 console summary has no percentiles, so it stays out of the `throughput`
@@ -164,6 +167,73 @@ interpolation, metrics recording / percentile summary, `RingBuf` process-output
 capture, `waitUntil` readiness matchers) live in
 `crates/perfscale-core/benches/` and run with `cargo bench -p perfscale-core`.
 
+## SPECjbb2015 (opt-in)
+
+The `specjbb` suite runs [SPECjbb2015](https://www.spec.org/jbb2015/) — a
+separate commercial Java server benchmark, **not** an HTTP target and not a
+load-generator competitor — so it never joins the engine comparison tables
+and is never part of the default suite list (or the CI default). Select it
+explicitly:
+
+```sh
+SPECJBB_HOME=/opt/SPECjbb2015 SUITES=specjbb ./scripts/bench.sh
+```
+
+The kit is not bundled or downloaded. Supply it via `SPECJBB_HOME` (kit root
+containing `specjbb2015.jar`) or `SPECJBB_JAR` (direct jar path); optional
+knobs: `SPECJBB_JAVA` (java launcher), `SPECJBB_MODE` (default `COMPOSITE`;
+`MULTI`/`DIST` exist), `SPECJBB_JAVA_ARGS` and `SPECJBB_ARGS`. When `specjbb`
+is not selected the suite skips silently, kit or no kit; when it IS selected
+and the supplied path is invalid, the bench fails with a clear error — never
+a fake success.
+
+The runner (`scripts/bench_specjbb2015.sh`) executes the official jar from
+the kit root — `java -jar specjbb2015.jar -m <MODE>` — under the same
+`/usr/bin/time` resource measurement as every other row, and never shortens
+the official run. The report gets a dedicated section with the native
+**max-jOPS** and **critical-jOPS** (Java operations/s — these are NOT HTTP
+RPS and must not be compared against the engine tables) plus mode, duration,
+CPU and peak RSS; the same fields land in `bench-results.json`
+(`specjbb` suite). `bench_compare.py` compares jOPS only between runs of the
+same mode. The console log and the SPEC report tree are preserved as
+artifacts under `specjbb-artifacts/` (override with `SPECJBB_RESULTS_DIR`;
+uploaded with the bench CI artifact), and cleanup kills the JVM — no java
+process is left behind.
+
+## Renaissance (MIT distribution)
+
+The `renaissance` suite runs the [Renaissance](https://renaissance.dev/)
+benchmark suite's MIT distribution — JVM workloads (Big Data, concurrency,
+functional), **not** an HTTP target — so its rows never join the engine
+comparison tables. It IS part of the default suite list and the daily CI
+run: the pinned release jar
+(`renaissance-mit-0.16.2.jar`, sha256-verified) is cached by CI under
+`target/renaissance/`, so no caller setup is needed there. Locally, download
+the pinned jar yourself or point `RENAISSANCE_JAR` at it:
+
+```sh
+RENAISSANCE_JAR=target/renaissance/renaissance-mit-0.16.2.jar SUITES=renaissance ./scripts/bench.sh
+```
+
+The runner (`scripts/bench_renaissance.sh`) needs Java 11+ (CI uses 21 —
+`RENAISSANCE_JAVA` selects the launcher). Knobs: `RENAISSANCE_BENCHMARKS`
+(space-separated; default `finagle-http` — one harness invocation per
+benchmark, one report row each) and `RENAISSANCE_RUN_SECONDS` (default 60 —
+the harness's own `--run-seconds` bound on the measured phase, plus
+benchmark warmup). A missing/invalid jar, a Java failure, or an empty
+results file fails the bench — never a fake success.
+
+The report gets a dedicated section per benchmark with the measured
+operation throughput (**ops/s** — NOT HTTP RPS) and per-operation time
+(mean/min/max, ms), plus repetitions, duration, CPU and peak RSS; the same
+fields land in `bench-results.json` (`renaissance` suite).
+`bench_compare.py` compares only rows of the same benchmark. The console
+log and the harness's native JSON (`format_version` 6,
+`data.<benchmark>.results[]` with `duration_ns`/`uptime_ns` per operation)
+are preserved as artifacts under `renaissance-artifacts/` (override with
+`RENAISSANCE_RESULTS_DIR`; uploaded with the bench CI artifact), the
+harness's scratch dirs are confined and removed, and cleanup kills the JVM.
+
 ## GPU inference (local only)
 
 A separate suite for benchmarking **GPU-backed LLM inference** (Ollama /
@@ -206,7 +276,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 
 | Variable | Default | Description |
 |---|---|---|
-| `SUITES` | all | Space-separated suite list; an unknown name fails the run (see table above) |
+| `SUITES` | all but `specjbb` | Space-separated suite list; an unknown name fails the run (see table above) |
 | `APPS` | `k6 jmeter locust sytester` | Competitor engines whose rows join the tables (space-separated; perfscale's own rows always run; `k6` also gates the xk6-sql / xk6-nats builds). An unknown name fails the run |
 | `VUS` | `10` | Virtual users per scenario |
 | `DURATION` | `15s` | Run length for `overhead`/`throughput` |
@@ -230,6 +300,12 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `K6_NATS_BIN` | `target/xk6-nats/k6` | Custom k6 with the xk6-nats extension for the pubsub-suite k6 rows (built by the bench workflow) |
 | `SYT_RATE` / `SYT_WARMUP` / `SYT_MAX_VUS` | `10000` / `5s` / `256` | TPS the SyTester rows offer / its warm-up length / its gRPC sender pool |
 | `SYTESTER_JAR` / `SYTESTER_JAVA` / `SYT_PORT` | `target/sytester/SyTester.jar` / `java` / `18997` | SyTester release jar / Java 21+ binary / its REST port |
+| `SPECJBB_HOME` / `SPECJBB_JAR` | unset | SPECjbb2015 kit root / direct jar path — required for the opt-in `specjbb` suite (not bundled or downloaded) |
+| `SPECJBB_JAVA` / `SPECJBB_MODE` | `java` / `COMPOSITE` | java launcher / run mode for the specjbb suite |
+| `SPECJBB_JAVA_ARGS` / `SPECJBB_ARGS` / `SPECJBB_RESULTS_DIR` | unset / unset / `./specjbb-artifacts*` | extra JVM flags / extra benchmark args / where the console log and SPEC report tree are preserved |
+| `RENAISSANCE_JAR` | `target/renaissance/renaissance-mit-0.16.2.jar` | pinned Renaissance MIT jar path (CI caches + checksum-verifies it; locally download it yourself) |
+| `RENAISSANCE_BENCHMARKS` / `RENAISSANCE_RUN_SECONDS` | `finagle-http` / `60` | space-separated benchmark list / measured seconds per benchmark (harness `--run-seconds`) |
+| `RENAISSANCE_JAVA` / `RENAISSANCE_JAVA_ARGS` / `RENAISSANCE_ARGS` / `RENAISSANCE_RESULTS_DIR` | `java` (needs 11+) / unset / unset / `./renaissance-artifacts*` | java launcher / extra JVM flags / extra harness args / where the console log and native JSON are preserved |
 | `SRC_VUS` / `SRC_DURATION` / `SRC_PORT_RANGE` / `SRC_IPS_COUNT` | `6000` / `20s` / `50000 53999` / `4` | sourceips-suite VUs (one standing connection each) / run length / narrowed ephemeral range / loopback source addresses of the multi-IP row |
 | `PORT` / `TLS_PORT` | `18999` / `18998` | Ports for the throwaway serve targets |
 | `OUTPUT` | `bench-report.md` | Markdown report path |

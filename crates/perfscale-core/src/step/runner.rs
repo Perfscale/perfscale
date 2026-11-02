@@ -281,13 +281,18 @@ pub async fn run_native(
 ) -> NativeRunOutcome {
     // Run identity for `report@v1` (issue #9): an engine-generated run id
     // and the run-start timestamp, fixed before any VU spawns.
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let started_at = crate::summary::iso8601_utc(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
-    );
+    // A trusted embedder (perfscaled) may pin the controlplane-issued run
+    // id so every worker of a logical run shares it; standalone runs keep
+    // the generated UUID. Never settable from YAML (`serde(skip)`).
+    let run_id = config
+        .run_id_override
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let started_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let started_at = crate::summary::iso8601_utc(started_ms.div_euclid(1000) as u64);
 
     let vars = if variables.is_empty() {
         Value::Null
@@ -308,10 +313,52 @@ pub async fn run_native(
     // a resolved `${{ env.NAME }}` value must never appear in the log.
     let secrets = SecretRegistry::new();
 
+    // Step labels (issue #12) interpolate once, before the run —
+    // `${{ inputs.* }}` and `${{ env.* }}` resolve here, so the VU loop
+    // records against constant label sets.
+    let mut label_scratch = Context::new();
+    label_scratch.secrets = secrets.clone();
+    label_scratch.set_shared("inputs", Arc::new(inputs.clone()));
+    let mut steps = steps;
+    let mut before = before;
+    let mut after = after;
+    for step in steps.iter_mut().chain(&mut before).chain(&mut after) {
+        if let Some(labels) = &mut step.labels {
+            for v in labels.values_mut() {
+                *v = label_scratch.interpolate(v);
+            }
+        }
+    }
+
     // Report config errors (unknown reporter, missing destination) are
     // fail-fast — before any setup step runs, like the library checks below.
-    if let Some(report) = &config.report {
-        if let Err(msg) = crate::report::validate_reporters(&report.reporters) {
+    // The reserved engine labels (`run_id`, `worker`) can never be user-set
+    // at any level (run, reporter, step) — same fail-fast contract.
+    {
+        let check = match &config.report {
+            Some(report) => crate::report::validate_reporters(&report.reporters)
+                .and_then(|()| crate::report::validate_labels(&report.labels, "report.labels")),
+            None => Ok(()),
+        };
+        let check = check.and_then(|()| {
+            for step in steps.iter().chain(&before).chain(&after) {
+                if let Some(labels) = &step.labels {
+                    let map: Map<String, Value> = labels
+                        .iter()
+                        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                        .collect();
+                    crate::report::validate_labels(
+                        &map,
+                        &format!(
+                            "step '{}'",
+                            step.name.as_deref().unwrap_or(step.action.as_str())
+                        ),
+                    )?;
+                }
+            }
+            Ok(())
+        });
+        if let Err(msg) = check {
             emit(
                 &tx,
                 LogSource::Stderr,
@@ -674,11 +721,12 @@ pub async fn run_native(
     }
 
     // During-run metrics streaming: one cumulative snapshot every
-    // `report.interval_ms` for a shipper at the other end of `metrics_tx`.
-    // Independent of the 5s [stats] reporter; spans the VU phase like it and
-    // is aborted next to it, which closes the channel for the final drain.
-    // With a GPU session running, each snapshot also carries the GPU gauge
-    // samples taken since the previous one.
+    // `report.interval_ms` for the reporter fan-out at the other end of
+    // `metrics_tx`. Independent of the 5s [stats] reporter; spans the VU
+    // phase like it and is aborted next to it. The sender and identity are
+    // retained for the terminal cumulative snapshot sent before the channel
+    // closes (the reporters' final flush must land the last values).
+    let mut stream_sender = None;
     let metrics_stream = match (&config.report, metrics_tx) {
         (Some(report), Some(snap_tx)) if report.during_run => {
             // Surface it in the run log: the controlplane task log is the
@@ -695,6 +743,22 @@ pub async fn run_native(
                 &secrets,
             )
             .await;
+            // Run-level labels resolve once, before the run (`${{ inputs.* }}`
+            // / `${{ env.* }}`), and ride every snapshot for the reporters.
+            let mut scratch = Context::new();
+            scratch.secrets = secrets.clone();
+            scratch.set_shared("inputs", Arc::clone(&inputs));
+            let run_labels: Map<String, Value> = report
+                .labels
+                .iter()
+                .map(|(k, v)| (k.clone(), scratch.interpolate_value(v)))
+                .collect();
+            let identity = StreamIdentity {
+                run_id: run_id.clone(),
+                started_ms,
+                labels: run_labels,
+            };
+            stream_sender = Some((snap_tx.clone(), identity.clone()));
             Some(spawn_metrics_stream(
                 Arc::clone(&metrics),
                 snap_tx,
@@ -708,6 +772,7 @@ pub async fn run_native(
                         _ => 0,
                     },
                 },
+                identity,
             ))
         }
         _ => None,
@@ -769,10 +834,23 @@ pub async fn run_native(
     if let Some(probe) = engine_probe {
         probe.abort();
     }
-    // Dropping the pump's sender closes the snapshot channel — the shipper
-    // sees it and runs its final drain.
+    // Stopping the pump ends the tick stream; before the sender is dropped
+    // (closing the channel for the reporters' final flush), one terminal
+    // cumulative snapshot carries the final values every reporter must land.
     if let Some(task) = metrics_stream {
         task.abort();
+        if let Some((snap_tx, identity)) = stream_sender {
+            let mut snap = build_snapshot(
+                &metrics.merged(),
+                &identity,
+                progress_snapshot(&iter_count, &shared.active_vus, &schedule),
+                Vec::new(),
+            );
+            snap.terminal = true;
+            // Bounded: a jammed channel must not hold run teardown hostage —
+            // the reporters' final flush delivers what arrived in time.
+            let _ = tokio::time::timeout(Duration::from_secs(2), snap_tx.send(snap)).await;
+        }
     }
     let gpu_summary = gpu_session.and_then(|s| s.stop());
 
@@ -864,16 +942,13 @@ pub async fn run_native(
     // largest configured `max_samples` — each reporter re-truncates to its
     // own knob at render time.
     if let Some(report_cfg) = config.report.as_ref().filter(|r| !r.reporters.is_empty()) {
-        let max_samples = report_cfg
-            .reporters
-            .iter()
-            .map(|r| r.with.max_samples())
-            .max();
-        // Labels interpolate like variables do, and their resolved values
-        // join the masking registry so a `${{ env.* }}` label never leaks
-        // into the log in cleartext.
+        let max_samples = report_cfg.reporters.iter().map(|r| r.max_samples()).max();
+        // Labels interpolate like variables do (inputs and env), and their
+        // resolved values join the masking registry so a `${{ env.* }}`
+        // label never leaks into the log in cleartext.
         let mut scratch = Context::new();
         scratch.secrets = secrets.clone();
+        scratch.set_shared("inputs", Arc::clone(&inputs));
         let labels: Map<String, Value> = report_cfg
             .labels
             .iter()
@@ -959,10 +1034,11 @@ pub async fn run_native(
 /// Snapshot pump for during-run metrics streaming: every `interval`, lock
 /// [`Metrics`], ship one cumulative [`MetricSnapshot`] via `try_send`. A full
 /// channel drops the snapshot (rate-limited warning) — streaming must never
-/// backpressure the VU loop; downstream the shipper queues through CPU gates
-/// and outages (soft `max_pending` cap) rather than dropping. Abort to stop;
-/// aborting drops the sender, which closes the channel for the shipper's
-/// final drain.
+/// backpressure the VU loop; downstream each reporter's bounded queue drops
+/// the oldest snapshot on overflow (`perfscale_report_dropped_snapshots_total`),
+/// never the VUs. Abort to stop; the runner then sends one terminal
+/// cumulative snapshot before dropping the sender, which closes the channel
+/// for the reporters' final flush.
 ///
 /// With `gpu` set (a running [`crate::gpu::GpuSession`]'s buffer), each
 /// snapshot also carries the GPU gauge samples appended since the previous
@@ -972,7 +1048,7 @@ pub async fn run_native(
 /// Every snapshot also carries the run-progress gauges
 /// (`iterations_completed`, `vus` from `progress`), so a snapshot is never
 /// empty while the run is alive — a pure-LLM run records no metric samples
-/// until its first request completes, and without the gauges the shipper
+/// until its first request completes, and without the gauges the reporters
 /// would flatten those snapshots to nothing.
 fn spawn_metrics_stream(
     metrics: Arc<ShardedMetrics>,
@@ -980,6 +1056,7 @@ fn spawn_metrics_stream(
     interval: Duration,
     gpu: Option<Arc<Mutex<Vec<crate::gpu::GpuSample>>>>,
     progress: StreamProgress,
+    identity: StreamIdentity,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
@@ -988,10 +1065,6 @@ fn spawn_metrics_stream(
         let mut gpu_cursor: usize = 0;
         loop {
             ticker.tick().await;
-            let ts_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
             // Drain only what is new since the last tick. `get(cursor..)`
             // rather than indexing: `GpuSession::stop` takes the buffer at
             // run end, which can briefly race the pump's final tick.
@@ -1004,13 +1077,12 @@ fn spawn_metrics_stream(
                     new
                 })
                 .unwrap_or_default();
-            let snap = MetricSnapshot {
-                ts_ms,
-                metrics: metrics.merged().metric_snapshot(),
-                gpu: gpu_samples,
-                iterations_completed: progress.iterations.load(Ordering::Relaxed),
-                vus: progress.vus(),
-            };
+            let snap = build_snapshot(
+                &metrics.merged(),
+                &identity,
+                (progress.iterations.load(Ordering::Relaxed), progress.vus()),
+                gpu_samples,
+            );
             if tx.try_send(snap).is_err() {
                 dropped += 1;
                 if dropped % 10 == 1 {
@@ -1022,6 +1094,111 @@ fn spawn_metrics_stream(
             }
         }
     })
+}
+
+/// Run identity stamped on every [`MetricSnapshot`] (issue #12): the
+/// engine-generated `run_id`, the run start (cumulative temporality start)
+/// and the interpolated run-level labels.
+#[derive(Clone)]
+struct StreamIdentity {
+    run_id: String,
+    started_ms: i64,
+    labels: Map<String, Value>,
+}
+
+/// Build one cumulative snapshot from the merged store: the legacy aggregate
+/// map (thresholds/serve consumers) plus the label-aware series with HDR
+/// bucket counts (issue #12 streaming exporters).
+fn build_snapshot(
+    m: &Metrics,
+    identity: &StreamIdentity,
+    progress: (u64, u64),
+    gpu: Vec<crate::gpu::GpuSample>,
+) -> MetricSnapshot {
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let series = m
+        .labeled_series()
+        .iter()
+        .map(|((name, labels), s)| {
+            let agg = match s.kind {
+                crate::step::thresholds::MetricKind::Sample => {
+                    crate::step::thresholds::MetricAgg::sample(
+                        s.hist.as_ref().expect("sample series carry a histogram"),
+                    )
+                }
+                crate::step::thresholds::MetricKind::Counter => {
+                    crate::step::thresholds::MetricAgg::counter(s.counter)
+                }
+                crate::step::thresholds::MetricKind::Rate => {
+                    crate::step::thresholds::MetricAgg::rate(s.rate.0, s.rate.1)
+                }
+            };
+            // Non-empty HDR buckets: (upper bound, count) pairs,
+            // milliseconds — the source for Prometheus classic/native and
+            // OTLP exponential histograms. `iter_all` walks every bin, so
+            // stop once the histogram's whole count is accounted for.
+            let buckets = s
+                .hist
+                .as_ref()
+                .map(|h| {
+                    let mut out: Vec<crate::report::stream::BucketCount> = Vec::new();
+                    let mut accounted = 0u64;
+                    for b in h.iter_all() {
+                        let n = b.count_since_last_iteration();
+                        if n > 0 {
+                            out.push(crate::report::stream::BucketCount {
+                                le_ms: h.highest_equivalent(b.value_iterated_to()) as f64 / 1000.0,
+                                count: n,
+                            });
+                            accounted += n;
+                            if accounted >= h.len() {
+                                break;
+                            }
+                        }
+                    }
+                    out
+                })
+                .unwrap_or_default();
+            crate::report::stream::SeriesSnapshot {
+                name: name.clone(),
+                labels: labels.clone(),
+                agg,
+                gauge: s.is_gauge,
+                buckets,
+            }
+        })
+        .collect();
+    MetricSnapshot {
+        ts_ms,
+        metrics: m.metric_snapshot(),
+        iterations_completed: progress.0,
+        vus: progress.1,
+        gpu,
+        run_id: identity.run_id.clone(),
+        started_ms: identity.started_ms,
+        labels: identity.labels.clone(),
+        series,
+        terminal: false,
+    }
+}
+
+/// `(iterations, vus)` for a snapshot outside the pump (the terminal one).
+fn progress_snapshot(
+    iter_count: &Arc<AtomicU64>,
+    active_vus: &Option<Arc<AtomicU64>>,
+    schedule: &Schedule,
+) -> (u64, u64) {
+    let vus = active_vus
+        .as_ref()
+        .map(|g| g.load(Ordering::Relaxed))
+        .unwrap_or(match schedule {
+            Schedule::Fixed { vus, .. } => *vus as u64,
+            _ => 0,
+        });
+    (iter_count.load(Ordering::Relaxed), vus)
 }
 
 /// Run-liveness gauges the snapshot pump stamps on every [`MetricSnapshot`].
@@ -1812,6 +1989,11 @@ async fn execute_step(
 ) {
     let action = &step.action;
     let step_name = step.name.as_deref().unwrap_or(action.as_str());
+    // The step's own labels stamp every metric series this step emits
+    // (issue #12) — already interpolated once before the run; borrowed, the
+    // VU loop never clones the map.
+    let empty_labels = std::collections::BTreeMap::new();
+    let step_labels = step.labels.as_ref().unwrap_or(&empty_labels);
     if let Some(condition) = &step.condition {
         match super::condition::evaluate(condition, ctx) {
             Ok(true) => {}
@@ -1855,7 +2037,7 @@ async fn execute_step(
         // Every write lands on this worker thread's home shard — no run-wide
         // lock; the custom-metrics fold below takes it once for the step.
         if let Some(ref sample) = output.http_sample {
-            metrics.record(sample);
+            metrics.record_labeled(sample, step_labels);
         }
         if let Some(obj) = output.value.get("metrics").and_then(|v| v.as_object()) {
             for (name, v) in obj {
@@ -1889,7 +2071,7 @@ async fn execute_step(
                 .filter(|(_, v)| v.is_array())
                 .map(|(name, _)| ctx.rate_names[name].as_str())
                 .collect();
-            metrics.add_counters_and_rates(obj, failed, &rates);
+            metrics.add_counters_and_rates_labeled(obj, failed, &rates, step_labels);
         }
         for warning in warnings {
             emit(tx, LogSource::Stderr, &warning, &ctx.secrets).await;
@@ -2037,6 +2219,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }
     }
 
@@ -2095,6 +2278,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let config = RunConfig {
             vus: 4,
@@ -2418,6 +2602,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let config = RunConfig {
             vus: 4,
@@ -2459,6 +2644,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             // Throttle the loop so a 250ms run makes a handful of requests, not
             // thousands — the suite runs many tests in parallel.
@@ -2499,6 +2685,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let config = RunConfig {
             vus: 1,
@@ -2534,6 +2721,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             sleep_step(50),
         ];
@@ -2576,6 +2764,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let config = RunConfig {
             vus: 1,
@@ -2624,6 +2813,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             Step {
                 name: Some("report".into()),
@@ -2634,6 +2824,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
         ];
         let config = RunConfig {
@@ -3170,6 +3361,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             Step {
                 name: Some("sub".into()),
@@ -3180,6 +3372,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             Step {
                 name: Some("wait".into()),
@@ -3190,6 +3383,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             // No explicit close — the iteration-end drain must handle it.
             sleep_step(50),
@@ -3241,6 +3435,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             Step {
                 name: Some("unary".into()),
@@ -3255,6 +3450,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             Step {
                 name: Some("open".into()),
@@ -3268,6 +3464,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             Step {
                 name: Some("send".into()),
@@ -3282,6 +3479,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             Step {
                 name: Some("recv".into()),
@@ -3296,6 +3494,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             Step {
                 name: Some("close".into()),
@@ -3306,6 +3505,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
         ];
         let config = RunConfig {
@@ -3354,6 +3554,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }
     }
 
@@ -3490,6 +3691,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let config = RunConfig {
             vus: 1,
@@ -3525,6 +3727,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let config = RunConfig {
             vus: 1,
@@ -3558,6 +3761,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let config = RunConfig {
             vus: 2,
@@ -3598,6 +3802,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         // Test step logs the config value interpolated from the before output.
         let steps = vec![log_step("show", "host=${{ config.cfg.content }}", None)];
@@ -3685,6 +3890,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let steps = vec![log_step("should-not-run", "MUST NOT APPEAR", None)];
 
@@ -3754,6 +3960,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let mut vars = Map::new();
         vars.insert("region".into(), json!("eu"));
@@ -3773,6 +3980,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             log_step("teardown-2", "AFTER STILL RUNS", None),
         ];
@@ -3830,6 +4038,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let after = vec![log_step("teardown", "AFTER ON SETUP FAILURE", None)];
 
@@ -3897,6 +4106,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let steps = vec![sleep_step(1)];
 
@@ -3936,6 +4146,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let after = vec![Step {
             name: Some("stop server".into()),
@@ -3946,6 +4157,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
         let steps = vec![sleep_step(1)];
 
@@ -3991,6 +4203,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }];
 
         let lines = run_native_and_collect(
@@ -4111,6 +4324,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         };
         vec![
             step(
@@ -4139,6 +4353,7 @@ mod tests {
             severity: severity.map(str::to_owned),
             message: message.map(str::to_owned),
             condition: None,
+            labels: None,
         }
     }
 
@@ -4463,6 +4678,7 @@ mod tests {
                 severity: None,
                 message: None,
                 condition: None,
+                labels: None,
             },
             sleep_step(50),
         ];
@@ -4507,6 +4723,161 @@ mod tests {
             .unwrap()
             .metrics
             .contains_key("http_req_failed"));
+    }
+
+    /// Issue #12: snapshots carry run identity, run/step labels, HDR bucket
+    /// counts, and the channel ends with a terminal cumulative snapshot.
+    #[tokio::test]
+    async fn run_native_streams_labeled_series_with_buckets_and_a_terminal_snapshot() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let steps = vec![
+            Step {
+                name: Some("hit".into()),
+                action: "std/http@v1".into(),
+                with: Some(json!({ "url": server.uri() })),
+                check: None,
+                outputs: None,
+                severity: None,
+                message: None,
+                labels: Some(
+                    [("channel".to_string(), "book".to_string())]
+                        .into_iter()
+                        .collect(),
+                ),
+                condition: None,
+            },
+            sleep_step(50),
+        ];
+        let mut run_labels = Map::new();
+        run_labels.insert("testid".into(), Value::String("smoke-1".into()));
+        let config = RunConfig {
+            vus: 1,
+            duration: "800ms".into(),
+            report: Some(crate::report::ReportRunConfig {
+                during_run: true,
+                interval_ms: 200,
+                labels: run_labels,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (_lines, snaps) = run_native_streaming(steps, config).await;
+
+        assert!(snaps.len() >= 2, "snapshots streamed: {}", snaps.len());
+        let last = snaps.last().unwrap();
+        // Terminal marker + run identity on the final cumulative snapshot.
+        assert!(last.terminal, "the last snapshot is the terminal one");
+        assert!(snaps[..snaps.len() - 1].iter().all(|s| !s.terminal));
+        assert!(!last.run_id.is_empty(), "engine-generated run id");
+        assert!(last.started_ms > 0);
+        assert_eq!(last.labels["testid"], Value::String("smoke-1".into()));
+        // Non-terminal snapshots carry the identity too.
+        assert!(snaps.iter().all(|s| s.run_id == last.run_id));
+
+        // Label-aware series: the step's label rides its metrics.
+        let lat = last
+            .series
+            .iter()
+            .find(|s| s.name == "http_req_duration")
+            .expect("labeled duration series present");
+        assert_eq!(lat.labels.get("channel").map(String::as_str), Some("book"));
+        // HDR bucket counts sum to the series' sample count.
+        let bucket_total: u64 = lat.buckets.iter().map(|b| b.count).sum();
+        assert_eq!(bucket_total as f64, lat.agg.count, "buckets == HDR count");
+        assert!(bucket_total > 0);
+        // The failure-rate series rides along, labeled the same way.
+        let failed = last
+            .series
+            .iter()
+            .find(|s| s.name == "http_req_failed")
+            .expect("labeled rate series");
+        assert_eq!(
+            failed.labels.get("channel").map(String::as_str),
+            Some("book")
+        );
+    }
+
+    /// A trusted embedder pins the run id (perfscaled workers of one logical
+    /// run share it); standalone runs keep a generated UUID.
+    #[tokio::test]
+    async fn run_id_override_rides_every_snapshot() {
+        let config = RunConfig {
+            vus: 1,
+            duration: "300ms".into(),
+            run_id_override: Some("run-from-controlplane".into()),
+            report: Some(crate::report::ReportRunConfig {
+                during_run: true,
+                interval_ms: 100,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (_lines, snaps) = run_native_streaming(vec![sleep_step(20)], config).await;
+        assert!(!snaps.is_empty());
+        assert!(
+            snaps.iter().all(|s| s.run_id == "run-from-controlplane"),
+            "override on every snapshot"
+        );
+        let default_config = RunConfig {
+            vus: 1,
+            duration: "300ms".into(),
+            report: Some(crate::report::ReportRunConfig {
+                during_run: true,
+                interval_ms: 100,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (_lines, snaps) = run_native_streaming(vec![sleep_step(20)], default_config).await;
+        assert!(
+            snaps.iter().all(|s| s.run_id != "run-from-controlplane"),
+            "standalone runs generate their own id"
+        );
+    }
+
+    /// Reserved engine labels (`run_id`, `worker`) are fail-fast at every
+    /// level — run labels and step labels.
+    #[tokio::test]
+    async fn reserved_labels_fail_the_run_before_it_starts() {
+        let mut run_labels = Map::new();
+        run_labels.insert("worker".into(), Value::String("3".into()));
+        let config = RunConfig {
+            vus: 1,
+            duration: "200ms".into(),
+            report: Some(crate::report::ReportRunConfig {
+                labels: run_labels,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (_lines, outcome) = run_native_full(
+            vec![sleep_step(10)],
+            Vec::new(),
+            Vec::new(),
+            Map::new(),
+            config,
+        )
+        .await;
+        let err = outcome.config_error.expect("reserved run label fails fast");
+        assert!(err.contains("reserved"), "{err}");
+
+        let mut step = sleep_step(10);
+        step.labels = Some(
+            [("run_id".to_string(), "mine".to_string())]
+                .into_iter()
+                .collect(),
+        );
+        let (_lines, outcome) =
+            run_native_full(vec![step], Vec::new(), Vec::new(), Map::new(), quick_run()).await;
+        let err = outcome
+            .config_error
+            .expect("reserved step label fails fast");
+        assert!(err.contains("reserved"), "{err}");
     }
 
     #[tokio::test]
@@ -4879,6 +5250,11 @@ mod tests {
     async fn report_line_is_emitted_when_reporters_are_configured() {
         let reporter = crate::report::ReporterConfig {
             use_: "std/report/json@v1".into(),
+            during_run: false,
+            interval_ms: None,
+            labels: Map::new(),
+            max_series: None,
+            max_samples: None,
             with: crate::report::ReporterWith {
                 path: Some("out.json".into()),
                 max_samples: Some(5),
@@ -4945,6 +5321,11 @@ mod tests {
             report: Some(crate::report::ReportRunConfig {
                 reporters: vec![crate::report::ReporterConfig {
                     use_: "std/report/xml@v1".into(),
+                    during_run: false,
+                    interval_ms: None,
+                    labels: Map::new(),
+                    max_series: None,
+                    max_samples: None,
                     with: crate::report::ReporterWith {
                         path: Some("out.xml".into()),
                         ..crate::report::ReporterWith::default()

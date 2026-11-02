@@ -4,7 +4,9 @@
 Subcommands:
   parse <kind> <file>            kind: text | locust-csv | ws-text |
                                  grpc-text | db-text | pubsub-text |
-                                 jmeter-summary | sytester-json
+                                 jmeter-summary | sytester-json |
+                                 specjbb-text
+                                 renaissance-text
                                  prints shell-evalable `key=value` lines
   append <json> <label> [k=v..]  append a row object to a JSON array file
   boundary <kind> <file> <max-vus> <duration-s> <err-pct>
@@ -216,6 +218,100 @@ def parse_pubsub_text(content):
     }
 
 
+def parse_specjbb_text(content):
+    """Parse a SPECjbb2015 console run (via scripts/bench_specjbb2015.sh):
+    the native `max-jOPS = N` / `critical-jOPS = N` result line, plus the
+    runner's trailer (`specjbb_mode:`, `specjbb_duration_s:`). jOPS are NOT
+    HTTP requests — `requests`/`rps` stay 0 and the values come back as the
+    extra keys max_jops / critical_jops / mode / duration_s so the report and
+    JSON cannot mislabel them as RPS. There are no latency percentiles in the
+    SPEC summary; those cells stay 0."""
+    out = zeroed()
+    extra = {"max_jops": 0, "critical_jops": 0, "mode": "", "duration_s": 0.0}
+
+    m = re.search(r"max-jOPS\s*=\s*(\d+)", content)
+    if m:
+        extra["max_jops"] = int(m.group(1))
+    m = re.search(r"critical-jOPS\s*=\s*(\d+)", content)
+    if m:
+        extra["critical_jops"] = int(m.group(1))
+    m = re.search(r"^specjbb_mode:\s*(\S+)", content, re.M)
+    if m:
+        extra["mode"] = m.group(1)
+    m = re.search(r"^specjbb_duration_s:\s*([\d.]+)", content, re.M)
+    if m:
+        extra["duration_s"] = float(m.group(1))
+
+    out["parse_ok"] = 1 if extra["max_jops"] else 0
+    return out, extra
+
+
+def parse_renaissance_text(content):
+    """Parse a Renaissance console run (via scripts/bench_renaissance.sh):
+    the runner's trailer (`renaissance_benchmark:`, `renaissance_json:`,
+    `renaissance_duration_s:`) leads to the harness's native JSON
+    (format_version 6): `data.<benchmark>.results` is one
+    `{"duration_ns": …, "uptime_ns": …}` object per measured operation
+    (`duration_ns` = the operation's wall time), plus `termination`.
+
+    Reported extra keys: benchmark / ops_per_s (measured operations per
+    second — NOT HTTP RPS) / avg_ms / min_ms / max_ms (per-operation time,
+    milliseconds) / repetitions / duration_s / termination. The HTTP fields
+    (`requests`/`rps`/percentiles) stay 0 so the report can never mislabel
+    JVM operation throughput as HTTP."""
+    out = zeroed()
+    out["parse_ok"] = 0
+    extra = {
+        "benchmark": "",
+        "ops_per_s": 0.0,
+        "avg_ms": 0.0,
+        "min_ms": 0.0,
+        "max_ms": 0.0,
+        "repetitions": 0,
+        "duration_s": 0.0,
+        "termination": "",
+    }
+
+    m = re.search(r"^renaissance_benchmark:\s*(\S+)", content, re.M)
+    if m:
+        extra["benchmark"] = m.group(1)
+    m = re.search(r"^renaissance_duration_s:\s*([\d.]+)", content, re.M)
+    if m:
+        extra["duration_s"] = float(m.group(1))
+
+    m = re.search(r"^renaissance_json:\s*(\S+)", content, re.M)
+    if not m:
+        out["parse_ok"] = 0
+        return out, extra
+    import json
+
+    try:
+        with open(m.group(1), encoding="utf-8", errors="replace") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        out["parse_ok"] = 0
+        return out, extra
+
+    bench = extra["benchmark"]
+    entry = (doc.get("data") or {}).get(bench) or {}
+    extra["termination"] = entry.get("termination") or ""
+    durations = [
+        r["duration_ns"]
+        for r in (entry.get("results") or [])
+        if isinstance(r.get("duration_ns"), (int, float))
+    ]
+    if durations and extra["termination"] == "normal":
+        n = len(durations)
+        mean_ns = sum(durations) / n
+        extra["repetitions"] = n
+        extra["ops_per_s"] = round(1e9 / mean_ns, 2) if mean_ns > 0 else 0.0
+        extra["avg_ms"] = round(mean_ns / 1e6, 3)
+        extra["min_ms"] = round(min(durations) / 1e6, 3)
+        extra["max_ms"] = round(max(durations) / 1e6, 3)
+        out["parse_ok"] = 1
+    return out, extra
+
+
 def parse_jmeter_summary(content):
     """Parse JMeter's non-GUI console summary: the last cumulative
     `summary =` line carries the totals (samples, rate, Avg/Min/Max in ms,
@@ -378,6 +474,12 @@ def cmd_parse(kind, path):
         elif kind == "sytester-json":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics, extra = parse_sytester_json(f.read())
+        elif kind == "specjbb-text":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics, extra = parse_specjbb_text(f.read())
+        elif kind == "renaissance-text":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics, extra = parse_renaissance_text(f.read())
         elif kind == "jmeter-summary":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_jmeter_summary(f.read())

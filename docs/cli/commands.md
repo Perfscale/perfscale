@@ -51,6 +51,20 @@ streaming. Config errors fail before the run starts; delivery errors are
 best-effort (logged, counted, run completes). With a serve target connected,
 the artifact is also POSTed to `<url>/api/v1/report`.
 
+### Streaming reporters (Prometheus remote write, OTLP)
+
+The config's `report.reporters` block also streams live metrics **during**
+the run to pluggable sinks: `std/report/serve@v1` (the `report.url` path as
+a reporter), `std/report/prometheus-rw@v1` (Snappy+protobuf remote write)
+and `std/report/otel@v1` (OTLP/gRPC). Each reporter sets `during_run: true`
+and engine keys (`interval_ms`, `labels`, `max_series`) next to `use:` —
+see [Streaming reporters](../core/metrics.md#streaming-reporters-prometheus-remote-write-and-otlp)
+for the full config and the delivery policy (bounded drop-oldest queues,
+backoff retries, final flush bounded by `final_timeout`; reporter errors
+warn but never fail the run, drops are counted in
+`perfscale_report_dropped_snapshots_total` / `perfscale_report_dropped_series_total`
+/ `perfscale_report_errors_total`, summarized on stderr at run end).
+
 ### Exit code semantics
 
 - `0` — the run completed, **even if requests or checks failed**. Failed

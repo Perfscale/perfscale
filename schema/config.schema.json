@@ -387,13 +387,13 @@
         },
         "max_cpu_percent": {
           "default": 90.0,
-          "description": "CPU gate for during-run shipping: while the host's busy CPU% is at or above this value batches are held (no POSTs) and snapshots deferred — queued, not dropped, shipped in order once the gate opens. `0` disables the gate (default 90); off-Linux the gate is inert.",
+          "description": "CPU gate for during-run shipping: while the host's busy CPU% is at or above this value batches are held (no POSTs) and snapshots deferred — queued into the bounded backlog (drop-oldest past `max_pending`), shipped once the gate opens. `0` disables the gate (default 90); off-Linux the gate is inert.",
           "format": "double",
           "type": "number"
         },
         "max_pending": {
           "default": 24,
-          "description": "Soft cap on sealed batches awaiting delivery: crossing it warns, but batches are never dropped while the run is alive (default 24).",
+          "description": "Bounded backlog for the legacy serve stream: overflow drops the OLDEST snapshot/batch and counts it in `perfscale_report_dropped_snapshots_total` (default 24).",
           "format": "uint",
           "minimum": 0.0,
           "type": "integer"
@@ -415,10 +415,46 @@
     },
     "ReporterConfig": {
       "additionalProperties": false,
-      "description": "One configured end-of-run reporter (`report.reporters[]`).",
+      "description": "One configured reporter (`report.reporters[]`).",
       "properties": {
+        "during_run": {
+          "description": "Stream metric snapshots during the run (streaming reporters only). Setting this on a final-only reporter is a configuration error.",
+          "type": "boolean"
+        },
+        "interval_ms": {
+          "description": "Snapshot/flush interval for this reporter in milliseconds (default the run-level `report.interval_ms`, clamped to ≥ [`crate::report::MIN_INTERVAL_MS`] at use).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "labels": {
+          "additionalProperties": true,
+          "description": "Reporter-level labels: stamped on every series this reporter exports. Merge priority is step > reporter > run. `run_id` and `worker` are reserved — the engine always sets them. Values support `${{ inputs.* }}` / `${{ env.* }}` interpolation, resolved once before the run starts.",
+          "type": "object"
+        },
+        "max_samples": {
+          "description": "Raw per-step samples to include (final reporters; default [`MAX_STORED_STEP_SAMPLES`], `0` disables the samples block). Moved out of `with:` in issue #12; the legacy `with.max_samples` key is still honored when this is unset.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_series": {
+          "description": "Cardinality guard: maximum distinct output series this reporter exports (default [`DEFAULT_MAX_SERIES`]). Series beyond the limit are dropped deterministically (sorted order) and counted in `perfscale_report_dropped_series_total{reporter}`; the run continues.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "use": {
-          "description": "Reporter id: `std/report/json@v1`, `std/report/junit@v1`, or `std/report/html@v1`.",
+          "description": "Reporter id: `std/report/json@v1`, `std/report/junit@v1`, `std/report/html@v1`, `std/report/serve@v1`, `std/report/prometheus-rw@v1`, `std/report/otel@v1`, or `wasm:./path/to/reporter.wasm`.",
           "type": "string"
         },
         "with": {
@@ -438,20 +474,59 @@
     },
     "ReporterWith": {
       "additionalProperties": false,
-      "description": "Reporter parameters. Exactly one of `path` / `url` is required.",
+      "description": "Reporter parameters (`with:`). Destination plus reporter-owned knobs.",
       "properties": {
+        "batch_size": {
+          "description": "Batch size for streaming delivery: seal and send a batch once it holds this many items (default the run-level `report.batch_size`). Streaming reporters only.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "config": {
           "description": "WASM reporters only: free-form config handed to the guest's `on-report` verbatim (the `config-json` argument)."
+        },
+        "endpoint": {
+          "description": "OTLP/gRPC collector endpoint for `std/report/otel@v1`, e.g. `http://otel-collector:4317`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "final_timeout": {
+          "description": "Bound on the synchronous final flush at run end, e.g. `\"30s\"` (default `\"30s\"`). A timed-out flush warns but never fails the run.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "headers": {
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Extra headers for the HTTP push. Values may embed `${VAR}` environment references, e.g. `Authorization: \"Bearer ${TOKEN}\"` — interpolated host-side at delivery, never logged.",
+          "description": "Extra headers for HTTP delivery. Values may embed `${VAR}` environment references, e.g. `Authorization: \"Bearer ${TOKEN}\"` — interpolated host-side at delivery, never logged.",
           "type": "object"
         },
+        "histogram": {
+          "description": "Prometheus histogram mode (`std/report/prometheus-rw@v1`): `classic` (default, `_bucket{le}` + `_sum` + `_count`) or `native` (Prometheus native histograms).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_pending": {
+          "description": "Bounded queue depth: snapshots/batches awaiting delivery. Overflow drops the OLDEST entry and increments `perfscale_report_dropped_snapshots_total{reporter}` (default 24). Streaming reporters only.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "max_samples": {
-          "description": "Raw per-step samples to include (default [`MAX_STORED_STEP_SAMPLES`], `0` disables the samples block).",
+          "description": "Legacy spelling of the engine-level `max_samples` key (kept for backward compatibility; prefer `max_samples` next to `use:`).",
           "format": "uint",
           "minimum": 0.0,
           "type": [
@@ -467,18 +542,48 @@
           ]
         },
         "path": {
-          "description": "Write the report to this local file.",
+          "description": "Write the report to this local file (final reporters).",
           "type": [
             "string",
             "null"
           ]
         },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RetryConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Retry policy for transient delivery failures (network errors, 429, 5xx, transient gRPC statuses)."
+        },
         "url": {
-          "description": "POST the report to this URL (HTTP push).",
+          "description": "Target URL: HTTP push for final reporters, the base URL of a `perfscale serve` for `std/report/serve@v1`, the remote-write endpoint for `std/report/prometheus-rw@v1`.",
           "type": [
             "string",
             "null"
           ]
+        }
+      },
+      "type": "object"
+    },
+    "RetryConfig": {
+      "additionalProperties": false,
+      "description": "Retry policy for transient delivery failures.",
+      "properties": {
+        "backoff": {
+          "default": "1s..30s",
+          "description": "Backoff range, `\"<min>..<max>\"` (default `\"1s..30s\"`). The first retry waits `min`, doubling per attempt up to `max`; a server's `Retry-After` hint wins when present.",
+          "type": "string"
+        },
+        "max_attempts": {
+          "default": 5,
+          "description": "Maximum delivery attempts per batch before it is dropped and counted (default 5; `1` disables retries).",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
         }
       },
       "type": "object"
@@ -506,6 +611,16 @@
           "description": "Run the step only when this condition holds (`if:` or `when:` in YAML; equivalent aliases, rejected together). Both `${{ … }}` placeholders and `${…}` generator tokens expand first, then the result is either a comparison (`a == b`, `!=`, `<`, `<=`, `>`, `>=` — numeric when both sides parse as numbers) or a bare value (false when empty, `false`, `0` or `null`); clauses combine with `&&` and `||`. A skipped step produces no output, no metrics and leaves `__last__` untouched.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Step-level metric labels (issue #12): stamped on every series this step emits; merge priority over reporter and run labels. Values must be scalars and support `${{ inputs.* }}` / `${{ env.* }}` interpolation, resolved once before the run. `run_id` and `worker` are reserved (engine-set).",
+          "type": [
+            "object",
             "null"
           ]
         },

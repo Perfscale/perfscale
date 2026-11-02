@@ -14,3 +14,5 @@ bench/gpu/results/
 # local bench run artifacts
 /bench-report.md
 /bench-results*.json
+/specjbb-artifacts*/
+/renaissance-artifacts*/

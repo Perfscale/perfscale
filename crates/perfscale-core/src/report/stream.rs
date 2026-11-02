@@ -5,8 +5,10 @@
 //!
 //! `run_native` (when its `metrics_tx` is `Some` and the run config's
 //! `report.during_run` is set) sends a cumulative [`MetricSnapshot`] every
-//! `report.interval_ms`. [`DuringRunShipper`] receives them, converts each to
-//! [`Sample`]s via [`snapshot_to_samples`], batches, and POSTs
+//! `report.interval_ms`. A streaming reporter ([`super::serve`],
+//! [`super::prometheus_rw`], [`super::otel`]) receives them through the
+//! shared bounded delivery layer ([`super::delivery`]); the serve reporter
+//! converts each to [`Sample`]s via [`snapshot_to_samples`] and POSTs
 //! `{samples, taskId?, seq}` to `<target>/api/v1/metrics` — the endpoint the
 //! end-of-run summary report already uses.
 //!
@@ -33,32 +35,22 @@
 //!   `gpu_memory_used_mib`, `gpu_memory_total_mib`, `gpu_temperature_c` and
 //!   `gpu_power_w`, each with a `gpu="<index>"` label (plus any
 //!   collector-specific extras under their own names).
-//! - **Backpressure**: none, by design — the engine drops snapshots when the
-//!   channel is full (the only mid-run shed), while the shipper queues
-//!   snapshots through CPU gates and network outages rather than slow the
-//!   VU loop.
+//! - **Backpressure**: the engine drops snapshots when the channel is full
+//!   (never slowing the VU loop); downstream, each reporter's bounded queue
+//!   drops the OLDEST snapshot on overflow (counted in
+//!   `perfscale_report_dropped_snapshots_total{reporter}`) — cumulative
+//!   values recover on the next snapshot. See [`super::delivery`].
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::BTreeMap;
 
-use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tokio::sync::mpsc;
-use tokio::time::Instant;
 
-use crate::report::ReportRunConfig;
 use crate::step::thresholds::{MetricAgg, MetricKind};
 
-/// Per-request timeout for one batch POST. Batches are larger than the
-/// end-of-run summary's `{"lines": …}` payload, so this is a bit roomier
-/// than its 5s.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-/// First retry delay after a failed POST; doubles per failure…
-const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
-/// …up to this cap.
-const MAX_BACKOFF: Duration = Duration::from_secs(60);
+/// Backward-compatible re-exports: the auth types live in [`super::serve`]
+/// since issue #12 made the serve shipper a reporter.
+pub use super::serve::{Auth, TokenProvider};
 
 /// A point-in-time, cumulative view of every metric family the run collected.
 ///
@@ -70,6 +62,12 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// snapshot so a run whose steps record no request samples yet (e.g. an LLM
 /// run waiting on its first 60s completion) still flattens to a non-empty
 /// batch — the stream is never silent while the run is alive.
+///
+/// Issue #12 extended the snapshot additively: `run_id`/`started_ms`/`labels`
+/// carry the run identity, and `series` the label-aware per-(name, labels)
+/// view with HDR bucket counts for bucketed exporters (Prometheus
+/// classic/native, OTLP exponential). The legacy `metrics` aggregate map is
+/// unchanged, so existing consumers (the serve shipper) keep working.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricSnapshot {
     /// Snapshot time, milliseconds since the Unix epoch.
@@ -88,6 +86,149 @@ pub struct MetricSnapshot {
     /// directly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gpu: Vec<crate::gpu::GpuSample>,
+    /// Engine-generated run id, stamped by the engine — never user-settable.
+    #[serde(default)]
+    pub run_id: String,
+    /// Run start, milliseconds since the Unix epoch (cumulative temporality
+    /// start for the OTLP/native-histogram exporters).
+    #[serde(default)]
+    pub started_ms: i64,
+    /// Run-level labels (`report.labels`), interpolated before the run.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub labels: Map<String, Value>,
+    /// Label-aware series: the same data as `metrics`, keyed by
+    /// `(name, step labels)` and carrying HDR bucket counts for sample-kind
+    /// series. Empty on engines that predate issue #12.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub series: Vec<SeriesSnapshot>,
+    /// True on the terminal cumulative snapshot the engine emits right
+    /// before the channel closes — the final flush guarantees it lands.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub terminal: bool,
+}
+
+/// One label-aware series in a [`MetricSnapshot`] (issue #12): the aggregate
+/// numbers plus — for sample-kind series — the HDR bucket counts the
+/// bucketed exporters emit. No client-side quantile series: backends compute
+/// correct global quantiles from the buckets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeriesSnapshot {
+    /// Metric name, e.g. `http_req_duration`.
+    pub name: String,
+    /// The step's labels (empty when the metric is not step-attributed).
+    /// Reporter and run labels merge at export time (step > reporter > run).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
+    /// Cumulative aggregates (same values as the `metrics` map entry).
+    #[serde(flatten)]
+    pub agg: MetricAgg,
+    /// True for point-in-time gauges (last write wins), false for monotonic
+    /// counters — the OTLP exporter maps these to Gauge vs monotonic Sum.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gauge: bool,
+    /// Per-bucket counts of the duration histogram (sample-kind series
+    /// only): `(upper bound, count)` pairs, non-cumulative, milliseconds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buckets: Vec<BucketCount>,
+}
+
+/// One non-empty HDR histogram bucket: count of samples whose value falls
+/// in `(lowest_equivalent(le_ms), le_ms]`, milliseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BucketCount {
+    /// Bucket upper bound, milliseconds.
+    pub le_ms: f64,
+    /// Samples in this bucket (NOT cumulative).
+    pub count: u64,
+}
+
+/// Merge the three label levels with priority step > reporter > run, then
+/// stamp the reserved engine labels (`run_id`, `worker`) — they always win,
+/// user configuration can never override them (rejected at lint/run time).
+pub fn merge_labels(
+    run: &Map<String, Value>,
+    reporter: &Map<String, Value>,
+    step: &BTreeMap<String, String>,
+    run_id: &str,
+    worker: &str,
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let mut overlay = |m: &Map<String, Value>| {
+        for (k, v) in m {
+            out.insert(k.clone(), label_value_to_string(v));
+        }
+    };
+    overlay(run);
+    overlay(reporter);
+    out.extend(step.iter().map(|(k, v)| (k.clone(), v.clone())));
+    out.insert("run_id".to_string(), run_id.to_string());
+    out.insert("worker".to_string(), worker.to_string());
+    out
+}
+
+/// A label value renders as a string: strings as-is, numbers/booleans in
+/// their plain form (interpolation already resolved `${{ … }}` tokens).
+pub fn label_value_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Resolve `${{ inputs.* }}` and `${{ env.* }}` placeholders in label values
+/// — once, before the run starts. A miss resolves to an empty string (the
+/// same lenient rule as non-strict step interpolation); everything else
+/// stays verbatim.
+pub fn interpolate_label_values(labels: &Map<String, Value>, inputs: &Value) -> Map<String, Value> {
+    labels
+        .iter()
+        .map(|(k, v)| {
+            let resolved = match v {
+                Value::String(s) => Value::String(interpolate_label_str(s, inputs)),
+                other => other.clone(),
+            };
+            (k.clone(), resolved)
+        })
+        .collect()
+}
+
+fn interpolate_label_str(s: &str, inputs: &Value) -> String {
+    let Some(mut start) = s.find("${{") else {
+        return s.to_string();
+    };
+    let mut rest = s;
+    let mut out = String::with_capacity(s.len() + 16);
+    loop {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 3..];
+        let Some(end) = after.find("}}") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let expr = after[..end].trim();
+        let resolved = if let Some(name) = expr.strip_prefix("env.") {
+            std::env::var(name).unwrap_or_default()
+        } else if let Some(path) = expr.strip_prefix("inputs.") {
+            crate::step::json_path::parse(&format!(".{path}"))
+                .ok()
+                .and_then(|segments| crate::step::json_path::walk(inputs, &segments))
+                .map(|v| label_value_to_string(&v))
+                .unwrap_or_default()
+        } else {
+            // Unknown namespaces stay verbatim — label interpolation covers
+            // only inputs/env.
+            format!("${{{{ {expr} }}}}")
+        };
+        out.push_str(&resolved);
+        rest = &after[end + 2..];
+        match rest.find("${{") {
+            Some(next) => start = next,
+            None => {
+                out.push_str(rest);
+                return out;
+            }
+        }
+    }
 }
 
 /// One ingest sample, matching the controlplane's
@@ -266,393 +407,231 @@ pub fn snapshot_to_samples(snap: &MetricSnapshot, labels: &Map<String, Value>) -
     out
 }
 
-/// Async bearer-token provider, called before every POST — e.g. the agent's
-/// Keycloak token getter. Returning `None` sends that attempt
-/// unauthenticated.
-pub type TokenProvider = Arc<dyn Fn() -> BoxFuture<'static, Option<String>> + Send + Sync>;
-
-/// Bearer-token source for the shipper's POSTs.
-pub enum Auth {
-    /// A static token.
-    Bearer(String),
-    /// A provider called before every POST (token refresh for free).
-    Provider(TokenProvider),
-}
-
-/// Batches [`MetricSnapshot`]s and POSTs them to `<target>/api/v1/metrics`.
+/// Label-aware flatten (issue #12): one sample set per `(name, step labels)`
+/// series, with the run and reporter labels merged underneath (step >
+/// reporter > run). Aggregate-only names (metrics with no labeled series —
+/// producers that never went through the labeled fold) are still exported
+/// once, unlabeled. A counter series shadowed by a same-key rate series is
+/// skipped (same rule as the aggregate snapshot). Run-progress and GPU
+/// gauges ride along exactly as in [`snapshot_to_samples`].
 ///
-/// Created with [`DuringRunShipper::new`], driven by
-/// [`DuringRunShipper::spawn`] over the engine's snapshot channel. Behavior:
-///
-/// - **Batching**: snapshots accumulate into an open batch; it is sealed and
-///   queued once it holds ≥ `batch_size` samples, and whatever is open is
-///   sealed on every `interval_ms` tick.
-/// - **Ordering / idempotency**: batches POST strictly in order; each sealed
-///   batch gets a monotonically increasing `seq` that is reused across
-///   retries, so the receiver can deduplicate redeliveries.
-/// - **CPU gate**: if `max_cpu_percent > 0` and the reader reports a busy CPU
-///   ≥ the limit, incoming snapshots are deferred — queued, not dropped —
-///   and pending batches are held (no POSTs). Once the gate opens the
-///   deferred snapshots are flushed first, in arrival order. A `None`
-///   reading (non-Linux) leaves the gate inert.
-/// - **Soft pending cap**: sealed-but-undelivered batches are never dropped
-///   while the run is alive; growing past `max_pending` only logs a
-///   rate-limited warning. Delivery resumes in order when the target
-///   responds again.
-/// - **Retries**: network errors, 5xx and 429 retry the same batch with
-///   exponential backoff ×2 from 1s, capped at 60s. Any other 4xx marks the
-///   batch poison — it is dropped with a warning, never retried.
-/// - **Shutdown**: when the snapshot channel closes, everything still open
-///   or pending is flushed with short bounded retries (sleeps of 1/2/5/10s),
-///   then the task exits. The CPU gate does not apply to this final drain
-///   (the VUs have stopped; the CPU is free).
-pub struct DuringRunShipper {
-    cfg: ReportRunConfig,
-    target_url: String,
-    /// Static labels plus the `task_id` label, merged once at construction.
-    labels: Map<String, Value>,
-    auth: Option<Auth>,
-    task_id: Option<String>,
-    cpu_reader: Arc<dyn Fn() -> Option<f64> + Send + Sync>,
-}
-
-/// A sealed batch awaiting delivery.
-struct PendingBatch {
-    seq: u64,
-    samples: Vec<Sample>,
-    /// Delay before the next retry; starts at [`INITIAL_BACKOFF`], doubles
-    /// per failure up to [`MAX_BACKOFF`].
-    backoff: Duration,
-    /// Do not attempt delivery before this instant.
-    not_before: Instant,
-}
-
-impl PendingBatch {
-    fn new(seq: u64, samples: Vec<Sample>) -> Self {
-        Self {
-            seq,
-            samples,
-            backoff: INITIAL_BACKOFF,
-            not_before: Instant::now(),
+/// `extra_label` stamps one extra label on every sample (serve's `task_id`).
+/// Reserved engine labels (`run_id`, `worker`) are NOT stamped here — the
+/// serve ingestion shape predates them; the new exporters add them
+/// themselves.
+pub fn snapshot_to_samples_labeled(
+    snap: &MetricSnapshot,
+    reporter_labels: &Map<String, Value>,
+    extra_label: Option<(&str, &str)>,
+) -> Vec<Sample> {
+    let mut out = Vec::new();
+    let finish = |out: &mut Vec<Sample>,
+                  metric: String,
+                  labels: Map<String, Value>,
+                  value: f64,
+                  ts_ms: i64| {
+        let mut labels = labels;
+        if let Some((k, v)) = extra_label {
+            labels.insert(k.to_string(), Value::String(v.to_string()));
         }
-    }
-}
-
-enum PostOutcome {
-    Delivered,
-    /// Network error, 5xx, or 429 — retry the same batch (same seq).
-    Retry,
-    /// Any other 4xx — the batch is poison; drop it.
-    Poison(reqwest::StatusCode),
-}
-
-impl DuringRunShipper {
-    /// `static_labels` are stamped on every sample (plus `task_id` as a
-    /// `task_id` label when set). `cpu_reader` reports host busy CPU% —
-    /// see [`crate::report::cpu::CpuReader`]; `None` readings make the gate
-    /// inert.
-    pub fn new(
-        cfg: ReportRunConfig,
-        target_url: String,
-        static_labels: Map<String, Value>,
-        auth: Option<Auth>,
-        task_id: Option<String>,
-        cpu_reader: impl Fn() -> Option<f64> + Send + Sync + 'static,
-    ) -> Self {
-        let mut labels = static_labels;
-        if let Some(task_id) = &task_id {
-            labels.insert("task_id".to_string(), Value::String(task_id.clone()));
-        }
-        Self {
-            cfg,
-            target_url,
+        out.push(Sample {
+            metric,
             labels,
-            auth,
-            task_id,
-            cpu_reader: Arc::new(cpu_reader),
-        }
-    }
-
-    /// Run the shipper until the snapshot channel closes and the final drain
-    /// completes.
-    pub fn spawn(self, rx: mpsc::Receiver<MetricSnapshot>) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(self.run(rx))
-    }
-
-    async fn run(self, mut rx: mpsc::Receiver<MetricSnapshot>) {
-        let client = reqwest::Client::new();
-        let mut ticker = tokio::time::interval(self.cfg.interval());
-        ticker.tick().await; // consume the immediate first tick
-
-        let mut open: Vec<Sample> = Vec::new();
-        let mut pending: VecDeque<PendingBatch> = VecDeque::new();
-        // Snapshots that arrived while the CPU gate was closed — queued, not
-        // dropped, flushed in arrival order once the gate opens.
-        let mut deferred: VecDeque<MetricSnapshot> = VecDeque::new();
-        let mut seq: u64 = 0;
-        let mut gated_deferred: u64 = 0;
-        let mut backlog_overflow: u64 = 0;
-
-        loop {
-            // Gate open again? Deferred snapshots go first so series keep
-            // arrival order.
-            if !self.cpu_gated() {
-                while let Some(snap) = deferred.pop_front() {
-                    self.absorb(
-                        &snap,
-                        &mut open,
-                        &mut pending,
-                        &mut seq,
-                        &mut backlog_overflow,
-                    );
-                }
-            }
-
-            // While gated, the delivery arm stays off — recv/tick still wake
-            // the loop, so there is no busy spin.
-            let due = if self.cpu_gated() {
-                None
-            } else {
-                pending.front().map(|b| b.not_before)
-            };
-
-            tokio::select! {
-                maybe = rx.recv() => match maybe {
-                    Some(snap) => {
-                        if self.cpu_gated() {
-                            gated_deferred += 1;
-                            if gated_deferred % 10 == 1 {
-                                tracing::warn!(
-                                    gated_deferred,
-                                    cpu_limit = self.cfg.max_cpu_percent,
-                                    "cpu gate active — queueing metric snapshot"
-                                );
-                            }
-                            deferred.push_back(snap);
-                            continue;
-                        }
-                        // The gate may have opened since the loop-top check:
-                        // deferred snapshots go first, keeping arrival order.
-                        while let Some(old) = deferred.pop_front() {
-                            self.absorb(
-                                &old, &mut open, &mut pending, &mut seq, &mut backlog_overflow,
-                            );
-                        }
-                        self.absorb(
-                            &snap, &mut open, &mut pending, &mut seq, &mut backlog_overflow,
-                        );
-                    }
-                    // Channel closed — final drain below.
-                    None => break,
-                },
-                _ = ticker.tick() => {
-                    if !open.is_empty() {
-                        seq += 1;
-                        pending.push_back(PendingBatch::new(seq, std::mem::take(&mut open)));
-                        note_backlog(pending.len(), self.cfg.max_pending, &mut backlog_overflow);
-                    }
-                }
-                // Delivery wakeup: fires when the head batch's retry comes
-                // due. Disabled arms would still evaluate their expression
-                // (select! semantics), so gate with a never-ready future.
-                _ = async {
-                    match due {
-                        Some(t) => tokio::time::sleep_until(t).await,
-                        None => std::future::pending().await,
-                    }
-                } => {}
-            }
-
-            // Deliver the oldest due batch. In-order only: seq is meaningful
-            // strictly in sequence, so a retrying head blocks newer batches.
-            if !self.cpu_gated()
-                && pending
-                    .front()
-                    .is_some_and(|b| b.not_before <= Instant::now())
-            {
-                let mut batch = pending.pop_front().expect("front checked above");
-                match self.post(&client, &batch).await {
-                    PostOutcome::Delivered => {}
-                    PostOutcome::Retry => {
-                        batch.not_before = Instant::now() + batch.backoff;
-                        batch.backoff = (batch.backoff * 2).min(MAX_BACKOFF);
-                        pending.push_front(batch);
-                    }
-                    PostOutcome::Poison(status) => {
-                        tracing::warn!(
-                            seq = batch.seq,
-                            %status,
-                            "dropping undeliverable metrics batch (4xx)"
-                        );
-                    }
-                }
-            }
-        }
-
-        // Seal whatever is still open — after flushing the snapshots the CPU
-        // gate deferred — and drain everything, best-effort.
-        while let Some(snap) = deferred.pop_front() {
-            self.absorb(
-                &snap,
-                &mut open,
-                &mut pending,
-                &mut seq,
-                &mut backlog_overflow,
-            );
-        }
-        if !open.is_empty() {
-            seq += 1;
-            pending.push_back(PendingBatch::new(seq, open));
-        }
-        self.final_drain(&client, pending).await;
-    }
-
-    /// Bounded final flush: each batch gets an initial attempt plus retries
-    /// after 1/2/5/10s. A poisoned batch is dropped and the drain continues;
-    /// a batch that exhausts its retries means the target is down, so the
-    /// rest are dropped with one warning instead of sleeping through every
-    /// remaining batch.
-    async fn final_drain(&self, client: &reqwest::Client, pending: VecDeque<PendingBatch>) {
-        const DRAIN_DELAYS: [Duration; 4] = [
-            Duration::from_secs(1),
-            Duration::from_secs(2),
-            Duration::from_secs(5),
-            Duration::from_secs(10),
-        ];
-        let total = pending.len();
-        for (i, batch) in pending.into_iter().enumerate() {
-            let mut outcome = self.post(client, &batch).await;
-            for delay in DRAIN_DELAYS {
-                if !matches!(outcome, PostOutcome::Retry) {
-                    break;
-                }
-                tokio::time::sleep(delay).await;
-                outcome = self.post(client, &batch).await;
-            }
-            match outcome {
-                PostOutcome::Delivered => {}
-                PostOutcome::Poison(status) => {
-                    tracing::warn!(
-                        seq = batch.seq,
-                        %status,
-                        "dropping undeliverable metrics batch (4xx) during final drain"
-                    );
-                }
-                PostOutcome::Retry => {
-                    tracing::warn!(
-                        seq = batch.seq,
-                        remaining = total - i - 1,
-                        "metrics target unreachable during final drain — dropping remaining batches"
-                    );
-                    return;
-                }
-            }
-        }
-    }
-
-    async fn post(&self, client: &reqwest::Client, batch: &PendingBatch) -> PostOutcome {
-        let endpoint = format!("{}/api/v1/metrics", self.target_url.trim_end_matches('/'));
-        let mut body = serde_json::json!({
-            "samples": batch.samples,
-            "seq": batch.seq,
+            value,
+            ts_ms,
         });
-        if let Some(task_id) = &self.task_id {
-            body["taskId"] = Value::String(task_id.clone());
+    };
+    let merged = |step: &BTreeMap<String, String>| -> Map<String, Value> {
+        let mut m = snap.labels.clone();
+        for (k, v) in reporter_labels {
+            m.insert(k.clone(), v.clone());
         }
-        let mut req = client.post(&endpoint).json(&body).timeout(REQUEST_TIMEOUT);
-        match &self.auth {
-            Some(Auth::Bearer(token)) => req = req.bearer_auth(token),
-            Some(Auth::Provider(provider)) => {
-                if let Some(token) = provider().await {
-                    req = req.bearer_auth(token);
+        for (k, v) in step {
+            m.insert(k.clone(), Value::String(v.clone()));
+        }
+        m
+    };
+    let rate_keys: std::collections::BTreeSet<(&str, &BTreeMap<String, String>)> = snap
+        .series
+        .iter()
+        .filter(|s| s.agg.kind == MetricKind::Rate)
+        .map(|s| (s.name.as_str(), &s.labels))
+        .collect();
+    let mut seen_names: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for s in &snap.series {
+        seen_names.insert(s.name.as_str());
+        // A counter shadowed by a same-key rate series is skipped (the rate
+        // view answers both use cases).
+        if s.agg.kind == MetricKind::Counter
+            && !s.gauge
+            && rate_keys.contains(&(s.name.as_str(), &s.labels))
+        {
+            continue;
+        }
+        let labels = merged(&s.labels);
+        match s.agg.kind {
+            MetricKind::Sample => {
+                for (q, v) in [
+                    ("0.5", s.agg.p50),
+                    ("0.9", s.agg.p90),
+                    ("0.95", s.agg.p95),
+                    ("0.99", s.agg.p99),
+                ] {
+                    let mut l = labels.clone();
+                    l.insert("quantile".to_string(), Value::String(q.to_string()));
+                    finish(&mut out, s.name.clone(), l, v / 1000.0, snap.ts_ms);
                 }
+                finish(
+                    &mut out,
+                    format!("{}_count", s.name),
+                    labels.clone(),
+                    s.agg.count,
+                    snap.ts_ms,
+                );
+                finish(
+                    &mut out,
+                    format!("{}_sum", s.name),
+                    labels,
+                    s.agg.avg * s.agg.count / 1000.0,
+                    snap.ts_ms,
+                );
             }
-            None => {}
+            MetricKind::Counter => {
+                // The legacy flatten ships counters AND gauges (the aggregate
+                // snapshot surfaces gauges as counters) with the `_total`
+                // suffix — keep that shape.
+                finish(
+                    &mut out,
+                    format!("{}_total", s.name),
+                    labels,
+                    s.agg.count,
+                    snap.ts_ms,
+                );
+            }
+            MetricKind::Rate => {
+                finish(
+                    &mut out,
+                    format!("{}_total", s.name),
+                    labels.clone(),
+                    s.agg.count,
+                    snap.ts_ms,
+                );
+                finish(
+                    &mut out,
+                    format!("{}_failed_total", s.name),
+                    labels,
+                    s.agg.rate * s.agg.count,
+                    snap.ts_ms,
+                );
+            }
         }
-        match req.send().await {
-            Ok(resp) if resp.status().is_success() => PostOutcome::Delivered,
-            Ok(resp) => {
-                let status = resp.status();
-                if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                    PostOutcome::Retry
-                } else {
-                    PostOutcome::Poison(status)
+    }
+    // Aggregate-only metrics (no labeled series): exported once, unlabeled.
+    let empty = BTreeMap::new();
+    for (name, agg) in &snap.metrics {
+        if seen_names.contains(name.as_str()) {
+            continue;
+        }
+        let labels = merged(&empty);
+        match agg.kind {
+            MetricKind::Sample => {
+                for (q, v) in [
+                    ("0.5", agg.p50),
+                    ("0.9", agg.p90),
+                    ("0.95", agg.p95),
+                    ("0.99", agg.p99),
+                ] {
+                    let mut l = labels.clone();
+                    l.insert("quantile".to_string(), Value::String(q.to_string()));
+                    finish(&mut out, name.clone(), l, v / 1000.0, snap.ts_ms);
                 }
+                finish(
+                    &mut out,
+                    format!("{name}_count"),
+                    labels.clone(),
+                    agg.count,
+                    snap.ts_ms,
+                );
+                finish(
+                    &mut out,
+                    format!("{name}_sum"),
+                    labels,
+                    agg.avg * agg.count / 1000.0,
+                    snap.ts_ms,
+                );
             }
-            Err(_) => PostOutcome::Retry,
+            MetricKind::Counter => finish(
+                &mut out,
+                format!("{name}_total"),
+                labels,
+                agg.count,
+                snap.ts_ms,
+            ),
+            MetricKind::Rate => {
+                finish(
+                    &mut out,
+                    format!("{name}_total"),
+                    labels.clone(),
+                    agg.count,
+                    snap.ts_ms,
+                );
+                finish(
+                    &mut out,
+                    format!("{name}_failed_total"),
+                    labels,
+                    agg.rate * agg.count,
+                    snap.ts_ms,
+                );
+            }
         }
     }
-
-    /// True when the gate is configured and the reader reports a busy CPU at
-    /// or above the limit. `None` readings (non-Linux) are inert.
-    fn cpu_gated(&self) -> bool {
-        if self.cfg.max_cpu_percent <= 0.0 {
-            return false;
+    // Progress gauges and GPU gauges: identical to the legacy flatten.
+    let base = merged(&empty);
+    finish(
+        &mut out,
+        "perfscale_iterations_completed".to_string(),
+        base.clone(),
+        snap.iterations_completed as f64,
+        snap.ts_ms,
+    );
+    finish(
+        &mut out,
+        "perfscale_vus".to_string(),
+        base,
+        snap.vus as f64,
+        snap.ts_ms,
+    );
+    for g in &snap.gpu {
+        let mut gpu_sample = |metric: &str, value: f64| {
+            let mut labels = merged(&empty);
+            labels.insert("gpu".to_string(), Value::String(g.index.to_string()));
+            finish(&mut out, metric.to_string(), labels, value, g.ts_ms as i64);
+        };
+        if let Some(v) = g.utilization_pct {
+            gpu_sample("gpu_utilization_pct", v);
         }
-        match (self.cpu_reader)() {
-            Some(cpu) => cpu >= self.cfg.max_cpu_percent,
-            None => false,
+        if let Some(v) = g.memory_used_mib {
+            gpu_sample("gpu_memory_used_mib", v);
+        }
+        if let Some(v) = g.memory_total_mib {
+            gpu_sample("gpu_memory_total_mib", v);
+        }
+        if let Some(v) = g.temperature_c {
+            gpu_sample("gpu_temperature_c", v);
+        }
+        if let Some(v) = g.power_w {
+            gpu_sample("gpu_power_w", v);
+        }
+        for (name, v) in &g.extra {
+            gpu_sample(name, *v);
         }
     }
-
-    /// Convert one snapshot into samples on the open batch, sealing and
-    /// queueing a batch once it reaches `batch_size`.
-    fn absorb(
-        &self,
-        snap: &MetricSnapshot,
-        open: &mut Vec<Sample>,
-        pending: &mut VecDeque<PendingBatch>,
-        seq: &mut u64,
-        backlog_overflow: &mut u64,
-    ) {
-        open.extend(snapshot_to_samples(snap, &self.labels));
-        if open.len() >= self.cfg.batch_size.max(1) {
-            *seq += 1;
-            pending.push_back(PendingBatch::new(*seq, std::mem::take(open)));
-            note_backlog(pending.len(), self.cfg.max_pending, backlog_overflow);
-        }
-    }
-}
-
-/// Warn when the sealed-but-undelivered backlog grows past the
-/// `max_pending` soft cap — first crossing, then every 10th batch beyond.
-/// Batches are never dropped while the run is alive; the cap only paces the
-/// warning.
-fn note_backlog(len: usize, max_pending: usize, overflow: &mut u64) {
-    if len <= max_pending.max(1) {
-        return;
-    }
-    *overflow += 1;
-    if *overflow % 10 == 1 {
-        tracing::warn!(
-            backlog = len,
-            max_pending,
-            "metrics backlog past the soft cap — batches kept for delivery"
-        );
-    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
-
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
-
     use super::*;
-
-    fn test_cfg() -> ReportRunConfig {
-        ReportRunConfig {
-            during_run: true,
-            interval_ms: 1000,
-            batch_size: 500,
-            // Gate off unless the test opts in.
-            max_cpu_percent: 0.0,
-            max_pending: 24,
-            ..ReportRunConfig::default()
-        }
-    }
 
     /// Wire contract regression: the controlplane's MetricSampleInput takes
     /// `ts` as an RFC3339 STRING — an integer fails ingestion with a 400 and
@@ -692,66 +671,6 @@ mod tests {
         );
     }
 
-    /// One snapshot with a single sample-kind metric → 8 samples
-    /// (4 quantiles + `_count` + `_sum` + the 2 run-progress gauges).
-    fn sample_snapshot(ts_ms: i64, count: f64) -> MetricSnapshot {
-        let mut metrics = BTreeMap::new();
-        metrics.insert(
-            "http_req_duration".to_string(),
-            MetricAgg {
-                kind: MetricKind::Sample,
-                avg: 10.0,
-                min: 1.0,
-                max: 50.0,
-                p50: 8.0,
-                p90: 20.0,
-                p95: 30.0,
-                p99: 40.0,
-                count,
-                rate: 0.0,
-            },
-        );
-        MetricSnapshot {
-            ts_ms,
-            metrics,
-            iterations_completed: 7,
-            vus: 1,
-            gpu: Vec::new(),
-        }
-    }
-
-    fn spawn_shipper(
-        server: &MockServer,
-        cfg: ReportRunConfig,
-        cpu: impl Fn() -> Option<f64> + Send + Sync + 'static,
-    ) -> (mpsc::Sender<MetricSnapshot>, tokio::task::JoinHandle<()>) {
-        let (tx, rx) = mpsc::channel(512);
-        let shipper = DuringRunShipper::new(cfg, server.uri(), Map::new(), None, None, cpu);
-        (tx, shipper.spawn(rx))
-    }
-
-    /// Poll the server's recorded requests until `n` arrive or time out.
-    async fn wait_requests(server: &MockServer, n: usize, timeout: Duration) -> Vec<Request> {
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            let reqs = server.received_requests().await.unwrap_or_default();
-            if reqs.len() >= n || std::time::Instant::now() >= deadline {
-                return reqs;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    }
-
-    fn bodies(reqs: &[Request]) -> Vec<Value> {
-        reqs.iter()
-            .map(|r| serde_json::from_slice(&r.body).expect("batch body is JSON"))
-            .collect()
-    }
-
-    // -------------------------------------------------------------
-    // snapshot_to_samples
-    // -------------------------------------------------------------
-
     #[test]
     fn snapshot_to_samples_maps_all_three_kinds() {
         let mut metrics = BTreeMap::new();
@@ -778,6 +697,11 @@ mod tests {
             iterations_completed: 3,
             vus: 2,
             gpu: Vec::new(),
+            run_id: String::new(),
+            started_ms: 0,
+            labels: Map::new(),
+            series: Vec::new(),
+            terminal: false,
         };
         let mut labels = Map::new();
         labels.insert("run".to_string(), Value::String("r1".into()));
@@ -830,6 +754,11 @@ mod tests {
             iterations_completed: 5,
             vus: 3,
             gpu: Vec::new(),
+            run_id: String::new(),
+            started_ms: 0,
+            labels: Map::new(),
+            series: Vec::new(),
+            terminal: false,
         };
         let samples = snapshot_to_samples(&snap, &Map::new());
         assert_eq!(samples.len(), 2, "{samples:?}");
@@ -874,6 +803,11 @@ mod tests {
             iterations_completed: 0,
             vus: 1,
             gpu: vec![g0, g1],
+            run_id: String::new(),
+            started_ms: 0,
+            labels: Map::new(),
+            series: Vec::new(),
+            terminal: false,
         };
         let mut labels = Map::new();
         labels.insert("task_id".to_string(), Value::String("t1".into()));
@@ -932,368 +866,5 @@ mod tests {
         );
         let back: Sample = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
-    }
-
-    // -------------------------------------------------------------
-    // Shipper: batching / flush
-    // -------------------------------------------------------------
-
-    #[tokio::test]
-    async fn shipper_seals_a_batch_at_batch_size_samples() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/metrics"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-
-        let cfg = ReportRunConfig {
-            batch_size: 8, // one snapshot fills a batch exactly
-            ..test_cfg()
-        };
-        let (tx, _handle) = spawn_shipper(&server, cfg, || None);
-        tx.send(sample_snapshot(1000, 4.0)).await.unwrap();
-        tx.send(sample_snapshot(2000, 9.0)).await.unwrap();
-
-        let reqs = wait_requests(&server, 2, Duration::from_secs(3)).await;
-        let bodies = bodies(&reqs);
-        assert_eq!(bodies.len(), 2, "one POST per full batch");
-        assert_eq!(bodies[0]["seq"], 1);
-        assert_eq!(bodies[1]["seq"], 2);
-        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 8);
-    }
-
-    #[tokio::test]
-    async fn shipper_flushes_open_batch_on_interval_tick() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/metrics"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-
-        // batch_size far above the snapshot's 8 samples → only the 1s tick
-        // can flush it.
-        let (tx, _handle) = spawn_shipper(&server, test_cfg(), || None);
-        tx.send(sample_snapshot(1000, 4.0)).await.unwrap();
-
-        let reqs = wait_requests(&server, 1, Duration::from_secs(3)).await;
-        let bodies = bodies(&reqs);
-        assert_eq!(bodies.len(), 1, "tick flushed the open batch");
-        assert_eq!(bodies[0]["seq"], 1);
-        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 8);
-        // No taskId field when the shipper has no task id.
-        assert!(bodies[0].get("taskId").is_none());
-    }
-
-    #[tokio::test]
-    async fn shipper_stamps_task_id_in_ledger_field_and_label() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/metrics"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-
-        let (tx, rx) = mpsc::channel(512);
-        let shipper = DuringRunShipper::new(
-            ReportRunConfig {
-                batch_size: 1,
-                ..test_cfg()
-            },
-            server.uri(),
-            Map::new(),
-            None,
-            Some("task-9".to_string()),
-            || None,
-        );
-        let _handle = shipper.spawn(rx);
-        tx.send(sample_snapshot(1000, 4.0)).await.unwrap();
-
-        let reqs = wait_requests(&server, 1, Duration::from_secs(3)).await;
-        let bodies = bodies(&reqs);
-        assert_eq!(bodies[0]["taskId"], "task-9");
-        assert_eq!(
-            bodies[0]["samples"][0]["labels"]["task_id"],
-            Value::String("task-9".into())
-        );
-    }
-
-    // -------------------------------------------------------------
-    // Shipper: CPU gate
-    // -------------------------------------------------------------
-
-    #[tokio::test]
-    async fn cpu_gate_defers_snapshots_and_ships_them_on_recovery() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/metrics"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-
-        let cpu = Arc::new(AtomicU64::new(95));
-        let reader = {
-            let cpu = Arc::clone(&cpu);
-            move || Some(cpu.load(Ordering::Relaxed) as f64)
-        };
-        let cfg = ReportRunConfig {
-            batch_size: 1,
-            max_cpu_percent: 90.0,
-            ..test_cfg()
-        };
-        let (tx, _handle) = spawn_shipper(&server, cfg, reader);
-
-        // Gated: the snapshot is queued, nothing is POSTed.
-        tx.send(sample_snapshot(1000, 4.0)).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(
-            server
-                .received_requests()
-                .await
-                .unwrap_or_default()
-                .is_empty(),
-            "gated shipper must not POST"
-        );
-
-        // Recovered: the deferred snapshot ships first, then the fresh one —
-        // nothing is dropped and arrival order is preserved.
-        cpu.store(10, Ordering::Relaxed);
-        tx.send(sample_snapshot(2000, 9.0)).await.unwrap();
-        let reqs = wait_requests(&server, 2, Duration::from_secs(3)).await;
-        let bodies = bodies(&reqs);
-        assert_eq!(bodies.len(), 2, "deferred + fresh snapshot both ship");
-        assert_eq!(bodies[0]["seq"], 1);
-        assert!(
-            bodies[0]["samples"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|s| s["ts"] == "1970-01-01T00:00:01.000Z"),
-            "the snapshot gated at ts=1s must ship after recovery: {}",
-            bodies[0]["samples"]
-        );
-        assert_eq!(bodies[1]["seq"], 2);
-        assert!(
-            bodies[1]["samples"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|s| s["ts"] == "1970-01-01T00:00:02.000Z"),
-            "the post-recovery snapshot ships second: {}",
-            bodies[1]["samples"]
-        );
-    }
-
-    #[tokio::test]
-    async fn cpu_gate_holds_pending_batches_until_recovery() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/metrics"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-
-        let cpu = Arc::new(AtomicU64::new(10));
-        let reader = {
-            let cpu = Arc::clone(&cpu);
-            move || Some(cpu.load(Ordering::Relaxed) as f64)
-        };
-        let cfg = ReportRunConfig {
-            batch_size: 1,
-            max_cpu_percent: 90.0,
-            ..test_cfg()
-        };
-        let (tx, _handle) = spawn_shipper(&server, cfg, reader);
-
-        // First attempt fails (500) → batch pending with a 1s backoff.
-        tx.send(sample_snapshot(1000, 4.0)).await.unwrap();
-        let reqs = wait_requests(&server, 1, Duration::from_secs(3)).await;
-        assert_eq!(reqs.len(), 1);
-
-        // Gate on: the backoff expires while gated — the retry must be held.
-        cpu.store(95, Ordering::Relaxed);
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        assert_eq!(
-            server.received_requests().await.unwrap_or_default().len(),
-            1,
-            "gated shipper must hold pending batches"
-        );
-
-        // Gate off: the held batch is retried (same seq).
-        cpu.store(10, Ordering::Relaxed);
-        let reqs = wait_requests(&server, 2, Duration::from_secs(4)).await;
-        let bodies = bodies(&reqs);
-        assert_eq!(bodies.len(), 2);
-        assert_eq!(bodies[0]["seq"], 1);
-        assert_eq!(bodies[1]["seq"], 1, "retry reuses the batch's seq");
-    }
-
-    // -------------------------------------------------------------
-    // Shipper: backlog / retries / drain
-    // -------------------------------------------------------------
-
-    #[tokio::test]
-    async fn shipper_keeps_all_batches_past_the_pending_soft_cap() {
-        let server = MockServer::start().await;
-        // The first POST fails; everything after it succeeds.
-        Mock::given(method("POST"))
-            .and(path("/api/v1/metrics"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/metrics"))
-            .respond_with(ResponseTemplate::new(500))
-            .with_priority(1)
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-
-        let cfg = ReportRunConfig {
-            batch_size: 1,
-            max_pending: 2, // soft cap — exceeded, yet nothing is dropped
-            ..test_cfg()
-        };
-        let (tx, _handle) = spawn_shipper(&server, cfg, || None);
-
-        // Four snapshots → four sealed batches. The first POST 500s, so
-        // seqs 2–4 pile up behind the retrying head — past the soft cap.
-        for i in 1..=4 {
-            tx.send(sample_snapshot(i * 1000, 4.0)).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        // 1 failed attempt + 4 deliveries: every batch is kept and lands in
-        // order once the target responds (the retry reuses seq 1).
-        let reqs = wait_requests(&server, 5, Duration::from_secs(5)).await;
-        let bodies = bodies(&reqs);
-        assert_eq!(bodies.len(), 5, "retry + all four batches: {bodies:?}");
-        let seqs: Vec<u64> = bodies.iter().map(|b| b["seq"].as_u64().unwrap()).collect();
-        assert_eq!(
-            seqs,
-            vec![1, 1, 2, 3, 4],
-            "no drops past the soft cap, in-order delivery"
-        );
-    }
-
-    #[tokio::test]
-    async fn final_drain_flushes_snapshots_deferred_by_the_cpu_gate() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/metrics"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-
-        // The gate never opens during the run…
-        let cfg = ReportRunConfig {
-            max_cpu_percent: 90.0,
-            ..test_cfg()
-        };
-        let (tx, handle) = spawn_shipper(&server, cfg, || Some(95.0));
-        tx.send(sample_snapshot(1000, 4.0)).await.unwrap();
-        tx.send(sample_snapshot(2000, 9.0)).await.unwrap();
-        drop(tx);
-
-        // …but the final drain ignores the gate (the VUs have stopped), so
-        // the deferred snapshots still ship.
-        tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .expect("shipper exits after the final drain")
-            .unwrap();
-        let reqs = server.received_requests().await.unwrap_or_default();
-        let bodies = bodies(&reqs);
-        assert_eq!(
-            bodies.len(),
-            1,
-            "deferred snapshots sealed into one batch: {bodies:?}"
-        );
-        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 16);
-    }
-
-    #[tokio::test]
-    async fn shipper_retries_5xx_with_the_same_seq() {
-        let server = MockServer::start().await;
-        // wiremock matches lowest priority number first, stable within a
-        // priority: one 500 (spent after one match), then 200s.
-        Mock::given(method("POST"))
-            .and(path("/api/v1/metrics"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/metrics"))
-            .respond_with(ResponseTemplate::new(500))
-            .with_priority(1)
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-
-        let cfg = ReportRunConfig {
-            batch_size: 1,
-            ..test_cfg()
-        };
-        let (tx, _handle) = spawn_shipper(&server, cfg, || None);
-        tx.send(sample_snapshot(1000, 4.0)).await.unwrap();
-
-        let reqs = wait_requests(&server, 2, Duration::from_secs(4)).await;
-        let bodies = bodies(&reqs);
-        assert_eq!(bodies.len(), 2, "500 → backoff → retry");
-        assert_eq!(bodies[0]["seq"], 1);
-        assert_eq!(bodies[1]["seq"], 1, "same seq across retries");
-    }
-
-    #[tokio::test]
-    async fn shipper_drops_4xx_poison_batch_without_retrying() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/metrics"))
-            .respond_with(ResponseTemplate::new(400))
-            .mount(&server)
-            .await;
-
-        let cfg = ReportRunConfig {
-            batch_size: 1,
-            ..test_cfg()
-        };
-        let (tx, _handle) = spawn_shipper(&server, cfg, || None);
-        tx.send(sample_snapshot(1000, 4.0)).await.unwrap();
-
-        // Past the first backoff step: a poison batch must not reappear.
-        let reqs = wait_requests(&server, 1, Duration::from_secs(3)).await;
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        assert_eq!(reqs.len(), 1);
-        assert_eq!(
-            server.received_requests().await.unwrap_or_default().len(),
-            1,
-            "4xx is poison — dropped, never retried"
-        );
-    }
-
-    #[tokio::test]
-    async fn shipper_drains_everything_when_the_channel_closes() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/metrics"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-
-        // batch_size above the total: only the channel close can flush.
-        let (tx, handle) = spawn_shipper(&server, test_cfg(), || None);
-        tx.send(sample_snapshot(1000, 4.0)).await.unwrap();
-        tx.send(sample_snapshot(2000, 9.0)).await.unwrap();
-        drop(tx);
-
-        tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .expect("shipper exits after the final drain")
-            .unwrap();
-        let reqs = server.received_requests().await.unwrap_or_default();
-        let bodies = bodies(&reqs);
-        assert_eq!(bodies.len(), 1, "open snapshots sealed into one batch");
-        assert_eq!(bodies[0]["seq"], 1);
-        assert_eq!(bodies[0]["samples"].as_array().unwrap().len(), 16);
     }
 }

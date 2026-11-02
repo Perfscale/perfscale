@@ -45,7 +45,7 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
     )?;
     let (engine, vus, duration) = plan_meta(&plan);
     let report_url = resolve_report_url(flag_url.as_ref(), config.as_ref());
-    let shipper = wire_during_run(&mut plan, report_url.as_ref());
+    let streaming = wire_streaming(&mut plan, report_url.as_ref())?;
     // The reporters the run will deliver at the end (config + CLI flags).
     let reporters = plan_reporters(&plan, &flag_reporters);
     if !reporters.is_empty() {
@@ -91,11 +91,31 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
         }
     }
 
-    // During-run shipper: the engine dropped its snapshot sender when the VU
-    // phase ended, closing the channel — the shipper is now running its final
-    // drain. Wait for it (bounded) so the last batch lands before exit.
-    if let Some(shipper) = shipper {
-        let _ = tokio::time::timeout(Duration::from_secs(30), shipper).await;
+    // Streaming reporters (issue #12): the engine dropped its snapshot
+    // sender when the VU phase ended, closing the channel — each reporter's
+    // delivery worker is now running its bounded final flush. Wait for all
+    // of them (bounded) so the terminal cumulative values land before exit;
+    // a reporter failure here is a warning, never a run failure.
+    if !streaming.handles.is_empty() {
+        let handles = streaming.handles;
+        let wait = async move {
+            for h in handles {
+                let _ = h.await;
+            }
+        };
+        if tokio::time::timeout(Duration::from_secs(45), wait)
+            .await
+            .is_err()
+        {
+            eprintln!("[report] warning: a streaming reporter's final flush exceeded its bound — the run's results are unaffected");
+        }
+        if let Some(counters) = &streaming.counters {
+            for (metric, reporter, value) in counters.snapshot() {
+                if value > 0 {
+                    eprintln!("[report] {metric}{{reporter=\"{reporter}\"}}: {value}");
+                }
+            }
+        }
     }
 
     if let Some(url) = report_url.as_ref() {
@@ -106,7 +126,7 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
     // document once, deliver per reporter. Runtime delivery errors are
     // best-effort — logged and counted, the run still completes.
     if !reporters.is_empty() {
-        let report = build_report(
+        let mut report = build_report(
             report_line.as_ref(),
             engine,
             vus,
@@ -114,6 +134,9 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
             &summary_lines,
             &labels,
         );
+        if let Some(counters) = &streaming.counters {
+            fold_reporter_counters(&mut report, counters);
+        }
         let errors = deliver_reports(&reporters, &report).await;
         // `perfscale serve` keeps report artifacts: push the document next
         // to the summary lines when a target is connected.
@@ -553,9 +576,15 @@ fn parse_report_flags(
             CliError::new(format!("invalid --report value '{v}'"))
                 .hint("expected an http(s):// URL or a reporter spec like `json:out.json` / `junit:out.xml` / `html:out.html`")
         })?;
-        if perfscale_core::report::reporter_kind(name).is_none() {
+        let Some(kind) = perfscale_core::report::reporter_kind(name) else {
             return Err(CliError::new(format!("unknown reporter '{name}'"))
                 .hint("built-in reporters: json, junit, html (config file: std/report/json@v1, std/report/junit@v1, std/report/html@v1)"));
+        };
+        if !kind.capabilities().final_ {
+            return Err(CliError::new(format!(
+                "--report {name} is a streaming reporter, not a final one"
+            ))
+            .hint("streaming reporters (std/report/serve@v1, std/report/prometheus-rw@v1, std/report/otel@v1) are configured in the config file's `report.reporters` block with `during_run: true`"));
         }
         if path.is_empty() {
             return Err(
@@ -565,6 +594,11 @@ fn parse_report_flags(
         }
         reporters.push(perfscale_core::report::ReporterConfig {
             use_: name.to_string(),
+            during_run: false,
+            interval_ms: None,
+            labels: Default::default(),
+            max_series: None,
+            max_samples: None,
             with: perfscale_core::report::ReporterWith {
                 path: Some(path.to_string()),
                 ..Default::default()
@@ -585,6 +619,10 @@ fn parse_labels(values: &[String]) -> Result<serde_json::Map<String, serde_json:
         if k.is_empty() {
             return Err(CliError::new(format!("invalid --label value '{v}'"))
                 .hint("the key must be non-empty, e.g. `--label env=staging`"));
+        }
+        if perfscale_core::report::reporters::RESERVED_LABELS.contains(&k) {
+            return Err(CliError::new(format!("invalid --label value '{v}'"))
+                .hint("`run_id` and `worker` are reserved — the engine always sets them"));
         }
         out.insert(k.to_string(), serde_json::Value::String(val.to_string()));
     }
@@ -611,40 +649,220 @@ fn plan_reporters(
     }
 }
 
-/// When the native run opts into during-run streaming (`report.during_run`)
-/// and a report URL resolved (the `--report` flag beats the config URL for
-/// the streaming target too), hand the engine a snapshot channel and spawn
-/// the shipper that batches snapshots to `<url>/api/v1/metrics`.
+/// Streaming reporters (issue #12): every reporter whose `during_run` is set
+/// gets its own bounded delivery worker; one engine snapshot pump fans out to
+/// all of them. The historical `report.url` + `report.during_run` path maps
+/// to an implicit `std/report/serve@v1` reporter (skipped when the config
+/// already declares one) with the run-level knobs it always used.
 ///
 /// The CLI ships unauthenticated — authenticated streaming is the agent's
-/// path (its shipper gets a Keycloak token provider). Returns the shipper's
-/// join handle so the caller can await the final drain before exit.
-fn wire_during_run(
+/// path. Returns the fan-out + worker join handles so the caller can await
+/// the final flush before exit, plus the run's reporter-counter registry.
+fn wire_streaming(
     plan: &mut ExecutionPlan,
     report_url: Option<&String>,
-) -> Option<tokio::task::JoinHandle<()>> {
-    let (
-        ExecutionPlan::NativeSteps {
-            config, metrics_tx, ..
-        },
-        Some(url),
-    ) = (plan, report_url)
+) -> Result<StreamingWiring, CliError> {
+    let ExecutionPlan::NativeSteps {
+        config, metrics_tx, ..
+    } = plan
     else {
-        return None;
+        return Ok(StreamingWiring::default());
     };
-    let report = config.report.as_ref().filter(|r| r.during_run)?;
+    let Some(report) = config.report.as_ref() else {
+        return Ok(StreamingWiring::default());
+    };
+
+    use perfscale_core::report::{reporter_kind, ReporterConfig, ReporterKind, ReporterWith};
+
+    // The streaming reporters: config-declared ones with `during_run`, plus
+    // the legacy `report.url` mapping.
+    let mut streamers: Vec<ReporterConfig> = report
+        .reporters
+        .iter()
+        .filter(|r| r.during_run && reporter_kind(&r.use_).is_some_and(|k| k.capabilities().stream))
+        .cloned()
+        .collect();
+    let has_explicit_serve = streamers
+        .iter()
+        .any(|r| reporter_kind(&r.use_) == Some(ReporterKind::Serve));
+    if let Some(url) = report_url.filter(|_| report.during_run && !has_explicit_serve) {
+        streamers.push(ReporterConfig {
+            use_: "std/report/serve@v1".into(),
+            during_run: true,
+            interval_ms: None,
+            labels: Default::default(),
+            max_series: None,
+            max_samples: None,
+            with: ReporterWith {
+                url: Some(url.clone()),
+                ..Default::default()
+            },
+        });
+    }
+    if streamers.is_empty() {
+        return Ok(StreamingWiring::default());
+    }
+
+    // Per-run reporter counters (issue #12): the fan-out injects them into
+    // every snapshot as counter series, so each backend receives them, and
+    // the run end folds them into the report. Never process-global —
+    // concurrent runs must not contaminate each other.
+    let counters =
+        std::sync::Arc::new(perfscale_core::report::delivery::ReporterCounters::default());
+
+    // Reporter labels resolve once, before the run (`${{ inputs.* }}` /
+    // `${{ env.* }}`), like step and run labels do engine-side.
+    let inputs = perfscale_core::inputs::inputs_namespace(&config.input_values);
+    let run_interval = report.interval();
+    let report_cfg = report.clone();
+
+    // The engine pump ticks at the fastest requested interval; each
+    // reporter's worker seals batches at its own.
+    let min_interval_ms = streamers
+        .iter()
+        .map(|r| r.interval(run_interval).as_millis() as u64)
+        .min()
+        .unwrap_or(report_cfg.interval_ms);
+    {
+        let report = config.report.as_mut().expect("checked above");
+        report.during_run = true;
+        report.interval_ms = min_interval_ms.max(perfscale_core::report::MIN_INTERVAL_MS);
+    }
     let (tx, rx) = tokio::sync::mpsc::channel(512);
     *metrics_tx = Some(tx);
+
     let cpu = std::sync::Arc::new(perfscale_core::report::cpu::CpuReader::new());
-    let shipper = perfscale_core::report::DuringRunShipper::new(
-        report.clone(),
-        url.clone(),
-        serde_json::Map::new(),
-        None,
-        None,
-        move || cpu.sample(),
+    let mut queues = Vec::new();
+    let mut handles = Vec::new();
+    for r in &streamers {
+        let kind = reporter_kind(&r.use_).expect("validated: stream-capable built-in");
+        let labels = perfscale_core::report::stream::interpolate_label_values(&r.labels, &inputs);
+        let retry = match &r.with.retry {
+            Some(rc) => {
+                let (min, max) = rc
+                    .backoff_range()
+                    .map_err(|e| CliError::new(format!("reporter '{}': {e}", r.use_)))?;
+                perfscale_core::report::delivery::RetryPolicy {
+                    max_attempts: rc.max_attempts,
+                    backoff_min: min,
+                    backoff_max: max,
+                }
+            }
+            None => perfscale_core::report::delivery::RetryPolicy::default(),
+        };
+        let final_timeout = match r.with.final_timeout.as_deref() {
+            Some(v) => Duration::from_millis(
+                perfscale_core::step::parse_duration_ms_strict(v).map_err(|e| {
+                    CliError::new(format!(
+                        "reporter '{}': invalid `with.final_timeout`: {e}",
+                        r.use_
+                    ))
+                })?,
+            ),
+            None => Duration::from_secs(30),
+        };
+        let cfg = perfscale_core::report::delivery::DeliveryConfig {
+            interval: r.interval(run_interval),
+            // Per-reporter `with.batch_size`, falling back to the run-level
+            // `report.batch_size`.
+            batch_size: r.with.batch_size.unwrap_or(report_cfg.batch_size),
+            max_pending: r.with.max_pending.unwrap_or(report_cfg.max_pending),
+            retry,
+            final_timeout,
+            // The CPU gate is the legacy serve knob (`report.max_cpu_percent`).
+            cpu_gate: if kind == ReporterKind::Serve && report_cfg.max_cpu_percent > 0.0 {
+                let cpu = std::sync::Arc::clone(&cpu);
+                Some((
+                    report_cfg.max_cpu_percent,
+                    std::sync::Arc::new(move || cpu.sample())
+                        as perfscale_core::report::delivery::CpuReader,
+                ))
+            } else {
+                None
+            },
+            counters: Some(std::sync::Arc::clone(&counters)),
+        };
+        let queue = std::sync::Arc::new(
+            perfscale_core::report::delivery::SnapshotQueue::new(r.use_.clone(), cfg.max_pending)
+                .with_counters(std::sync::Arc::clone(&counters)),
+        );
+        match kind {
+            ReporterKind::Serve => {
+                let sink = perfscale_core::report::serve::ServeSink::new(
+                    r.with.url.clone().expect("validated"),
+                    labels,
+                    None,
+                    None,
+                    r.max_series(),
+                )
+                .with_counters_registry(std::sync::Arc::clone(&counters));
+                handles.push(perfscale_core::report::delivery::spawn(
+                    sink,
+                    cfg,
+                    std::sync::Arc::clone(&queue),
+                ));
+            }
+            ReporterKind::PrometheusRw => {
+                let sink = perfscale_core::report::prometheus_rw::PromRwSink::new(
+                    r.with.url.clone().expect("validated"),
+                    &r.with.headers,
+                    labels,
+                    r.max_series(),
+                    r.with.histogram.as_deref(),
+                    "0".to_string(),
+                )
+                .map_err(|e| CliError::new(format!("reporter '{}': {e}", r.use_)))?
+                .with_counters_registry(std::sync::Arc::clone(&counters));
+                handles.push(perfscale_core::report::delivery::spawn(
+                    sink,
+                    cfg,
+                    std::sync::Arc::clone(&queue),
+                ));
+            }
+            ReporterKind::Otel => {
+                let sink = perfscale_core::report::otel::OtelSink::new(
+                    r.with.endpoint.clone().expect("validated"),
+                    labels,
+                    r.max_series(),
+                    "0".to_string(),
+                )
+                .with_counters_registry(std::sync::Arc::clone(&counters));
+                handles.push(perfscale_core::report::delivery::spawn(
+                    sink,
+                    cfg,
+                    std::sync::Arc::clone(&queue),
+                ));
+            }
+            _ => unreachable!("only streaming kinds collected above"),
+        }
+        queues.push(queue);
+    }
+    handles.push(perfscale_core::report::delivery::spawn_fanout(
+        rx,
+        queues,
+        Some(std::sync::Arc::clone(&counters)),
+    ));
+    eprintln!(
+        "[report] streaming metrics to {} reporter(s): {}",
+        streamers.len(),
+        streamers
+            .iter()
+            .map(|r| r.use_.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
-    Some(shipper.spawn(rx))
+    Ok(StreamingWiring {
+        handles,
+        counters: Some(counters),
+    })
+}
+
+/// What [`wire_streaming`] attached to the plan: the task handles to await
+/// and the per-run reporter-counter registry (issue #12).
+#[derive(Default)]
+struct StreamingWiring {
+    handles: Vec<tokio::task::JoinHandle<()>>,
+    counters: Option<std::sync::Arc<perfscale_core::report::delivery::ReporterCounters>>,
 }
 
 /// `--quiet` print policy, applied uniformly to every engine: keep errors,
@@ -749,6 +967,57 @@ fn build_report(
     }
 }
 
+/// Fold the per-run reporter delivery counters (issue #12) into the
+/// `report@v1` metrics section: one series per nonzero counter, labeled by
+/// reporter. Registered family names carry no `_total` suffix (the
+/// streaming exporters add it on the wire); the report's `series` values
+/// are plain counts.
+fn fold_reporter_counters(
+    report: &mut perfscale_core::report::v1::ReportV1,
+    counters: &perfscale_core::report::delivery::ReporterCounters,
+) {
+    use perfscale_core::report::v1;
+    let by_metric: std::collections::BTreeMap<String, Vec<(String, u64)>> = counters
+        .snapshot()
+        .into_iter()
+        .filter(|(_, _, v)| *v > 0)
+        .fold(Default::default(), |mut acc, (m, r, v)| {
+            acc.entry(m).or_default().push((r, v));
+            acc
+        });
+    for (metric, reporters) in by_metric {
+        let name = metric.strip_suffix("_total").unwrap_or(&metric).to_string();
+        let series = reporters
+            .into_iter()
+            .map(|(reporter, value)| v1::MetricSeries {
+                labels: serde_json::Map::from_iter([(
+                    "reporter".to_string(),
+                    serde_json::Value::String(reporter),
+                )]),
+                value: Some(value as f64),
+                ..v1::MetricSeries::default()
+            })
+            .collect();
+        // Merge into the family's existing entry when present (the engine
+        // emits the family with `recorded: false` otherwise).
+        match report.metrics.iter_mut().find(|f| f.name == name) {
+            Some(f) => {
+                f.recorded = true;
+                f.series.extend(series);
+            }
+            None => report.metrics.push(v1::MetricFamilyReport {
+                name,
+                family: "report".to_string(),
+                kind: "counter".to_string(),
+                unit: "count".to_string(),
+                description: String::new(),
+                recorded: true,
+                series,
+            }),
+        }
+    }
+}
+
 /// Render and deliver each configured reporter. Returns the number of
 /// delivery errors — the `engine_report_errors` count. Best-effort: errors
 /// are logged, never propagated.
@@ -759,7 +1028,7 @@ async fn deliver_reports(
     let mut errors = 0u64;
     for r in reporters {
         let mut doc = report.clone();
-        doc.truncate_samples(r.with.max_samples());
+        doc.truncate_samples(r.max_samples());
         // WASM reporters (issue #9): the guest renders and writes via the
         // host's emit-file — there is no host-side body or destination.
         if let Some(module) = perfscale_core::report::wasm_reporter_module(&r.use_) {
@@ -776,8 +1045,9 @@ async fn deliver_reports(
             Some(perfscale_core::report::ReporterKind::Json) => doc.to_json(),
             Some(perfscale_core::report::ReporterKind::Junit) => doc.to_junit_xml(),
             Some(perfscale_core::report::ReporterKind::Html) => doc.to_html(),
-            // Validated before the run started.
-            None => continue,
+            // Streaming reporters (serve/prometheus-rw/otel) never receive
+            // the end-of-run document; unknown ids were rejected pre-run.
+            _ => continue,
         };
         let result = if let Some(path) = &r.with.path {
             std::fs::write(path, &body)
@@ -1213,19 +1483,26 @@ mod tests {
             _ => false,
         };
 
-        // Opted in + URL resolved → channel attached, shipper spawned.
+        // Opted in + URL resolved → channel attached, workers spawned.
         let mut plan = native_plan(Some(perfscale_core::report::ReportRunConfig {
             during_run: true,
             ..Default::default()
         }));
-        let handle = wire_during_run(&mut plan, Some(&url));
-        assert!(handle.is_some());
+        let wiring = wire_streaming(&mut plan, Some(&url)).unwrap();
+        // Legacy mapping: the serve reporter + its worker + the fan-out.
+        assert_eq!(wiring.handles.len(), 2);
+        assert!(wiring.counters.is_some());
         assert!(has_channel(&plan));
-        handle.unwrap().abort();
+        for h in wiring.handles {
+            h.abort();
+        }
 
         // during_run off → untouched.
         let mut plan = native_plan(Some(perfscale_core::report::ReportRunConfig::default()));
-        assert!(wire_during_run(&mut plan, Some(&url)).is_none());
+        assert!(wire_streaming(&mut plan, Some(&url))
+            .unwrap()
+            .handles
+            .is_empty());
         assert!(!has_channel(&plan));
 
         // Opted in but no URL anywhere → untouched.
@@ -1233,12 +1510,64 @@ mod tests {
             during_run: true,
             ..Default::default()
         }));
-        assert!(wire_during_run(&mut plan, None).is_none());
+        assert!(wire_streaming(&mut plan, None).unwrap().handles.is_empty());
         assert!(!has_channel(&plan));
 
         // Non-native engines never stream.
         let mut plan = ExecutionPlan::K6Script(PathBuf::from("a.js"));
-        assert!(wire_during_run(&mut plan, Some(&url)).is_none());
+        assert!(wire_streaming(&mut plan, Some(&url))
+            .unwrap()
+            .handles
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn wire_streaming_fans_out_to_config_reporters() {
+        let reporter = |use_: &str, during_run: bool| perfscale_core::report::ReporterConfig {
+            use_: use_.into(),
+            during_run,
+            interval_ms: None,
+            labels: Default::default(),
+            max_series: None,
+            max_samples: None,
+            with: perfscale_core::report::ReporterWith {
+                url: Some("http://localhost:7999".into()),
+                ..Default::default()
+            },
+        };
+        let mut config = RunConfig {
+            vus: 1,
+            duration: "1s".into(),
+            ..Default::default()
+        };
+        config.report = Some(perfscale_core::report::ReportRunConfig {
+            reporters: vec![
+                reporter("std/report/serve@v1", true),
+                reporter("std/report/prometheus-rw@v1", true),
+                // A final-only reporter never streams.
+                reporter("std/report/json@v1", false),
+                // A streaming reporter without during_run stays idle.
+                reporter("std/report/serve@v1", false),
+            ],
+            ..Default::default()
+        });
+        let mut plan = ExecutionPlan::NativeSteps {
+            test: sample_test(),
+            config: Box::new(config),
+            before: Vec::new(),
+            after: Vec::new(),
+            variables: serde_json::Map::new(),
+            shared_variables: serde_json::Map::new(),
+            libraries: Vec::new(),
+            quiet: false,
+            metrics_tx: None,
+        };
+        let wiring = wire_streaming(&mut plan, None).unwrap();
+        // Two streaming reporters → two workers + the fan-out.
+        assert_eq!(wiring.handles.len(), 3);
+        for h in wiring.handles {
+            h.abort();
+        }
     }
 
     #[test]
