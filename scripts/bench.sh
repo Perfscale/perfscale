@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Engine benchmark suites. Every scenario hits the same `perfscale serve`
-# endpoints, so gaps between a `perfscale (*)` row and its native counterpart
-# are perfscale's wrapping overhead, not the underlying tool.
+# Engine comparison scenarios hit the same `perfscale serve` endpoints, so
+# gaps between a `perfscale (*)` row and its native counterpart are perfscale's
+# wrapping overhead, not the underlying tool. The standalone specjbb and
+# renaissance suites run their own JVM benchmarks instead.
 #
-# Suites (select with SUITES="..."; default runs all):
+# Suites (select with SUITES="..."; default runs all but the opt-in specjbb):
 #   overhead    – wall-clock at the configured duration (hyperfine). With a
 #                 fixed test duration this mostly proves the wrapper adds no
 #                 wall time; throughput differences live in `throughput`.
@@ -73,6 +74,22 @@ set -euo pipefail
 #                 connect cost is part of the measurement), so the k6 side
 #                 gets both a warm row (connection per VU) and a cold row
 #                 (connect per iteration, the fair twin).
+#   renaissance – Renaissance MIT suite (JVM workloads; default finagle-http,
+#                 RENAISSANCE_BENCHMARKS selects others), bounded by
+#                 RENAISSANCE_RUN_SECONDS (default 60) measured seconds per
+#                 benchmark via scripts/bench_renaissance.sh; the pinned MIT
+#                 jar is checksum-verified by CI (target/renaissance/).
+#   specjbb     – OPT-IN (never in the default suite list): SPECjbb2015, a
+#                 separate commercial Java benchmark — not an HTTP target or
+#                 load-generator competitor. The kit is not bundled or
+#                 downloaded; supply it via SPECJBB_HOME or SPECJBB_JAR (plus
+#                 SPECJBB_JAVA / SPECJBB_MODE, default COMPOSITE / optional
+#                 SPECJBB_JAVA_ARGS / SPECJBB_ARGS). Runs the official jar to
+#                 completion via scripts/bench_specjbb2015.sh and reports
+#                 max-jOPS / critical-jOPS (Java operations/s — NOT HTTP RPS)
+#                 plus mode, duration, CPU and peak RSS. When explicitly
+#                 selected with an invalid kit path the bench FAILS — no fake
+#                 success.
 #
 # No llm suite: the engine's LLM driver needs a backing endpoint with
 # meaningful semantics, which doesn't fit a bench CI job cleanly. Add it
@@ -108,8 +125,11 @@ PORT="${PORT:-18999}"
 TLS_PORT="${TLS_PORT:-18998}"
 OUTPUT="${OUTPUT:-bench-report.md}"
 RESULTS="${RESULTS:-bench-results.json}"
-KNOWN_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sourceips"
-SUITES="${SUITES:-$KNOWN_SUITES}"
+KNOWN_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sourceips renaissance specjbb"
+# specjbb is deliberately excluded from the default: it is opt-in only (a
+# separate commercial benchmark whose kit the caller must supply).
+DEFAULT_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sourceips renaissance"
+SUITES="${SUITES:-$DEFAULT_SUITES}"
 # Competitor engines whose rows join the tables, space-separated (perfscale's
 # own rows always run). k6 also gates its custom xk6-sql / xk6-nats builds.
 KNOWN_APPS="k6 jmeter locust sytester"
@@ -2749,6 +2769,109 @@ if has_suite pubsub; then
     echo "Metrics share names on both sides (\`pubsub_msgs_published\`,"
     echo "\`pubsub_publish_ms\`, \`pubsub_e2e_ms\`, \`pubsub_errors\`), parsed"
     echo "by one pubsub-text parser._"
+  } >>"$OUTPUT"
+fi
+
+# --- specjbb (opt-in; skipped silently when not selected) --------------------
+
+# SPECjbb2015 is a separate commercial Java benchmark — not an HTTP target,
+# not a load-generator competitor — so it never joins the engine tables. The
+# kit is user-supplied (SPECJBB_HOME / SPECJBB_JAR); an explicitly selected
+# suite with an invalid path fails the run rather than reporting fake
+# success. The official `java -jar specjbb2015.jar -m <MODE>` run is never
+# shortened; CPU/RSS come from /usr/bin/time on the whole run like every
+# other row. Not selected → this block is skipped quietly, kit or no kit.
+if has_suite specjbb; then
+  echo "suite: specjbb" >&2
+  SPECJBB_MODE="${SPECJBB_MODE:-COMPOSITE}"
+  SPECJBB_RESULTS_DIR="${SPECJBB_RESULTS_DIR:-$PWD/specjbb-artifacts}"
+  max_jops=0 critical_jops=0 mode="$SPECJBB_MODE" duration_s=0
+  measure "specjbb2015 ($SPECJBB_MODE)" \
+    "env SPECJBB_MODE='$SPECJBB_MODE' SPECJBB_RESULTS_DIR='$SPECJBB_RESULTS_DIR' $ROOT/scripts/bench_specjbb2015.sh" \
+    specjbb-text
+  [[ -n "$mode" ]] || mode="$SPECJBB_MODE"  # the trailer may be missing
+  if [[ "$T_RC" != 0 ]]; then
+    echo "error: specjbb suite failed (rc=$T_RC) — kit path valid? console log and SPEC report tree preserved under $SPECJBB_RESULTS_DIR" >&2
+    exit 1
+  fi
+  if [[ "$parse_ok" != 1 ]]; then
+    echo "error: specjbb run produced no max-jOPS/critical-jOPS summary — failing rather than reporting a fake result (log: $SPECJBB_RESULTS_DIR)" >&2
+    exit 1
+  fi
+  label="specjbb2015 ($mode)"
+  cpu_total=$(awk "BEGIN{printf \"%.1fs\", ${T_USER_S:-0}+${T_SYS_S:-0}}")
+  $METRICS append "$RESULTS_D/specjbb.json" "$label" \
+    mode="$mode" max_jops="$max_jops" critical_jops="$critical_jops" \
+    duration_s="$duration_s" \
+    user_s="${T_USER_S:-0}" sys_s="${T_SYS_S:-0}" rss_mib="$T_RSS_MIB"
+  section "SPECjbb2015 (${mode} mode)"
+  {
+    echo "| Benchmark | Mode | max-jOPS | critical-jOPS | Duration | CPU (u+s) | Peak RSS |"
+    echo "|---|---|---:|---:|---:|---:|---:|"
+    echo "| $label | $mode | $max_jops | $critical_jops | ${duration_s}s | $cpu_total | $T_RSS |"
+    echo
+    echo "_SPECjbb2015 is a commercial Java server benchmark, not an HTTP load"
+    echo "test: **jOPS are Java operations/s, NOT HTTP RPS** — never compare"
+    echo "these cells against the engine tables. The official kit is supplied by"
+    echo "the caller (\`SPECJBB_HOME\`/\`SPECJBB_JAR\`); the run is the unmodified"
+    echo "\`java -jar specjbb2015.jar -m ${mode}\` and runs to its own"
+    echo "completion. Console log and the SPEC report tree are preserved under"
+    echo "\`$SPECJBB_RESULTS_DIR\`. jOPS numbers are comparable only between"
+    echo "runs of the same mode (bench_compare.py enforces this)._"
+  } >>"$OUTPUT"
+fi
+
+# --- renaissance (in the default suites; needs the pinned MIT jar) --------
+
+# Renaissance (MIT distribution) is a JVM benchmark suite, not an HTTP
+# target — its rows never join the engine tables. The jar is pinned and
+# checksum-verified by CI (target/renaissance/); locally supply it via
+# RENAISSANCE_JAR. One harness invocation per benchmark, each bounded to
+# RENAISSANCE_RUN_SECONDS measured seconds (the harness's --run-seconds);
+# CPU/RSS come from /usr/bin/time on the whole JVM run like every other row.
+# A Java failure or a missing/empty results JSON fails the run — never a
+# fake success.
+if has_suite renaissance; then
+  echo "suite: renaissance" >&2
+  RENAISSANCE_RUN_SECONDS="${RENAISSANCE_RUN_SECONDS:-60}"
+  RENAISSANCE_RESULTS_DIR="${RENAISSANCE_RESULTS_DIR:-$PWD/renaissance-artifacts}"
+  declare -a ren_rows=()
+  for bench in ${RENAISSANCE_BENCHMARKS:-finagle-http}; do
+    benchmark="$bench" ops_per_s=0 avg_ms=0 min_ms=0 max_ms=0 repetitions=0 duration_s=0 termination=""
+    measure "renaissance $bench" \
+      "env RENAISSANCE_BENCHMARKS='$bench' RENAISSANCE_RUN_SECONDS='$RENAISSANCE_RUN_SECONDS' RENAISSANCE_RESULTS_DIR='$RENAISSANCE_RESULTS_DIR' $ROOT/scripts/bench_renaissance.sh" \
+      renaissance-text
+    if [[ "$T_RC" != 0 ]]; then
+      echo "error: renaissance suite failed for $bench (rc=$T_RC) — jar valid? console log preserved under $RENAISSANCE_RESULTS_DIR" >&2
+      exit 1
+    fi
+    if [[ "$parse_ok" != 1 ]]; then
+      echo "error: renaissance run of $bench produced no measured operations (termination=${termination:-?}) — failing rather than reporting a fake result (log: $RENAISSANCE_RESULTS_DIR)" >&2
+      exit 1
+    fi
+    label="renaissance $bench"
+    cpu_total=$(awk "BEGIN{printf \"%.1fs\", ${T_USER_S:-0}+${T_SYS_S:-0}}")
+    $METRICS append "$RESULTS_D/renaissance.json" "$label" \
+      benchmark="$benchmark" ops_per_s="$ops_per_s" avg_ms="$avg_ms" \
+      min_ms="$min_ms" max_ms="$max_ms" repetitions="$repetitions" \
+      duration_s="$duration_s" \
+      user_s="${T_USER_S:-0}" sys_s="${T_SYS_S:-0}" rss_mib="$T_RSS_MIB"
+    ren_rows+=("| $bench | $ops_per_s | $avg_ms | $repetitions | ${duration_s}s | $cpu_total | $T_RSS |")
+  done
+  section "Renaissance (MIT ${RENAISSANCE_VERSION:-0.16.2}, ${RENAISSANCE_RUN_SECONDS}s measured per benchmark)"
+  {
+    echo "| Benchmark | ops/s | Avg op (ms) | Ops | Duration | CPU (u+s) | Peak RSS |"
+    echo "|---|---:|---:|---:|---:|---:|---:|"
+    printf '%s\n' "${ren_rows[@]}"
+    echo
+    echo "_Renaissance (MIT distribution) is a JVM benchmark suite, not an HTTP"
+    echo "load test: **ops/s are measured benchmark operations/s, NOT HTTP RPS**"
+    echo "— never compare these cells against the engine tables. The pinned"
+    echo "release jar is checksum-verified by CI (target/renaissance/); the run"
+    echo "is the harness's own \`--run-seconds\` bound. Console log and native"
+    echo "JSON are preserved under \`$RENAISSANCE_RESULTS_DIR\`. ops/s are"
+    echo "comparable only between runs of the same benchmark (bench_compare.py"
+    echo "enforces this)._"
   } >>"$OUTPUT"
 fi
 

@@ -48,6 +48,7 @@ steps:
 | `outputs` | нет | Имя переменной, под которой сохраняется вывод шага |
 | `severity` | нет | Только для `std/thresholds@v1`: во что превращается нарушенный порог — `fail` (по умолчанию; запуск завершается с ненулевым кодом), `warn` или `info` |
 | `message` | нет | Только для `std/thresholds@v1`: пользовательская метка, добавляемая к сводке нарушений (интерполируется) |
+| `labels` | нет | Метки метрик уровня шага (скаляры; `${{ inputs.* }}` / `${{ env.* }}` интерполируются один раз до запуска): проставляются на всех рядах метрик шага для стриминг-репортеров, приоритет слияния step > reporter > run. `run_id` и `worker` зарезервированы (проставляет движок) |
 | `if` / `when` | нет | Выполнять шаг только при истинном условии — см. [Условные шаги](#условные-шаги-if--when) |
 
 ### Условные шаги (`if:` / `when:`)
@@ -205,6 +206,23 @@ report:          # необязательно — пересылка в serve + 
       with:
         output: ./reports      # куда попадают файлы emit-file гостя (по умолчанию ./perfscale-report-<module>)
         config: { style: short }  # произвольный блок, передаётся гостю как есть
+    - use: std/report/prometheus-rw@v1     # стриминг: Prometheus remote write
+      during_run: true          # ключи движка — рядом с use:
+      interval_ms: 5000
+      labels: { env: staging }  # метки репортера (step > reporter > run)
+      max_series: 10000         # защита от кардинальности (по умолчанию 10000)
+      with:
+        url: http://alloy:8429/api/v1/metrics/write
+        histogram: classic      # classic (_bucket{le}) | native
+        retry: { max_attempts: 5, backoff: 1s..30s }
+        max_pending: 24         # ограниченная очередь; переполнение теряет СТАРЕЙШИЙ снапшот
+        final_timeout: 30s      # предел синхронного финального сброса
+    - use: std/report/otel@v1             # стриминг: OTLP/gRPC коллектор
+      during_run: true
+      with: { endpoint: http://otel-collector:4317 }
+    - use: std/report/serve@v1            # стриминг: инстанс perfscale serve
+      during_run: true
+      with: { url: http://localhost:7999 }
 
 gpu:             # необязательно — метрики GPU во время запуска (нативный движок)
   enabled: true
@@ -222,10 +240,10 @@ gpu:             # необязательно — метрики GPU во вре
 | `report.during_run` | `false` | Также стримить накопительные снапшоты метрик во время запуска (батчевые POST на `<url>/api/v1/metrics`), а не только сводку в конце — см. [Метрики во время запуска](core/metrics.md#during-run-metrics-reportduring_run). Только нативный движок |
 | `report.interval_ms` | `5000` | Интервал снапшотов/сброса во время запуска, миллисекунды (мин. 1000) |
 | `report.batch_size` | `500` | Сбрасывать батч, как только в нём накопится столько сэмплов |
-| `report.max_cpu_percent` | `90` | Порог по CPU: пока загрузка CPU хоста ≥ этого значения, батчи удерживаются (без POST), а снапшоты ставятся в очередь — никогда не теряются — пока порог не откроется; `0` отключает; вне Linux не действует |
-| `report.max_pending` | `24` | Мягкий лимит недоставленных батчей — при превышении выводится предупреждение, но батчи сохраняются и доставляются по порядку, никогда не теряются посреди запуска |
+| `report.max_cpu_percent` | `90` | Порог по CPU (стриминг в serve): пока загрузка CPU хоста ≥ этого значения, доставка приостанавливается, а снапшоты копятся в ограниченной очереди (переполнение теряет старейшие после `max_pending`); `0` отключает; вне Linux не действует |
+| `report.max_pending` | `24` | Ограниченный бэклог для legacy-стрима в serve: переполнение теряет СТАРЕЙШИЙ снапшот/батч и считает это в `perfscale_report_dropped_snapshots_total` (значения кумулятивны — следующий снапшот их восстанавливает) |
 | `report.labels` | — | Метки запуска (ключ → значение) в идентичности запуска `report@v1` |
-| `report.reporters` | — | Репортеры конца запуска (`report@v1`): `[{ use, with }]`. Встроенные: `std/report/json@v1` (канонический JSON), `std/report/junit@v1` (JUnit XML — testsuite = запуск, testcase на шаг, failures из вердиктов thresholds) и `std/report/html@v1` (одна самодостаточная HTML-страница — тёмная тема, идентичность запуска, вердикты, таблица шагов со спарклайнами сэмплов, семейства метрик; весь CSS/JS инлайн, открывается офлайн). Назначение: ровно одно из `with.path` (файл) или `with.url` (HTTP push; в `with.headers` можно использовать `${VAR}` — резолвятся на хосте, не логируются). `with.max_samples` ограничивает сырые сэмплы по шагам (по умолчанию 100000, `0` отключает; при превышении шаг помечается `truncated: true`). `use: wasm:./path.wasm` подключает WASM-репортер (`perfscale:reporter@0.1.0`, см. `wit/reporter/reporter.wit`; относительные пути — от файла-источника): гость получает документ `report@v1` и свой `with.config`, а вывод пишет только через host-функцию `emit-file` в `with.output` (path traversal отклоняется; WASI fs/net не выдаются). Ошибки конфигурации (неизвестный репортер, нет назначения, не установлен `${VAR}`, нечитаемый WASM-модуль) фейлят lint/validate до старта; ошибки доставки — best-effort (`engine_report_errors`), запуск завершается |
+| `report.reporters` | — | Репортеры: `[{ use, during_run?, interval_ms?, labels?, max_series?, max_samples?, with }]`. Ключи движка — рядом с `use:`: `during_run` включает экспорт во время запуска для стриминг-репортера (final-only репортеры его отклоняют), `interval_ms` переопределяет интервал снапшотов для репортера, `labels` — метки уровня репортера, `max_series` (по умолчанию 10000) ограничивает число выходных рядов (превышение считается в `perfscale_report_dropped_series_total{reporter}`), `max_samples` ограничивает сырые сэмплы по шагам (вынесено из `with:`; старый `with.max_samples` по-прежнему читается). Стриминг-встроенные: `std/report/serve@v1` (путь `report.url` как репортер), `std/report/prometheus-rw@v1` (`with.url`, `with.histogram: classic|native`) и `std/report/otel@v1` (`with.endpoint`, OTLP/gRPC) — см. [Стриминг-репортеры](core/metrics.md#streaming-reporters-prometheus-remote-write-и-otlp). Параметры доставки в `with:` (только стриминг — на final-only репортерах отклоняются): `retry: { max_attempts, backoff: "1s..30s" }`, `batch_size` (по умолчанию — `report.batch_size` уровня запуска; батчи никогда не превышают его — слишком большой снапшот разбивается), `max_pending`, `final_timeout: "30s"` (при закрытии бэклог схлопывается к финальному кумулятивному снапшоту — доставляется только он). Финальные репортеры (`report@v1`): `[{ use, with }]`. Встроенные: `std/report/json@v1` (канонический JSON), `std/report/junit@v1` (JUnit XML — testsuite = запуск, testcase на шаг, failures из вердиктов thresholds) и `std/report/html@v1` (одна самодостаточная HTML-страница — тёмная тема, идентичность запуска, вердикты, таблица шагов со спарклайнами сэмплов, семейства метрик; весь CSS/JS инлайн, открывается офлайн). Назначение: ровно одно из `with.path` (файл) или `with.url` (HTTP push; в `with.headers` можно использовать `${VAR}` — резолвятся на хосте, не логируются). `with.max_samples` ограничивает сырые сэмплы по шагам (по умолчанию 100000, `0` отключает; при превышении шаг помечается `truncated: true`). `use: wasm:./path.wasm` подключает WASM-репортер (`perfscale:reporter@0.1.0`, см. `wit/reporter/reporter.wit`; относительные пути — от файла-источника): гость получает документ `report@v1` и свой `with.config`, а вывод пишет только через host-функцию `emit-file` в `with.output` (path traversal отклоняется; WASI fs/net не выдаются). Ошибки конфигурации (неизвестный репортер, нет назначения, не установлен `${VAR}`, нечитаемый WASM-модуль) фейлят lint/validate до старта; ошибки доставки — best-effort (`engine_report_errors`), запуск завершается |
 | `gpu` | — | Сбор метрик GPU — см. [Метрики GPU](#gpu-metrics-gpu). Только нативный движок |
 | `engine_metrics` | — | Самонаблюдаемость движка — см. [Собственные метрики движка](#engine-self-metrics-engine_metrics). Только нативный движок |
 | `before` | `[]` | Одноразовые шаги инициализации — см. [Инициализация и переменные](#setup-and-variables) |

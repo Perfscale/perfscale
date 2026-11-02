@@ -242,3 +242,44 @@ impl MetricsFamily for PubsubFamily {
         ]
     }
 }
+
+/// The reporter family (issue #12): the streaming reporters' own
+/// delivery/drop counters. Names carry NO `_total` suffix — the exporters
+/// add it like for every counter, so the shipped series are
+/// `perfscale_report_dropped_series_total{reporter=…}` etc. The values never
+/// touch the run's metrics store mid-run (they would feed back into the
+/// stream); the fan-out injects them into snapshots, and the CLI folds them
+/// into the end-of-run `report@v1` document.
+pub(crate) struct ReportFamily;
+
+impl MetricsFamily for ReportFamily {
+    fn family(&self) -> &'static str {
+        "report"
+    }
+
+    fn defs(&self) -> &'static [MetricDef] {
+        &[
+            MetricDef {
+                name: "perfscale_report_dropped_series",
+                kind: MetricKind::Counter,
+                unit: "count",
+                description:
+                    "Series dropped by a streaming reporter's max_series cardinality guard",
+            },
+            MetricDef {
+                name: "perfscale_report_dropped_snapshots",
+                kind: MetricKind::Counter,
+                unit: "count",
+                description:
+                    "Snapshots dropped by a streaming reporter's bounded queue (oldest first)",
+            },
+            MetricDef {
+                name: "perfscale_report_errors",
+                kind: MetricKind::Counter,
+                unit: "count",
+                description:
+                    "Batches a streaming reporter dropped after exhausting retries or as poison",
+            },
+        ]
+    }
+}

@@ -405,7 +405,7 @@ report:
   interval_ms: 5000       # snapshot/flush interval, min 100
   batch_size: 500         # flush a batch once it holds this many samples
   max_cpu_percent: 90     # CPU gate; 0 disables it
-  max_pending: 24         # soft warn cap — batches are never dropped mid-run
+  max_pending: 24         # bounded queue — overflow drops the OLDEST snapshot
 ```
 
 The engine emits one snapshot per `interval_ms` (independent of the 5 s
@@ -465,16 +465,23 @@ snapshots carry no GPU data at all.
   snapshots are deferred (queued, every 10th logs a warning), then flushed
   in arrival order once the gate opens. Off-Linux there is no CPU reading,
   so the gate is inert. `max_cpu_percent: 0` disables it.
-- *Unbounded backlog, soft cap*: sealed-but-undelivered batches are never
-  dropped while the run is alive; growing past `max_pending` only logs a
-  rate-limited warning. Delivery resumes in order when the target responds.
+**Since the streaming-reporters release (issue #12), this serve sink is one
+of several reporters** — see [Streaming reporters](#streaming-reporters-prometheus-remote-write-and-otlp)
+below. Its queue semantics are the shared bounded ones:
+
+- *Bounded backlog, drop-oldest*: the snapshot queue and the
+  sealed-but-undelivered batch backlog are both capped (`max_pending`).
+  Overflow drops the OLDEST entry and counts it in
+  `perfscale_report_dropped_snapshots_total{reporter}`. Values are
+  cumulative, so the next snapshot restores every counter and histogram —
+  only time resolution is lost.
 - *Retries*: network errors, 5xx and 429 retry the same batch with
-  exponential backoff ×2 from 1 s, capped at 60 s. Any other 4xx is treated
-  as poison — the batch is dropped, never retried.
-- *Shutdown*: when the run ends, everything still pending — including
-  snapshots deferred by the CPU gate — is flushed with short bounded
-  retries (1/2/5/10 s), then the shipper exits. The CLI waits for this
-  final drain (bounded) so the last batch lands before the process exits.
+  exponential backoff (a `Retry-After` hint wins when present). Any other
+  4xx is treated as poison — the batch is dropped, never retried.
+- *Shutdown*: the engine emits one terminal cumulative snapshot right before
+  the channel closes; the reporter then runs a synchronous final flush,
+  bounded by `final_timeout` (default 30 s). The CLI waits for it, and a
+  failed or timed-out flush warns — it never fails the load run.
 
 The engine never blocks on streaming: snapshots go over a bounded channel
 with `try_send`, and a full channel drops the snapshot rather than
@@ -486,6 +493,108 @@ Auth note: the CLI ships unauthenticated (same as the end-of-run report).
 The authenticated path is the agent's — it runs the same shipper with a
 Keycloak token provider and a `taskId` (also stamped as a `task_id` label on
 every sample).
+
+## Streaming reporters: Prometheus remote write and OTLP
+
+`report.reporters` can stream the same cumulative snapshots to **pluggable
+sinks**, not just `perfscale serve` — so perfscale can stand in for
+`k6 -o experimental-prometheus-rw` with live Grafana dashboards. Streaming
+reporters declare `during_run: true` and take engine-owned keys **next to
+`use:`**; `with:` holds reporter-owned parameters:
+
+```yaml
+report:
+  labels:                          # run-level labels, applied to every reporter
+    testid: ${{ inputs.testid }}
+    namespace: ${{ env.KUBERNETES_NAMESPACE }}
+  reporters:
+    - use: std/report/prometheus-rw@v1
+      during_run: true             # engine-owned keys sit next to use:
+      interval_ms: 5000
+      labels: { env: staging-load2 }
+      max_series: 10000
+      with:                        # reporter-owned params
+        url: http://alloy:8429/api/v1/metrics/write
+        histogram: native          # native | classic (_bucket{le=…}), default classic
+        retry: { max_attempts: 5, backoff: 1s..30s }
+        batch_size: 500
+        max_pending: 24
+        final_timeout: 30s
+    - use: std/report/otel@v1
+      during_run: true
+      with:
+        endpoint: http://otel-collector:4317   # OTLP/gRPC
+    - use: std/report/serve@v1     # the perfscale serve sink as a reporter
+      during_run: true
+      with: { url: http://localhost:7999 }
+    - use: std/report/junit@v1     # final-only reporter — no during_run
+      with: { path: out.xml }
+```
+
+The built-in streaming reporters are `std/report/serve@v1` (the historical
+`report.url` + `during_run` path — that legacy spelling still works and maps
+to this reporter), `std/report/prometheus-rw@v1` and `std/report/otel@v1`.
+`json`/`junit`/`html` and WASM reporters are **final-only**: `during_run:
+true` on them is a lint/run error, not a silent no-op.
+
+**Labels** come from three levels, merged with priority **step > reporter >
+run**: a step's own `labels:` (see the step reference) apply only to the
+metrics that step emits. The engine always sets `run_id` and `worker` (the
+shard index) itself — overriding either is a configuration error. Values are
+scalars and support `${{ inputs.* }}` / `${{ env.* }}` interpolation,
+resolved once before the run.
+
+**Histograms stream bucketed, never as client-side quantiles** (quantiles
+from N workers cannot be merged; buckets can). Durations export as:
+
+- Prometheus `with.histogram: classic` (default, works everywhere):
+  `<name>_bucket{le="…"}` cumulative counters plus `<name>_sum` and
+  `<name>_count`, all in **seconds** — a correct global p95 across workers
+  is `histogram_quantile(0.95, sum by (le) (rate(http_req_duration_bucket[1m])))`.
+- Prometheus `with.histogram: native`: Prometheus native histograms (the
+  backend must have the feature enabled).
+- OTLP: exponential histograms with cumulative temporality and the run start
+  as `start_time_unix_nano`; counters/rates export as monotonic cumulative
+  sums (`<name>_total` / `<name>_failed_total`), gauges as gauges.
+
+**Cardinality guard**: `max_series` (default 10000) caps each reporter's
+output series, classic buckets included. Series beyond the limit are dropped
+deterministically (sorted order) and counted in
+`perfscale_report_dropped_series_total{reporter}`; the run continues.
+
+**Delivery and failure policy** (shared by every streaming reporter):
+
+- Each reporter has its own **bounded queue** (`with.max_pending`, default
+  24) and batches by `with.batch_size` (default the run-level
+  `report.batch_size`) and its own `interval_ms`; batches never exceed the
+  batch size — an oversized snapshot splits into sequential batches, in
+  order. One snapshot pump feeds all reporters at the fastest requested
+  interval; a slow or unreachable backend can never block the VUs or another
+  reporter. Overflow drops the oldest snapshot/batch and counts the distinct
+  snapshots lost in `perfscale_report_dropped_snapshots_total{reporter}` — a
+  dropped batch counts every snapshot it held, but a snapshot split across
+  several dropped batches counts once (drop accounting is idempotent per run;
+  likewise the terminal re-encode cannot re-count the same dropped series).
+- Transient failures retry with exponential backoff (`with.retry`:
+  `max_attempts` × `backoff` range, `Retry-After` honored): network errors,
+  HTTP 429/5xx, and the transient gRPC statuses (Unavailable,
+  ResourceExhausted, DeadlineExceeded). Any other 4xx or gRPC status is
+  poison — dropped with a warning.
+- **Final flush**: at run end the engine emits one terminal cumulative
+  snapshot and the backlog **coalesces** to it — older batches are strict
+  cumulative prefixes, so only the terminal snapshot is delivered (older
+  values are never sent after it; the discarded backlog is counted in
+  `perfscale_report_dropped_snapshots_total`). The flush is synchronous,
+  bounded by `with.final_timeout` (default 30s); a failure warns and never
+  fails the load run.
+- The reporters' own counters are per-run (isolated across concurrent runs),
+  registered as the `report` metric family
+  (`perfscale_report_dropped_series` / `_dropped_snapshots` / `_errors`) and
+  exported to each reporter's backend as
+  `..._total{reporter="<use>"}` counter series riding the snapshots — the
+  terminal flush refreshes them to their latest values before the final
+  export; they are also folded into the end-of-run `report@v1` document and
+  summarized on stderr. They are exempt from the `max_series` guard.
 
 **On the platform** (perfscale.su or a self-hosted controlplane) the stream
 lights the run page up live — latency quantiles, throughput, failure rate

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use assert_cmd::cargo::cargo_bin;
 use predicates::prelude::*;
+use prost::Message as _;
 use serial_test::file_serial;
 
 fn k6_available() -> bool {
@@ -697,4 +698,458 @@ fn run_k6_broken_script_exits_nonzero_with_no_metrics() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("before producing any results"));
+}
+
+// ---------------------------------------------------------------------------
+// Streaming reporters (issue #12): Prometheus remote write fan-out.
+// ---------------------------------------------------------------------------
+
+/// A minimal HTTP sink for the remote-write endpoint: 200 OK everything,
+/// record bodies. std-only (the e2e file is sync).
+struct PromSink {
+    url: String,
+    bodies: std::sync::mpsc::Receiver<(String, Vec<u8>)>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PromSink {
+    fn start() -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let join = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let _ = tx.send(read_http_request(&mut stream));
+                use std::io::Write as _;
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
+            }
+        });
+        Self {
+            url: format!("http://127.0.0.1:{port}/api/v1/write"),
+            bodies: rx,
+            join: Some(join),
+        }
+    }
+
+    /// All bodies received so far, draining the channel.
+    fn drain(&self) -> Vec<(String, Vec<u8>)> {
+        let mut out = Vec::new();
+        while let Ok(b) = self.bodies.try_recv() {
+            out.push(b);
+        }
+        out
+    }
+
+    /// Wait until at least `n` requests arrived (or ~10s pass), then drain.
+    fn wait_for(&self, n: usize) -> Vec<(String, Vec<u8>)> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let got = self.drain();
+            if got.len() >= n || std::time::Instant::now() >= deadline {
+                return got;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+impl Drop for PromSink {
+    fn drop(&mut self) {
+        // The listener thread blocks in `incoming`; the process exit reaps it.
+        let _ = self.join.take();
+    }
+}
+
+/// Read one HTTP request: headers, then the content-length body. Returns the
+/// content-encoding header and the body.
+fn read_http_request(stream: &mut std::net::TcpStream) -> (String, Vec<u8>) {
+    use std::io::{BufRead, BufReader, Read};
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut content_length = 0usize;
+    let mut encoding = String::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        let line = line.trim().to_string();
+        if line.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            match k.trim().to_ascii_lowercase().as_str() {
+                "content-length" => content_length = v.trim().parse().unwrap_or(0),
+                "content-encoding" => encoding = v.trim().to_string(),
+                _ => {}
+            }
+        }
+    }
+    let mut body = vec![0u8; content_length];
+    let _ = reader.read_exact(&mut body);
+    (encoding, body)
+}
+
+#[test]
+#[file_serial(heavy_io)]
+fn run_streams_to_prometheus_remote_write_and_serve_simultaneously() {
+    let prom = PromSink::start();
+    let mut serve = ServeProc::start();
+
+    let test_file = write_temp(
+        ".yaml",
+        "steps:\n  - use: std/sleep@v1\n    with:\n      ms: 5\n    labels: { phase: smoke }\n",
+    );
+    let config_file = write_temp(
+        ".yaml",
+        &format!(
+            "vus: 1\nduration: 1s\nreport:\n  labels: {{ testid: e2e-stream }}\n  reporters:\n    - use: std/report/prometheus-rw@v1\n      during_run: true\n      interval_ms: 200\n      labels: {{ env: staging }}\n      with: {{ url: {} }}\n    - use: std/report/serve@v1\n      during_run: true\n      interval_ms: 200\n      with: {{ url: {} }}\n",
+            prom.url, serve.url
+        ),
+    );
+
+    assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args([
+            "run",
+            "-f",
+            test_file.path().to_str().unwrap(),
+            "-c",
+            config_file.path().to_str().unwrap(),
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success();
+
+    // The remote-write endpoint received Snappy-framed protobuf batches with
+    // merged labels and no quantile series.
+    let reqs = prom.wait_for(1);
+    assert!(!reqs.is_empty(), "no remote-write POSTs received");
+    let (encoding, body) = &reqs[0];
+    assert_eq!(encoding, "snappy");
+    let raw = snap::raw::Decoder::new().decompress_vec(body).unwrap();
+    let req =
+        perfscale_core::report::prometheus_rw::PromWriteRequest::decode(raw.as_slice()).unwrap();
+    assert!(!req.timeseries.is_empty());
+    let labels_of = |ts: &perfscale_core::report::prometheus_rw::PromTimeSeries| {
+        ts.labels
+            .iter()
+            .map(|l| (l.name.clone(), l.value.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let first = labels_of(&req.timeseries[0]);
+    assert_eq!(first.get("testid").map(String::as_str), Some("e2e-stream"));
+    assert_eq!(first.get("env").map(String::as_str), Some("staging"));
+    assert!(first.contains_key("run_id"));
+    assert_eq!(first.get("worker").map(String::as_str), Some("0"));
+    assert!(
+        req.timeseries
+            .iter()
+            .all(|t| !labels_of(t).contains_key("quantile")),
+        "no client-side quantile series"
+    );
+
+    // …and the serve reporter still got its live batches.
+    let serve_output = serve.wait_for_output("live snapshot");
+    assert!(
+        serve_output.join("\n").contains("live snapshot"),
+        "serve printed: {}",
+        serve_output.join("\n")
+    );
+}
+
+#[test]
+#[file_serial(heavy_io)]
+fn run_with_a_dead_streaming_reporter_still_succeeds_and_serves() {
+    let mut serve = ServeProc::start();
+
+    let test_file = write_temp(
+        ".yaml",
+        "steps:\n  - use: std/log@v1\n    with:\n      message: fanout-isolation\n",
+    );
+    let config_file = write_temp(
+        ".yaml",
+        &format!(
+            "vus: 1\nduration: 1s\nreport:\n  reporters:\n    - use: std/report/prometheus-rw@v1\n      during_run: true\n      interval_ms: 200\n      with:\n        url: http://127.0.0.1:1/write\n        retry: {{ max_attempts: 1 }}\n        final_timeout: 2s\n    - use: std/report/serve@v1\n      during_run: true\n      interval_ms: 200\n      with: {{ url: {} }}\n",
+            serve.url
+        ),
+    );
+
+    // The dead Prometheus endpoint must not fail or hang the run, and the
+    // live serve reporter keeps receiving metrics.
+    assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args([
+            "run",
+            "-f",
+            test_file.path().to_str().unwrap(),
+            "-c",
+            config_file.path().to_str().unwrap(),
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fanout-isolation"));
+
+    let serve_output = serve.wait_for_output("live snapshot");
+    assert!(
+        serve_output.join("\n").contains("live snapshot"),
+        "a dead reporter never starves the live one, serve printed: {}",
+        serve_output.join("\n")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Streaming reporters (issue #12): Prometheus remote write + OTLP/gRPC in one
+// run.
+// ---------------------------------------------------------------------------
+
+/// An in-process OTLP/gRPC collector (the hand-rolled service from core's
+/// `report::otel` wire tests): every Export call's gRPC frame + protobuf is
+/// decoded and stored. The runtime keeps the server alive for the test.
+struct OtlpCollector {
+    endpoint: String,
+    requests: std::sync::Arc<
+        std::sync::Mutex<Vec<perfscale_core::report::otel::OtlpExportMetricsServiceRequest>>,
+    >,
+    _rt: tokio::runtime::Runtime,
+}
+
+#[derive(Clone, Default)]
+struct CollectorSvc {
+    requests: std::sync::Arc<
+        std::sync::Mutex<Vec<perfscale_core::report::otel::OtlpExportMetricsServiceRequest>>,
+    >,
+}
+
+impl tonic::server::NamedService for CollectorSvc {
+    const NAME: &'static str = "opentelemetry.proto.collector.metrics.v1.MetricsService";
+}
+
+impl tower::Service<http::Request<tonic::body::Body>> for CollectorSvc {
+    type Response = http::Response<tonic::body::Body>;
+    type Error = std::convert::Infallible;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: http::Request<tonic::body::Body>) -> Self::Future {
+        let requests = std::sync::Arc::clone(&self.requests);
+        Box::pin(async move {
+            use http_body_util::BodyExt as _;
+            let payload = req
+                .into_body()
+                .collect()
+                .await
+                .expect("readable body")
+                .to_bytes();
+            let mut rest = &payload[..];
+            while rest.len() >= 5 {
+                let len = u32::from_be_bytes([rest[1], rest[2], rest[3], rest[4]]) as usize;
+                let msg = &rest[5..5 + len];
+                let decoded =
+                    perfscale_core::report::otel::OtlpExportMetricsServiceRequest::decode(msg)
+                        .expect("OTLP protobuf decodes");
+                requests.lock().unwrap().push(decoded);
+                rest = &rest[5 + len..];
+            }
+            // Trailers-only success: grpc-status rides the headers.
+            let resp = http::Response::builder()
+                .status(200)
+                .header("content-type", "application/grpc")
+                .header("grpc-status", "0")
+                .body(tonic::body::Body::default())
+                .unwrap();
+            Ok(resp)
+        })
+    }
+}
+
+impl OtlpCollector {
+    fn start() -> Self {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let svc = CollectorSvc::default();
+        let requests = std::sync::Arc::clone(&svc.requests);
+        let endpoint = rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(
+                tonic::transport::Server::builder()
+                    .add_service(svc)
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+            );
+            format!("http://{addr}")
+        });
+        Self {
+            endpoint,
+            requests,
+            _rt: rt,
+        }
+    }
+
+    fn drain(&self) -> Vec<perfscale_core::report::otel::OtlpExportMetricsServiceRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    /// Wait until at least one Export arrived (bounded).
+    fn wait_nonempty(&self) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while self.requests.lock().unwrap().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no OTLP export arrived"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+#[test]
+#[file_serial(heavy_io)]
+fn run_streams_to_prometheus_remote_write_and_otlp_simultaneously() {
+    use perfscale_core::report::otel::{otlp_any_value, otlp_metric, OtlpAnyValue};
+
+    let prom = PromSink::start();
+    let otel = OtlpCollector::start();
+
+    // One native run, both streaming reporters, labels at all three levels.
+    let test_file = write_temp(
+        ".yaml",
+        "steps:\n  - use: std/http@v1\n    with:\n      method: GET\n      url: http://127.0.0.1:1/unreachable\n    labels: { channel: book }\n  - use: std/sleep@v1\n    with:\n      ms: 20\n",
+    );
+    let config_file = write_temp(
+        ".yaml",
+        &format!(
+            "vus: 1\nduration: 1s\nreport:\n  labels: {{ testid: e2e-both }}\n  reporters:\n    - use: std/report/prometheus-rw@v1\n      during_run: true\n      interval_ms: 200\n      labels: {{ sink: prom }}\n      with: {{ url: {} }}\n    - use: std/report/otel@v1\n      during_run: true\n      interval_ms: 200\n      labels: {{ sink: otlp }}\n      with: {{ endpoint: {} }}\n",
+            prom.url, otel.endpoint
+        ),
+    );
+
+    assert_cmd::Command::new(cargo_bin("perfscale"))
+        .args([
+            "run",
+            "-f",
+            test_file.path().to_str().unwrap(),
+            "-c",
+            config_file.path().to_str().unwrap(),
+        ])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .success();
+
+    // --- Prometheus remote write: Snappy + protobuf decoded ---
+    let prom_reqs = prom.wait_for(1);
+    assert!(!prom_reqs.is_empty(), "no remote-write POSTs");
+    let raw = snap::raw::Decoder::new()
+        .decompress_vec(&prom_reqs.last().unwrap().1)
+        .unwrap();
+    let wr =
+        perfscale_core::report::prometheus_rw::PromWriteRequest::decode(raw.as_slice()).unwrap();
+    assert!(!wr.timeseries.is_empty());
+    let labels_of = |ts: &perfscale_core::report::prometheus_rw::PromTimeSeries| {
+        ts.labels
+            .iter()
+            .map(|l| (l.name.clone(), l.value.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let bucket = wr
+        .timeseries
+        .iter()
+        .find(|t| {
+            let l = labels_of(t);
+            l.get("__name__").map(String::as_str) == Some("http_req_duration_bucket")
+                && l.get("le").map(String::as_str) == Some("+Inf")
+        })
+        .expect("classic +Inf bucket series");
+    let bl = labels_of(bucket);
+    // step > reporter > run + reserved engine labels.
+    assert_eq!(bl.get("channel").map(String::as_str), Some("book"));
+    assert_eq!(bl.get("sink").map(String::as_str), Some("prom"));
+    assert_eq!(bl.get("testid").map(String::as_str), Some("e2e-both"));
+    assert!(bl.get("run_id").is_some_and(|v| !v.is_empty()));
+    assert_eq!(bl.get("worker").map(String::as_str), Some("0"));
+    // Cumulative histogram data: +Inf bucket count == _count > 0.
+    let count = wr
+        .timeseries
+        .iter()
+        .find(|t| {
+            labels_of(t).get("__name__").map(String::as_str) == Some("http_req_duration_count")
+        })
+        .expect("_count series");
+    assert_eq!(
+        bucket.samples[0].value, count.samples[0].value,
+        "+Inf bucket equals _count"
+    );
+    assert!(count.samples[0].value > 0.0, "requests recorded");
+    assert!(
+        wr.timeseries
+            .iter()
+            .all(|t| !labels_of(t).contains_key("quantile")),
+        "no client-side quantile series"
+    );
+
+    // --- OTLP/gRPC: protobuf decoded ---
+    otel.wait_nonempty();
+    let reqs = otel.drain();
+    let last = reqs.last().unwrap();
+    let metrics = &last.resource_metrics[0].scope_metrics[0].metrics;
+    assert!(!metrics.is_empty());
+    let find = |name: &str| metrics.iter().find(|m| m.name == name);
+    let hist = match find("http_req_duration")
+        .expect("duration metric")
+        .data
+        .as_ref()
+        .unwrap()
+    {
+        otlp_metric::Data::ExponentialHistogram(h) => h,
+        other => panic!("duration is an exponential histogram: {other:?}"),
+    };
+    assert_eq!(hist.aggregation_temporality, 2, "cumulative temporality");
+    let point = &hist.data_points[0];
+    assert!(point.count > 0, "samples recorded");
+    assert_eq!(
+        point.count,
+        point
+            .positive
+            .as_ref()
+            .map(|b| b.bucket_counts.iter().sum::<u64>())
+            .unwrap_or(0),
+        "bucket counts sum to count"
+    );
+    assert!(point.sum.unwrap_or(0.0) >= 0.0);
+    assert!(point.start_time_unix_nano > 0 && point.start_time_unix_nano <= point.time_unix_nano);
+    let attr = |k: &str| {
+        point.attributes.iter().find_map(|a| {
+            if a.key == k {
+                match &a.value {
+                    Some(OtlpAnyValue {
+                        value: Some(otlp_any_value::Value::StringValue(v)),
+                    }) => Some(v.clone()),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        })
+    };
+    assert_eq!(attr("channel").as_deref(), Some("book"));
+    assert_eq!(attr("sink").as_deref(), Some("otlp"));
+    assert_eq!(attr("testid").as_deref(), Some("e2e-both"));
+    assert!(attr("run_id").is_some_and(|v| !v.is_empty()));
+    assert_eq!(attr("worker").as_deref(), Some("0"));
+    // No client-side quantile data anywhere: the duration metric exists only
+    // as the exponential histogram above (no Summary/gauge duplicate).
+    assert_eq!(
+        metrics
+            .iter()
+            .filter(|m| m.name == "http_req_duration")
+            .count(),
+        1,
+        "exactly one duration metric entry"
+    );
 }

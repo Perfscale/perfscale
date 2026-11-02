@@ -90,6 +90,97 @@ impl StepAgg {
     }
 }
 
+/// Aggregates of one label-aware series — the `(metric name, labels)` key
+/// identifies the series (issue #12). Durations keep their HDR histogram so
+/// streaming exporters can emit bucket counts (Prometheus classic/native,
+/// OTLP exponential); quantiles are derived, never stored per series.
+#[derive(Debug)]
+pub struct LabeledSeries {
+    pub(crate) kind: crate::step::thresholds::MetricKind,
+    /// Duration samples (microseconds) — `Sample` series only.
+    pub(crate) hist: Option<hdrhistogram::Histogram<u64>>,
+    /// Counter/gauge value.
+    pub(crate) counter: f64,
+    /// True for gauges: shard merges take the max (peak readings), not the
+    /// counter sum.
+    pub(crate) is_gauge: bool,
+    /// Failure-rate samples: `(total, failed)` invocations.
+    pub(crate) rate: (u64, u64),
+}
+
+impl LabeledSeries {
+    fn sample() -> Self {
+        Self {
+            kind: crate::step::thresholds::MetricKind::Sample,
+            hist: Some(
+                hdrhistogram::Histogram::new_with_bounds(
+                    HIST_LOW_MICROS,
+                    HIST_HIGH_MICROS,
+                    HIST_SIGFIGS,
+                )
+                .expect("static histogram bounds are valid"),
+            ),
+            counter: 0.0,
+            is_gauge: false,
+            rate: (0, 0),
+        }
+    }
+
+    fn counter() -> Self {
+        Self {
+            kind: crate::step::thresholds::MetricKind::Counter,
+            hist: None,
+            counter: 0.0,
+            is_gauge: false,
+            rate: (0, 0),
+        }
+    }
+
+    fn gauge() -> Self {
+        Self {
+            is_gauge: true,
+            ..Self::counter()
+        }
+    }
+
+    fn rate() -> Self {
+        Self {
+            kind: crate::step::thresholds::MetricKind::Rate,
+            hist: None,
+            counter: 0.0,
+            is_gauge: false,
+            rate: (0, 0),
+        }
+    }
+
+    fn record_sample(&mut self, ms: f64) {
+        let micros = (ms * 1000.0).round() as u64;
+        let _ = self
+            .hist
+            .as_mut()
+            .expect("sample series carry a histogram")
+            .record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
+    }
+
+    fn merge_from(&mut self, other: &LabeledSeries) {
+        if let (Some(own), Some(foreign)) = (&mut self.hist, &other.hist) {
+            own.add(foreign)
+                .expect("all run histograms share the same bounds");
+        }
+        if self.is_gauge {
+            self.counter = self.counter.max(other.counter);
+        } else {
+            self.counter += other.counter;
+        }
+        self.rate.0 += other.rate.0;
+        self.rate.1 += other.rate.1;
+    }
+}
+
+/// The `(name, labels)` key of a label-aware series. Labels are the step's
+/// own labels (reporter/run labels merge at export time).
+pub type SeriesKey = (String, std::collections::BTreeMap<String, String>);
+
 /// Per-run HTTP metrics accumulator.
 ///
 /// Public only so `benches/` can exercise the hot paths (`record`, quantile
@@ -131,6 +222,10 @@ pub struct Metrics {
     /// every step invocation — the `steps` section of `report@v1`. Not part
     /// of the k6-compatible summary lines.
     pub(crate) steps: std::collections::BTreeMap<String, StepAgg>,
+    /// Label-aware series keyed by `(name, step labels)` (issue #12) — the
+    /// streaming exporters' source. The aggregate maps above stay the
+    /// summary/threshold view; this is the same data, split by series.
+    pub(crate) labeled: std::collections::BTreeMap<SeriesKey, LabeledSeries>,
 }
 
 impl Default for Metrics {
@@ -150,12 +245,20 @@ impl Default for Metrics {
             gauges: std::collections::BTreeMap::new(),
             threshold_results: Vec::new(),
             steps: std::collections::BTreeMap::new(),
+            labeled: std::collections::BTreeMap::new(),
         }
     }
 }
 
 impl Metrics {
     pub fn record(&mut self, s: &crate::step::actions::HttpSample) {
+        self.record_aggregate(s);
+        self.record_labeled(s, &std::collections::BTreeMap::new());
+    }
+
+    /// The aggregate-only half of [`record`](Self::record) — the labeled
+    /// variant applies it too, then folds the label-aware series.
+    pub(crate) fn record_aggregate(&mut self, s: &crate::step::actions::HttpSample) {
         self.total += 1;
         if s.failed {
             self.failures += 1;
@@ -165,6 +268,25 @@ impl Metrics {
         let _ = self
             .durations_micros
             .record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
+    }
+
+    /// [`record`](Self::record) plus the label-aware series the streaming
+    /// exporters read (issue #12): the request duration histogram and the
+    /// failure rate land under `(name, labels)`.
+    pub(crate) fn record_labeled(
+        &mut self,
+        s: &crate::step::actions::HttpSample,
+        labels: &std::collections::BTreeMap<String, String>,
+    ) {
+        let key = ("http_req_duration".to_string(), labels.clone());
+        self.labeled
+            .entry(key)
+            .or_insert_with(LabeledSeries::sample)
+            .record_sample(s.duration_ms);
+        let key = ("http_req_failed".to_string(), labels.clone());
+        let e = self.labeled.entry(key).or_insert_with(LabeledSeries::rate);
+        e.rate.0 += 1;
+        e.rate.1 += s.failed as u64;
     }
 
     /// Fold a step's custom `metrics` object into the run aggregates. A
@@ -239,9 +361,49 @@ impl Metrics {
         failed: bool,
         rates: &[&str],
     ) {
+        self.add_counters_and_rates_labeled(obj, failed, rates, &std::collections::BTreeMap::new());
+    }
+
+    /// [`add_counters_and_rates`](Self::add_counters_and_rates) plus the
+    /// label-aware series fold (issue #12): each metric lands under
+    /// `(name, labels)` so streaming exporters can split it by step labels.
+    pub(crate) fn add_counters_and_rates_labeled(
+        &mut self,
+        obj: &Map<String, Value>,
+        failed: bool,
+        rates: &[&str],
+        labels: &std::collections::BTreeMap<String, String>,
+    ) {
         self.add_counters(obj);
+        for (name, v) in obj {
+            match v {
+                Value::Array(samples) => {
+                    let key = (name.clone(), labels.clone());
+                    let series = self
+                        .labeled
+                        .entry(key)
+                        .or_insert_with(LabeledSeries::sample);
+                    for s in samples.iter().filter_map(|s| s.as_f64()) {
+                        series.record_sample(s);
+                    }
+                }
+                _ => {
+                    if let Some(x) = v.as_f64() {
+                        let key = (name.clone(), labels.clone());
+                        self.labeled
+                            .entry(key)
+                            .or_insert_with(LabeledSeries::counter)
+                            .counter += x;
+                    }
+                }
+            }
+        }
         for name in rates {
             self.record_rate(name, failed);
+            let key = (name.to_string(), labels.clone());
+            let series = self.labeled.entry(key).or_insert_with(LabeledSeries::rate);
+            series.rate.0 += 1;
+            series.rate.1 += failed as u64;
         }
     }
 
@@ -267,6 +429,13 @@ impl Metrics {
             .get_mut(name)
             .expect("inserted above")
             .record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
+        // Label-aware series too (engine-internal producers have no step —
+        // empty labels), so the streaming exporters see the probe's metrics.
+        let key = (name.to_string(), std::collections::BTreeMap::new());
+        self.labeled
+            .entry(key)
+            .or_insert_with(LabeledSeries::sample)
+            .record_sample(ms);
     }
 
     /// Set a gauge's current value — last write wins, unlike
@@ -278,6 +447,14 @@ impl Metrics {
                 self.gauges.insert(name.to_string(), value);
             }
         }
+        // Gauges surface as counter-like series for the streaming exporters
+        // (same as `metric_snapshot`'s gauge-as-counter view); last write
+        // wins, matching the aggregate store.
+        let key = (name.to_string(), std::collections::BTreeMap::new());
+        self.labeled
+            .entry(key)
+            .or_insert_with(LabeledSeries::gauge)
+            .counter = value;
     }
 
     /// Fold another store's contents into this one — the per-shard merge
@@ -328,6 +505,28 @@ impl Metrics {
                 .or_insert_with(StepAgg::new)
                 .merge_from(agg);
         }
+        for (key, series) in &other.labeled {
+            match self.labeled.get_mut(key) {
+                Some(own) => own.merge_from(series),
+                None => {
+                    self.labeled.insert(
+                        key.clone(),
+                        LabeledSeries {
+                            kind: series.kind,
+                            hist: series.hist.clone(),
+                            counter: series.counter,
+                            is_gauge: series.is_gauge,
+                            rate: series.rate,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    /// The label-aware series view, for the snapshot pump (issue #12).
+    pub(crate) fn labeled_series(&self) -> &std::collections::BTreeMap<SeriesKey, LabeledSeries> {
+        &self.labeled
     }
 
     /// Per-step aggregates keyed by step name, for the `report@v1` builder.

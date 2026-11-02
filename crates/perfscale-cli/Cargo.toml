@@ -49,8 +49,15 @@ assert_cmd    = "2"
 predicates    = "3"
 tempfile      = "3"
 wiremock      = "0.6"
-tower         = { version = "0.5", features = ["util"] }
+# Decoding remote-write bodies in the streaming-reporter e2e tests.
+snap = "1"
+prost = "0.14"
+# The OTLP/gRPC collector the streaming e2e test runs in-process.
+tonic = { version = "0.14.6", features = ["transport"] }
+tokio-stream = "0.1"
+http = "1"
 http-body-util = "0.1"
+tower         = { version = "0.5", features = ["util"] }
 serial_test = { version = "3", features = ["file_locks"] }
 tokio-tungstenite = "0.30"
 futures-util = { version = "0.3.32", default-features = false, features = ["sink"] }

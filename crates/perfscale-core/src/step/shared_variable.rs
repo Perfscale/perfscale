@@ -948,6 +948,7 @@ mod tests {
             severity: None,
             message: None,
             condition: None,
+            labels: None,
         }
     }
 

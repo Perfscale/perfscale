@@ -17,8 +17,8 @@ on:
         description: "hyperfine runs per scenario"
         default: "5"
       suites:
-        description: "Suites to run (see scripts/bench.sh)"
-        default: "overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sourceips"
+        description: "Suites to run (see scripts/bench.sh; 'renaissance' runs in the default from the pinned CI jar; 'specjbb' is opt-in — needs a caller-supplied SPECjbb2015 kit via SPECJBB_HOME/SPECJBB_JAR and is never in the default)"
+        default: "overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sourceips renaissance"
       graphql_duration:
         description: "Run duration per GraphQL scenario (e.g. 10s, 30s)"
         default: "10s"
@@ -77,6 +77,11 @@ env:
   SYTESTER_VERSION: "6.10.0"
   SYTESTER_URL: "https://gitverse.ru/api/attachments/12ca5198-bc4b-47ca-8054-2f27bf3279e2"
   SYTESTER_SHA256: "3f2ae828685720276a8391b847ab4d99e436d74c876120e253d82ce41831a652"
+  # Renaissance MIT suite (the `renaissance` bench suite, in the daily
+  # default): the official MIT distribution jar, pinned by version + sha256.
+  RENAISSANCE_VERSION: "0.16.2"
+  RENAISSANCE_URL: "https://github.com/renaissance-benchmarks/renaissance/releases/download/v0.16.2/renaissance-mit-0.16.2.jar"
+  RENAISSANCE_SHA256: "75c5cb7503f4d808f6cbf2ea32ffc41dc02cc8560854c94bbbe4bedc7553e6f6"
 
 jobs:
   bench:
@@ -171,6 +176,25 @@ jobs:
             curl -fsSL --retry 5 --retry-all-errors -C - -o "$jar" "$SYTESTER_URL"
           fi
           echo "${SYTESTER_SHA256}  $jar" | sha256sum -c -
+
+      # ~440 MB MIT jar from GitHub releases — cached by version + sha so
+      # the daily run doesn't re-download it. `-C -` resumes a dropped
+      # transfer; the checksum is verified on every run, cache hit or not.
+      - name: Cache Renaissance MIT jar
+        id: renaissance-cache
+        uses: actions/cache@v4
+        with:
+          path: target/renaissance/renaissance-mit-0.16.2.jar
+          key: renaissance-${{ env.RENAISSANCE_VERSION }}-${{ env.RENAISSANCE_SHA256 }}
+
+      - name: Install Renaissance MIT jar
+        run: |
+          jar=target/renaissance/renaissance-mit-0.16.2.jar
+          if [ "${{ steps.renaissance-cache.outputs.cache-hit }}" != "true" ]; then
+            mkdir -p target/renaissance
+            curl -fsSL --retry 5 --retry-all-errors -C - -o "$jar" "$RENAISSANCE_URL"
+          fi
+          echo "${RENAISSANCE_SHA256}  $jar" | sha256sum -c -
 
       - name: JMeter on PATH
         run: echo "/opt/apache-jmeter-${JMETER_VERSION}/bin" >> "$GITHUB_PATH"
@@ -325,10 +349,11 @@ jobs:
           VUS: ${{ github.event.inputs.vus || '10' }}
           DURATION: ${{ github.event.inputs.duration || '30s' }}
           RUNS: ${{ github.event.inputs.runs || '5' }}
-          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sourceips' }}
+          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sourceips renaissance' }}
           APPS: ${{ github.event.inputs.apps || 'k6 jmeter locust sytester' }}
           SYTESTER_JAR: ${{ github.workspace }}/target/sytester/SyTester.jar
           SYTESTER_JAVA: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+          RENAISSANCE_JAVA: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
           BOUNDARY_DURATION: ${{ github.event.inputs.boundary_duration || '30s' }}
           GQL_DURATION: ${{ github.event.inputs.graphql_duration || '10s' }}
         run: ./scripts/bench.sh
@@ -374,4 +399,6 @@ jobs:
           path: |
             bench-report.md
             bench-results.json
+            specjbb-artifacts/
+            renaissance-artifacts/
           retention-days: 90

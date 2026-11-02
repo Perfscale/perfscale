@@ -1,23 +1,28 @@
-//! During-run metrics streaming (`report:` run-config block).
+//! Metrics reporting (`report:` run-config block): during-run streaming to
+//! pluggable reporters and end-of-run report documents.
 //!
 //! # Overview
 //!
 //! While a run is in progress the native engine can emit a cumulative
 //! [`MetricSnapshot`](stream::MetricSnapshot) of every metric family every
-//! `interval_ms` over an optional channel (`run_native`'s `metrics_tx`), and a
-//! [`DuringRunShipper`](stream::DuringRunShipper) batches those snapshots into
-//! samples and POSTs them to `<url>/api/v1/metrics` — the same endpoint the
-//! end-of-run summary report uses. Shipping is adaptive: a CPU gate holds
-//! sends and defers snapshots while the host is saturated (the VU loop always
-//! wins), undelivered batches are kept (soft `max_pending` warn cap), and
-//! failures retry with exponential backoff.
+//! `interval_ms` over an optional channel (`run_native`'s `metrics_tx`).
+//! Streaming reporters (issue #12) — [`serve`] (`std/report/serve@v1`, the
+//! historical `report.url` path), [`prometheus_rw`]
+//! (`std/report/prometheus-rw@v1`) and [`otel`] (`std/report/otel@v1`) —
+//! fan out from that one pump, each with its own bounded drop-oldest queue,
+//! batching, retry and final flush ([`delivery`]). A slow backend can never
+//! block the VU loop or another reporter.
 //!
-//! Off by default: with no `report` block (or `during_run: false`) the engine
-//! spawns no task and no channel traffic exists — the zero-overhead path.
+//! Off by default: with no streaming reporter configured the engine spawns
+//! no task and no channel traffic exists — the zero-overhead path.
 
 pub mod cpu;
+pub mod delivery;
 pub mod html;
+pub mod otel;
+pub mod prometheus_rw;
 pub mod reporters;
+pub mod serve;
 pub mod stream;
 pub mod v1;
 /// WASM end-of-run reporters — requires the `wasm-libs` feature (the CLI
@@ -31,10 +36,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use reporters::{
-    reporter_kind, resolve_env_refs, validate_reporters, wasm_reporter_module, ReporterConfig,
-    ReporterKind, ReporterWith,
+    reporter_kind, resolve_env_refs, validate_labels, validate_reporters, wasm_reporter_module,
+    ReporterCapabilities, ReporterConfig, ReporterKind, ReporterWith, RetryConfig,
+    DEFAULT_MAX_SERIES,
 };
-pub use stream::{snapshot_to_samples, DuringRunShipper, MetricSnapshot, Sample};
+pub use serve::{Auth, DuringRunShipper};
+pub use stream::{snapshot_to_samples, MetricSnapshot, Sample, SeriesSnapshot};
 
 /// Minimum snapshot/flush interval — below ~100ms the sampler and shipper
 /// would spend the run servicing timers instead of letting the VUs work.
@@ -78,9 +85,10 @@ pub struct ReportRunConfig {
     #[serde(default = "default_max_cpu_percent")]
     pub max_cpu_percent: f64,
 
-    /// Soft cap on sealed batches awaiting delivery: crossing it logs a
-    /// rate-limited warning, but batches are never dropped while the run is
-    /// alive (default 24).
+    /// Bounded queue depth for the legacy serve streaming path: snapshots
+    /// and sealed batches awaiting delivery. Overflow drops the OLDEST entry
+    /// and increments `perfscale_report_dropped_snapshots_total` — values
+    /// are cumulative, so the next snapshot restores them (default 24).
     #[serde(default = "default_max_pending")]
     pub max_pending: usize,
 

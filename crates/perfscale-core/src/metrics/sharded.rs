@@ -125,6 +125,35 @@ impl ShardedMetrics {
             .add_counters_and_rates(obj, failed, rates);
     }
 
+    /// The per-step fold with the step's labels — see
+    /// [`Metrics::add_counters_and_rates_labeled`].
+    pub(crate) fn add_counters_and_rates_labeled(
+        &self,
+        obj: &Map<String, Value>,
+        failed: bool,
+        rates: &[&str],
+        labels: &std::collections::BTreeMap<String, String>,
+    ) {
+        self.home()
+            .lock()
+            .unwrap()
+            .add_counters_and_rates_labeled(obj, failed, rates, labels);
+    }
+
+    /// One request-like step's sample with the step's labels — see
+    /// [`Metrics::record_labeled`]. The aggregate view (`total`/`failures`/
+    /// duration histogram) is updated too — callers use this INSTEAD of
+    /// [`ShardedMetrics::record`].
+    pub(crate) fn record_labeled(
+        &self,
+        s: &crate::step::actions::HttpSample,
+        labels: &std::collections::BTreeMap<String, String>,
+    ) {
+        let mut guard = self.home().lock().unwrap();
+        guard.record_aggregate(s);
+        guard.record_labeled(s, labels);
+    }
+
     /// One duration sample into a named histogram — see
     /// [`Metrics::record_hist_sample`].
     pub(crate) fn record_hist_sample(&self, name: &str, ms: f64) {

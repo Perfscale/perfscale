@@ -32,6 +32,16 @@ ROW_METRICS = [
     ("pubsub", "rps", True),
     ("pubsub", "p95_ms", False),
     ("startup", "overhead_vs_ideal_ms", False),
+    # SPECjbb2015: jOPS (Java operations/s), not HTTP RPS. Compared only
+    # between rows of the same run mode — max-jOPS across modes (e.g.
+    # COMPOSITE vs MULTI) are not the same quantity.
+    ("specjbb", "max_jops", True),
+    ("specjbb", "critical_jops", True),
+    # Renaissance: benchmark operation throughput (measured ops/s, NOT HTTP
+    # RPS) and per-operation time. Rows are labeled by benchmark, so only
+    # the same benchmark is ever compared.
+    ("renaissance", "ops_per_s", True),
+    ("renaissance", "avg_ms", False),
 ]
 
 
@@ -50,7 +60,16 @@ def collect(old, new):
         for label in new_rows:
             if label not in old_rows:
                 continue
-            o, n = old_rows[label].get(metric), new_rows[label].get(metric)
+            o_row, n_row = old_rows[label], new_rows[label]
+            # Never compare jOPS across run modes, even if a label matches.
+            if suite == "specjbb" and o_row.get("mode") != n_row.get("mode"):
+                continue
+            # Never compare across Renaissance benchmarks, even if a label
+            # somehow matches (labels are benchmark names, so this is the
+            # belt-and-suspenders twin of the specjbb mode rule).
+            if suite == "renaissance" and o_row.get("benchmark") != n_row.get("benchmark"):
+                continue
+            o, n = o_row.get(metric), n_row.get(metric)
             if isinstance(o, (int, float)) and isinstance(n, (int, float)):
                 yield f"{suite}/{label} {metric}", o, n, higher_better
 

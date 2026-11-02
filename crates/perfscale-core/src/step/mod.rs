@@ -116,6 +116,14 @@ pub struct Step {
     /// actions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+
+    /// Step-level metric labels (issue #12): stamped on every series this
+    /// step emits; merge priority over reporter and run labels. Values must
+    /// be scalars and support `${{ inputs.* }}` / `${{ env.* }}`
+    /// interpolation, resolved once before the run. `run_id` and `worker`
+    /// are reserved (engine-set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<std::collections::BTreeMap<String, String>>,
     /// Run the step only when this condition holds (`if:` or `when:` in YAML;
     /// equivalent aliases, rejected together). Both `${{ … }}` placeholders
     /// and `${…}` generator tokens expand first, then the result is either a
@@ -271,6 +279,15 @@ pub struct RunConfig {
     #[serde(skip)]
     #[schemars(skip)]
     pub config_extensions: serde_json::Map<String, serde_json::Value>,
+
+    /// Trusted run-id override (issue #12): embedding agents running several
+    /// workers of one logical run set the controlplane-issued run id so every
+    /// worker's snapshots share it. Never parsed from YAML/the wire — the
+    /// embedding process sets it programmatically; standalone runs keep the
+    /// generated UUID.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub run_id_override: Option<String>,
 }
 
 /// One `stages:` entry — ramp the VU count linearly to `target` over
@@ -355,6 +372,7 @@ impl Default for RunConfig {
             webrtc: None,
             input_values: serde_json::Map::new(),
             config_extensions: serde_json::Map::new(),
+            run_id_override: None,
         }
     }
 }

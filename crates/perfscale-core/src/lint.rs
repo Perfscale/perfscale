@@ -466,8 +466,9 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 const TEST_TOP_FIELDS: [&str; 2] = ["steps", "libraries"];
-const STEP_FIELDS: [&str; 10] = [
+const STEP_FIELDS: [&str; 11] = [
     "name", "use", "uses", "with", "check", "outputs", "severity", "message", "if", "when",
+    "labels",
 ];
 const CONFIG_TOP_FIELDS: [&str; 18] = [
     "vus",
@@ -499,9 +500,29 @@ const REPORT_FIELDS: [&str; 8] = [
     "reporters",
     "labels",
 ];
-const REPORTER_FIELDS: [&str; 2] = ["use", "with"];
-const REPORTER_WITH_FIELDS: [&str; 6] =
-    ["path", "url", "headers", "max_samples", "output", "config"];
+const REPORTER_FIELDS: [&str; 7] = [
+    "use",
+    "during_run",
+    "interval_ms",
+    "labels",
+    "max_series",
+    "max_samples",
+    "with",
+];
+const REPORTER_WITH_FIELDS: [&str; 12] = [
+    "path",
+    "url",
+    "endpoint",
+    "headers",
+    "histogram",
+    "retry",
+    "batch_size",
+    "max_pending",
+    "final_timeout",
+    "max_samples",
+    "output",
+    "config",
+];
 const CHECK_FIELDS: [&str; 7] = [
     "on",
     "status",
@@ -702,6 +723,8 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
     };
 
     unknown_field_issues(map, &STEP_FIELDS, loc, issues);
+    // Step metric labels (issue #12): reserved engine labels are rejected.
+    lint_labels(map.get("labels"), &format!("{loc}/labels"), issues);
 
     // `use` is canonical; `uses` is an accepted alias.
     let use_key = if map.contains_key("uses") {
@@ -886,6 +909,7 @@ fn lint_config_fields(value: &Value, issues: &mut Vec<LintIssue>) {
     let Some(map) = value.as_object() else { return };
     if let Some(report) = map.get("report").and_then(|v| v.as_object()) {
         unknown_field_issues(report, &REPORT_FIELDS, "/report", issues);
+        lint_labels(report.get("labels"), "/report/labels", issues);
         lint_reporters(report, issues);
     }
 
@@ -1032,25 +1056,54 @@ fn lint_reporters(report: &serde_json::Map<String, Value>, issues: &mut Vec<Lint
             (None, _) => issues.push(LintIssue {
                 location: loc.clone(),
                 problem: "a reporter entry needs `use:` naming the reporter".into(),
-                suggestion: Some(
-                    "built-ins: std/report/json@v1, std/report/junit@v1, std/report/html@v1; or wasm:./path/to/reporter.wasm"
-                        .into(),
-                ),
+                suggestion: Some(format!(
+                    "built-ins: {}; or wasm:./path/to/reporter.wasm",
+                    crate::report::reporters::BUILTIN_REPORTER_IDS
+                )),
             }),
-            (Some(u), None)
-                if crate::report::reporter_kind(u).is_none() =>
-            {
+            (Some(u), None) if crate::report::reporter_kind(u).is_none() => {
                 issues.push(LintIssue {
                     location: format!("{loc}/use"),
                     problem: format!("unknown reporter '{u}'"),
-                    suggestion: Some(
-                        "built-ins: std/report/json@v1, std/report/junit@v1, std/report/html@v1; or wasm:./path/to/reporter.wasm"
-                            .into(),
-                    ),
+                    suggestion: Some(format!(
+                        "built-ins: {}; or wasm:./path/to/reporter.wasm",
+                        crate::report::reporters::BUILTIN_REPORTER_IDS
+                    )),
                 });
             }
             _ => {}
         }
+        // Engine-owned keys (issue #12): capability and label checks.
+        let during_run = entry
+            .get("during_run")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if during_run
+            && is_wasm.is_none()
+            && use_
+                .and_then(crate::report::reporter_kind)
+                .is_some_and(|k| !k.capabilities().stream)
+        {
+            let u = use_.expect("checked above");
+            issues.push(LintIssue {
+                location: format!("{loc}/during_run"),
+                problem: format!(
+                    "reporter '{u}' is final-only and does not support `during_run`"
+                ),
+                suggestion: Some(
+                    "streaming reporters: std/report/serve@v1, std/report/prometheus-rw@v1, std/report/otel@v1"
+                        .into(),
+                ),
+            });
+        }
+        if during_run && is_wasm.is_some() {
+            issues.push(LintIssue {
+                location: format!("{loc}/during_run"),
+                problem: "WASM reporters are final-only — `during_run` does not apply".into(),
+                suggestion: None,
+            });
+        }
+        lint_labels(obj.get("labels"), &format!("{loc}/labels"), issues);
         let with = entry.get("with").and_then(Value::as_object);
         // WASM reporters deliver through the guest's emit-file; the
         // destination check is replaced by a module loadability check.
@@ -1078,14 +1131,28 @@ fn lint_reporters(report: &serde_json::Map<String, Value>, issues: &mut Vec<Lint
             }
             continue;
         }
+        let kind = use_.and_then(crate::report::reporter_kind);
         match with {
-            None => issues.push(LintIssue {
-                location: loc.clone(),
-                problem:
-                    "a reporter needs a destination: `with.path` (file) or `with.url` (HTTP push)"
-                        .into(),
-                suggestion: None,
-            }),
+            None if kind.is_some() => {
+                let problem = match kind.expect("checked") {
+                    crate::report::ReporterKind::Otel => {
+                        "reporter std/report/otel@v1 needs `with.endpoint` (the OTLP/gRPC collector, e.g. http://localhost:4317)"
+                    }
+                    crate::report::ReporterKind::Serve
+                    | crate::report::ReporterKind::PrometheusRw => {
+                        "a streaming reporter needs a target: `with.url`"
+                    }
+                    _ => {
+                        "a reporter needs a destination: `with.path` (file) or `with.url` (HTTP push)"
+                    }
+                };
+                issues.push(LintIssue {
+                    location: loc.clone(),
+                    problem: problem.into(),
+                    suggestion: None,
+                });
+            }
+            None => {}
             Some(w) => {
                 unknown_field_issues(w, &REPORTER_WITH_FIELDS, &format!("{loc}/with"), issues);
                 let has_path = w
@@ -1096,15 +1163,143 @@ fn lint_reporters(report: &serde_json::Map<String, Value>, issues: &mut Vec<Lint
                     .get("url")
                     .and_then(Value::as_str)
                     .is_some_and(|u| !u.is_empty());
-                if has_path == has_url {
+                let has_endpoint = w
+                    .get("endpoint")
+                    .and_then(Value::as_str)
+                    .is_some_and(|u| !u.is_empty());
+                match kind {
+                    Some(crate::report::ReporterKind::Serve)
+                    | Some(crate::report::ReporterKind::PrometheusRw) => {
+                        if !has_url || has_path || has_endpoint {
+                            issues.push(LintIssue {
+                                location: format!("{loc}/with"),
+                                problem: "a streaming reporter needs exactly `url` (no `path`/`endpoint`)".into(),
+                                suggestion: None,
+                            });
+                        }
+                        if kind == Some(crate::report::ReporterKind::Serve)
+                            && w.contains_key("histogram")
+                        {
+                            issues.push(LintIssue {
+                                location: format!("{loc}/with/histogram"),
+                                problem: "`histogram` only applies to std/report/prometheus-rw@v1"
+                                    .into(),
+                                suggestion: None,
+                            });
+                        }
+                        if let Some(h) = w.get("histogram").and_then(Value::as_str) {
+                            if h != "classic" && h != "native" {
+                                issues.push(LintIssue {
+                                    location: format!("{loc}/with/histogram"),
+                                    problem: format!(
+                                        "unknown histogram mode '{h}' — expected `classic` or `native`"
+                                    ),
+                                    suggestion: None,
+                                });
+                            }
+                        }
+                    }
+                    Some(crate::report::ReporterKind::Otel) => {
+                        if !has_endpoint || has_path || has_url {
+                            issues.push(LintIssue {
+                                location: format!("{loc}/with"),
+                                problem:
+                                    "std/report/otel@v1 needs exactly `endpoint` (no `path`/`url`)"
+                                        .into(),
+                                suggestion: None,
+                            });
+                        }
+                    }
+                    Some(_) => {
+                        if has_path == has_url {
+                            issues.push(LintIssue {
+                                location: format!("{loc}/with"),
+                                problem:
+                                    "exactly one of `path` (file) or `url` (HTTP push) is required"
+                                        .into(),
+                                suggestion: None,
+                            });
+                        }
+                        if has_endpoint {
+                            issues.push(LintIssue {
+                                location: format!("{loc}/with/endpoint"),
+                                problem: "`endpoint` only applies to std/report/otel@v1".into(),
+                                suggestion: None,
+                            });
+                        }
+                    }
+                    None => {}
+                }
+                // Delivery knobs shared by all kinds.
+                if let Some(retry) = w.get("retry").and_then(Value::as_object) {
+                    if let Some(b) = retry.get("backoff").and_then(Value::as_str) {
+                        if let Err(e) = crate::report::reporters::parse_backoff_range(b) {
+                            issues.push(LintIssue {
+                                location: format!("{loc}/with/retry/backoff"),
+                                problem: e,
+                                suggestion: Some("e.g. `backoff: 1s..30s`".into()),
+                            });
+                        }
+                    }
+                    if retry
+                        .get("max_attempts")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|n| n == 0)
+                    {
+                        issues.push(LintIssue {
+                            location: format!("{loc}/with/retry/max_attempts"),
+                            problem: "`max_attempts` must be ≥ 1".into(),
+                            suggestion: None,
+                        });
+                    }
+                }
+                if let Some(ft) = w.get("final_timeout").and_then(Value::as_str) {
+                    if let Err(e) = crate::step::parse_duration_ms_strict(ft) {
+                        issues.push(LintIssue {
+                            location: format!("{loc}/with/final_timeout"),
+                            problem: e,
+                            suggestion: Some("e.g. `final_timeout: 30s`".into()),
+                        });
+                    }
+                }
+                if w.get("max_pending")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|n| n == 0)
+                {
                     issues.push(LintIssue {
-                        location: format!("{loc}/with"),
-                        problem: "exactly one of `path` (file) or `url` (HTTP push) is required"
-                            .into(),
+                        location: format!("{loc}/with/max_pending"),
+                        problem: "`max_pending` must be ≥ 1".into(),
                         suggestion: None,
                     });
                 }
             }
+        }
+    }
+}
+
+/// Label-map linting (issue #12), shared by reporter labels, run
+/// `report.labels` and step `labels:`: reserved engine labels can never be
+/// user-set, and values must be scalars.
+fn lint_labels(labels: Option<&Value>, loc: &str, issues: &mut Vec<LintIssue>) {
+    let Some(labels) = labels.and_then(Value::as_object) else {
+        return;
+    };
+    for (k, v) in labels {
+        if crate::report::reporters::RESERVED_LABELS.contains(&k.as_str()) {
+            issues.push(LintIssue {
+                location: format!("{loc}/{k}"),
+                problem: format!(
+                    "label '{k}' is reserved — the engine always sets `run_id` and `worker`"
+                ),
+                suggestion: None,
+            });
+        }
+        if !v.is_string() && !v.is_number() && !v.is_boolean() {
+            issues.push(LintIssue {
+                location: format!("{loc}/{k}"),
+                problem: "label values must be scalars (string, number or boolean)".into(),
+                suggestion: None,
+            });
         }
     }
 }
@@ -3119,6 +3314,136 @@ report:
             issues
                 .iter()
                 .any(|i| i.location == "/report/reporters/0/with"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn lint_streaming_reporters_and_engine_keys() {
+        // Streaming reporters with engine keys lint clean.
+        let ok = r#"
+report:
+  labels: { testid: "${{ inputs.testid }}" }
+  reporters:
+    - use: std/report/prometheus-rw@v1
+      during_run: true
+      interval_ms: 5000
+      labels: { env: staging }
+      max_series: 10000
+      with:
+        url: http://alloy:8429/api/v1/metrics/write
+        histogram: native
+        retry: { max_attempts: 5, backoff: 1s..30s }
+        max_pending: 24
+        final_timeout: 30s
+    - use: std/report/otel@v1
+      during_run: true
+      with: { endpoint: http://otel-collector:4317 }
+    - use: std/report/serve@v1
+      during_run: true
+      with: { url: http://localhost:7999 }
+"#;
+        assert_eq!(lint(ok, DocKind::Config), vec![]);
+
+        // during_run on a final-only reporter is a lint error.
+        let bad = r#"
+report:
+  reporters:
+    - use: std/report/junit@v1
+      during_run: true
+      with: { path: out.xml }
+"#;
+        let issues = lint(bad, DocKind::Config);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.location == "/report/reporters/0/during_run"
+                    && i.problem.contains("final-only")),
+            "{issues:?}"
+        );
+
+        // Streaming reporters need their own destinations.
+        let nodest = r#"
+report:
+  reporters:
+    - use: std/report/otel@v1
+      with: { url: http://x }
+"#;
+        let issues = lint(nodest, DocKind::Config);
+        assert!(
+            issues.iter().any(|i| i.problem.contains("endpoint")),
+            "{issues:?}"
+        );
+
+        // Reserved engine labels can never be user-set, at any level.
+        let reserved = r#"
+report:
+  labels: { run_id: mine }
+  reporters:
+    - use: std/report/serve@v1
+      with: { url: http://x }
+      labels: { worker: "0" }
+"#;
+        let issues = lint(reserved, DocKind::Config);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.location == "/report/labels/run_id" && i.problem.contains("reserved")),
+            "{issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.location == "/report/reporters/0/labels/worker"),
+            "{issues:?}"
+        );
+
+        // Bad delivery knobs.
+        let knobs = r#"
+report:
+  reporters:
+    - use: std/report/serve@v1
+      with:
+        url: http://x
+        retry: { backoff: nonsense }
+        final_timeout: whenever
+"#;
+        let issues = lint(knobs, DocKind::Config);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.location == "/report/reporters/0/with/retry/backoff"),
+            "{issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.location == "/report/reporters/0/with/final_timeout"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn lint_step_labels() {
+        // Scalar step labels lint clean; reserved keys are rejected.
+        let ok = r#"
+steps:
+  - use: std/http@v1
+    with: { url: http://x }
+    labels: { channel: book }
+"#;
+        assert_eq!(lint(ok, DocKind::Test), vec![]);
+        let bad = r#"
+steps:
+  - use: std/http@v1
+    with: { url: http://x }
+    labels: { worker: "7" }
+"#;
+        let issues = lint(bad, DocKind::Test);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.location == "/steps/0/labels/worker" && i.problem.contains("reserved")),
             "{issues:?}"
         );
     }
