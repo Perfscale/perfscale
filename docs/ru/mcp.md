@@ -65,3 +65,6 @@ claude mcp add perfscale -- npx -y @perfscale/mcp
 - `run_test` выполняется локально с той же семантикой, что и
   [`perfscale run`](cli/commands.md#perfscale-run): ровно один вариант из
   k6/locust/файл, а для нативных тестов требуется конфигурация.
+- Чтобы сгенерировать готовые определения агентов и зарегистрировать этот
+  MCP-сервер одним шагом, используйте [`perfscale init-agents`](agents.md)
+  (а `perfscale init-skills` — для skill-папок).

@@ -1,5 +1,7 @@
 pub mod burn;
 pub mod cache;
+pub mod init_agents;
+pub mod init_skills;
 pub mod install;
 pub mod lint;
 pub mod man;

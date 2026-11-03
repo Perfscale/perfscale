@@ -64,3 +64,6 @@ same tool result, so invalid YAML never silently lands on disk.
 - `run_test` executes locally with the same semantics as
   [`perfscale run`](cli/commands.md#perfscale-run): exactly one of
   k6/locust/file, and native tests require a config.
+- To generate ready-made agent definitions and register this MCP server in
+  one step, use [`perfscale init-agents`](agents.md) (and
+  `perfscale init-skills` for the skill folders).

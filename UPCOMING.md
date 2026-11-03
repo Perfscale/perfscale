@@ -12,6 +12,23 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- Coding-agent integration (issue #15): two new commands wire perfscale into
+  AI coding agents. `perfscale init-skills [--loop claude|agents] [-g]`
+  installs embedded skill folders (`perfscale-cli` with YAML/actions/
+  load-shapes/thresholds/metrics/reporters/protocols references,
+  `perfscale-library-sdk`, `perfscale-migration-k6`) into `./.claude/skills`,
+  `./.agents/skills`, or the home directory with `-g`; re-running overwrites.
+  `perfscale init-agents [--loop claude|codex|copilot|opencode|vscode|
+  vscode-legacy] [-c config] [--prompts]` (default loop: `claude`) generates
+  the `perfscale-test-{planner,generator,healer}` agent definitions per loop,
+  registers the `@perfscale/mcp` server in the loop's MCP config
+  (`npx -y @perfscale/mcp`), and initializes the repo: `specs/README.md`, a
+  found-or-created `tests/seed.yaml`, and a minimal config. `--prompts`
+  installs the `perfscale-{plan,generate,heal,threshold}` prompt templates —
+  the `threshold` prompt replaces Playwright's `coverage` with a HOLD /
+  NOT HOLD verdict at a confirmed full-load run. Agents verify with small
+  1-VU runs by default, and the healer never edits `thresholds:`. See
+  `docs/agents.md`.
 - Streaming reporters (issue #12): `report.reporters` can now stream live,
   cumulative metrics during the run to pluggable sinks — `std/report/serve@v1`
   (the historical `report.url` path as a reporter), `std/report/prometheus-rw@v1`

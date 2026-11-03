@@ -17,6 +17,7 @@ perfscale — это единый CLI для запуска нагрузочны
 - [Рецепты](cli/examples.md) — готовые примеры для типовых задач
 - [Бенчмарки](benchmarks.md) — методология сравнения движков и запуски в CI
 - [MCP-сервер](mcp.md) — управление perfscale из AI-агентов по протоколу Model Context Protocol
+- [Агенты кодирования](agents.md) — `init-skills` / `init-agents`: скиллы, определения агентов и промпты для Claude Code, Codex, Copilot, opencode, VS Code
 
 ## Ядро (библиотека `perfscale-core`)
 
