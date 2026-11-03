@@ -2498,5 +2498,1415 @@
     "mtime": 1793613541.489568,
     "ast_hash": "479f17ac7dafac2f1e117ea0b6bd2bdc",
     "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/.claude/settings.json": {
+    "mtime": 1793724030.7883747,
+    "ast_hash": "87f0d903477984d0587a02f8fe185263",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/bench/gpu/run.sh": {
+    "mtime": 1793724030.7948854,
+    "ast_hash": "57513cc0833cac893a426d25eba7df6c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/build.rs": {
+    "mtime": 1793724030.7963398,
+    "ast_hash": "3be9d4ac95a8c4206f0bc504ccecf047",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/cli.rs": {
+    "mtime": 1793724707.0123606,
+    "ast_hash": "b85bc4d347e7ce01f170fbc568f17e9a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/burn.rs": {
+    "mtime": 1793724030.7970858,
+    "ast_hash": "2ec6988760766148b075e80d14865a29",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/cache.rs": {
+    "mtime": 1793724030.7994163,
+    "ast_hash": "d83be043075274fce46e41b545d73e8a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/init_agents.rs": {
+    "mtime": 1793726665.8665183,
+    "ast_hash": "29f02321bb86fae49e89d93625a7326c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/init_skills.rs": {
+    "mtime": 1793726142.052898,
+    "ast_hash": "f1eccee7573aa9a95634b758746fcca9",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/install.rs": {
+    "mtime": 1793724030.8002172,
+    "ast_hash": "1e6fb6388fb069e9248d2d5ff8547d53",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/lint.rs": {
+    "mtime": 1793724030.8006134,
+    "ast_hash": "172793b2cbc6d9e3bd45017e45c72efc",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/man.rs": {
+    "mtime": 1793724030.8007934,
+    "ast_hash": "6539a792fb7ee5f338d8c1b80865df95",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/metrics.rs": {
+    "mtime": 1793724030.8008888,
+    "ast_hash": "5bdfd6c713b78b949e0a24941a8954c5",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/mod.rs": {
+    "mtime": 1793724707.00753,
+    "ast_hash": "0c3fb2eeadd83726a891fe082982220a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/run.rs": {
+    "mtime": 1793724030.801607,
+    "ast_hash": "febe0cfb1165c1892f87875ffe69d3d4",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/schema.rs": {
+    "mtime": 1793724030.8018005,
+    "ast_hash": "4ca6fcf2203dca4a201da6f7fec86700",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/self_update.rs": {
+    "mtime": 1793724030.802459,
+    "ast_hash": "eb041f395450c2666fbdaba459228674",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/serve.rs": {
+    "mtime": 1793724030.8030891,
+    "ast_hash": "4023ad99ec3748af3ac206bab05a46e4",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/serve_docs.rs": {
+    "mtime": 1793724030.8036654,
+    "ast_hash": "1e1ca42690aaaaddeab26213b9bc7827",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/error.rs": {
+    "mtime": 1793724030.8142831,
+    "ast_hash": "f994df2280f00942c8c89b0981131bdc",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/main.rs": {
+    "mtime": 1793724707.007629,
+    "ast_hash": "59ee41db6681147e225d8ad0f446cfb4",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/update.rs": {
+    "mtime": 1793724030.815174,
+    "ast_hash": "8491a28fb89db17aec3dcb441eae3675",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/version.rs": {
+    "mtime": 1793724030.8154662,
+    "ast_hash": "37bd7842d6699a16aef6af9fb627190a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/version_format.rs": {
+    "mtime": 1793724030.8158817,
+    "ast_hash": "df0a459e4e8b8701932116e74e7597d6",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/tests/burn.rs": {
+    "mtime": 1793724030.8160236,
+    "ast_hash": "36ec82bc25c357799758f16b73b8f5e3",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/tests/cli.rs": {
+    "mtime": 1793724030.8164768,
+    "ast_hash": "0dbb25edb6156d8afc9c3e6412f436bf",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/tests/e2e_workflows.rs": {
+    "mtime": 1793724030.8169997,
+    "ast_hash": "4f655f21c08cf12362584c29a1028dd1",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/tests/init.rs": {
+    "mtime": 1793726729.2972493,
+    "ast_hash": "61409c43c8eb7406ba9d556b198655ff",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/tests/install.rs": {
+    "mtime": 1793724030.8172586,
+    "ast_hash": "a9f397669697cdcc76b45d7a21cee45e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/tests/install_git.rs": {
+    "mtime": 1793724030.8173616,
+    "ast_hash": "f29c51c18dc18a1ffd0a5ff33bd2cfeb",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/tests/self_update.rs": {
+    "mtime": 1793724030.8176167,
+    "ast_hash": "30d12dcd5c045f386365b12ff70e0269",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/check-built.sh": {
+    "mtime": 1793724030.8183944,
+    "ast_hash": "7b6d56d96e26a2e3e453a74744ee3468",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/package.json": {
+    "mtime": 1793724030.8190422,
+    "ast_hash": "15ed76d1c0db02e98148f1ce83410480",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/postcss.config.js": {
+    "mtime": 1793724030.8200443,
+    "ast_hash": "c735540bb63936a123bc867d950c9f69",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/App.tsx": {
+    "mtime": 1793724030.8203893,
+    "ast_hash": "70491c686b9b2ee4584c26b0ba4e3879",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/components/Dashboard.tsx": {
+    "mtime": 1793724030.8206463,
+    "ast_hash": "f96ecc0583023e6efbc26d4bb3e4036e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/components/Docs.tsx": {
+    "mtime": 1793724030.8208447,
+    "ast_hash": "205512bc60f20f5db320c24bae955039",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/components/Header.tsx": {
+    "mtime": 1793724030.821572,
+    "ast_hash": "90cb5e67078e9d30c8c52a0cd8831707",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/components/MetricCard.tsx": {
+    "mtime": 1793724030.8217194,
+    "ast_hash": "adb741bbae752323c21e18399fe2a29f",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/components/MetricsTable.tsx": {
+    "mtime": 1793724030.8218737,
+    "ast_hash": "001b063fe24c0d250cbdad4a0ec1f610",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/components/Sparkline.tsx": {
+    "mtime": 1793724030.822282,
+    "ast_hash": "f69fd54b68bb24fe6f6aebc9ac702a64",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/components/ui/badge.tsx": {
+    "mtime": 1793724030.8224788,
+    "ast_hash": "b5335a60e6aba92d18fa0213ffcd7ffb",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/components/ui/button.tsx": {
+    "mtime": 1793724030.82263,
+    "ast_hash": "f11c0e9c92a15566bb072dea98dd6d24",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/components/ui/card.tsx": {
+    "mtime": 1793724030.8229313,
+    "ast_hash": "31cc44d40275eb50a7e72d5995c8fdf8",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/components/ui/table.tsx": {
+    "mtime": 1793724030.823339,
+    "ast_hash": "6afa6f9fe1c070eba245cf89638a937f",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/components/ui/tabs.tsx": {
+    "mtime": 1793724030.8235683,
+    "ast_hash": "50b73fd6e7f5d28789602bb8018dd8ac",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/components/ui/tooltip.tsx": {
+    "mtime": 1793724030.8239143,
+    "ast_hash": "ac241314ce8228908bc929eefc083fd7",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/hooks/useServeState.ts": {
+    "mtime": 1793724030.8241832,
+    "ast_hash": "885a1fd75dc3e46c1730fb95a21867e9",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/lib/docs.ts": {
+    "mtime": 1793724030.8247702,
+    "ast_hash": "7952ac068a845c33209bac2c3336cc55",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/lib/state.test.ts": {
+    "mtime": 1793724030.825269,
+    "ast_hash": "4a50a706b79b95f7738aacdb6fc05921",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/lib/state.ts": {
+    "mtime": 1793724030.8254478,
+    "ast_hash": "a98df9fb23859cdea3d8339bb68aed3d",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/lib/utils.ts": {
+    "mtime": 1793724030.825827,
+    "ast_hash": "d9837f38cc05303254571985e3164050",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/src/main.tsx": {
+    "mtime": 1793724030.8260856,
+    "ast_hash": "2c699e4d141d9bd413027585b8498954",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/tailwind.config.js": {
+    "mtime": 1793724030.8266277,
+    "ast_hash": "ebfbcb7da8cd045da3c07bf6dd9e882b",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/tsconfig.json": {
+    "mtime": 1793724030.8270152,
+    "ast_hash": "cad675ac7a1d98fc71a557d929aac2bb",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/vite.config.ts": {
+    "mtime": 1793724030.8273766,
+    "ast_hash": "d8d3aa998f7beaa7188bb64a4cdab90b",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-connection/src/connection.rs": {
+    "mtime": 1793724030.8276274,
+    "ast_hash": "60b51ad8222f3215c3a4e2230c4d49fb",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-connection/src/extensions.rs": {
+    "mtime": 1793724030.82772,
+    "ast_hash": "5d1c9ba8d7037c54f743a84ed31ff45c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-connection/src/lib.rs": {
+    "mtime": 1793724030.8279052,
+    "ast_hash": "99132cdce444dd756f26bba9a461ad6b",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-connection/src/registry.rs": {
+    "mtime": 1793724030.8284416,
+    "ast_hash": "927d0e687fbafa5ee5900257811ac391",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/benches/engine.rs": {
+    "mtime": 1793724030.8295023,
+    "ast_hash": "29c989b75500e25aae5a7f33196de734",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/benches/generate.rs": {
+    "mtime": 1793724030.8298454,
+    "ast_hash": "cdd5cfb1e987b10a65d43f065cd167fa",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/benches/library.rs": {
+    "mtime": 1793724030.8303003,
+    "ast_hash": "095b566c5d86b40f0452c71bd98ca682",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/build.rs": {
+    "mtime": 1793724030.8304787,
+    "ast_hash": "91b1319326e1133874bb79acad9f9cb8",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/examples/gen_schema.rs": {
+    "mtime": 1793724030.8305948,
+    "ast_hash": "f332f5c3d4a2da6007e9252b9f1444e2",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/examples/graphql_server.rs": {
+    "mtime": 1793724030.8306687,
+    "ast_hash": "281027c7d82e0732d12ceab37fab6ddb",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/examples/grpc_echo_server.rs": {
+    "mtime": 1793724030.830747,
+    "ast_hash": "a098dd9652d69b209b2420b2724a98f9",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/generate.rs": {
+    "mtime": 1793724030.832013,
+    "ast_hash": "bc470fa0b05501ecbcc4b6cfe161b30b",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/gpu.rs": {
+    "mtime": 1793724030.832445,
+    "ast_hash": "f4e3592cfb08370035fdf4996a6dfd56",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/import.rs": {
+    "mtime": 1793724030.8330126,
+    "ast_hash": "66d37ee352550558ad8f7c152579ce3f",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/inputs.rs": {
+    "mtime": 1793724030.833446,
+    "ast_hash": "15109c5ca5c6bef3c04b45afcb055003",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/introspect.rs": {
+    "mtime": 1793724030.8338223,
+    "ast_hash": "c608a1ec9cb8306c69bb2f4c6ea67b60",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/lib.rs": {
+    "mtime": 1793724030.8340569,
+    "ast_hash": "d2e26c2aef81efa3647d984281268a96",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/library/burn.rs": {
+    "mtime": 1793724030.8345785,
+    "ast_hash": "7b41c91fc950deb1333fb11c0c06676b",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/library/exec.rs": {
+    "mtime": 1793724030.8349915,
+    "ast_hash": "4c7b692fbdc3f4fc0170a61d84df3860",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/library/lockfile.rs": {
+    "mtime": 1793724030.835099,
+    "ast_hash": "c504edad4d49079ce2f41d58efadfc9e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/library/metrics.rs": {
+    "mtime": 1793724030.8355033,
+    "ast_hash": "15effe7a17fc3a6ed911294ecf270373",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/library/mod.rs": {
+    "mtime": 1793724030.836799,
+    "ast_hash": "bbaca1a161d5ae86699997d6dd5f12ad",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/library/std_json.rs": {
+    "mtime": 1793724030.8373902,
+    "ast_hash": "f496ffc6d4b280f69154d89d9bb66927",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/library/std_random.rs": {
+    "mtime": 1793724030.8381052,
+    "ast_hash": "677de61e4a5cabb6bcd073ade13a532c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/library/wasm.rs": {
+    "mtime": 1793724030.8417947,
+    "ast_hash": "8b52e040fcb9dca922308208ed3f28e0",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/lint.rs": {
+    "mtime": 1793724030.842843,
+    "ast_hash": "59e7f62df4cc7607ff1572c89c9096fa",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/log_mask.rs": {
+    "mtime": 1793724030.8431375,
+    "ast_hash": "3893798061bef52ec9493c2cbc5e6bdc",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/metrics/builtin.rs": {
+    "mtime": 1793724030.8433557,
+    "ast_hash": "9a891a63d9e5f40aac360653a6e5d028",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/metrics/engine.rs": {
+    "mtime": 1793724030.8437436,
+    "ast_hash": "352a55cebcde71ac3af33063f4344d07",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/metrics/mod.rs": {
+    "mtime": 1793724030.8439672,
+    "ast_hash": "fc80501ec3916c2c58d79bc6d14bd3bc",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/metrics/registry.rs": {
+    "mtime": 1793724030.844311,
+    "ast_hash": "9ab49e191bab38fcd5f020f93b0aec0e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/metrics/sharded.rs": {
+    "mtime": 1793724030.8448167,
+    "ast_hash": "483d1dcae315396954286b716f49c743",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/metrics/store.rs": {
+    "mtime": 1793724030.845255,
+    "ast_hash": "7259f2d07fbdecb3e34b43cca62808da",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/models.rs": {
+    "mtime": 1793724030.8456488,
+    "ast_hash": "2ce015d2fef8d09db5d9665efb307d44",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/pro.rs": {
+    "mtime": 1793724030.8457224,
+    "ast_hash": "b02d86f8a10d3301aa479e41b4b508b9",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/report/cpu.rs": {
+    "mtime": 1793724030.8458526,
+    "ast_hash": "325e2551556971f0632f8583d7cee598",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/report/delivery.rs": {
+    "mtime": 1793724030.8467188,
+    "ast_hash": "1ae766288babdfb06ac0d88756892442",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/report/html.rs": {
+    "mtime": 1793724030.8472774,
+    "ast_hash": "c95109f01a43cfd11a0b399268477461",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/report/mod.rs": {
+    "mtime": 1793724030.8477213,
+    "ast_hash": "1e5541c00a2a52b50133b0e2cc237138",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/report/otel.rs": {
+    "mtime": 1793724030.8481104,
+    "ast_hash": "98cfb869e0669b8bd22635167fde31da",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/report/prometheus_rw.rs": {
+    "mtime": 1793724030.8484414,
+    "ast_hash": "9fab554f8fcf5da6f2a2bfa36bba84f9",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/report/reporters.rs": {
+    "mtime": 1793724030.8490868,
+    "ast_hash": "a460bb80f2017fe7bf13ed98eed5483e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/report/serve.rs": {
+    "mtime": 1793724030.8494442,
+    "ast_hash": "8c2cacfa0622e8348d7c17affd93100d",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/report/stream.rs": {
+    "mtime": 1793724030.849825,
+    "ast_hash": "44d8b71607c55cd27e7016229a705213",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/report/v1.rs": {
+    "mtime": 1793724030.8501337,
+    "ast_hash": "d8250fa116eec4dbc3871b4a8cceb931",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/report/wasm.rs": {
+    "mtime": 1793724030.8504672,
+    "ast_hash": "2e0440bef0ae12385afe197d502108d4",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/runner/jmeter.rs": {
+    "mtime": 1793724030.8506215,
+    "ast_hash": "97dbd47c82c5a22d36ef22ed969f11ca",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/runner/k6.rs": {
+    "mtime": 1793724030.850808,
+    "ast_hash": "759455ae621c6b3fb1ddbfe56b1cab81",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/runner/locust.rs": {
+    "mtime": 1793724030.8509138,
+    "ast_hash": "1a2732feba39b82bf61f87056dc59aa5",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/runner/mod.rs": {
+    "mtime": 1793724030.8511755,
+    "ast_hash": "49a08f883e340d34db5d93aecf6afbbc",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/schema.rs": {
+    "mtime": 1793724030.8516803,
+    "ast_hash": "46d8fce627c8615ce22025513cc6a159",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/actions.rs": {
+    "mtime": 1793724030.853108,
+    "ast_hash": "bbc74454a95e3ecf3ff4c54b45a04188",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/condition.rs": {
+    "mtime": 1793724030.8541276,
+    "ast_hash": "c33eec2e49192d84c21b0b80deed2ba2",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/context.rs": {
+    "mtime": 1793724030.8545973,
+    "ast_hash": "23c4f1618c60c679120a25e05cf3b3df",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/db.rs": {
+    "mtime": 1793724030.855754,
+    "ast_hash": "8b6230dde97122e90ba2e4affcfe10cc",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/graphql.rs": {
+    "mtime": 1793724030.8564272,
+    "ast_hash": "e50b9aedcb8389966678e715e9f71a96",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/grpc.rs": {
+    "mtime": 1793724030.856936,
+    "ast_hash": "5fd9c5d2ad9106dc0a0519a50fa6754c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/http.rs": {
+    "mtime": 1793724030.858142,
+    "ast_hash": "a1f6937a4a8748b57f3c1e963375f646",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/json_doc.rs": {
+    "mtime": 1793724030.85876,
+    "ast_hash": "4e312753a6a02c2ae95cabe805cb78e8",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/json_path.rs": {
+    "mtime": 1793724030.8591716,
+    "ast_hash": "78b24d4d1ca4e2029a8eda6f8ce8bde4",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/libstep.rs": {
+    "mtime": 1793724030.8594735,
+    "ast_hash": "49171c858d7ecb47f5675338b24164d8",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/llm.rs": {
+    "mtime": 1793724030.8604753,
+    "ast_hash": "ad3f77688395acf8f1a7eb82e5f2182c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/mod.rs": {
+    "mtime": 1793724030.8609517,
+    "ast_hash": "dd5e0366045609e1df0289a4cf81ebf6",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/process.rs": {
+    "mtime": 1793724030.861334,
+    "ast_hash": "37c43bcaa6222b6de4656429e0c42d52",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/pubsub.rs": {
+    "mtime": 1793724030.861994,
+    "ast_hash": "df22edf369d4ad243e835d31c88019b2",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/resources.rs": {
+    "mtime": 1793724030.862819,
+    "ast_hash": "af849d304bb5b77bba2185824060bc47",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/runner.rs": {
+    "mtime": 1793724030.865043,
+    "ast_hash": "cb324b75cf02e832f487e7f99cf52986",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/schedule.rs": {
+    "mtime": 1793724030.8654373,
+    "ast_hash": "ee8530897b08e5c8adedcd4c1df8f11c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/shared_variable.rs": {
+    "mtime": 1793724030.866609,
+    "ast_hash": "9552ac621352ff30a622b4869a66387b",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/thresholds.rs": {
+    "mtime": 1793724030.8672955,
+    "ast_hash": "394a5647adc92d0ce4a87aa22c96ffb3",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/step/ws.rs": {
+    "mtime": 1793724030.868425,
+    "ast_hash": "05cae6f25b17040f2538c290bd5c7ec5",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/summary.rs": {
+    "mtime": 1793724030.8687181,
+    "ast_hash": "432262ccd344ef535db04456ab6ac5e5",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/testsupport.rs": {
+    "mtime": 1793724030.8688495,
+    "ast_hash": "93c5509b5afc9365fbf4fabccd8c2fa0",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/src/yaml.rs": {
+    "mtime": 1793724030.8694317,
+    "ast_hash": "e1b701e12715e3bbc7ab0c1eeb79d91e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/tests/end_to_end.rs": {
+    "mtime": 1793724030.8702052,
+    "ast_hash": "3a4e93ba42f01bfeaa151589ae7dfd1d",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-core/tests/webrtc_gate.rs": {
+    "mtime": 1793724030.8705466,
+    "ast_hash": "68be9820a3d4387a86f6e385e936cd52",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/examples/configlib/src/lib.rs": {
+    "mtime": 1793724030.872069,
+    "ast_hash": "37b2a052565df908bb147f25359d7820",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/examples/fsreader/src/lib.rs": {
+    "mtime": 1793724030.8728166,
+    "ast_hash": "e6f36e843cb82333ac64ba6e88938aa9",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/examples/hello/src/lib.rs": {
+    "mtime": 1793724030.873696,
+    "ast_hash": "979f01bc94f96198c6c05b75490dbfd3",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/examples/hello01/src/lib.rs": {
+    "mtime": 1793724030.874398,
+    "ast_hash": "f1d11a4ae9139be5f6b0e2bdc5edbdcb",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/examples/memhog/src/lib.rs": {
+    "mtime": 1793724030.8752155,
+    "ast_hash": "4e234c3515ee5e263622eb2df1420cec",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/examples/netfetch/src/lib.rs": {
+    "mtime": 1793724030.875892,
+    "ast_hash": "0c0884f1447d6a54a8e2340762c81bf2",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/examples/purefs/src/lib.rs": {
+    "mtime": 1793724030.8767526,
+    "ast_hash": "2bd5eb4dc8077eb2b33b315a785a6c5e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/examples/reporter/src/lib.rs": {
+    "mtime": 1793724030.877803,
+    "ast_hash": "1e88364dfb37b512806a0bb9bd8e94c0",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/examples/spin/src/lib.rs": {
+    "mtime": 1793724030.8786144,
+    "ast_hash": "9446a1f68739d5d6cfd35835dd3b46bc",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/examples/stepexec/src/lib.rs": {
+    "mtime": 1793724030.8798594,
+    "ast_hash": "5822d7cae8bd7c0de927aa4d03840ac6",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/examples/steps/src/lib.rs": {
+    "mtime": 1793724030.8809588,
+    "ast_hash": "60beffb54d761784f7a3212e6a9a85e4",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/examples/stepsmismatch/src/lib.rs": {
+    "mtime": 1793724030.882466,
+    "ast_hash": "fddb180cf8233497fa7690723d96954c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/src/lib.rs": {
+    "mtime": 1793724030.8828928,
+    "ast_hash": "137cee4f39f5a604ddd5b652b8b3eef5",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docker/install-runners.sh": {
+    "mtime": 1793724030.883492,
+    "ast_hash": "fdf2a0d80c402636f3b9ff05b75c7de4",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/coreml-ane/ane_load.py": {
+    "mtime": 1793724030.906948,
+    "ast_hash": "83c5edc789bc67f363679705e6427416",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/hello.k6.js": {
+    "mtime": 1793724030.9076655,
+    "ast_hash": "1748c8c2950900b4fceb3f099e2e6ab8",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/hello.locust.py": {
+    "mtime": 1793724030.9077513,
+    "ast_hash": "d8f3633e77160a13f1421bb915527da0",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/npm/build-npm-packages.mjs": {
+    "mtime": 1793724031.7648282,
+    "ast_hash": "3234f3ac11d996ea66c7e1f922b7de36",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/schema/config.schema.json": {
+    "mtime": 1793724031.769146,
+    "ast_hash": "69322ca50d76cb0243dcfaae3bf7f4a2",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/schema/test.schema.json": {
+    "mtime": 1793724031.7695942,
+    "ast_hash": "6ac2243e5451fdc09ba5af2cf17c09cd",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/scripts/bench.sh": {
+    "mtime": 1793724031.7713253,
+    "ast_hash": "d6dc94ab2272baa09a6ed97adb5520ca",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/scripts/bench_compare.py": {
+    "mtime": 1793724031.7717185,
+    "ast_hash": "5204a1d043e326677c1e67aed96f1697",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/scripts/bench_metrics.py": {
+    "mtime": 1793724031.7719383,
+    "ast_hash": "a7657678e8f233492986bf6eea159583",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/scripts/bench_renaissance.sh": {
+    "mtime": 1793724031.7722003,
+    "ast_hash": "ce8947e2df1ec3abe6f11000420a8b64",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/scripts/bench_specjbb2015.sh": {
+    "mtime": 1793724031.7724903,
+    "ast_hash": "071d29fd52609d392afdca50ddfbc1df",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/scripts/test_bench_renaissance.py": {
+    "mtime": 1793724031.7728934,
+    "ast_hash": "fb569ce6c547fbf828e683c95efaf158",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/scripts/test_bench_specjbb.py": {
+    "mtime": 1793724031.7730467,
+    "ast_hash": "1b16a6f9625e8950913c8487694c8c57",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/.claude/CLAUDE.md": {
+    "mtime": 1793724030.7882645,
+    "ast_hash": "db73b0edd7ffbc61ceac177130730865",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/.claude/skills/graphify/SKILL.md": {
+    "mtime": 1793724030.7890887,
+    "ast_hash": "5ae00786ea53e4d944ab70abe11eedd1",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/.github/workflows/bench.yml": {
+    "mtime": 1793724030.7896655,
+    "ast_hash": "fa5860d16800818ea23005d44fc23780",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/.github/workflows/ci.yml": {
+    "mtime": 1793724030.7903528,
+    "ast_hash": "ef7f783f34bcad94e74ab37af0f6e6db",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/.github/workflows/release-smoke.yml": {
+    "mtime": 1793724030.790594,
+    "ast_hash": "969e0fd8a9f55e5ae7c8e77b63590f92",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/.github/workflows/release.yml": {
+    "mtime": 1793724030.7908578,
+    "ast_hash": "506be9ea639f8d55dd152fce08fb4a42",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/CLAUDE.md": {
+    "mtime": 1793724030.7915452,
+    "ast_hash": "911ad34f7ebf3cf9e3ffc40a34937b2f",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/README.md": {
+    "mtime": 1793724030.793743,
+    "ast_hash": "311b78d57a9ea3f7baf28da14cbfe83e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/UPCOMING.md": {
+    "mtime": 1793726080.2907026,
+    "ast_hash": "8ce092d723b644d14d18cff2e040eaf6",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/agents/perfscale-test-generator.agent.md": {
+    "mtime": 1793724451.0283344,
+    "ast_hash": "581ca247f95c278267f3f8a134653111",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/agents/perfscale-test-healer.agent.md": {
+    "mtime": 1793724451.02759,
+    "ast_hash": "517fd68f86a5c2a4b3abd689c759ca11",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/agents/perfscale-test-planner.agent.md": {
+    "mtime": 1793724451.027507,
+    "ast_hash": "f713d2d3cab8fa1ccb1edbd24811ad6e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/bench/gpu/README.md": {
+    "mtime": 1793724030.7944276,
+    "ast_hash": "c49904a865954eb4a1a1c669bbddc4e5",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/bench/gpu/arrival.yaml": {
+    "mtime": 1793724030.7945237,
+    "ast_hash": "afbc26639584297add5d2dab1931d004",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/bench/gpu/ollama.yaml": {
+    "mtime": 1793724030.7947438,
+    "ast_hash": "0f8c701a132aad296471ebfbba1df6ad",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/bench/gpu/stages.yaml": {
+    "mtime": 1793724030.7949772,
+    "ast_hash": "7c10582a640399779db3fe58c6bbadf2",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/bench/gpu/vllm.yaml": {
+    "mtime": 1793724030.7952552,
+    "ast_hash": "1d10cf2cc191201fc47d17579c993ebb",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/serve_docs_data.html": {
+    "mtime": 1793726923.6114957,
+    "ast_hash": "4f3941231a8027fa792b5dbb2a3799b2",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/src/commands/serve_ui.html": {
+    "mtime": 1793724030.8137991,
+    "ast_hash": "85bffa991d4eced31d54dc139a9b425f",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-cli/ui/index.html": {
+    "mtime": 1793724030.8186328,
+    "ast_hash": "6d714afe8f243b37a23b596e37608a9e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/crates/perfscale-library-sdk/README.md": {
+    "mtime": 1793724030.8710656,
+    "ast_hash": "eedc75f972f3a0ab4d9b5b30a500e11e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/README.md": {
+    "mtime": 1793725981.4748147,
+    "ast_hash": "4b30afa20d04774e8ccef23a6b28863d",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/agents.md": {
+    "mtime": 1793726800.663706,
+    "ast_hash": "8327467da74b5cf7483f249689ae3393",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/benchmarks.md": {
+    "mtime": 1793724030.8844252,
+    "ast_hash": "9a6d874514bdba3d0fc90983587138c5",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ci.md": {
+    "mtime": 1793724030.8845692,
+    "ast_hash": "a65d45b7ec515978c12537c13ed83bcf",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/cli/commands.md": {
+    "mtime": 1793726054.919609,
+    "ast_hash": "7d8c4224bfc093a8c25cafbf67ee8a93",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/cli/examples.md": {
+    "mtime": 1793724030.885183,
+    "ast_hash": "99e31d877ff6bb84a4c2e2883760b792",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/actions.md": {
+    "mtime": 1793724030.8862126,
+    "ast_hash": "a87085313f8acb6649cf310fd1460c8a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/architecture.md": {
+    "mtime": 1793724030.8864872,
+    "ast_hash": "09d8364e8d0e89428341cf9c19d2eb8c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/docker.md": {
+    "mtime": 1793724030.8869386,
+    "ast_hash": "acb75a7652059aa52ca85003f48de750",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/gpu.md": {
+    "mtime": 1793724030.8870463,
+    "ast_hash": "acfab406bf2049fc2814d06d253cdbc8",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/graphql.md": {
+    "mtime": 1793724030.8871353,
+    "ast_hash": "dad31604a5826796c603826ccc0c6c10",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/grpc.md": {
+    "mtime": 1793724030.8873794,
+    "ast_hash": "d54e7a8185074570261c1746aa7f9d04",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/imports.md": {
+    "mtime": 1793724030.8874707,
+    "ast_hash": "9bf5d1da3b3ee3b5690bdcb2dacce4c9",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/jmeter.md": {
+    "mtime": 1793724030.887573,
+    "ast_hash": "4d702188ec70d40a04c1ddb53c66b8c3",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/kubernetes.md": {
+    "mtime": 1793724030.8877878,
+    "ast_hash": "8b039865d0263bd7a028b79644a54e8f",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/libraries.md": {
+    "mtime": 1793724030.888673,
+    "ast_hash": "625d793fc8a4b21ca101c508b305e236",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/llm.md": {
+    "mtime": 1793724030.8887675,
+    "ast_hash": "78d659a5a1bf8f8d083875eae3ef0e53",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/metrics.md": {
+    "mtime": 1793724030.8905087,
+    "ast_hash": "fb9875355af5f51eab9b60b674caa789",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/pubsub.md": {
+    "mtime": 1793724030.890702,
+    "ast_hash": "19587a02612e1478771d36101d13a8c6",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/runners.md": {
+    "mtime": 1793724030.8908012,
+    "ast_hash": "bc18d9ef1c131b6982334354eed0abd3",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/setup-teardown.md": {
+    "mtime": 1793724030.891109,
+    "ast_hash": "9d93b245bbc80314085186a1805be378",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/shared-variables.md": {
+    "mtime": 1793724030.8911986,
+    "ast_hash": "32cb139cc70713bf19ce339249f25a94",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/core/websocket.md": {
+    "mtime": 1793724030.8917089,
+    "ast_hash": "d18757d8149b870cbd35bb32aee8a7d1",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/getting-started.md": {
+    "mtime": 1793726017.9345193,
+    "ast_hash": "e2269b57fe19ffe7130d6f151739b38e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/library-sdk.md": {
+    "mtime": 1793724030.893534,
+    "ast_hash": "e5e3a2613b64e221227b05673712cff3",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/mcp.md": {
+    "mtime": 1793725981.4750159,
+    "ast_hash": "d2d89b8c46c55967db478273e72af14a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/README.md": {
+    "mtime": 1793726017.9345357,
+    "ast_hash": "2650ca9455c3a786e06118d1a2e5b0d0",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/agents.md": {
+    "mtime": 1793726800.663676,
+    "ast_hash": "6444513c51f39152d1fafb898cffe904",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/benchmarks.md": {
+    "mtime": 1793724030.8945715,
+    "ast_hash": "3fec4e21e51e9d4cb083bc343d62f1d5",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/ci.md": {
+    "mtime": 1793724030.8946593,
+    "ast_hash": "b8bd4cff92e3b3d24e1de522070f5bc1",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/cli/commands.md": {
+    "mtime": 1793726080.2909198,
+    "ast_hash": "950ae456d17447d24e9b8a197e0392d6",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/cli/examples.md": {
+    "mtime": 1793724030.8959916,
+    "ast_hash": "18afaedab0b79a6d62fcc963b0f45ad6",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/actions.md": {
+    "mtime": 1793724030.8980012,
+    "ast_hash": "6238129baf6b40092b8daf698b300c6b",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/architecture.md": {
+    "mtime": 1793724030.8981118,
+    "ast_hash": "f422793ef72ce7d4955dd526589a5c79",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/docker.md": {
+    "mtime": 1793724030.8990424,
+    "ast_hash": "a179292a3f9b969b433311994d152931",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/gpu.md": {
+    "mtime": 1793724030.8993323,
+    "ast_hash": "7170bf5b5674691b7dec9cd1ef58846c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/graphql.md": {
+    "mtime": 1793724030.8995523,
+    "ast_hash": "7f3efbb39d7de4e25001aaec2d8b133b",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/grpc.md": {
+    "mtime": 1793724030.89988,
+    "ast_hash": "a8b368f1c51f164334c715f773b16a49",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/imports.md": {
+    "mtime": 1793724030.9001098,
+    "ast_hash": "461ca1ad22f150ffc0206057e3dc4da2",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/jmeter.md": {
+    "mtime": 1793724030.90021,
+    "ast_hash": "f4a8f4af8591e42e4dcdf65116b28218",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/kubernetes.md": {
+    "mtime": 1793724030.9002962,
+    "ast_hash": "8f111716c24fad52a6af487d9bc05845",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/libraries.md": {
+    "mtime": 1793724030.9015348,
+    "ast_hash": "62467e6791f017de5a18bbe7c0c9cd7f",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/llm.md": {
+    "mtime": 1793724030.901725,
+    "ast_hash": "5e7c188303e4f11c2d17c0c65bb772d8",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/metrics.md": {
+    "mtime": 1793724030.9027746,
+    "ast_hash": "8f342a148918c0d95d3f3ebec629a9d8",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/pubsub.md": {
+    "mtime": 1793724030.9030771,
+    "ast_hash": "759926e1020fb74dfcf9a45496b4008a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/runners.md": {
+    "mtime": 1793724030.9031854,
+    "ast_hash": "c309e463301dcdc18847f7d34e23630b",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/setup-teardown.md": {
+    "mtime": 1793724030.903293,
+    "ast_hash": "e0113d310c4247a687c330c5be01657a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/shared-variables.md": {
+    "mtime": 1793724030.9035282,
+    "ast_hash": "adcebd99668bfaa03ef35813db3ede3c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/core/websocket.md": {
+    "mtime": 1793724030.9037957,
+    "ast_hash": "0e6671c3c3fa16afd950bebd16452cfc",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/getting-started.md": {
+    "mtime": 1793726017.9345376,
+    "ast_hash": "4c6913fd6beb083e8a5bfdadddf3ede4",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/library-sdk.md": {
+    "mtime": 1793724030.9044456,
+    "ast_hash": "8fc7bbba1d796588e7248613351ee9c5",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/mcp.md": {
+    "mtime": 1793725981.4749947,
+    "ast_hash": "9664da523da075b78c447d83aa8d6c42",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/ru/yaml-reference.md": {
+    "mtime": 1793724030.9053383,
+    "ast_hash": "45ce852d72a3f277c03b1ffe43e0cd52",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/yaml-reference.md": {
+    "mtime": 1793724030.906258,
+    "ast_hash": "34fc286b1e2e0752505251f373802b49",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/arrival-rate.config.yaml": {
+    "mtime": 1793724030.9064338,
+    "ast_hash": "bd27841eca8da8f6939e41d0fb509a51",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/arrival-rate.test.yaml": {
+    "mtime": 1793724030.9065552,
+    "ast_hash": "45afd9b03cbf998eabb2dcd2bc44c969",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/coreml-ane/README.md": {
+    "mtime": 1793724030.9067156,
+    "ast_hash": "e13671b4f157d7a62a71a77bebc55a9e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/coreml-ane/config.yaml": {
+    "mtime": 1793724030.9070442,
+    "ast_hash": "9720a26c3cebd004c6813af522c16571",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/coreml-ane/test.yaml": {
+    "mtime": 1793724030.907131,
+    "ast_hash": "ed3a29cec31aa3c66bc57bf7ef94a892",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/db-sqlite.test.yaml": {
+    "mtime": 1793724030.9073117,
+    "ast_hash": "c9da23daeb206cfb91eb030abee7a573",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/graphql.test.yaml": {
+    "mtime": 1793724030.907401,
+    "ast_hash": "e27653ba76febf114fffd03e802d552d",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/grpc.test.yaml": {
+    "mtime": 1793724030.9075012,
+    "ast_hash": "b3e6550dc1ef4d09ad03b979fc8734b3",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/hello.config.yaml": {
+    "mtime": 1793724030.907582,
+    "ast_hash": "8455d8d37994ce501c12ac0536c6a6da",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/hello.test.yaml": {
+    "mtime": 1793724030.9078221,
+    "ast_hash": "c2e294553bc7bcb55260c2123369884a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/import/_base.config.yaml": {
+    "mtime": 1793724030.9079494,
+    "ast_hash": "fce456b5d75646c60755ebb6daca58bb",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/import/_base.test.yaml": {
+    "mtime": 1793724030.9080255,
+    "ast_hash": "9465b2169750c1fc975df14cc7bf1b97",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/import/import.config.yaml": {
+    "mtime": 1793724030.9081116,
+    "ast_hash": "2b1d22eab318148fe671f1603cf1fbf1",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/import/import.test.yaml": {
+    "mtime": 1793724030.9081964,
+    "ast_hash": "bd1dee7ad77271e09a6ac9957e6b255a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/ramping.config.yaml": {
+    "mtime": 1793724030.9082756,
+    "ast_hash": "d9d381912578ac07d4bc5b910cf0f7d2",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/ramping.test.yaml": {
+    "mtime": 1793724030.908352,
+    "ast_hash": "285ae6db729039df847b7ae1eb457836",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/raw-net.test.yaml": {
+    "mtime": 1793724030.9084396,
+    "ast_hash": "73307b62f7861c9c5f7eb0c039a7ff76",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/spike.config.yaml": {
+    "mtime": 1793724030.908605,
+    "ast_hash": "af6ca9f95ff20ae0f156e1aabac99032",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/websocket.test.yaml": {
+    "mtime": 1793724030.9086933,
+    "ast_hash": "b52520f5e152320e48bce5005e3abb70",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/with-processes.config.yaml": {
+    "mtime": 1793724030.9087834,
+    "ast_hash": "f64e08b56358aa1806db5c63a321238a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/with-processes.test.yaml": {
+    "mtime": 1793724030.9088707,
+    "ast_hash": "712ebd56d8f27a9ffc677e68181bb9aa",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/with-setup.config.yaml": {
+    "mtime": 1793724030.9089549,
+    "ast_hash": "d601c1530907c0c9913d2d0da161cd31",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/examples/with-setup.test.yaml": {
+    "mtime": 1793724030.9090304,
+    "ast_hash": "e2c3d2ce94e4d261f42ad05352354980",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/prompts/perfscale-generate.prompt.md": {
+    "mtime": 1793724478.0378473,
+    "ast_hash": "1e770c1e47f6702e66368e5933ade2a7",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/prompts/perfscale-heal.prompt.md": {
+    "mtime": 1793724478.0377555,
+    "ast_hash": "62fbfde19da23f775b74e77b67974a11",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/prompts/perfscale-plan.prompt.md": {
+    "mtime": 1793724478.0378077,
+    "ast_hash": "bb1e62666a3891aa4103dc272ee729f7",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/prompts/perfscale-threshold.prompt.md": {
+    "mtime": 1793724478.037932,
+    "ast_hash": "4734d01f83834f02a63b3fcbf840914a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/rfcs/001-sdk.md": {
+    "mtime": 1793724031.7652848,
+    "ast_hash": "78a7d54d7606ebe5a7e6c792eab56b58",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/rfcs/002-marketplace.md": {
+    "mtime": 1793724031.7653925,
+    "ast_hash": "c5700efbf2ef7b3d77c74b69ebacc035",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/rfcs/003-composite-step.md": {
+    "mtime": 1793724031.7658641,
+    "ast_hash": "d2e0c696fd8d42ecd99339cf0e3bcc07",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/rfcs/004-setup-teardown.md": {
+    "mtime": 1793724031.7659721,
+    "ast_hash": "f0032698daf9b56e97685b0a360a1d52",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/rfcs/005-libraries.md": {
+    "mtime": 1793724031.7664526,
+    "ast_hash": "d0c58aa0df7d31e8be0bbf6839b13000",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/rfcs/006-library-revocation.md": {
+    "mtime": 1793724031.7670605,
+    "ast_hash": "e0b010825a756bfb710240c6e0fcdede",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/rfcs/007-webrtc.md": {
+    "mtime": 1793724031.7671714,
+    "ast_hash": "1215f8fb92e08275385d596a15529f4a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/rfcs/008-pro-steps.md": {
+    "mtime": 1793724031.767331,
+    "ast_hash": "9e0c04207ec6ffd9d5dc37d9be83eda0",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/rfcs/009-custom-sdk-steps.md": {
+    "mtime": 1793724031.7681825,
+    "ast_hash": "9b199f40104040eb5800156dd7f27404",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/rfcs/010-metrics-module.md": {
+    "mtime": 1793724031.7683048,
+    "ast_hash": "9122eb7b8ae1257456a5f8e0f77d2759",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/rfcs/README.md": {
+    "mtime": 1793724031.7686021,
+    "ast_hash": "0e2c8720ba223dca34140c963ee0e058",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/skills/perfscale-cli/SKILL.md": {
+    "mtime": 1793724326.4599607,
+    "ast_hash": "73b874e20b06bd19db7a0f42c48c5d6c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/skills/perfscale-cli/references/actions.md": {
+    "mtime": 1793724326.464959,
+    "ast_hash": "3d123c4f500720b1641911e8c2299760",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/skills/perfscale-cli/references/load-shapes.md": {
+    "mtime": 1793724326.4606042,
+    "ast_hash": "fc1280a8ee45b48272dd916995cee96c",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/skills/perfscale-cli/references/metrics.md": {
+    "mtime": 1793724326.4649725,
+    "ast_hash": "be6ce8c9d7b7f05aa414152fca87b2b3",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/skills/perfscale-cli/references/protocols.md": {
+    "mtime": 1793724326.4649746,
+    "ast_hash": "06d746a1c6c4e30dd6416a7ea134c420",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/skills/perfscale-cli/references/reporters.md": {
+    "mtime": 1793724326.4649677,
+    "ast_hash": "fbbeddfe532803d8bf60d816c966cfb8",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/skills/perfscale-cli/references/thresholds.md": {
+    "mtime": 1793724326.46059,
+    "ast_hash": "2a320ab952ab6906a56f86ff8a4a8f0f",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/skills/perfscale-cli/references/yaml-reference.md": {
+    "mtime": 1793724326.4606,
+    "ast_hash": "6117e9ab5e83092b2c75875a4007d09e",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/skills/perfscale-library-sdk/SKILL.md": {
+    "mtime": 1793724358.7143166,
+    "ast_hash": "9a06c74aa4204c94b564d3d4f4e1892a",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/skills/perfscale-migration-k6/SKILL.md": {
+    "mtime": 1793724358.7143116,
+    "ast_hash": "19c70add0a38112f7bfda7b13908b1e7",
+    "semantic_hash": ""
+  },
+  "/Users/vitaliharadkou/Documents/git/perfscale-org/.worktrees/perfscale-init-agents/docs/images/serve-dashboard.png": {
+    "mtime": 1793724030.8932567,
+    "ast_hash": "479f17ac7dafac2f1e117ea0b6bd2bdc",
+    "semantic_hash": ""
   }
 }
