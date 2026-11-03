@@ -631,6 +631,119 @@ fn truncate_message(message: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// `abort_on_fail` / `http_debug` step fields
+// ---------------------------------------------------------------------------
+
+/// One `after:` `std/thresholds@v1` gate with `abort_on_fail: true`,
+/// pre-resolved for the mid-run monitor: the step name for the abort log
+/// line and the merged params (the step's `with` plus step-level
+/// `severity`/`message`), interpolated once against the post-setup context.
+#[derive(Debug, Clone)]
+pub struct AbortGate {
+    pub name: String,
+    pub params: Value,
+    /// The gate asks for `http_debug: error` failed-request diagnostics.
+    pub http_debug_errors: bool,
+}
+
+/// True for the canonical and short-alias ids of `std/thresholds@v1`.
+pub fn is_thresholds_action(action: &str) -> bool {
+    matches!(action, "std/thresholds@v1" | "thresholds")
+}
+
+/// The effective severity of a thresholds step (step-level field wins over
+/// the `with.severity` key, like the runner's merge): `None`/anything else
+/// resolves to the default `fail` at evaluation time.
+fn gate_severity(step: &super::Step) -> Option<&str> {
+    step.severity
+        .as_deref()
+        .or_else(|| step.with.as_ref()?.get("severity")?.as_str())
+}
+
+/// Validate the `abort_on_fail` / `http_debug` step fields across all three
+/// step lists, exactly as the run applies them (lint mirrors these rules):
+///
+/// - both fields are only meaningful on `std/thresholds@v1` steps in the
+///   `after:` block — anywhere else they are a configuration error;
+/// - `abort_on_fail: true` requires `severity: fail` (the default): aborting
+///   on a warn/info advisory makes no sense;
+/// - `http_debug` requires `abort_on_fail: true` on the same step and
+///   currently accepts only `"error"`.
+pub fn validate_abort_gates(
+    steps: &[super::Step],
+    before: &[super::Step],
+    after: &[super::Step],
+) -> Result<(), String> {
+    fn step_label(step: &super::Step) -> &str {
+        step.name.as_deref().unwrap_or(step.action.as_str())
+    }
+    for (section, list) in [("steps", steps), ("before", before)] {
+        for step in list {
+            if step.abort_on_fail || step.http_debug.is_some() {
+                return Err(format!(
+                    "{section} step '{}': `abort_on_fail`/`http_debug` are only valid on `std/thresholds@v1` steps in the `after:` block",
+                    step_label(step)
+                ));
+            }
+        }
+    }
+    for step in after {
+        let label = step_label(step);
+        if !is_thresholds_action(&step.action) {
+            if step.abort_on_fail || step.http_debug.is_some() {
+                return Err(format!(
+                    "after step '{label}' ({}) — `abort_on_fail`/`http_debug` only apply to `std/thresholds@v1` steps",
+                    step.action
+                ));
+            }
+            continue;
+        }
+        if let Some(mode) = &step.http_debug {
+            if !step.abort_on_fail {
+                return Err(format!(
+                    "after step '{label}': `http_debug` requires `abort_on_fail: true` on the same step"
+                ));
+            }
+            if mode != "error" {
+                return Err(format!(
+                    "after step '{label}': unknown http_debug '{mode}' — expected \"error\""
+                ));
+            }
+        }
+        if step.abort_on_fail {
+            if let Some(severity) = gate_severity(step) {
+                if severity != "fail" {
+                    return Err(format!(
+                        "after step '{label}': `abort_on_fail` requires `severity: fail` (the default) — a {severity} gate is advisory and never aborts"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Collect the `after:` abort gates for the mid-run monitor. Call only after
+/// [`validate_abort_gates`] passed: this assumes the configuration is sane.
+/// `resolve` interpolates each gate's params once (post-setup `config`,
+/// `vars`, `inputs`) — thresholds metric keys are never interpolated anyway;
+/// it exists so an interpolated `message` reads sensibly in the abort log.
+pub fn collect_abort_gates(
+    after: &[super::Step],
+    resolve: impl Fn(&super::Step) -> Value,
+) -> Vec<AbortGate> {
+    after
+        .iter()
+        .filter(|s| is_thresholds_action(&s.action) && s.abort_on_fail)
+        .map(|s| AbortGate {
+            name: s.name.clone().unwrap_or_else(|| s.action.clone()),
+            http_debug_errors: s.http_debug.as_deref() == Some("error"),
+            params: resolve(s),
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // The action
 // ---------------------------------------------------------------------------
 
@@ -1024,6 +1137,87 @@ mod tests {
         assert_eq!(c.message, "a; b; c");
         let c = combine(vec![mk("info", "a"), mk("pass", "b")]).unwrap();
         assert_eq!(c.status, "info");
+    }
+
+    // -----------------------------------------------------------------
+    // abort_on_fail / http_debug field validation
+    // -----------------------------------------------------------------
+
+    fn gate_step() -> crate::step::Step {
+        crate::step::Step {
+            name: Some("slo gate".into()),
+            action: "std/thresholds@v1".into(),
+            with: Some(json!({ "http_req_failed": ["rate<0.05"] })),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+            abort_on_fail: false,
+            http_debug: None,
+            condition: None,
+            labels: None,
+        }
+    }
+
+    #[test]
+    fn abort_gate_validation_accepts_the_valid_and_rejects_the_rest() {
+        // No abort fields at all — always fine, everywhere.
+        assert!(validate_abort_gates(&[gate_step()], &[], &[]).is_ok());
+        // A properly armed gate in after:.
+        let mut gate = gate_step();
+        gate.abort_on_fail = true;
+        gate.http_debug = Some("error".into());
+        assert!(validate_abort_gates(&[], &[], &[gate.clone()]).is_ok());
+
+        // …but never in steps/before.
+        let e = validate_abort_gates(std::slice::from_ref(&gate), &[], &[]).unwrap_err();
+        assert!(e.contains("after:"), "{e}");
+        let e = validate_abort_gates(&[], std::slice::from_ref(&gate), &[]).unwrap_err();
+        assert!(e.contains("after:"), "{e}");
+
+        // http_debug without abort_on_fail.
+        let mut g = gate_step();
+        g.http_debug = Some("error".into());
+        let e = validate_abort_gates(&[], &[], &[g]).unwrap_err();
+        assert!(e.contains("abort_on_fail: true"), "{e}");
+
+        // Unknown http_debug mode.
+        let mut g = gate.clone();
+        g.http_debug = Some("verbose".into());
+        let e = validate_abort_gates(&[], &[], &[g]).unwrap_err();
+        assert!(e.contains("unknown http_debug 'verbose'"), "{e}");
+
+        // The fields on a non-thresholds after step.
+        let mut g = gate.clone();
+        g.action = "std/http@v1".into();
+        let e = validate_abort_gates(&[], &[], &[g]).unwrap_err();
+        assert!(e.contains("std/thresholds@v1"), "{e}");
+
+        // abort_on_fail with an advisory severity (step-level and with-level).
+        let mut g = gate.clone();
+        g.severity = Some("warn".into());
+        let e = validate_abort_gates(&[], &[], &[g]).unwrap_err();
+        assert!(e.contains("severity: fail"), "{e}");
+        let mut g = gate.clone();
+        g.with = Some(json!({ "http_req_failed": ["rate<0.05"], "severity": "info" }));
+        let e = validate_abort_gates(&[], &[], &[g]).unwrap_err();
+        assert!(e.contains("severity: fail"), "{e}");
+    }
+
+    #[test]
+    fn collect_abort_gates_picks_only_armed_thresholds_steps() {
+        let mut armed = gate_step();
+        armed.abort_on_fail = true;
+        armed.http_debug = Some("error".into());
+        let mut other = gate_step();
+        other.action = "std/kill_process@v1".into();
+        let gates = collect_abort_gates(&[armed, other, gate_step()], |s| {
+            s.with.clone().unwrap_or(Value::Null)
+        });
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].name, "slo gate");
+        assert!(gates[0].http_debug_errors);
+        assert_eq!(gates[0].params["http_req_failed"], json!(["rate<0.05"]));
     }
 
     #[test]

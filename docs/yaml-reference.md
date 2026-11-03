@@ -46,6 +46,8 @@ steps:
 | `outputs` | no | Variable name to store the step output under |
 | `severity` | no | `std/thresholds@v1` only: what a violated gate becomes — `fail` (default; the run exits non-zero), `warn`, or `info` |
 | `message` | no | `std/thresholds@v1` only: custom label appended to the violation summary (interpolated) |
+| `abort_on_fail` | no | `std/thresholds@v1` `after:` steps only (default `false`): k6-style mid-run abort — while the VUs run, a monitor re-evaluates the gate against the metrics collected so far every 250ms, and a violated `severity: fail` gate stops all load early (between steps; `after:` teardown, reporters and the summary still run). See [Threshold abort and failure diagnostics](#threshold-abort-and-failure-diagnostics) |
+| `http_debug` | no | Only with `abort_on_fail: true` on an `after:` `std/thresholds@v1` step: `error` (currently the only mode) logs one masked `http_debug: {…}` JSON line per failed step action and per failed `check:` during the VU phase — VU id, iteration, interpolated request params (payload included) and the response output (body included). Successful requests/checks emit nothing |
 | `labels` | no | Step-level metric labels (scalars; `${{ inputs.* }}` / `${{ env.* }}` interpolated once before the run): stamped on every metric series the step emits for the streaming reporters, with merge priority step > reporter > run. `run_id` and `worker` are reserved (engine-set) |
 | `if` / `when` | no | Run the step only when the condition holds — see [Conditional steps](#conditional-steps-if--when) |
 
@@ -891,6 +893,49 @@ after:
 
 See [`std/thresholds@v1`](core/actions.md#stdthresholdsv1) for the expression
 grammar, metric kinds, and the `thresholds` field in the run summary JSON.
+
+### Threshold abort and failure diagnostics
+
+With `abort_on_fail: true` on a `severity: fail` gate, the gate also becomes a
+k6-style `abortOnFail` monitor: while the VUs run, the engine re-evaluates the
+gate against the metrics collected so far every 250 ms, and the first
+violation stops all load schedules (between steps, like Ctrl-C — the in-flight
+step finishes), logs one line
+
+```
+abort_on_fail: threshold gate 'slo gate' violated — stopping load early (after: teardown and the summary still run): …
+```
+
+and proceeds through the usual `after:` teardown, reporters and summary — the
+`after:` step's own evaluation remains the single recorded gate result, so a
+`fail` gate still fails the run's exit code. A run that finishes on schedule
+(or via Ctrl-C) without a violation prints no abort line. Gate metrics that
+have no samples yet skip the tick instead of aborting; the monitor starts only
+after a successful `before:` and stops before `after:` teardown. The monitor's
+evaluations are pure — they never record intermediate gate results.
+
+Add `http_debug: error` (the only mode; valid only together with
+`abort_on_fail: true`, and only on `after:` `std/thresholds@v1` steps —
+anything else is a lint/run configuration error) to get k6
+[#6618](https://github.com/grafana/k6/issues/6618)-style failure diagnostics
+while the run is live: each failed step action and each failed `check:` emits
+one secret-masked line `http_debug: {…}` carrying `vu`, `iteration`, `step`,
+`action`, the interpolated `request` params (request payload included), the
+`response` output (response body included), and — for checks — the failing
+`failed_checks` details. Successful requests and checks emit nothing, and
+nothing is buffered for later: only failures produce output.
+
+```yaml
+after:
+  - name: slo gate
+    use: std/thresholds@v1
+    with:
+      http_req_failed: ["rate<0.05"]
+      http_req_duration: ["p95<500"]
+    severity: fail
+    abort_on_fail: true     # stop the load early when the gate trips
+    http_debug: error       # log failed requests/checks (masked) while it runs
+```
 
 With `--locust`, the same config maps to locust's `--users`/`--spawn-rate`/`--run-time`.
 With `--k6`, load config lives in the script's own `options` block and the

@@ -947,6 +947,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }

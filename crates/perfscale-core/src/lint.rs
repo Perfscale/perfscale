@@ -466,9 +466,20 @@ fn schema_error_suggestion(problem: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 const TEST_TOP_FIELDS: [&str; 2] = ["steps", "libraries"];
-const STEP_FIELDS: [&str; 11] = [
-    "name", "use", "uses", "with", "check", "outputs", "severity", "message", "if", "when",
+const STEP_FIELDS: [&str; 13] = [
+    "name",
+    "use",
+    "uses",
+    "with",
+    "check",
+    "outputs",
+    "severity",
+    "message",
+    "if",
+    "when",
     "labels",
+    "abort_on_fail",
+    "http_debug",
 ];
 const CONFIG_TOP_FIELDS: [&str; 18] = [
     "vus",
@@ -802,6 +813,11 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
         });
     }
 
+    // `abort_on_fail` / `http_debug` are `std/thresholds@v1`-only fields;
+    // the section rules (`after:` only, combination rules) are checked by the
+    // caller, which knows where the step lives.
+    lint_abort_gate_fields(map, action, loc, issues);
+
     if let Some(with) = map.get("with").and_then(|v| v.as_object()) {
         let with_fields: Option<&[&str]> = match action {
             "std/http@v1" | "http" => Some(&HTTP_WITH_FIELDS),
@@ -902,6 +918,94 @@ fn lint_step(step: &Value, loc: &str, issues: &mut Vec<LintIssue>) {
 
     if let Some(check) = map.get("check").and_then(|v| v.as_object()) {
         unknown_field_issues(check, &CHECK_FIELDS, &format!("{loc}/check"), issues);
+    }
+}
+
+/// The `abort_on_fail` / `http_debug` step fields (k6-style mid-run abort):
+/// both are `std/thresholds@v1`-only, and only on a config file's `after:`
+/// steps — the run applies the same rules in
+/// [`crate::step::thresholds::validate_abort_gates`]. `section` is one of
+/// `steps`, `before`, `after`.
+fn lint_abort_gate_fields(
+    map: &serde_json::Map<String, Value>,
+    action: &str,
+    loc: &str,
+    issues: &mut Vec<LintIssue>,
+) {
+    let has_abort = map.contains_key("abort_on_fail");
+    let has_debug = map.contains_key("http_debug");
+    if !has_abort && !has_debug {
+        return;
+    }
+    if !matches!(action, "std/thresholds@v1" | "thresholds") {
+        issues.push(LintIssue {
+            location: loc.to_string(),
+            problem: format!(
+                "'{}' steps do not support abort_on_fail/http_debug",
+                if action.is_empty() {
+                    "unnamed-action"
+                } else {
+                    action
+                }
+            ),
+            suggestion: Some(
+                "both fields belong on a `std/thresholds@v1` step in the config's `after:` block"
+                    .into(),
+            ),
+        });
+        return;
+    }
+    let section = loc.split('/').nth(1).unwrap_or("");
+    if section != "after" {
+        issues.push(LintIssue {
+            location: loc.to_string(),
+            problem: "abort_on_fail/http_debug are only valid on `after:` steps — the gate they arm lives in the config's teardown block".into(),
+            suggestion: Some("move the gate to `after:` in the `-c` config file".into()),
+        });
+        return;
+    }
+    let abort = map
+        .get("abort_on_fail")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Some(mode) = map.get("http_debug") {
+        if !abort {
+            issues.push(LintIssue {
+                location: format!("{loc}/http_debug"),
+                problem: "`http_debug` requires `abort_on_fail: true` on the same step".into(),
+                suggestion: None,
+            });
+        }
+        match mode.as_str() {
+            Some("error") => {}
+            Some(other) => issues.push(LintIssue {
+                location: format!("{loc}/http_debug"),
+                problem: format!("unknown http_debug '{other}'"),
+                suggestion: Some("currently the only mode is `http_debug: error`".into()),
+            }),
+            None => issues.push(LintIssue {
+                location: format!("{loc}/http_debug"),
+                problem: "`http_debug` must be a string".into(),
+                suggestion: Some("currently the only mode is `http_debug: error`".into()),
+            }),
+        }
+    }
+    if abort {
+        // The step-level `severity` wins over `with.severity` at run time.
+        let severity = map.get("severity").and_then(Value::as_str).or_else(|| {
+            map.get("with")
+                .and_then(|w| w.get("severity"))
+                .and_then(Value::as_str)
+        });
+        if let Some(severity) = severity.filter(|s| *s != "fail") {
+            issues.push(LintIssue {
+                location: format!("{loc}/abort_on_fail"),
+                problem: format!(
+                    "`abort_on_fail` requires `severity: fail` (the default) — a {severity} gate is advisory and never aborts"
+                ),
+                suggestion: None,
+            });
+        }
     }
 }
 
@@ -2570,6 +2674,151 @@ after:
 "#;
         let issues = lint(yaml, DocKind::Config);
         assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    // -----------------------------------------------------------------
+    // abort_on_fail / http_debug (k6-style mid-run abort)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn abort_gate_with_http_debug_lints_clean() {
+        let yaml = r#"
+vus: 1
+duration: 30s
+after:
+  - name: slo gate
+    use: std/thresholds@v1
+    with:
+      http_req_failed: ["rate<0.05"]
+    abort_on_fail: true
+    http_debug: error
+"#;
+        let issues = lint(yaml, DocKind::Config);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn http_debug_without_abort_on_fail_is_a_lint_issue() {
+        let yaml = r#"
+vus: 1
+duration: 30s
+after:
+  - name: slo gate
+    use: std/thresholds@v1
+    with: { http_req_failed: ["rate<0.05"] }
+    http_debug: error
+"#;
+        let issues = lint(yaml, DocKind::Config);
+        let issue = issues
+            .iter()
+            .find(|i| i.location == "/after/0/http_debug")
+            .expect("http_debug issue present");
+        assert!(issue.problem.contains("abort_on_fail"), "{issue:?}");
+    }
+
+    #[test]
+    fn http_debug_unknown_mode_is_a_lint_issue() {
+        let yaml = r#"
+vus: 1
+duration: 30s
+after:
+  - name: slo gate
+    use: std/thresholds@v1
+    with: { http_req_failed: ["rate<0.05"] }
+    abort_on_fail: true
+    http_debug: verbose
+"#;
+        let issues = lint(yaml, DocKind::Config);
+        let issue = issues
+            .iter()
+            .find(|i| i.location == "/after/0/http_debug")
+            .expect("http_debug issue present");
+        assert!(
+            issue.problem.contains("unknown http_debug 'verbose'"),
+            "{issue:?}"
+        );
+        assert!(
+            issue.suggestion.as_deref().unwrap().contains("error"),
+            "{issue:?}"
+        );
+    }
+
+    #[test]
+    fn abort_fields_on_a_non_thresholds_step_are_a_lint_issue() {
+        let yaml = r#"
+vus: 1
+duration: 30s
+after:
+  - name: hit
+    use: std/http@v1
+    with: { url: http://x }
+    abort_on_fail: true
+"#;
+        let issues = lint(yaml, DocKind::Config);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.problem.contains("do not support abort_on_fail")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn abort_gate_outside_after_is_a_lint_issue() {
+        // Test documents have no `after:` — the field can never be armed.
+        let yaml = r#"
+steps:
+  - name: slo gate
+    use: std/thresholds@v1
+    with: { http_req_failed: ["rate<0.05"] }
+    abort_on_fail: true
+"#;
+        let issues = lint(yaml, DocKind::Test);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.problem.contains("only valid on `after:` steps")),
+            "{issues:?}"
+        );
+
+        // Same for a config's `before:` block.
+        let yaml = r#"
+vus: 1
+duration: 30s
+before:
+  - name: slo gate
+    use: std/thresholds@v1
+    with: { http_req_failed: ["rate<0.05"] }
+    http_debug: error
+    abort_on_fail: true
+"#;
+        let issues = lint(yaml, DocKind::Config);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.problem.contains("only valid on `after:` steps")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn abort_on_fail_with_advisory_severity_is_a_lint_issue() {
+        let yaml = r#"
+vus: 1
+duration: 30s
+after:
+  - name: slo gate
+    use: std/thresholds@v1
+    with: { http_req_failed: ["rate<0.05"] }
+    severity: warn
+    abort_on_fail: true
+"#;
+        let issues = lint(yaml, DocKind::Config);
+        let issue = issues
+            .iter()
+            .find(|i| i.location == "/after/0/abort_on_fail")
+            .expect("abort_on_fail issue present");
+        assert!(issue.problem.contains("severity: fail"), "{issue:?}");
     }
 
     // -----------------------------------------------------------------
