@@ -68,8 +68,11 @@
 //! final message's sample includes the flush that pushes the batch onto the
 //! wire and awaits the ack; with `flush: none` the samples measure the
 //! enqueue only). `pubsub_errors` is a
-//! counter emitted on every exchange — 0 on success, 1 on failure — so the
-//! run summary always has the error count (the `db_errors` convention).
+//! counter emitted on every exchange: 0 on success, 1 on failure, PLUS any
+//! driver-reported asynchronous failures (e.g. Kafka delivery errors with
+//! `flush: none`, MQTT ack timeouts, Redis pipeline error replies) — so the
+//! count can exceed 1 per exchange. The run summary always has the error
+//! count (the `db_errors` convention).
 //! `received` / `body` / the `pubsub_msgs_received` and `pubsub_e2e_ms`
 //! metrics appear only when `subscribe` is given. `pubsub_e2e_ms` holds one
 //! sample per matched message: start of the publish phase → consumed.
@@ -281,6 +284,12 @@ pub struct PubSubOutcome {
     pub rejected: u64,
     /// One sample per matched message: start of the publish phase → consumed.
     pub e2e_ms: Vec<f64>,
+    /// Messages the driver knows failed asynchronously (e.g. a Kafka
+    /// delivery-error callback firing after enqueue with `flush: none`).
+    /// Defaults to 0 — drivers predating the field are unaffected. Folded
+    /// into `pubsub_errors` by the engine; synchronous failures stay step
+    /// errors as before.
+    pub errors: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -694,8 +703,10 @@ pub(crate) async fn pubsub_action(params: &Value, step_name: &str, ctx: &Context
         }
     }
     // The `db_errors` convention: the counter exists on every exchange (0 on
-    // success), so summaries and thresholds always have the error count.
-    metrics["pubsub_errors"] = json!(if failure.is_some() { 1 } else { 0 });
+    // success), so summaries and thresholds always have the error count. The
+    // driver-reported asynchronous failures (e.g. Kafka delivery errors with
+    // `flush: none`) fold in here.
+    metrics["pubsub_errors"] = json!(outcome.errors + u64::from(failure.is_some()));
     value["metrics"] = metrics;
     if let Some(why) = &failure {
         value["error"] = json!(why);
@@ -1009,6 +1020,46 @@ mod tests {
         let err = out.value["error"].as_str().unwrap();
         assert!(err.contains("0 of 1 message(s) arrived"), "{err}");
         assert!(err.contains("1 rejected by until_contains"), "{err}");
+    }
+
+    /// A driver-reported async error count folds into `pubsub_errors`
+    /// additively with the step's own failure flag.
+    #[tokio::test]
+    async fn driver_reported_errors_fold_into_pubsub_errors() {
+        struct FlakyDriver;
+        impl PubSubDriver for FlakyDriver {
+            fn name(&self) -> &'static str {
+                "test-flaky"
+            }
+            fn run<'a>(
+                &'a self,
+                _params: &'a PubSubParams,
+                _ctx: &'a PubSubContext,
+            ) -> PubSubFuture<'a> {
+                Box::pin(async {
+                    Ok(PubSubOutcome {
+                        published: 3,
+                        errors: 2,
+                        ..PubSubOutcome::default()
+                    })
+                })
+            }
+        }
+        register_pubsub_driver(std::sync::Arc::new(FlakyDriver));
+        let out = execute_action(
+            "std/pubsub@v1",
+            &json!({
+                "driver": "test-flaky",
+                "subject": "flaky.test",
+                "publish": ["a", "b", "c"],
+            }),
+            &Context::new(),
+            "flaky",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(out.value["metrics"]["pubsub_msgs_published"], 3);
+        assert_eq!(out.value["metrics"]["pubsub_errors"], 2);
     }
 
     #[tokio::test]

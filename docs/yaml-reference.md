@@ -237,7 +237,7 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `arrival` | — | Arrival-rate profile (open model): `{ max_vus, pre_allocated_vus?, stages: [{ duration, rate }] }` — hold an iterations/sec rate. Mutually exclusive with `stages`. Native engine only |
 | `report.url` | — | A `perfscale serve` base URL; the CLI `--report` flag overrides it |
 | `report.during_run` | `false` | Also stream cumulative metric snapshots during the run (batched POSTs to `<url>/api/v1/metrics`), not just the summary at the end — see [During-run metrics](core/metrics.md#during-run-metrics-reportduring_run). Native engine only |
-| `report.interval_ms` | `5000` | During-run snapshot/flush interval, milliseconds (min 1000) |
+| `report.interval_ms` | `5000` | During-run snapshot/flush interval, milliseconds (min 100) |
 | `report.batch_size` | `500` | Flush a batch once it holds this many samples |
 | `report.max_cpu_percent` | `90` | CPU gate (serve streaming): while host CPU% ≥ this, delivery pauses and snapshots pile into the bounded queue (drop-oldest past `max_pending`); `0` disables; inert off-Linux |
 | `report.max_pending` | `24` | Bounded backlog for the legacy serve stream: overflow drops the OLDEST snapshot/batch and counts it in `perfscale_report_dropped_snapshots_total` (values are cumulative — the next snapshot restores them) |
