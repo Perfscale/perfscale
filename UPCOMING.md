@@ -86,3 +86,18 @@ Release notes for the next release, written as features land.
   in `pubsub_errors`, so Kafka delivery errors, MQTT ack timeouts and Redis
   pipeline error replies remain visible with `flush: none`; the counter can
   exceed 1 per exchange without failing the step.
+
+- k6-style mid-run threshold abort plus failure diagnostics: an `after:`
+  `std/thresholds@v1` gate with `abort_on_fail: true` is now monitored while
+  the VUs run (re-evaluated every 250 ms against the metrics collected so
+  far), and the first violated `severity: fail` gate stops all load schedules
+  early — between steps, like Ctrl-C — then runs the usual `after:` teardown,
+  reporters and summary (the `after:` evaluation stays the single recorded
+  gate result). The monitor starts only after a successful `before:` and never
+  records intermediate results; a normal finish or Ctrl-C prints no abort
+  line. Adding `http_debug: error` (valid only with `abort_on_fail: true`;
+  lint/run reject other combinations) emits one secret-masked
+  `http_debug: {…}` JSON line per failed step action and failed `check:`,
+  carrying the VU id, iteration, interpolated request params (payload
+  included) and the response output (body included) — k6 #6618-style
+  diagnostics with zero output for successful exchanges.

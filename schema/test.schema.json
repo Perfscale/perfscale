@@ -162,8 +162,19 @@
       ],
       "description": "A single step in a test definition.\n\nUnknown keys are rejected (`deny_unknown_fields`): a typo like `output:` (instead of `outputs:`) must fail at load time, not silently drop data.",
       "properties": {
+        "abort_on_fail": {
+          "description": "k6-style mid-run abort for `std/thresholds@v1` `after:` steps: while the VU phase runs, a monitor re-evaluates the gate against the metrics collected so far, and a violated `severity: fail` (default) gate stops all load schedules early — `after:` teardown and the final summary still run. Meaningless (and rejected) on other actions and outside `after:`.",
+          "type": "boolean"
+        },
         "check": {
           "description": "Post-execution assertions.  Keys are assertion names; values are expected values.  Example: `{ \"status\": 200, \"duration_ms_lt\": 500 }`."
+        },
+        "http_debug": {
+          "description": "Failed-request/check diagnostics for runs gated by an abort gate (`abort_on_fail: true` on an `after:` `std/thresholds@v1` step): `\"error\"` (currently the only value) emits one masked diagnostic JSON line per failed step action and per failed `check:` during the VU phase, carrying the VU id, iteration, interpolated request params and the response output. Valid only together with `abort_on_fail: true`.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "if": {
           "description": "Run the step only when this condition holds (`if:` or `when:` in YAML; equivalent aliases, rejected together). Both `${{ … }}` placeholders and `${…}` generator tokens expand first, then the result is either a comparison (`a == b`, `!=`, `<`, `<=`, `>`, `>=` — numeric when both sides parse as numbers) or a bare value (false when empty, `false`, `0` or `null`); clauses combine with `&&` and `||`. A skipped step produces no output, no metrics and leaves `__last__` untouched.",

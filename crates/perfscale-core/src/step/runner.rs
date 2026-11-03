@@ -520,6 +520,31 @@ pub async fn run_native(
         };
     }
 
+    // `abort_on_fail` / `http_debug` on `after:` thresholds steps: the
+    // combination rules are configuration errors, not mid-run surprises —
+    // fail before any setup runs, like the report/library checks above.
+    if let Err(msg) = super::thresholds::validate_abort_gates(&steps, &before, &after) {
+        emit(
+            &tx,
+            LogSource::Stderr,
+            &format!("invalid abort gate configuration: {msg}"),
+            &secrets,
+        )
+        .await;
+        registry.shutdown_all().await;
+        emit(
+            &tx,
+            LogSource::System,
+            "Done — configuration error",
+            &secrets,
+        )
+        .await;
+        return NativeRunOutcome {
+            config_error: Some(msg),
+            ..NativeRunOutcome::default()
+        };
+    }
+
     // Created up front (not after setup) so `after:` thresholds steps get a
     // metrics handle on every exit path — including a failed `before`, where
     // it is simply empty. Internally sharded: every VU's step fold lands on
@@ -625,6 +650,42 @@ pub async fn run_native(
     let vars = Arc::new(vars);
     let inputs = Arc::new(inputs);
 
+    // k6-style mid-run threshold abort: the `after:` gates marked
+    // `abort_on_fail: true` are monitored against the live metrics while the
+    // VUs run. Params interpolate once here (post-setup `config`, `vars`,
+    // `inputs`); the final `after:` step re-evaluates everything and stays
+    // the single recorded gate result — the monitor never records.
+    let abort_gates = {
+        let mut scratch = Context::new();
+        scratch.secrets = secrets.clone();
+        if !vars.is_null() {
+            scratch.set("vars", (*vars).clone());
+        }
+        if !inputs.is_null() {
+            scratch.set("inputs", (*inputs).clone());
+        }
+        if !config_seed.is_null() {
+            scratch.set("config", (*config_seed).clone());
+        }
+        super::thresholds::collect_abort_gates(&after, |step| {
+            scratch.interpolate_value(&step_params(step))
+        })
+    };
+    // `http_debug: error` on any abort gate turns on failed-request/check
+    // diagnostics for the whole VU phase.
+    let http_debug_errors = abort_gates.iter().any(|g| g.http_debug_errors);
+    let abort_monitor = if abort_gates.is_empty() {
+        None
+    } else {
+        Some(spawn_abort_monitor(
+            abort_gates,
+            Arc::clone(&metrics),
+            Arc::clone(&stop),
+            tx.clone(),
+            secrets.clone(),
+        ))
+    };
+
     // Staged/arrival runs track the live-VU gauge so the summary and the
     // [stats] reporter can report the *observed* concurrency; fixed runs skip
     // the atomics entirely.
@@ -654,6 +715,7 @@ pub async fn run_native(
         quiet,
         tx: tx.clone(),
         active_vus,
+        http_debug_errors,
     };
 
     // Periodic [stats] reporter: one machine-readable line every 5s while the
@@ -829,6 +891,12 @@ pub async fn run_native(
         ),
     };
     reporter.abort();
+    // The abort monitor's watch ends with the VU phase: it must never fire
+    // during `after:` teardown (the final gate evaluation belongs to the
+    // `after` step itself, which records the run's single gate result).
+    if let Some(monitor) = abort_monitor {
+        monitor.abort();
+    }
     // The engine probe stops with the reporter — the summary reads the
     // store right after, and no probe write may interleave with that read.
     if let Some(probe) = engine_probe {
@@ -1261,6 +1329,9 @@ struct VuShared {
     /// Live-VU gauge for staged/arrival runs (incremented on task start,
     /// decremented on exit). `None` for fixed runs — the count never changes.
     active_vus: Option<Arc<AtomicU64>>,
+    /// `http_debug: error` was requested by an `after:` abort gate: emit one
+    /// masked diagnostic JSON line per failed step action / failed check.
+    http_debug_errors: bool,
 }
 
 impl VuShared {
@@ -1362,6 +1433,7 @@ fn spawn_vu(
     let active_vus = shared.active_vus.clone();
     let quiet = shared.quiet;
     let tx = shared.tx.clone();
+    let http_debug_errors = shared.http_debug_errors;
 
     tokio::spawn(async move {
         if let Some(active) = &active_vus {
@@ -1372,7 +1444,16 @@ fn spawn_vu(
             iter_count.fetch_add(1, Ordering::Relaxed);
             ctx.iteration_seq += 1;
             for step in steps.iter() {
-                execute_step(step, &mut ctx, &tx, &metrics, quiet, vu_id).await;
+                execute_step(
+                    step,
+                    &mut ctx,
+                    &tx,
+                    &metrics,
+                    quiet,
+                    vu_id,
+                    http_debug_errors,
+                )
+                .await;
                 if Instant::now() >= deadline || stop.load(Ordering::Relaxed) || vu_stopped() {
                     break;
                 }
@@ -1417,6 +1498,7 @@ fn spawn_arrival_worker(
     let active_vus = shared.active_vus.clone();
     let quiet = shared.quiet;
     let tx = shared.tx.clone();
+    let http_debug_errors = shared.http_debug_errors;
 
     tokio::spawn(async move {
         if let Some(active) = &active_vus {
@@ -1448,7 +1530,16 @@ fn spawn_arrival_worker(
             iter_count.fetch_add(1, Ordering::Relaxed);
             ctx.iteration_seq += 1;
             for step in steps.iter() {
-                execute_step(step, &mut ctx, &tx, &metrics, quiet, vu_id).await;
+                execute_step(
+                    step,
+                    &mut ctx,
+                    &tx,
+                    &metrics,
+                    quiet,
+                    vu_id,
+                    http_debug_errors,
+                )
+                .await;
                 if Instant::now() >= deadline || stop.load(Ordering::Relaxed) {
                     break;
                 }
@@ -1694,6 +1785,70 @@ async fn supervise_arrival(
     obj.insert("dropped_iterations".to_string(), Value::from(dropped));
     shared.metrics.add_counters(&obj);
     sampler.observed()
+}
+
+// ---------------------------------------------------------------------------
+// Mid-run threshold abort monitor (`abort_on_fail`)
+// ---------------------------------------------------------------------------
+
+/// How often the abort monitor re-evaluates its gates against the live
+/// metrics. Cheap: one merged snapshot + a pure
+/// [`crate::step::thresholds::evaluate`] per gate per tick, and it runs only
+/// when a config actually declares `abort_on_fail: true`.
+const ABORT_MONITOR_INTERVAL: Duration = Duration::from_millis(250);
+
+/// k6-style `abortOnFail`: poll the shared metrics while the VUs run; the
+/// first violated `severity: fail` gate flips the run's `stop` flag, which
+/// stops every load schedule between steps (the same graceful path a Ctrl-C
+/// takes) — `after:` teardown and the final reporters/summary then run as
+/// usual, and the `after` thresholds step remains the single recorded gate
+/// result (the monitor evaluates purely, never recording).
+///
+/// A gate whose metrics have not been emitted yet evaluates to a config
+/// error (`unknown metric`); the monitor skips that tick instead of
+/// aborting — the final `after:` evaluation is authoritative. A run that
+/// finishes on schedule (or via Ctrl-C) without a violation produces no
+/// abort line: `stop` already set short-circuits before any evaluation.
+fn spawn_abort_monitor(
+    gates: Vec<super::thresholds::AbortGate>,
+    metrics: Arc<ShardedMetrics>,
+    stop: Arc<AtomicBool>,
+    tx: mpsc::Sender<LogLine>,
+    secrets: SecretRegistry,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(ABORT_MONITOR_INTERVAL);
+        ticker.tick().await; // consume the immediate first tick
+        loop {
+            ticker.tick().await;
+            if stop.load(Ordering::Relaxed) {
+                return; // duration over / Ctrl-C — never an abort
+            }
+            let snapshot = metrics.merged().metric_snapshot();
+            for gate in &gates {
+                let Ok(summary) = super::thresholds::evaluate(&gate.params, &snapshot) else {
+                    continue;
+                };
+                if summary.status == "fail" {
+                    // Exactly one clear abort line: a Ctrl-C racing in, or a
+                    // second gate, must not print it twice.
+                    if !stop.swap(true, Ordering::SeqCst) {
+                        emit(
+                            &tx,
+                            LogSource::Stderr,
+                            &format!(
+                                "abort_on_fail: threshold gate '{}' violated — stopping load early (after: teardown and the summary still run): {}",
+                                gate.name, summary.message
+                            ),
+                            &secrets,
+                        )
+                        .await;
+                    }
+                    return;
+                }
+            }
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1985,7 +2140,8 @@ async fn execute_step(
     tx: &mpsc::Sender<LogLine>,
     metrics: &Arc<ShardedMetrics>,
     quiet: bool,
-    _vu_id: u32,
+    vu_id: u32,
+    http_debug_errors: bool,
 ) {
     let action = &step.action;
     let step_name = step.name.as_deref().unwrap_or(action.as_str());
@@ -2094,6 +2250,28 @@ async fn execute_step(
             &mut dropped_logs,
         );
     }
+    // `http_debug: error` diagnostics (k6 #6618-style): a failed action
+    // yields one masked JSON line with the VU/iteration, the interpolated
+    // request params (payload included) and the response output (body
+    // included). Successful invocations never touch this path — nothing is
+    // buffered for retroactive output.
+    if http_debug_errors && !output.success {
+        let diag = serde_json::json!({
+            "vu": vu_id,
+            "iteration": ctx.iteration_seq,
+            "step": step_name,
+            "action": action,
+            "request": ctx.interpolate_value(&params),
+            "response": output.value,
+        });
+        emit(
+            tx,
+            LogSource::Stderr,
+            &format!("http_debug: {diag}"),
+            &ctx.secrets,
+        )
+        .await;
+    }
     // an Arc, shared by the `outputs:` name and `__last__` — the per-step
     // double deep-clone of the response body is gone.
     let output_value = Arc::new(output.value);
@@ -2122,6 +2300,33 @@ async fn execute_step(
                 &ctx.secrets,
                 &mut dropped_logs,
             );
+        }
+        // `http_debug: error`: failed checks get the same diagnostic treatment
+        // as failed actions — the failing check details plus the response the
+        // check ran against (`__last__`, body included).
+        if http_debug_errors && !check_out.success {
+            let failed: Vec<&str> = check_out
+                .logs
+                .iter()
+                .filter(|(tag, _)| *tag == LogTag::Err)
+                .map(|(_, text)| text.as_str())
+                .collect();
+            let diag = serde_json::json!({
+                "vu": vu_id,
+                "iteration": ctx.iteration_seq,
+                "step": step_name,
+                "action": "std/check@v1",
+                "checks": ctx.interpolate_value(checks),
+                "failed_checks": failed,
+                "response": ctx.vars.get("__last__").map(|v| (**v).clone()),
+            });
+            emit(
+                tx,
+                LogSource::Stderr,
+                &format!("http_debug: {diag}"),
+                &ctx.secrets,
+            )
+            .await;
         }
     }
     if dropped_logs > 0 {
@@ -2218,6 +2423,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }
@@ -2277,6 +2484,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -2601,6 +2810,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -2643,6 +2854,8 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -2684,6 +2897,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -2720,6 +2935,8 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -2763,6 +2980,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -2812,6 +3031,8 @@ mod tests {
                 outputs: Some("resp".into()),
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -2823,6 +3044,8 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -3360,6 +3583,8 @@ mod tests {
                 outputs: Some("feed".into()),
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -3371,6 +3596,8 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -3382,6 +3609,8 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -3434,6 +3663,8 @@ mod tests {
                 outputs: Some("conn".into()),
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -3449,6 +3680,8 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -3463,6 +3696,8 @@ mod tests {
                 outputs: Some("stream".into()),
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -3478,6 +3713,8 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -3493,6 +3730,8 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -3504,6 +3743,8 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -3553,6 +3794,8 @@ mod tests {
             outputs: outputs.map(str::to_owned),
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }
@@ -3690,6 +3933,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -3726,6 +3971,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -3760,6 +4007,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -3801,6 +4050,8 @@ mod tests {
             outputs: Some("cfg".into()),
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -3889,6 +4140,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -3959,6 +4212,8 @@ mod tests {
             outputs: Some("cfg".into()),
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -3979,6 +4234,8 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -4037,6 +4294,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -4105,6 +4364,8 @@ mod tests {
             outputs: Some("keeper".into()),
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -4145,6 +4406,8 @@ mod tests {
             outputs: Some("keeper".into()),
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -4156,6 +4419,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -4202,6 +4467,8 @@ mod tests {
             outputs: None,
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }];
@@ -4323,6 +4590,8 @@ mod tests {
             outputs: outputs.map(str::to_owned),
             severity: None,
             message: None,
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         };
@@ -4352,6 +4621,8 @@ mod tests {
             outputs: None,
             severity: severity.map(str::to_owned),
             message: message.map(str::to_owned),
+            abort_on_fail: false,
+            http_debug: None,
             condition: None,
             labels: None,
         }
@@ -4623,6 +4894,374 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // abort_on_fail / http_debug — k6-style mid-run abort + failure
+    // diagnostics (k6 #6618)
+    // -----------------------------------------------------------------
+
+    fn abort_gate_step(with: Value, http_debug: Option<&str>) -> Step {
+        let mut step = thresholds_step(with, None, None);
+        step.abort_on_fail = true;
+        step.http_debug = http_debug.map(str::to_owned);
+        step
+    }
+
+    /// A violated `abort_on_fail` gate stops a long run early — wall clock
+    /// far under the configured 30s — while `after:` teardown and the final
+    /// thresholds result still run, exactly once (the monitor evaluates
+    /// purely and never records).
+    #[tokio::test]
+    async fn abort_on_fail_stops_a_long_run_early() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+        let steps = vec![Step {
+            name: Some("hit".into()),
+            action: "std/http@v1".into(),
+            with: Some(json!({ "url": server.uri(), "timeout": 2000 })),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+            abort_on_fail: false,
+            http_debug: None,
+            condition: None,
+            labels: None,
+        }];
+        let after = vec![
+            abort_gate_step(json!({ "http_req_failed": ["rate<0.5"] }), None),
+            log_step("teardown", "AFTER RAN", None),
+        ];
+        let config = RunConfig {
+            vus: 1,
+            duration: "30s".into(),
+            ..Default::default()
+        };
+        let t0 = Instant::now();
+        let (lines, outcome) = run_native_full(steps, Vec::new(), after, Map::new(), config).await;
+        let elapsed = t0.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "the gate must abort long before the 30s duration: {elapsed:?}"
+        );
+        let abort: Vec<&LogLine> = lines
+            .iter()
+            .filter(|l| l.text.contains("abort_on_fail"))
+            .collect();
+        assert_eq!(abort.len(), 1, "exactly one abort line: {lines:?}");
+        assert!(abort[0].text.contains("stopping load early"), "{abort:?}");
+        assert!(abort[0].text.contains("'slo gate'"), "{abort:?}");
+        assert!(
+            lines.iter().any(|l| l.text == "AFTER RAN"),
+            "after: teardown still runs: {lines:?}"
+        );
+        let t = outcome.thresholds.expect("final gate result recorded");
+        assert_eq!(t.status, "fail");
+        assert_eq!(
+            t.violations.len(),
+            1,
+            "the after: step is the single recorded gate result"
+        );
+    }
+
+    /// A gate that never trips: the run lasts the full duration and the log
+    /// carries no abort line — the monitor stays silent on normal finishes.
+    #[tokio::test]
+    async fn untripped_abort_gate_finishes_normally_without_abort_line() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let steps = vec![Step {
+            name: Some("hit".into()),
+            action: "std/http@v1".into(),
+            with: Some(json!({ "url": server.uri() })),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+            abort_on_fail: false,
+            http_debug: None,
+            condition: None,
+            labels: None,
+        }];
+        let after = vec![abort_gate_step(
+            json!({ "http_req_failed": ["rate<0.5"] }),
+            Some("error"),
+        )];
+        let config = RunConfig {
+            vus: 1,
+            duration: "400ms".into(),
+            ..Default::default()
+        };
+        let t0 = Instant::now();
+        let (lines, outcome) = run_native_full(steps, Vec::new(), after, Map::new(), config).await;
+        let elapsed = t0.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(350),
+            "no violation → the run lasts its full duration: {elapsed:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.text.contains("abort_on_fail")),
+            "no abort line on a normal finish: {lines:?}"
+        );
+        // http_debug: error armed, but nothing failed → no diagnostics.
+        assert!(
+            !lines.iter().any(|l| l.text.starts_with("http_debug: ")),
+            "successful exchanges emit no diagnostic JSON: {lines:?}"
+        );
+        let t = outcome.thresholds.expect("gate result recorded");
+        assert_eq!(t.status, "pass", "{}", t.message);
+    }
+
+    /// `http_debug: error`: failed actions and failed checks each emit one
+    /// masked diagnostic JSON line (VU id, iteration, interpolated request
+    /// params incl. payload, response output incl. body); successful
+    /// exchanges emit nothing.
+    #[tokio::test]
+    async fn http_debug_error_logs_failed_actions_and_checks_only() {
+        unsafe {
+            std::env::set_var("PERFSCALE_TEST_HTTP_DEBUG_SECRET", "topsecret-token");
+        }
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ok"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("fine"))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/boom"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("server exploded"))
+            .mount(&server)
+            .await;
+
+        let mk = |name: &str, with: Value, check: Value| Step {
+            name: Some(name.into()),
+            action: "std/http@v1".into(),
+            with: Some(with),
+            check: Some(check),
+            outputs: None,
+            severity: None,
+            message: None,
+            abort_on_fail: false,
+            http_debug: None,
+            condition: None,
+            labels: None,
+        };
+        let steps = vec![
+            mk(
+                "ok",
+                json!({ "url": format!("{}/ok", server.uri()) }),
+                json!({ "status": 200 }),
+            ),
+            mk(
+                "boom",
+                json!({
+                    "method": "POST",
+                    "url": format!("{}/boom", server.uri()),
+                    "body": {
+                        "token": "t-${{ __iter__ }}",
+                        "api_key": "${{ env.PERFSCALE_TEST_HTTP_DEBUG_SECRET }}",
+                    },
+                }),
+                json!({ "status": 201 }),
+            ),
+        ];
+        // Half the requests fail; the 0.4 bound trips well clear of the
+        // abort-time fluctuation around 0.5.
+        let after = vec![abort_gate_step(
+            json!({ "http_req_failed": ["rate<0.4"] }),
+            Some("error"),
+        )];
+        let config = RunConfig {
+            vus: 1,
+            duration: "30s".into(),
+            ..Default::default()
+        };
+        let (lines, outcome) = run_native_full(steps, Vec::new(), after, Map::new(), config).await;
+        assert!(outcome.thresholds_failed());
+
+        let diag_lines: Vec<&str> = lines
+            .iter()
+            .filter_map(|l| l.text.strip_prefix("http_debug: "))
+            .collect();
+        assert!(!diag_lines.is_empty(), "diagnostics emitted: {lines:?}");
+        // Every line is valid JSON and belongs to the failing step only.
+        let diags: Vec<Value> = diag_lines
+            .iter()
+            .map(|s| serde_json::from_str(s).expect("diagnostic line is JSON"))
+            .collect();
+        assert!(
+            diags.iter().all(|d| d["step"] == "boom"),
+            "the passing step/checks emit nothing: {diags:?}"
+        );
+
+        // Failed action: request payload (interpolated) + response body.
+        let action = diags
+            .iter()
+            .find(|d| d["action"] == "std/http@v1")
+            .expect("failed-action diagnostic");
+        assert_eq!(action["vu"], 1);
+        assert!(action["iteration"].as_u64().unwrap() >= 1);
+        assert_eq!(action["response"]["status"], 500);
+        assert_eq!(action["response"]["body"], "server exploded");
+        let token = action["request"]["body"]["token"]
+            .as_str()
+            .expect("interpolated request payload present");
+        assert!(token.starts_with("t-"), "{token}");
+
+        // Failed check: check details + the response the check ran against.
+        let check = diags
+            .iter()
+            .find(|d| d["action"] == "std/check@v1")
+            .expect("failed-check diagnostic");
+        assert_eq!(check["vu"], 1);
+        assert_eq!(check["checks"]["status"], 201);
+        assert!(
+            check["failed_checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c.as_str().unwrap().contains("status==201")),
+            "{check}"
+        );
+        assert_eq!(check["response"]["body"], "server exploded");
+
+        // The secret-masked pipeline applies to diagnostics too: the resolved
+        // `${{ env.* }}` value never appears in cleartext (the failed-action
+        // line carries it masked in the request payload; the check line
+        // simply never contains it).
+        for line in &diag_lines {
+            assert!(!line.contains("topsecret-token"), "masked: {line}");
+        }
+        assert!(
+            diag_lines.iter().any(|l| l.contains("***")),
+            "the request payload's secret is masked: {diag_lines:?}"
+        );
+    }
+
+    /// Without `http_debug` on the gate, failures produce their usual error
+    /// lines and nothing else — no diagnostic JSON.
+    #[tokio::test]
+    async fn abort_gate_without_http_debug_emits_no_diagnostics() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let steps = vec![Step {
+            name: Some("hit".into()),
+            action: "std/http@v1".into(),
+            with: Some(json!({ "url": server.uri() })),
+            check: Some(json!({ "status": 200 })),
+            outputs: None,
+            severity: None,
+            message: None,
+            abort_on_fail: false,
+            http_debug: None,
+            condition: None,
+            labels: None,
+        }];
+        let after = vec![abort_gate_step(
+            json!({ "http_req_failed": ["rate<0.5"] }),
+            None,
+        )];
+        let config = RunConfig {
+            vus: 1,
+            duration: "30s".into(),
+            ..Default::default()
+        };
+        let (lines, outcome) = run_native_full(steps, Vec::new(), after, Map::new(), config).await;
+        assert!(outcome.thresholds_failed());
+        assert!(
+            !lines.iter().any(|l| l.text.starts_with("http_debug: ")),
+            "no diagnostics without http_debug: {lines:?}"
+        );
+        // The usual error lines are still there.
+        assert!(
+            lines.iter().any(|l| l.text.contains("[check] hit")),
+            "{lines:?}"
+        );
+    }
+
+    /// Miscombined abort-gate fields are configuration errors, failing before
+    /// any VU starts — the same rules `perfscale lint` reports.
+    #[tokio::test]
+    async fn abort_gate_misconfiguration_fails_before_the_run() {
+        let cases: Vec<(Vec<Step>, Vec<Step>, &str)> = vec![
+            // abort_on_fail on a non-thresholds after step
+            (
+                Vec::new(),
+                vec![{
+                    let mut s = log_step("hit", "x", None);
+                    s.action = "std/http@v1".into();
+                    s.with = Some(json!({ "url": "http://localhost/" }));
+                    s.abort_on_fail = true;
+                    s
+                }],
+                "only apply to `std/thresholds@v1`",
+            ),
+            // http_debug without abort_on_fail
+            (
+                Vec::new(),
+                vec![{
+                    let mut s =
+                        thresholds_step(json!({ "http_req_failed": ["rate<0.5"] }), None, None);
+                    s.http_debug = Some("error".into());
+                    s
+                }],
+                "requires `abort_on_fail: true`",
+            ),
+            // unknown http_debug mode
+            (
+                Vec::new(),
+                vec![{
+                    let mut s = abort_gate_step(json!({ "http_req_failed": ["rate<0.5"] }), None);
+                    s.http_debug = Some("verbose".into());
+                    s
+                }],
+                "unknown http_debug 'verbose'",
+            ),
+            // abort gate in the test's step list instead of after:
+            (
+                vec![abort_gate_step(
+                    json!({ "http_req_failed": ["rate<0.5"] }),
+                    None,
+                )],
+                Vec::new(),
+                "only valid on `std/thresholds@v1` steps in the `after:` block",
+            ),
+            // abort_on_fail with an advisory severity
+            (
+                Vec::new(),
+                vec![{
+                    let mut s = abort_gate_step(json!({ "http_req_failed": ["rate<0.5"] }), None);
+                    s.severity = Some("warn".into());
+                    s
+                }],
+                "requires `severity: fail`",
+            ),
+        ];
+        for (mut steps, after, needle) in cases {
+            steps.push(sleep_step(10));
+            let (lines, outcome) =
+                run_native_full(steps, Vec::new(), after, Map::new(), quick_run()).await;
+            let err = outcome
+                .config_error
+                .unwrap_or_else(|| panic!("config error expected for '{needle}'"));
+            assert!(err.contains(needle), "'{needle}' not in: {err}");
+            assert!(
+                !lines.iter().any(|l| l.text.starts_with("Starting")),
+                "no VUs must start for '{needle}': {lines:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
     // During-run metrics streaming (metrics_tx + report.during_run)
     // -----------------------------------------------------------------
 
@@ -4677,6 +5316,8 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 condition: None,
                 labels: None,
             },
@@ -4744,6 +5385,8 @@ mod tests {
                 outputs: None,
                 severity: None,
                 message: None,
+                abort_on_fail: false,
+                http_debug: None,
                 labels: Some(
                     [("channel".to_string(), "book".to_string())]
                         .into_iter()

@@ -117,6 +117,24 @@ pub struct Step {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 
+    /// k6-style mid-run abort for `std/thresholds@v1` `after:` steps: while
+    /// the VU phase runs, a monitor re-evaluates the gate against the metrics
+    /// collected so far, and a violated `severity: fail` (default) gate stops
+    /// all load schedules early — `after:` teardown and the final summary
+    /// still run. Meaningless (and rejected) on other actions and outside
+    /// `after:`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub abort_on_fail: bool,
+
+    /// Failed-request/check diagnostics for runs gated by an abort gate
+    /// (`abort_on_fail: true` on an `after:` `std/thresholds@v1` step):
+    /// `"error"` (currently the only value) emits one masked diagnostic JSON
+    /// line per failed step action and per failed `check:` during the VU
+    /// phase, carrying the VU id, iteration, interpolated request params and
+    /// the response output. Valid only together with `abort_on_fail: true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_debug: Option<String>,
+
     /// Step-level metric labels (issue #12): stamped on every series this
     /// step emits; merge priority over reporter and run labels. Values must
     /// be scalars and support `${{ inputs.* }}` / `${{ env.* }}`
@@ -731,6 +749,28 @@ mod tests {
         let round_tripped = serde_json::to_value(&step).unwrap();
         assert_eq!(round_tripped["use"], "std/http@v1");
         assert!(round_tripped.get("action").is_none());
+    }
+
+    #[test]
+    fn step_abort_fields_default_off_and_skip_serializing() {
+        // Absent keys: defaults, and the serialized form stays byte-identical
+        // to before (no new keys for old documents).
+        let step: Step = serde_json::from_str(r#"{"use": "std/thresholds@v1"}"#).unwrap();
+        assert!(!step.abort_on_fail);
+        assert!(step.http_debug.is_none());
+        let v = serde_json::to_value(&step).unwrap();
+        assert!(v.get("abort_on_fail").is_none());
+        assert!(v.get("http_debug").is_none());
+
+        let step: Step = serde_json::from_str(
+            r#"{"use": "std/thresholds@v1", "abort_on_fail": true, "http_debug": "error"}"#,
+        )
+        .unwrap();
+        assert!(step.abort_on_fail);
+        assert_eq!(step.http_debug.as_deref(), Some("error"));
+        let v = serde_json::to_value(&step).unwrap();
+        assert_eq!(v["abort_on_fail"], true);
+        assert_eq!(v["http_debug"], "error");
     }
 
     #[test]
