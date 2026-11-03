@@ -15,6 +15,10 @@ serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 uuid       = { version = "1", features = ["serde", "v4"] }
+# SIMD substring search for the `${` / `${{` token scans on every payload
+# and interpolation (std's str::find is a scalar Two-Way search). Already in
+# the tree transitively; no new crate.
+memchr     = "2.8"
 
 # Async runtime + subprocess management (k6, locust). `net` powers the raw
 # transport actions (std/tcp@v1, std/udp@v1) and the waitUntil port_open probe;

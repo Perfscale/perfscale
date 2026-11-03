@@ -154,8 +154,36 @@ fn expand_json_once_in_place(v: &mut Value) {
 // Criterion benchmarks
 // ---------------------------------------------------------------------------
 
+/// A realistic large request body (~4 KiB of JSON-ish text) with no tokens —
+/// the token scan is the whole cost, which is where the SIMD finder shows.
+fn large_static() -> String {
+    let row =
+        r#"{"sku":"A-1024","name":"Widget, blue","qty":3,"price":19.99,"tags":["sale","new"]},"#;
+    let mut s = String::from("{\"items\":[");
+    while s.len() < 4096 {
+        s.push_str(row);
+    }
+    s.push_str("]}");
+    s
+}
+
+/// The same large body with two tokens at the very end — scan + expand.
+fn large_tail_tokens() -> String {
+    let mut s = large_static();
+    s.push_str(" ${uuid} ${seq}");
+    s
+}
+
 fn bench_generate(c: &mut Criterion) {
     let mut group = c.benchmark_group("generate");
+    let big = large_static();
+    group.bench_function("large_static_4k", |b| {
+        b.iter(|| black_box(expand_once(black_box(&big))))
+    });
+    let big_tail = large_tail_tokens();
+    group.bench_function("large_tail_tokens_4k", |b| {
+        b.iter(|| black_box(expand_once(black_box(&big_tail))))
+    });
     group.bench_function("static_ascii", |b| {
         b.iter(|| black_box(expand_once(black_box(STATIC_ASCII))))
     });
@@ -269,7 +297,10 @@ fn report_allocations() {
     // In-place cases prebuild one owned `Value` per op; 10k keeps the
     // prebuilt vector small while the per-op accounting stays exact.
     const ITERS_IN_PLACE: u64 = 10_000;
-    let cases: [(&str, (f64, f64)); 7] = [
+    // Built outside the measured closures — only the expansion counts.
+    let big_static = large_static();
+    let big_tail = large_tail_tokens();
+    let cases: [(&str, (f64, f64)); 9] = [
         (
             "static_ascii",
             count_allocs(ITERS, || expand_once(STATIC_ASCII)),
@@ -281,6 +312,14 @@ fn report_allocations() {
         (
             "builtins_heavy",
             count_allocs(ITERS, || expand_once(BUILTINS_HEAVY)),
+        ),
+        (
+            "large_static_4k",
+            count_allocs(ITERS, || expand_once(&big_static)),
+        ),
+        (
+            "large_tail_4k",
+            count_allocs(ITERS, || expand_once(&big_tail)),
         ),
         ("json_tokens", count_allocs_json(ITERS, &json_tokens())),
         ("json_static", count_allocs_json(ITERS, &json_static())),

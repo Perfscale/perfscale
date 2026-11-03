@@ -507,8 +507,9 @@ pub const DEFAULT_MAX_RESPONSE_BODY_BYTES: u64 = 16 * 1024 * 1024;
 /// One finished HTTP exchange, body already read and decoded.
 pub struct HttpOutcome {
     pub status: u16,
-    /// Canonical reason phrase (`"OK"`, `""` when unknown).
-    pub reason: String,
+    /// Canonical reason phrase (`"OK"`, `""` when unknown) — static, so no
+    /// per-response allocation.
+    pub reason: &'static str,
     /// Lowercase-name JSON map for `${{ resp.headers.* }}` interpolation.
     pub headers: serde_json::Map<String, Value>,
     pub duration_ms: f64,
@@ -571,7 +572,7 @@ pub async fn timed_exchange(
         }
     };
     let status = resp.status().as_u16();
-    let reason = resp.status().canonical_reason().unwrap_or("").to_string();
+    let reason = resp.status().canonical_reason().unwrap_or("");
     let headers = header_map_to_json(resp.headers());
 
     let bytes = match read_body_capped(&mut resp, max_body_bytes, status).await {
@@ -581,8 +582,10 @@ pub async fn timed_exchange(
     // `text()` on this reqwest build (default-features off, no `charset`) is
     // exactly `from_utf8_lossy(bytes)` — decoding the capped buffer is the
     // byte-identical decode.
+    // The capped buffer is moved into the String when it is valid UTF-8 (one
+    // validation, no copy); only an invalid buffer pays the lossy re-encode.
     let (body, body_base64) = match body_kind {
-        BodyKind::Text => (String::from_utf8_lossy(&bytes).into_owned(), None),
+        BodyKind::Text => (utf8_or_lossy(bytes), None),
         BodyKind::Auto => {
             // Textual payloads keep the historic `body` string; binary
             // payloads surface as `body_base64` so protobuf descriptor sets,
@@ -596,11 +599,11 @@ pub async fn timed_exchange(
             // Headers were snapshotted above; the body is already read, so
             // decide from the snapshot + the buffer itself.
             match textual {
-                Some(true) => (String::from_utf8_lossy(&bytes).into_owned(), None),
+                Some(true) => (utf8_or_lossy(bytes), None),
                 Some(false) => (String::new(), Some(base64_encode(&bytes))),
-                None => match std::str::from_utf8(&bytes) {
-                    Ok(_) => (String::from_utf8_lossy(&bytes).into_owned(), None),
-                    Err(_) => (String::new(), Some(base64_encode(&bytes))),
+                None => match String::from_utf8(bytes) {
+                    Ok(text) => (text, None),
+                    Err(e) => (String::new(), Some(base64_encode(e.as_bytes()))),
                 },
             }
         }
@@ -614,6 +617,15 @@ pub async fn timed_exchange(
         body,
         body_base64,
     })
+}
+
+/// `bytes` as a String without copying when it is valid UTF-8; otherwise the
+/// `from_utf8_lossy` replacement (what reqwest's `text()` produces).
+fn utf8_or_lossy(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -881,12 +893,19 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
                 value["body_base64"] = Value::String(b64);
             }
 
+            // Under `--quiet` the runner keeps only error lines, so a
+            // successful request's line is never formatted at all.
+            let logs = if failed || !ctx.quiet {
+                vec![(
+                    if failed { LogTag::Err } else { LogTag::Out },
+                    request_line(&method, &url, out.status, out.reason, out.duration_ms, ""),
+                )]
+            } else {
+                Vec::new()
+            };
             ActionOutput {
                 value,
-                logs: vec![(
-                    if failed { LogTag::Err } else { LogTag::Out },
-                    request_line(&method, &url, out.status, &out.reason, out.duration_ms, ""),
-                )],
+                logs,
                 success: !failed,
                 http_sample: Some(HttpSample {
                     duration_ms: out.duration_ms,

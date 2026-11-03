@@ -2906,6 +2906,7 @@ dependencies = [
  "http-body-util",
  "jsonschema",
  "libc",
+ "memchr",
  "perfscale-connection",
  "plist",
  "prost",
@@ -6418,7 +6419,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "perfscale-core"
-version = "0.27.0"

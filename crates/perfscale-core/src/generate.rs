@@ -279,12 +279,12 @@ impl Gen {
     /// Fails only on a library call error (known alias, unknown function or
     /// bad arguments — see the module docs); the caller must fail the step.
     pub fn expand(&mut self, template: &str) -> Result<String, String> {
-        if !template.contains("${") {
+        if !has_token_start(template) {
             return Ok(template.to_string());
         }
         let mut rest = template;
         let mut out = String::with_capacity(template.len() + 32);
-        while let Some(open) = rest.find("${") {
+        while let Some(open) = find_token_start(rest) {
             // A `${{` belongs to the engine's interpolation layer — leave it
             // (and its content) alone by copying the literal through the `$`.
             if rest.as_bytes().get(open + 2) == Some(&b'{') {
@@ -292,16 +292,16 @@ impl Gen {
                 rest = &rest[open + 1..];
                 continue;
             }
-            let Some(close) = rest[open + 2..].find('}') else {
+            let Some(close) = memchr::memchr(b'}', &rest.as_bytes()[open + 2..]) else {
                 out.push_str(rest);
                 return Ok(out);
             };
             let token_start = open + 2;
             let token_end = token_start + close;
             out.push_str(&rest[..open]);
-            match self.eval(&rest[token_start..token_end])? {
-                Some(value) => out.push_str(&value),
-                None => out.push_str(&rest[open..token_end + 1]),
+            // Built-ins write straight into `out` — no per-token String.
+            if !self.eval_into(&rest[token_start..token_end], &mut out)? {
+                out.push_str(&rest[open..token_end + 1]);
             }
             rest = &rest[token_end + 1..];
         }
@@ -313,58 +313,90 @@ impl Gen {
     /// unknown token, left verbatim by the caller. `Err` → a library call on
     /// a known alias failed (unknown function or bad arguments); the step
     /// must fail with the message.
-    fn eval(&mut self, token: &str) -> Result<Option<String>, String> {
-        Ok(match token {
-            "seq" => Some(self.seq.to_string()),
-            "vu" => Some(self.vu_id.to_string()),
-            "uuid" => Some(format!("{:016x}{:016x}", self.next_u64(), self.next_u64())),
-            "now" => Some(now_fix()),
-            "now_ms" => Some(now_unix_millis().to_string()),
-            "now_iso" => Some(now_iso()),
+    ///
+    /// The value is appended to `out` directly (`Ok(true)`); `Ok(false)`
+    /// means unknown and nothing was written.
+    fn eval_into(&mut self, token: &str, out: &mut String) -> Result<bool, String> {
+        use std::fmt::Write as _;
+        // `write!` into a String never fails; the Result is fmt's contract.
+        match token {
+            "seq" => {
+                let _ = write!(out, "{}", self.seq);
+            }
+            "vu" => {
+                let _ = write!(out, "{}", self.vu_id);
+            }
+            "uuid" => {
+                let (hi, lo) = (self.next_u64(), self.next_u64());
+                let _ = write!(out, "{hi:016x}{lo:016x}");
+            }
+            "now" => out.push_str(&now_fix()),
+            "now_ms" => {
+                let _ = write!(out, "{}", now_unix_millis());
+            }
+            "now_iso" => out.push_str(&now_iso()),
             _ => {
                 let Some((name, args)) = parse_call(token) else {
-                    return self.eval_library(token);
+                    return self.eval_library_into(token, out);
                 };
                 match name {
                     "rand" => {
                         let Some((a, b)) = two_ints(args) else {
-                            return self.eval_library(token);
+                            return self.eval_library_into(token, out);
                         };
-                        Some(self.rand_range(a, b).to_string())
+                        let v = self.rand_range(a, b);
+                        let _ = write!(out, "{v}");
                     }
                     "randf" => {
-                        let Some(v) = self.eval_randf(args) else {
-                            return self.eval_library(token);
-                        };
-                        Some(v)
+                        if !self.eval_randf_into(args, out) {
+                            return self.eval_library_into(token, out);
+                        }
                     }
                     "choice" => {
                         let mut options = args.split('|');
                         let count = options.clone().count();
                         let idx = (self.next_u64() % count as u64) as usize;
                         let option = options.nth(idx).expect("split yields at least one option");
-                        Some(option.trim().to_string())
+                        out.push_str(option.trim());
                     }
-                    _ => return self.eval_library(token),
+                    _ => return self.eval_library_into(token, out),
                 }
             }
+        }
+        Ok(true)
+    }
+
+    fn eval_library_into(&mut self, token: &str, out: &mut String) -> Result<bool, String> {
+        Ok(match self.eval_library(token)? {
+            Some(value) => {
+                out.push_str(&value);
+                true
+            }
+            None => false,
         })
     }
 
-    fn eval_randf(&mut self, args: &str) -> Option<String> {
+    /// `randf(a,b[,dp])` written into `out`; `false` (nothing written) when
+    /// the arguments don't parse.
+    fn eval_randf_into(&mut self, args: &str, out: &mut String) -> bool {
+        use std::fmt::Write as _;
         let mut parts = args.split(',');
-        let a: f64 = parts.next()?.trim().parse().ok()?;
-        let b: f64 = parts.next()?.trim().parse().ok()?;
+        let (Some(a), Some(b)) = (parts.next(), parts.next()) else {
+            return false;
+        };
+        let (Ok(a), Ok(b)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>()) else {
+            return false;
+        };
         let dp: usize = parts
             .next()
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(2);
-        // Scale to integer units at `dp` precision, pick, rescale.
         let scale = 10f64.powi(dp as i32);
         let lo = (a * scale) as i64;
         let hi = (b * scale) as i64;
         let v = self.rand_range(lo, hi) as f64 / scale;
-        Some(format!("{v:.*}", dp))
+        let _ = write!(out, "{v:.*}", dp);
+        true
     }
 
     /// Library token resolution after every built-in missed: `alias.fn(args)`
@@ -521,7 +553,7 @@ impl Gen {
 pub fn contains_token(v: &serde_json::Value) -> bool {
     use serde_json::Value;
     match v {
-        Value::String(s) => s.contains("${"),
+        Value::String(s) => has_token_start(s),
         Value::Array(a) => a.iter().any(contains_token),
         Value::Object(m) => m.values().any(contains_token),
         _ => false,
@@ -562,7 +594,7 @@ pub fn expand_tokens_in_place(
     use serde_json::Value;
     match v {
         Value::String(s) => {
-            if s.contains("${") {
+            if has_token_start(s) {
                 *s = generator.expand(s)?;
             }
         }
@@ -584,6 +616,43 @@ pub fn expand_tokens_in_place(
 // ---------------------------------------------------------------------------
 // Wall-clock formatting (no chrono dependency)
 // ---------------------------------------------------------------------------
+
+/// SIMD substring finder for the `${` token start, built once per process.
+/// `memchr::memmem` vectorises the scan (SSE2/AVX2 on x86-64, NEON on
+/// aarch64) where `str::find` runs a scalar Two-Way search — the gate that
+/// every payload and every string JSON leaf goes through.
+static TOKEN_START: std::sync::LazyLock<memchr::memmem::Finder<'static>> =
+    std::sync::LazyLock::new(|| memchr::memmem::Finder::new(b"${"));
+
+/// Byte offset of the first `${` in `s`, if any.
+#[inline]
+pub(crate) fn find_token_start(s: &str) -> Option<usize> {
+    TOKEN_START.find(s.as_bytes())
+}
+
+/// True when `s` contains a `${` token start (generator tokens or the
+/// `${{ … }}` interpolation layer).
+#[inline]
+pub(crate) fn has_token_start(s: &str) -> bool {
+    find_token_start(s).is_some()
+}
+
+static PLACEHOLDER_OPEN: std::sync::LazyLock<memchr::memmem::Finder<'static>> =
+    std::sync::LazyLock::new(|| memchr::memmem::Finder::new(b"${{"));
+static PLACEHOLDER_CLOSE: std::sync::LazyLock<memchr::memmem::Finder<'static>> =
+    std::sync::LazyLock::new(|| memchr::memmem::Finder::new(b"}}"));
+
+/// Byte offset of the first `${{` (interpolation placeholder opener).
+#[inline]
+pub(crate) fn find_placeholder_open(s: &str) -> Option<usize> {
+    PLACEHOLDER_OPEN.find(s.as_bytes())
+}
+
+/// Byte offset of the first `}}` (interpolation placeholder closer).
+#[inline]
+pub(crate) fn find_placeholder_close(s: &str) -> Option<usize> {
+    PLACEHOLDER_CLOSE.find(s.as_bytes())
+}
 
 pub(crate) fn now_unix_millis() -> u128 {
     std::time::SystemTime::now()

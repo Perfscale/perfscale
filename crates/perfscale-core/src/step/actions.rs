@@ -122,7 +122,7 @@ pub struct HttpSample {
 /// never interpolated, so only values are scanned.
 pub(crate) fn has_placeholder(v: &Value) -> bool {
     match v {
-        Value::String(s) => s.contains("${{"),
+        Value::String(s) => crate::generate::find_placeholder_open(s).is_some(),
         Value::Object(m) => m.values().any(has_placeholder),
         Value::Array(a) => a.iter().any(has_placeholder),
         _ => false,
