@@ -115,6 +115,14 @@ fn bench_interpolate(c: &mut Criterion) {
         b.iter(|| ctx.interpolate_value(std::hint::black_box(&params)))
     });
 
+    // A ~4 KiB body string with one placeholder at the end — the opener scan
+    // over the literal prefix dominates.
+    let mut long = "lorem ipsum dolor sit amet, consectetur adipiscing elit; ".repeat(70);
+    long.push_str("${{ resp.status }}");
+    c.bench_function("interpolate_long_string_4k", |b| {
+        b.iter(|| ctx.interpolate(std::hint::black_box(long.as_str())))
+    });
+
     c.bench_function("interpolate_plain_string_no_placeholder", |b| {
         b.iter(|| {
             ctx.interpolate(std::hint::black_box(

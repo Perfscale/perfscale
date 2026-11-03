@@ -466,14 +466,14 @@ impl Context {
         // string costs one scan and no extra copies. Text produced by a
         // substitution is never re-scanned, as before.
         let mut rest = s;
-        let Some(mut start) = rest.find("${{") else {
+        let Some(mut start) = crate::generate::find_placeholder_open(rest) else {
             return Ok(s.to_string());
         };
         let mut out = String::with_capacity(s.len() + 16);
         loop {
             out.push_str(&rest[..start]);
             let after = &rest[start + 3..];
-            let Some(end) = after.find("}}") else {
+            let Some(end) = crate::generate::find_placeholder_close(after) else {
                 // Unterminated opener: the remainder stays verbatim.
                 out.push_str(&rest[start..]);
                 return Ok(out);
@@ -484,7 +484,7 @@ impl Context {
                 Err(_) => {} // non-strict: a miss resolves to empty, as before
             }
             rest = &after[end + 2..];
-            match rest.find("${{") {
+            match crate::generate::find_placeholder_open(rest) {
                 Some(next) => start = next,
                 None => {
                     out.push_str(rest);
@@ -595,7 +595,7 @@ impl TokenExpander<'_> {
     /// Expand one string. Token-free strings return unchanged without
     /// building the generator.
     pub(crate) fn expand(&mut self, s: &str) -> Result<String, String> {
-        if !s.contains("${") {
+        if !crate::generate::has_token_start(s) {
             return Ok(s.to_string());
         }
         self.gen()?.expand(s)

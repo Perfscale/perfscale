@@ -915,21 +915,25 @@ fn graphql_action_with_params<'a>(
                     .and_then(|e| e["message"].as_str())
                     .map(|m| format!(" — {m}"))
                     .unwrap_or_default();
-                logs.push((
-                    if failed { LogTag::Err } else { LogTag::Out },
-                    format!(
-                        "{}{}",
-                        request_line(
-                            method,
-                            &params.url,
-                            out.status,
-                            &out.reason,
-                            out.duration_ms,
-                            &extra
+                // `--quiet` keeps only error lines — skip formatting the
+                // success line entirely.
+                if failed || !ctx.quiet {
+                    logs.push((
+                        if failed { LogTag::Err } else { LogTag::Out },
+                        format!(
+                            "{}{}",
+                            request_line(
+                                method,
+                                &params.url,
+                                out.status,
+                                out.reason,
+                                out.duration_ms,
+                                &extra
+                            ),
+                            if failed { first_error.as_str() } else { "" },
                         ),
-                        if failed { first_error.as_str() } else { "" },
-                    ),
-                ));
+                    ));
+                }
 
                 ActionOutput {
                     value,
