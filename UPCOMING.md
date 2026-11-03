@@ -63,3 +63,9 @@ Release notes for the next release, written as features land.
   default suite list and CI; with an invalid kit path the bench fails loudly
   instead of reporting a fake success. Console log and the SPEC report tree
   are preserved as artifacts.
+
+- Pub/Sub drivers can report asynchronous delivery failures through
+  `PubSubOutcome.errors`. The engine adds them to the synchronous failure flag
+  in `pubsub_errors`, so Kafka delivery errors, MQTT ack timeouts and Redis
+  pipeline error replies remain visible with `flush: none`; the counter can
+  exceed 1 per exchange without failing the step.

@@ -174,9 +174,13 @@ Every exchange folds into the run summary as custom metrics:
   the default `scope: exchange`, only the **first** exchange of each VU under
   `scope: vu`. Keeps the connect cost visible separately instead of hiding
   it inside `pubsub_publish_ms`.
-- `pubsub_errors` — counter; failed exchanges (connect failure, publish
-  error, subscribe shortfall). Emitted on **every** exchange — 0 on success —
-  so summaries and thresholds always have the error count (the `db_errors`
+- `pubsub_errors` — counter emitted on **every** exchange: the synchronous
+  failure flag (connect failure, publish error, subscribe shortfall) plus any
+  driver-reported asynchronous failures, such as Kafka delivery errors with
+  `flush: none`, MQTT ack timeouts, or Redis pipeline error replies. It is 0
+  on success and can exceed 1 per exchange when a driver reports multiple
+  asynchronous failures. Asynchronous errors are counted without failing the
+  step. Summaries and thresholds always have the error count (the `db_errors`
   convention).
 - `pubsub_e2e_ms` — HDR histogram in ms (percentiles in the summary); start
   of the publish phase → message consumed, one sample per matched message.

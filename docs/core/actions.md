@@ -362,8 +362,11 @@ exchange under `scope: exchange`, only the first of each VU under
 holds one sample per published message — the transport's publish-call
 latency (for `nats` with `flush: message` the last message's sample
 includes the batch flush + ack).
-`pubsub_errors` counts failed exchanges and is emitted on every exchange (0
-on success — the `db_errors` convention). `${…}` generator tokens expand per
+`pubsub_errors` is emitted on every exchange and adds the synchronous failure
+flag to driver-reported asynchronous failures (Kafka delivery errors, MQTT ack
+timeouts, Redis pipeline error replies), so it can exceed 1 per exchange;
+asynchronous errors do not fail the step. It is 0 on success — the `db_errors`
+convention. `${…}` generator tokens expand per
 execution in `subject`, `publish`, and `subscribe.until_contains`; one
 execution is one message, so the payload and the matcher share one
 `${seq}` / `${vu}`. `body` is the
