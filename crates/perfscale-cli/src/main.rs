@@ -34,6 +34,8 @@ async fn main() {
         Commands::Cache(args) => match args.action {
             crate::cli::CacheAction::Clean(clean) => commands::cache::run(clean).await,
         },
+        Commands::InitSkills(args) => commands::init_skills::run(args).await,
+        Commands::InitAgents(args) => commands::init_agents::run(args).await,
     };
 
     if notify_updates {

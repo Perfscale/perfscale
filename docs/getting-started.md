@@ -132,3 +132,4 @@ forwarded — never the full per-iteration log.
 - [YAML reference](yaml-reference.md) — every field of both file formats
 - [CLI commands](cli/commands.md) — all flags
 - [Recipes](cli/examples.md) — CI usage, presets, multi-step scenarios, WebSocket, gRPC
+- [Coding agents](agents.md) — wire perfscale into Claude Code, Codex, Copilot, opencode, or VS Code with `init-skills` / `init-agents`

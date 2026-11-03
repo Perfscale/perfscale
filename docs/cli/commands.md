@@ -491,6 +491,37 @@ Eviction is always safe — everything in the cache is re-fetchable: the next
 `perfscale install` or `run` rebuilds what a pinned `perfscale.lock`
 references (at the cost of one refetch/recompile).
 
+## `perfscale init-skills`
+
+Installs the embedded agent skill folders (`perfscale-cli`,
+`perfscale-library-sdk`, `perfscale-migration-k6`) into `.<loop>/skills/` —
+copied as-is, re-running overwrites:
+
+```sh
+perfscale init-skills                 # ./.claude/skills/<skill>   (default loop)
+perfscale init-skills --loop agents   # ./.agents/skills/<skill>
+perfscale init-skills -g              # ~/.claude/skills/<skill>
+```
+
+## `perfscale init-agents`
+
+Generates the `perfscale-test-{planner,generator,healer}` agent definitions
+for one coding-agent loop (default `claude`; also `codex`, `copilot`,
+`opencode`, `vscode`, `vscode-legacy`), registers the
+[`@perfscale/mcp`](../mcp.md) server in the loop's config
+(`npx -y @perfscale/mcp`), and initializes the repo: `specs/README.md`, a
+found-or-created `tests/seed.yaml`, and a minimal config (or the one passed
+with `-c`). `--prompts` also installs the
+`perfscale-{plan,generate,heal,threshold}` prompt templates. Re-run after
+every perfscale upgrade.
+
+```sh
+perfscale init-agents --loop vscode --prompts
+```
+
+See [Coding agents](../agents.md) for the full loop matrix, generated files,
+and the load-safety rules baked into the agents.
+
 ## Environment variables
 
 | Name | Description |

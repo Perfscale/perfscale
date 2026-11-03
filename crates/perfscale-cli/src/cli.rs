@@ -87,6 +87,115 @@ pub enum Commands {
     SelfUpdate(SelfUpdateArgs),
     /// Manage the local import/library cache (~/.cache/perfscale).
     Cache(CacheArgs),
+    /// Install the perfscale skill folders for a coding agent (claude/agents).
+    #[command(name = "init-skills")]
+    InitSkills(InitSkillsArgs),
+    /// Generate coding-agent definitions (agents, MCP config, prompts) for this repo.
+    #[command(name = "init-agents")]
+    InitAgents(InitAgentsArgs),
+}
+
+fn init_skills_after_help() -> String {
+    format!(
+        "Copies the embedded skill folders (perfscale-cli, perfscale-library-sdk,\n\
+         perfscale-migration-k6) into `.<loop>/skills/` — as-is, no templating.\n\
+         Re-running overwrites, so skills stay in sync with the binary.\n\n\
+         Examples:\n  \
+         perfscale init-skills                   ./.claude/skills/<skill>\n  \
+         perfscale init-skills --loop agents     ./.agents/skills/<skill>\n  \
+         perfscale init-skills -g                ~/.claude/skills/<skill>\n\n\
+         Documentation: {DOCS_BASE}/agents.md#perfscale-init-skills"
+    )
+}
+
+#[derive(Args)]
+#[command(after_help = init_skills_after_help())]
+pub struct InitSkillsArgs {
+    /// Agent loop to install skills for.
+    #[arg(long, value_enum, default_value_t = SkillLoop::Claude)]
+    pub r#loop: SkillLoop,
+
+    /// Install into the home directory (~/.<loop>/skills) instead of the
+    /// current directory.
+    #[arg(short = 'g', long = "global")]
+    pub global: bool,
+}
+
+/// Skill target for `perfscale init-skills`.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum SkillLoop {
+    Claude,
+    Agents,
+}
+
+impl SkillLoop {
+    /// Directory the loop reads skills from (`.<loop>/skills`).
+    pub fn loop_dir(self) -> &'static str {
+        match self {
+            SkillLoop::Claude => ".claude",
+            SkillLoop::Agents => ".agents",
+        }
+    }
+}
+
+fn init_agents_after_help() -> String {
+    format!(
+        "Generates the perfscale-test-{{planner,generator,healer}} agent definitions for\n\
+         one coding-agent loop, registers the MCP server (`npx -y @perfscale/mcp`) in the\n\
+         loop's config, and initializes the repo: specs/README.md, a seed test\n\
+         (tests/seed.yaml, kept if present) and a minimal config. Re-run after every\n\
+         perfscale upgrade — there is no version check.\n\n\
+         Examples:\n  \
+         perfscale init-agents                          claude agents + .mcp.json\n  \
+         perfscale init-agents --loop vscode            VS Code agents + .vscode/mcp.json\n  \
+         perfscale init-agents -c staging.config.yaml   seed against an existing config\n  \
+         perfscale init-agents --prompts                also install the prompt templates\n\n\
+         Documentation: {DOCS_BASE}/agents.md#perfscale-init-agents"
+    )
+}
+
+#[derive(Args)]
+#[command(after_help = init_agents_after_help())]
+pub struct InitAgentsArgs {
+    /// Agent loop to generate definitions for (default: claude — a deliberate
+    /// difference from Playwright, which defaults to copilot).
+    #[arg(long, value_enum, default_value_t = AgentLoop::Claude)]
+    pub r#loop: AgentLoop,
+
+    /// Existing config file used to locate or seed the target (same role as
+    /// Playwright's `-c`/`--project`).
+    #[arg(short = 'c', long = "config", value_name = "CONFIG.yaml")]
+    pub config: Option<PathBuf>,
+
+    /// Also install the prompt templates (plan, generate, heal, threshold)
+    /// into the loop's prompt directory.
+    #[arg(long)]
+    pub prompts: bool,
+}
+
+/// Agent loop for `perfscale init-agents`.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum AgentLoop {
+    Claude,
+    Codex,
+    Copilot,
+    Opencode,
+    Vscode,
+    #[value(name = "vscode-legacy")]
+    VscodeLegacy,
+}
+
+impl std::fmt::Display for AgentLoop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            AgentLoop::Claude => "claude",
+            AgentLoop::Codex => "codex",
+            AgentLoop::Copilot => "copilot",
+            AgentLoop::Opencode => "opencode",
+            AgentLoop::Vscode => "vscode",
+            AgentLoop::VscodeLegacy => "vscode-legacy",
+        })
+    }
 }
 
 #[derive(Args)]

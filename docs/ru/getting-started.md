@@ -134,3 +134,4 @@ perfscale run -f test.yaml -c config.yaml --report http://localhost:7999
 - [Справочник по YAML](yaml-reference.md) — все поля обоих форматов файлов
 - [Команды CLI](cli/commands.md) — все флаги
 - [Рецепты](cli/examples.md) — использование в CI, пресеты, многошаговые сценарии, WebSocket, gRPC
+- [Агенты кодирования](agents.md) — подключение perfscale к Claude Code, Codex, Copilot, opencode или VS Code через `init-skills` / `init-agents`

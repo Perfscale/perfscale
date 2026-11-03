@@ -17,6 +17,7 @@ tiny local dev server for collecting results.
 - [Recipes](cli/examples.md) — copy-paste examples for common workflows
 - [Benchmarks](benchmarks.md) — engine comparison methodology & CI runs
 - [MCP server](mcp.md) — drive perfscale from AI agents over the Model Context Protocol
+- [Coding agents](agents.md) — `init-skills` / `init-agents`: skills, agent definitions, and prompts for Claude Code, Codex, Copilot, opencode, VS Code
 
 ## Core (`perfscale-core` library)
 

@@ -473,6 +473,37 @@ perfscale cache clean --dry-run    # только показать, скольк
 `perfscale install` или `run` пересоберёт то, на что ссылается закреплённый
 `perfscale.lock` (ценой одной повторной загрузки/компиляции).
 
+## `perfscale init-skills`
+
+Устанавливает встроенные skill-папки для агентов (`perfscale-cli`,
+`perfscale-library-sdk`, `perfscale-migration-k6`) в `.<loop>/skills/` —
+копируются как есть, повторный запуск перезаписывает:
+
+```sh
+perfscale init-skills                 # ./.claude/skills/<skill>   (цикл по умолчанию)
+perfscale init-skills --loop agents   # ./.agents/skills/<skill>
+perfscale init-skills -g              # ~/.claude/skills/<skill>
+```
+
+## `perfscale init-agents`
+
+Генерирует определения агентов `perfscale-test-{planner,generator,healer}`
+для одного цикла кодирования (по умолчанию `claude`; также `codex`,
+`copilot`, `opencode`, `vscode`, `vscode-legacy`), регистрирует
+[MCP-сервер `@perfscale/mcp`](../mcp.md) в конфиге цикла
+(`npx -y @perfscale/mcp`) и инициализирует репозиторий: `specs/README.md`,
+«найденный-или-созданный» `tests/seed.yaml` и минимальный конфиг (или тот,
+что передан через `-c`). `--prompts` дополнительно устанавливает шаблоны
+промптов `perfscale-{plan,generate,heal,threshold}`. Перезапускайте после
+каждого обновления perfscale.
+
+```sh
+perfscale init-agents --loop vscode --prompts
+```
+
+Полная матрица циклов, генерируемые файлы и правила безопасности нагрузки —
+в [Агентах кодирования](../agents.md).
+
 ## Переменные окружения
 
 | Имя | Описание |
