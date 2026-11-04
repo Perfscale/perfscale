@@ -63,10 +63,36 @@ const SKILLS: &[(&str, &[EmbeddedFile])] = &[
     ),
     (
         "perfscale-library-sdk",
-        &[EmbeddedFile {
-            path: "SKILL.md",
-            contents: include_str!("../../../../skills/perfscale-library-sdk/SKILL.md"),
-        }],
+        &[
+            EmbeddedFile {
+                path: "SKILL.md",
+                contents: include_str!("../../../../skills/perfscale-library-sdk/SKILL.md"),
+            },
+            EmbeddedFile {
+                path: "references/steps.md",
+                contents: include_str!(
+                    "../../../../skills/perfscale-library-sdk/references/steps.md"
+                ),
+            },
+            EmbeddedFile {
+                path: "references/libraries.md",
+                contents: include_str!(
+                    "../../../../skills/perfscale-library-sdk/references/libraries.md"
+                ),
+            },
+            EmbeddedFile {
+                path: "references/reporters.md",
+                contents: include_str!(
+                    "../../../../skills/perfscale-library-sdk/references/reporters.md"
+                ),
+            },
+            EmbeddedFile {
+                path: "references/distribution.md",
+                contents: include_str!(
+                    "../../../../skills/perfscale-library-sdk/references/distribution.md"
+                ),
+            },
+        ],
     ),
     (
         "perfscale-migration-k6",
@@ -74,6 +100,27 @@ const SKILLS: &[(&str, &[EmbeddedFile])] = &[
             path: "SKILL.md",
             contents: include_str!("../../../../skills/perfscale-migration-k6/SKILL.md"),
         }],
+    ),
+    (
+        "perfscale-run-analysis",
+        &[
+            EmbeddedFile {
+                path: "SKILL.md",
+                contents: include_str!("../../../../skills/perfscale-run-analysis/SKILL.md"),
+            },
+            EmbeddedFile {
+                path: "references/diagnosis.md",
+                contents: include_str!(
+                    "../../../../skills/perfscale-run-analysis/references/diagnosis.md"
+                ),
+            },
+            EmbeddedFile {
+                path: "references/artifacts.md",
+                contents: include_str!(
+                    "../../../../skills/perfscale-run-analysis/references/artifacts.md"
+                ),
+            },
+        ],
     ),
 ];
 
@@ -142,7 +189,8 @@ mod tests {
             [
                 "perfscale-cli",
                 "perfscale-library-sdk",
-                "perfscale-migration-k6"
+                "perfscale-migration-k6",
+                "perfscale-run-analysis"
             ]
         );
         let root = skills_root(tmp.path(), ".claude");
@@ -150,6 +198,13 @@ mod tests {
         assert!(root.join("perfscale-cli/references/actions.md").exists());
         assert!(root.join("perfscale-library-sdk/SKILL.md").exists());
         assert!(root.join("perfscale-migration-k6/SKILL.md").exists());
+        assert!(root
+            .join("perfscale-library-sdk/references/steps.md")
+            .exists());
+        assert!(root.join("perfscale-run-analysis/SKILL.md").exists());
+        assert!(root
+            .join("perfscale-run-analysis/references/diagnosis.md")
+            .exists());
     }
 
     #[test]

@@ -1,54 +1,75 @@
 ---
 name: perfscale-library-sdk
-description: Author perfscale WASM libraries in Rust, TypeScript, or Go — custom step actions and metric definitions — and wire them into test.yaml via imports. Use when a std/* action does not cover the protocol or logic needed.
+description: Extend perfscale with the official SDK (@perfscale/library-sdk for TypeScript, perfscale-library-sdk for Rust) — value generators for ${alias.fn(...)} tokens, custom steps for use: lib/<alias>/<step> with their own metrics and checks, trusted process steps, config extensions, and end-of-run reporters. Use when a std/* action or built-in token does not cover the protocol, data, metric or report you need.
 ---
 
-# perfscale Library SDK
+# perfscale SDK — extending the engine
 
-When the built-in `std/*` actions are not enough, ship a WASM library and
-import it from `test.yaml`.
+One WASM component can carry four kinds of extension. Pick by what the
+scenario needs:
 
-## Imports
+| Need | Build | Used from YAML as | Reference |
+|---|---|---|---|
+| A computed value inside a payload (ID, signature, fake data) | `defineLibrary` — `functions` | `${alias.fn(args)}` in any string | [libraries.md](references/libraries.md) |
+| A whole step with its own logic, outputs, metrics and checks | `defineSteps` — `steps` | `use: lib/<alias>/<step>` | [steps.md](references/steps.md) |
+| Running a local tool/runtime (node, python, CLI) as a step | `defineSteps` + `ctx.exec()`, build `--process` | `use: lib/<alias>/<step>` + `capabilities: [process]` | [steps.md](references/steps.md#process-steps) |
+| Library-owned settings in `config.yaml` | `configSchema` on the definition | a top-level `config.yaml` key | [libraries.md](references/libraries.md#config-extensions) |
+| A custom end-of-run report/file/integration | `defineReporter` | `report.reporters: [{ use: wasm:./x.wasm }]` | [reporters.md](references/reporters.md) |
 
-```yaml
-imports:
-  - ./libs/my-lib.wasm            # local
-  - https://example.com/lib.wasm  # remote, pinned in perfscale.lock
+Value functions and steps live in the **same** component: a signing function
+`${sig.token(...)}` and the login step `lib/sig/login` that uses it ship as
+one `.wasm`, one build, one `libraries:` entry.
+
+## Golden path (TypeScript)
+
+```console
+$ npm install @perfscale/library-sdk
+$ npx perfscale-library-build mylib.ts -o mylib.wasm --kind steps   # library | steps | reporter
+$ perfscale lint test.yaml config.yaml                             # validates lib/ refs + config block
+$ perfscale run -f test.yaml -c config.yaml
 ```
 
-Run `perfscale install` to fetch remote libraries and pin digests in
-`perfscale.lock`; `perfscale burn` builds a standalone binary with the
-libraries embedded.
+```yaml
+# config.yaml
+libraries:
+  - use: ./mylib.wasm
+    capabilities: []        # required key; [] = no grants
+    as: mylib               # optional alias (default: the library's name)
+```
 
-## WASM steps
+Unit-test without WASM under `node:test`: `testCall(def, new Ctx(), "fn",
+[args])` for functions and `testStep(def, new StepCtx(), "step", params)`
+for steps.
 
-A library exports step actions with their own IDs
-(`<namespace>/<action>@v1`, namespaced to the library). They appear in
-`steps:` exactly like `std/*` actions — with `with:` inputs, `check:`
-assertions, and `outputs:` bindings — and are validated by
-`perfscale lint`.
+## Rules that bite
 
-## defineMetric
+- Libraries are declared in `libraries:` (config file). `import:` is YAML
+  document composition, **not** library loading.
+- Steps are addressed `lib/<alias>/<step>` — `lib/` is reserved and never
+  shadows `std/*` / `pro/*`; `perfscale lint` checks every reference against
+  the component's manifest before the run.
+- Steps get **no network egress**. Protocol I/O stays with `std/*` / `pro/*`
+  steps; a WASM step transforms, signs, correlates, asserts and emits
+  metrics — or runs a host process through the `process` capability.
+- Any non-empty `capabilities:` grant needs `allow_library_capabilities:
+  true` in the config; `process` additionally `allow_process_actions: true`.
+- Metric names a step emits are `[a-z0-9_]` and must not collide with
+  engine series (`http_req_duration`, registered families) — a collision
+  fails the step naming the metric.
+- `${{ … }}` interpolation (secrets resolved and log-masked) happens
+  **before** the component is called; the component sees plain values.
+- Randomness: use the seeded `ctx.rng()` — never `Math.random()` — so a
+  `seed:` run reproduces bit-for-bit.
 
-Libraries declare their own metrics with `defineMetric` (name, kind, unit,
-description). Defined metrics:
+## Distribution
 
-- show up in `perfscale metrics` output and the run summary next to the
-  built-in families,
-- are usable in `std/thresholds@v1` expressions like any other metric,
-- stream through `report.reporters` with the same labels and histogram
-  handling.
+`perfscale install` fetches remote components into the content-addressed
+cache and pins digests in `perfscale.lock`; it also pre-compiles (burns)
+them so runs deserialize native code instead of recompiling. See
+[distribution.md](references/distribution.md). Templates to start from:
+`Perfscale/library-template` (functions), `Perfscale/faker` (Rust data
+generator), `Perfscale/nodejs` (process steps).
 
-## Config extensions
-
-A library may extend the run config with its own section (validated against
-the schema the library declares), so library behavior (endpoints, pool
-sizes, auth) lives in `config.yaml` instead of being hard-coded in test
-steps.
-
-## SDKs
-
-Libraries can be authored in Rust, TypeScript, or Go against the WIT
-interface in the perfscale repo (`wit/`). See the repo's
-`docs/library-sdk.md` for the full authoring guide and the
-`library-template` example project.
+After a run, analyze what your extension did with the
+`perfscale-run-analysis` skill — custom step cost shows in the summary's
+`libraries:` line (`step_calls`, `step_errors`, `step_p95_ms`).

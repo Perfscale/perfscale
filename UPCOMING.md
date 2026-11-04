@@ -23,6 +23,18 @@ Release notes for the next release, written as features land.
   columns (lost increments, queue drift) next to iterations/s. The bench
   workflow now runs with `BENCH_STRICT=1`: a row whose metrics don't parse
   fails the job (after the report and artifact are written).
+- Agent skills (`perfscale init-skills`): `perfscale-library-sdk` is
+  rewritten against the real SDK — value generators (`defineLibrary`),
+  custom steps (`defineSteps`, `lib/<alias>/<step>`, `StepResult` outputs,
+  metrics and checks), trusted process steps (`ctx.exec`, `--process`),
+  config extensions, WASM reporters (`defineReporter`), testing without
+  WASM (`testCall` / `testStep`) and install/lock/burn; it previously
+  described `imports:`-based loading and a `defineMetric` API that don't
+  exist. New `perfscale-run-analysis` skill: reading the summary and
+  `[stats]`, `--summary-export` / `report@v1`, open-model latency and
+  dropped iterations, target vs generator bottlenecks (`engine_metrics`,
+  port exhaustion), `abort_on_fail` + `http_debug`, threshold syntax and
+  fair run comparison.
 
 - `std/pick@v1` learns object sources and field renaming: `with.key` selects
   a value from a JSON object (`from`/`file` may now hold an object or a
