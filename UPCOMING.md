@@ -12,6 +12,12 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- `std/pick@v1` learns object sources and field renaming: `with.key` selects
+  a value from a JSON object (`from`/`file` may now hold an object or a
+  string with one), and `with.remap: { source: destination }` renames
+  top-level fields of the picked value — or of the whole object when no
+  `key`/`index` is given. Data-losing remaps (missing source, duplicate or
+  colliding destinations) fail the step instead of silently dropping fields.
 - Faster payload generation and interpolation: the `${` / `${{` token scans
   run on a SIMD substring search (`memchr::memmem` — SSE2/AVX2/NEON) instead
   of a scalar one, and built-in tokens (`${seq}`, `${uuid}`, `${rand(…)}`,

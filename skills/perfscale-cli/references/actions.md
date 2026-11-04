@@ -40,7 +40,8 @@ prefix and `@v1` suffix (`use: http`).
 - `std/sleep@v1` — `with: { ms }` pacing/think time.
 - `std/log@v1` — `with: { message }` (interpolated).
 - `std/random@v1` — random values for test data.
-- `std/pick@v1` — pick from a list (data-driven scenarios).
+- `std/pick@v1` — pick from a list (data-driven scenarios), select an object
+  value by `key`, or rename fields with `remap`.
 - `std/file-read@v1`, `std/read-json@v1`, `std/file-write@v1` — file I/O.
 - `std/child_process@v1`, `std/kill_process@v1` — manage helper processes.
 - `std/set_shared_variable@v1`, `std/get_shared_variable@v1` — cross-VU shared state.

@@ -1601,17 +1601,38 @@ back to 1000ms silently).
 
 ## `std/pick@v1`
 
-Pick one element of a JSON array — a random post from a feed, or a
-per-VU test user from a fixture file.
+Pick one element of a JSON array, select an object value by key, or rename
+object fields — for example, choose a per-VU test user from a fixture file.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `from` | array or string | one of from/file | The array, or a string holding a JSON array (`"${{ feed.body.posts }}"`) |
-| `file` | string (path) | one of from/file | A JSON array file, parsed once per process and cached by (mtime, size) like `std/file-read@v1`. Requires `allow_file_actions`, honours `fs_root` |
-| `index` | integer or string | random | Element index, wrapping modulo the length. Omitted → uniformly random |
-| `index_offset` | integer or string | `0` | Signed offset applied to `index` before wrapping; negative values wrap too |
+| `from` | array, object, or string | one of from/file | The array/object, or a string holding one (`"${{ feed.body.posts }}"`) |
+| `file` | string (path) | one of from/file | A JSON array/object file, parsed once per process and cached by (mtime, size) like `std/file-read@v1`. Requires `allow_file_actions`, honours `fs_root` |
+| `index` | integer or string | random | Element index, wrapping modulo the length. Omitted → uniformly random. Array sources only |
+| `index_offset` | integer or string | `0` | Signed offset applied to `index` before wrapping; negative values wrap too. Array sources only |
+| `key` | string or number | — | For an object source: select the value at this key (a number is canonicalised to its string form). A missing key fails the step |
+| `remap` | object | — | Rename top-level fields of the result: `source-field: destination-field`. Unmapped fields are kept; renamed sources are removed. A missing source, a non-string/empty or duplicate destination, or a destination colliding with an unrenamed field fails the step |
 
-**Output**: the picked element itself.
+**Output**: the picked element itself, remapped when `remap` is given.
+
+With an object source, `key` selects a value — or omit `key` and pass `remap`
+to rename the fields of the object itself:
+
+```yaml
+steps:
+  - use: std/pick@v1
+    with:
+      from: { dev: "https://dev.example.com", stage: "https://stage.example.com" }
+      key: "${{ inputs.env }}"
+    outputs: base_url
+  - use: std/pick@v1
+    with: { from: "${{ user_row }}", remap: { id: user_id, name: username } }
+    outputs: user
+```
+
+`remap` builds the result from the original object, so swapping two names
+(`remap: { a: b, b: a }`) works without ordering surprises, and
+`source: source` is a no-op.
 
 `index: "${{ __vu__ }}"` with `index_offset: -1` maps 1-based VU ids to
 zero-based array entries, exactly `(VU-1) % length`. To choose a random array
