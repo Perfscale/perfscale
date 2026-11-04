@@ -2870,6 +2870,7 @@ EOF
         <stringProp name="ThreadGroup.num_threads">1</stringProp>
         <stringProp name="ThreadGroup.ramp_time">0</stringProp>
         <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" enabled="true">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
           <stringProp name="LoopController.loops">1</stringProp>
         </elementProp>
       </SetupThreadGroup>
@@ -2910,6 +2911,7 @@ props.get("sv_hits").incrementAndGet()</stringProp>
         <stringProp name="ThreadGroup.num_threads">1</stringProp>
         <stringProp name="ThreadGroup.ramp_time">0</stringProp>
         <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" enabled="true">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
           <stringProp name="LoopController.loops">1</stringProp>
         </elementProp>
       </PostThreadGroup>
@@ -2934,7 +2936,11 @@ EOF
     local sc="$1" label="$2" cmd="$3" prefill="$4" extra="${5:-}"
     echo "  $sc / $label" >&2
     sv_counter=0 sv_queue_len=0
-    measure "sv-$sc-$label" "$cmd${extra:+; cat $extra}" sharedvars-text
+    # Hard per-row budget: a wedged engine (e.g. a JMeter plan that never
+    # exits) must cost one "—" row and a strict failure, not the whole job.
+    local guard=""
+    command -v timeout >/dev/null 2>&1 && guard="timeout --kill-after=10 $((sv_secs + 180)) "
+    measure "sv-$sc-$label" "$guard bash -c $(printf '%q' "$cmd")${extra:+; cat $extra}" sharedvars-text
     if [[ "$parse_ok" != 1 ]]; then
       echo "| $sc | $label | — | — | — | — | — | — | — |" >>"$OUTPUT"
       return
