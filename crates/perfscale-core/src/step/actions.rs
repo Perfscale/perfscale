@@ -1046,22 +1046,77 @@ fn random_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput
 // ---------------------------------------------------------------------------
 //
 // Parameters (one source):
-//   from  – an array, or a string holding a JSON array (`"${{ feed.body.posts }}"`)
-//   file  – path to a JSON array file; uses the shared json_doc cache
+//   from  – an array or object, or a string holding a JSON array/object
+//           (`"${{ feed.body.posts }}"`)
+//   file  – path to a JSON array/object file; uses the shared json_doc cache
 //           (needs allow_file_actions)
 //   index – optional integer (or string: `${{ __vu__ }}`); wraps modulo the
 //           array length. Omitted → a uniformly random element.
 //   index_offset – optional signed integer added to index before wrapping.
+//   key   – for an object source: select the value at this key (string, or a
+//           number canonicalised to its string form). Mutually exclusive with
+//           index/index_offset, required unless `remap` is given.
+//   remap – object of `source-field: destination-field` renames applied to
+//           the picked value (or, for an object source without key, to the
+//           object itself). Unmapped fields are kept; renamed sources are
+//           removed. Missing sources, empty/non-string or duplicate
+//           destinations, and destinations colliding with an unrenamed field
+//           fail the step.
 //
-// Output: the picked element itself, so `outputs: user` + `${{ user.token }}`.
+// Output: the picked value, with `remap` applied when provided.
 
 async fn pick_file(path: &str, ctx: &Context) -> Result<std::sync::Arc<Value>, String> {
     let doc = super::json_doc::load_async(path, ctx).await?;
-    if doc.is_array() {
+    if doc.is_array() || doc.is_object() {
         Ok(doc)
     } else {
-        Err(format!("file '{path}' is not a JSON array"))
+        Err(format!("file '{path}' is not a JSON array or object"))
     }
+}
+
+fn apply_remap(obj: &Value, remap: &Value) -> Result<Value, String> {
+    let Some(map) = remap.as_object() else {
+        return Err("`remap` must be an object of `source: destination`".into());
+    };
+    let Some(obj) = obj.as_object() else {
+        return Err("`remap` requires the picked value to be an object".into());
+    };
+    let mut renames: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for (src, dst) in map {
+        if !obj.contains_key(src) {
+            return Err(format!("remap source '{src}' not found"));
+        }
+        let Some(dst) = dst.as_str().filter(|d| !d.is_empty()) else {
+            return Err(format!(
+                "remap destination for '{src}' must be a non-empty string"
+            ));
+        };
+        if src == dst {
+            continue;
+        }
+        if renames.values().any(|d| *d == dst) {
+            return Err(format!("duplicate remap destination '{dst}'"));
+        }
+        renames.insert(src, dst);
+    }
+    // Check only after collecting every rename so swaps are independent of map
+    // order. A no-op `source: source` stays in place and therefore collides
+    // with another field renamed onto it.
+    for dst in renames.values() {
+        if obj.contains_key(*dst) && !renames.contains_key(*dst) {
+            return Err(format!(
+                "remap destination '{dst}' conflicts with an existing field"
+            ));
+        }
+    }
+    let mut out = serde_json::Map::with_capacity(obj.len());
+    for (k, v) in obj {
+        out.insert(
+            renames.get(k.as_str()).unwrap_or(&k.as_str()).to_string(),
+            v.clone(),
+        );
+    }
+    Ok(Value::Object(out))
 }
 
 async fn pick_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
@@ -1070,17 +1125,49 @@ async fn pick_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOu
             Ok(items) => items,
             Err(msg) => return err(step_name, &msg),
         },
-        (Value::Array(items), None) => std::sync::Arc::new(Value::Array(items.clone())),
+        (v @ (Value::Array(_) | Value::Object(_)), None) => std::sync::Arc::new(v.clone()),
         (Value::String(s), None) => match serde_json::from_str::<Value>(s) {
-            Ok(Value::Array(items)) => std::sync::Arc::new(Value::Array(items)),
-            _ => return err(step_name, "`from` must be a JSON array"),
+            Ok(v @ (Value::Array(_) | Value::Object(_))) => std::sync::Arc::new(v),
+            _ => return err(step_name, "`from` must be a JSON array or object"),
         },
         (Value::Null, None) => return err(step_name, "one of `from` or `file` is required"),
         (_, Some(_)) => return err(step_name, "`from` and `file` are mutually exclusive"),
-        _ => return err(step_name, "`from` must be an array"),
+        _ => return err(step_name, "`from` must be an array or object"),
     };
+    let key = match &params["key"] {
+        Value::Null => None,
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        other => {
+            return err(
+                step_name,
+                &format!("`key` must be a string or number, got {other}"),
+            )
+        }
+    };
+    if let Some(obj) = items.as_object() {
+        if params["index"] != Value::Null || params["index_offset"] != Value::Null {
+            return err(step_name, "`index`/`index_offset` require an array source");
+        }
+        let picked = match key {
+            Some(key) => match obj.get(&key) {
+                Some(v) => v.clone(),
+                None => return err(step_name, &format!("key '{key}' not found")),
+            },
+            None => {
+                if params["remap"] == Value::Null {
+                    return err(step_name, "an object source requires `key` or `remap`");
+                }
+                (*items).clone()
+            }
+        };
+        return finish_pick(picked, params, step_name);
+    }
+    if key.is_some() {
+        return err(step_name, "`key` requires an object source");
+    }
     let Some(items) = items.as_array() else {
-        return err(step_name, "`from` must be an array");
+        return err(step_name, "`from` must be an array or object");
     };
     if items.is_empty() {
         return err(step_name, "cannot pick from an empty array");
@@ -1135,9 +1222,19 @@ async fn pick_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOu
     };
     let adjusted =
         (i128::from(index) + i128::from(offset)).rem_euclid(items.len() as i128) as usize;
-    let picked = items[adjusted].clone();
+    finish_pick(items[adjusted].clone(), params, step_name)
+}
+
+fn finish_pick(picked: Value, params: &Value, step_name: &str) -> ActionOutput {
+    let value = match params["remap"] {
+        Value::Null => picked,
+        ref remap => match apply_remap(&picked, remap) {
+            Ok(v) => v,
+            Err(msg) => return err(step_name, &msg),
+        },
+    };
     ActionOutput {
-        value: picked,
+        value,
         logs: Vec::new(),
         success: true,
         http_sample: None,
@@ -3850,6 +3947,201 @@ mod tests {
         let out = execute_action("std/pick@v1", &params, &ctx, "step").await;
         assert!(out.success, "{:?}", out.logs);
         assert_eq!(out.value, json!({ "token": "b" }));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn pick_by_key_selects_from_object() {
+        let ctx = Context::new();
+        let from =
+            json!({ "dev": "https://dev.example.com", "stage": "https://stage.example.com" });
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": from, "key": "stage" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success);
+        assert_eq!(out.value, json!("https://stage.example.com"));
+
+        // A JSON string source and a numeric key (canonicalised to a string).
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": "{\"1\":\"one\"}", "key": 1 }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!("one"));
+    }
+
+    #[tokio::test]
+    async fn pick_rejects_key_and_index_misuse() {
+        let ctx = Context::new();
+        for params in [
+            json!({ "from": { "a": 1 }, "key": "missing" }),
+            json!({ "from": { "a": 1 } }),
+            json!({ "from": { "a": 1 }, "index": 0 }),
+            json!({ "from": { "a": 1 }, "key": "a", "index": 0 }),
+            json!({ "from": [1, 2], "key": "a" }),
+            json!({ "from": { "a": 1 }, "key": true }),
+        ] {
+            let out = execute_action("std/pick@v1", &params, &ctx, "step").await;
+            assert!(!out.success, "{params} should fail");
+        }
+    }
+
+    #[tokio::test]
+    async fn pick_remap_renames_fields_of_picked_object() {
+        let ctx = Context::new();
+        // After an array pick: unmapped fields stay, sources are removed.
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({
+                "from": [{ "id": 1, "name": "ann", "age": 30 }],
+                "index": 0,
+                "remap": { "id": "user_id", "name": "username" },
+            }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success);
+        assert_eq!(
+            out.value,
+            json!({ "user_id": 1, "username": "ann", "age": 30 })
+        );
+
+        // After a key selection from an object source.
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({
+                "from": { "u1": { "id": 7, "tag": "x" } },
+                "key": "u1",
+                "remap": { "id": "user_id" },
+            }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!({ "user_id": 7, "tag": "x" }));
+    }
+
+    #[tokio::test]
+    async fn pick_remap_whole_object_without_selection() {
+        let ctx = Context::new();
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": { "id": 1, "keep": true }, "remap": { "id": "uid" } }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success);
+        assert_eq!(out.value, json!({ "uid": 1, "keep": true }));
+
+        // Same from a JSON string source.
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": "{\"id\":1}", "remap": { "id": "uid" } }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!({ "uid": 1 }));
+
+        // A swap of two field names.
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": { "a": 1, "b": 2 }, "remap": { "a": "b", "b": "a" } }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!({ "a": 2, "b": 1 }));
+
+        // source == destination is a no-op.
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "from": { "a": 1 }, "remap": { "a": "a" } }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!({ "a": 1 }));
+    }
+
+    #[tokio::test]
+    async fn pick_remap_rejects_bad_remaps() {
+        let ctx = Context::new();
+        for params in [
+            // Missing source field.
+            json!({ "from": { "a": 1 }, "remap": { "nope": "x" } }),
+            // Non-string / empty destinations.
+            json!({ "from": { "a": 1 }, "remap": { "a": 1 } }),
+            json!({ "from": { "a": 1 }, "remap": { "a": "" } }),
+            // Duplicate destinations.
+            json!({ "from": { "a": 1, "b": 2 }, "remap": { "a": "x", "b": "x" } }),
+            // Destination collides with a field that is not renamed.
+            json!({ "from": { "a": 1, "b": 2 }, "remap": { "a": "b" } }),
+            // A no-op rename stays in place and cannot mask a collision.
+            json!({ "from": { "a": 1, "b": 2 }, "remap": { "a": "a", "b": "a" } }),
+            json!({ "from": { "a": 1, "b": 2 }, "remap": { "a": "b", "b": "b" } }),
+            // remap on a non-object picked value.
+            json!({ "from": [1, 2], "index": 0, "remap": { "a": "b" } }),
+            json!({ "from": { "k": "v" }, "key": "k", "remap": { "a": "b" } }),
+            // remap itself is not an object.
+            json!({ "from": { "a": 1 }, "remap": "a:b" }),
+        ] {
+            let out = execute_action("std/pick@v1", &params, &ctx, "step").await;
+            assert!(!out.success, "{params} should fail");
+        }
+    }
+
+    #[tokio::test]
+    async fn pick_from_file_object_supports_key_and_direct_remap() {
+        let dir = std::env::temp_dir().join(format!("perfscale-pick-obj-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("envs.json");
+        std::fs::write(
+            &path,
+            r#"{"dev":{"url":"https://dev"},"stage":{"url":"https://stage"}}"#,
+        )
+        .unwrap();
+        let mut ctx = Context::new();
+        ctx.allow_file_actions = true;
+
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "file": path.to_string_lossy(), "key": "dev" }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert!(out.success, "{:?}", out.logs);
+        assert_eq!(out.value, json!({ "url": "https://dev" }));
+
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "file": path.to_string_lossy(), "key": "stage", "remap": { "url": "base_url" } }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(out.value, json!({ "base_url": "https://stage" }));
+
+        let out = execute_action(
+            "std/pick@v1",
+            &json!({ "file": path.to_string_lossy(), "remap": { "dev": "development" } }),
+            &ctx,
+            "step",
+        )
+        .await;
+        assert_eq!(
+            out.value,
+            json!({ "development": { "url": "https://dev" }, "stage": { "url": "https://stage" } })
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
