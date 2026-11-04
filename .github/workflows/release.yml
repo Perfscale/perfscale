@@ -3,14 +3,24 @@ name: Build & Release perfscale
 on:
   push:
     tags: ["v*"]
-  # Re-run ONLY the npm publish for an already-released tag (e.g. after a
-  # transient registry/sigstore failure mid-loop). Binaries come from the
-  # tag's GitHub Release assets; build/release/docker/reset don't run.
+  # Manual / automated runs for an existing tag:
+  # - mode=full — the whole release for the tag (build → GitHub Release →
+  #   npm → Docker → reset). auto-release.yml dispatches this after a
+  #   release/vX.Y.Z PR merges: a tag pushed with GITHUB_TOKEN does not
+  #   trigger `push`, and a dispatched run keeps this file's own identity,
+  #   which npm trusted publishing (OIDC) is bound to.
+  # - mode=npm — re-run ONLY the npm publish (e.g. after a transient
+  #   registry/sigstore failure mid-loop), from the tag's Release assets.
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to (re)publish to npm, e.g. v0.30.0"
+        description: "Existing release tag, e.g. v0.30.0"
         required: true
+      mode:
+        description: "full = whole release for the tag; npm = npm publish only"
+        type: choice
+        options: [npm, full]
+        default: npm
 
 # Default for jobs without their own block (build); publish jobs declare the
 # elevated scopes they need (contents: write, packages: write, id-token).
@@ -21,7 +31,7 @@ jobs:
   # ── Build ────────────────────────────────────────────────────────────────────
   build:
     name: Build (${{ matrix.artifact }})
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || inputs.mode == 'full'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -59,6 +69,8 @@ jobs:
           # version — with the default shallow fetch the tag is invisible and
           # the release binary would get a dev `-next+unknown` suffix.
           fetch-depth: 0
+          # A dispatched run starts on main; build the tag itself.
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -108,6 +120,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/download-artifact@v5
         with:
@@ -137,6 +151,8 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          # Explicit: a dispatched run's github.ref is main, not the tag.
+          tag_name: ${{ inputs.tag || github.ref_name }}
           body_path: release-notes.md
           files: |
             dist/perfscale-*
@@ -149,7 +165,7 @@ jobs:
     needs: release
     # On a tag push: after the GitHub Release. On workflow_dispatch: alone
     # (release is skipped), from the existing release's assets.
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
+    if: ${{ !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'npm') || needs.release.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -163,13 +179,13 @@ jobs:
           ref: ${{ env.TAG }}
 
       - uses: actions/download-artifact@v5
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || inputs.mode == 'full'
         with:
           path: dist/
           merge-multiple: true
 
       - name: Download binaries from the GitHub Release
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'npm'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -235,6 +251,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/download-artifact@v5
         with:
@@ -243,8 +261,10 @@ jobs:
           merge-multiple: true
 
       - name: Compute tags
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "MAJOR_MINOR=${VERSION%.*}" >> "$GITHUB_ENV"
 
@@ -324,6 +344,8 @@ jobs:
           ref: main
 
       - name: Clear released notes
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           cat > UPCOMING.md <<'EOF'
           # Upcoming release
@@ -348,5 +370,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add UPCOMING.md
-          git commit -m "chore: reset UPCOMING.md after ${GITHUB_REF_NAME} [skip ci]"
+          git commit -m "chore: reset UPCOMING.md after ${TAG} [skip ci]"
           git push origin main

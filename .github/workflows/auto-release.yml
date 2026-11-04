@@ -1,0 +1,79 @@
+name: Auto release
+
+# Merging a `release/vX.Y.Z` PR into main releases vX.Y.Z — no manual tag.
+#
+# The job checks that the branch name, Cargo.toml and the merge commit agree,
+# tags the merge commit, and dispatches release.yml (mode=full) for that tag.
+# Why dispatch instead of relying on the tag push: a tag pushed with
+# GITHUB_TOKEN does not trigger other workflows (GitHub's anti-recursion
+# rule), while a workflow_dispatch from GITHUB_TOKEN does — and a dispatched
+# release.yml run keeps its own workflow identity, which npm trusted
+# publishing (OIDC provenance) is bound to. A `workflow_call` would run under
+# this file's identity and break the npm publish.
+#
+# Pushing a `v*` tag by hand still works exactly as before (release.yml's
+# `push: tags` trigger).
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tag-and-release:
+    name: Tag and release
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the tag
+      actions: write  # dispatch release.yml
+    env:
+      BRANCH: ${{ github.event.pull_request.head.ref }}
+      MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Resolve and validate the version
+        run: |
+          tag="${BRANCH#release/}"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::branch '$BRANCH' is not release/vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          # The workspace version on the merge commit must match the branch —
+          # a release branch that forgot its bump must not ship a mislabeled
+          # build.
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [[ "v$cargo_version" != "$tag" ]]; then
+            echo "::error::Cargo.toml version is $cargo_version, branch says ${tag#v} — bump the version on the release branch"
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::tag $tag already exists — nothing to release"
+            exit 1
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Tag the merge commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$MERGE_SHA" -m "Release $TAG"
+          git push origin "refs/tags/$TAG"
+
+      - name: Dispatch the release
+        run: |
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f tag="$TAG" -f mode=full
+          {
+            echo "## Release $TAG"
+            echo
+            echo "Tagged \`${MERGE_SHA:0:7}\` and dispatched **release.yml** (mode=full)."
+            echo "Follow it in the Actions tab → *Build & Release perfscale*."
+          } >> "$GITHUB_STEP_SUMMARY"
