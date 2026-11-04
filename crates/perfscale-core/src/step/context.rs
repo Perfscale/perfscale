@@ -907,7 +907,7 @@ mod tests {
         let mut gen = ctx.new_generator().unwrap();
         gen.begin_message();
         let v = gen.expand("${random.nanoid(8)}").unwrap();
-        assert_eq!(v.len(), 8, "{v}");
+        assert_eq!(v.len(), 8, "generated value must be 8 chars");
     }
 
     #[test]
