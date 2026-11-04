@@ -78,7 +78,7 @@
 //! `value` (unresolvable paths map to `null`). A `wait_for` wait adds
 //! `waited_ms` and a `shared_variable_wait_ms` metric sample.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock, Mutex, Once, OnceLock, RwLock};
@@ -589,9 +589,40 @@ pub fn validate_shared_variable_usage(
 // memory driver — process-global store
 // ---------------------------------------------------------------------------
 
+/// A declared variable's storage. Lists live in a `VecDeque` so the FIFO
+/// `pop` is O(1) (`pop_front`) — a `Vec` front removal shifts the whole
+/// list, which turned a 100k-item work queue into ~200µs per pop. Outside
+/// the store a list is still a plain JSON array.
+enum Slot {
+    Scalar(Value),
+    List(VecDeque<Value>),
+}
+
+impl Slot {
+    fn from_value(v: Value) -> Self {
+        match v {
+            Value::Array(items) => Slot::List(items.into()),
+            other => Slot::Scalar(other),
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        match self {
+            Slot::Scalar(v) => v.clone(),
+            Slot::List(items) => Value::Array(items.iter().cloned().collect()),
+        }
+    }
+
+    fn type_name(&self) -> &'static str {
+        match self {
+            Slot::Scalar(v) => declared_type(v),
+            Slot::List(_) => "list",
+        }
+    }
+}
+
 /// One entry per declared name, shared by all VUs in the process.
-static STORE: LazyLock<Mutex<HashMap<String, Value>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static STORE: LazyLock<Mutex<HashMap<String, Slot>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Ephemeral (undeclared) keys — a separate map so engine-internal
 /// rendezvous traffic never becomes visible through the declared-variable
@@ -612,38 +643,43 @@ impl MemoryDriver {
         })?;
         match op {
             SharedVarOp::Set(v) => {
-                *entry = v.clone();
+                *entry = Slot::from_value(v.clone());
                 Ok(v)
             }
             SharedVarOp::Increment(delta) => {
-                let next = increment_value(entry, &delta)
+                let current = match entry {
+                    Slot::Scalar(v) => v,
+                    Slot::List(_) => {
+                        return Err(format!(
+                            "shared variable '{name}': requires numbers, got list and {} (op 'increment')",
+                            declared_type(&delta)
+                        ))
+                    }
+                };
+                let next = increment_value(current, &delta)
                     .map_err(|why| format!("shared variable '{name}': {why} (op 'increment')"))?;
-                *entry = next.clone();
+                *current = next.clone();
                 Ok(next)
             }
             SharedVarOp::Append(element) => {
-                let Value::Array(list) = entry else {
+                let Slot::List(list) = entry else {
                     return Err(format!(
                         "shared variable '{name}' holds a {}, op 'append' requires a list",
-                        declared_type(entry)
+                        entry.type_name()
                     ));
                 };
-                list.push(element);
+                list.push_back(element);
                 Ok(json!(list.len()))
             }
-            SharedVarOp::Get => Ok(entry.clone()),
+            SharedVarOp::Get => Ok(entry.to_value()),
             SharedVarOp::Pop => {
-                let Value::Array(list) = entry else {
+                let Slot::List(list) = entry else {
                     return Err(format!(
                         "shared variable '{name}' holds a {}, op 'pop' requires a list",
-                        declared_type(entry)
+                        entry.type_name()
                     ));
                 };
-                if list.is_empty() {
-                    Ok(Value::Null)
-                } else {
-                    Ok(list.remove(0))
-                }
+                Ok(list.pop_front().unwrap_or(Value::Null))
             }
         }
     }
@@ -680,7 +716,7 @@ impl SharedVariableDriver for MemoryDriver {
         Box::pin(async move {
             let mut store = STORE.lock().unwrap();
             for (name, initial) in decls {
-                store.insert(name.clone(), initial.clone());
+                store.insert(name.clone(), Slot::from_value(initial.clone()));
             }
             Ok(())
         })
@@ -1217,6 +1253,48 @@ mod tests {
         .await;
         assert!(out.success);
         assert_eq!(out.value["value"], Value::Null); // empty → null
+    }
+
+    /// Lists are stored as a deque (O(1) front pop) but stay plain JSON
+    /// arrays at every boundary: a seeded list drains in order, `get` after
+    /// pops returns the remainder as an array, `set` with a new array
+    /// replaces the queue, and `increment` on a list keeps its error.
+    #[tokio::test]
+    async fn seeded_list_drains_fifo_and_reads_back_as_array() {
+        let name = unique_name("deque");
+        seed(&[(&name, json!([{ "id": 1 }, { "id": 2 }, { "id": 3 }]))]).await;
+        let act = |params: Value| async move {
+            execute_action(
+                if params.get("value").is_some() {
+                    "std/set_shared_variable@v1"
+                } else {
+                    "std/get_shared_variable@v1"
+                },
+                &params,
+                &Context::new(),
+                "deque",
+            )
+            .await
+        };
+        let first = act(json!({ "name": name, "op": "pop" })).await;
+        assert_eq!(first.value["value"], json!({ "id": 1 }));
+        let rest = act(json!({ "name": name })).await;
+        assert_eq!(rest.value["value"], json!([{ "id": 2 }, { "id": 3 }]));
+
+        let replaced = act(json!({ "name": name, "op": "set", "value": ["x", "y"] })).await;
+        assert!(replaced.success, "{:?}", replaced.logs);
+        let x = act(json!({ "name": name, "op": "pop" })).await;
+        assert_eq!(x.value["value"], "x");
+
+        let bad = act(json!({ "name": name, "op": "increment", "value": 1 })).await;
+        assert!(!bad.success);
+        assert!(
+            bad.logs
+                .iter()
+                .any(|(_, l)| l.contains("requires numbers, got list")),
+            "{:?}",
+            bad.logs
+        );
     }
 
     #[tokio::test]
