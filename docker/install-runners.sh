@@ -17,7 +17,7 @@ for runner in "$@"; do
   case "$runner" in
     k6)
       # GitHub tarball, not the dl.k6.io apt repo — that one has no arm64.
-      curl -fsSL "https://github.com/grafana/k6/releases/download/${K6_VERSION}/k6-${K6_VERSION}-linux-${ARCH}.tar.gz" \
+      curl -fsSL --retry 5 --retry-all-errors "https://github.com/grafana/k6/releases/download/${K6_VERSION}/k6-${K6_VERSION}-linux-${ARCH}.tar.gz" \
         | tar xz -C /tmp
       cp "/tmp/k6-${K6_VERSION}-linux-${ARCH}/k6" /usr/local/bin/k6
       rm -rf "/tmp/k6-${K6_VERSION}-linux-${ARCH}"
