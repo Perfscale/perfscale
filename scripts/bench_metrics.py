@@ -4,7 +4,7 @@
 Subcommands:
   parse <kind> <file>            kind: text | locust-csv | ws-text |
                                  grpc-text | db-text | pubsub-text |
-                                 jmeter-summary | sytester-json |
+                                 jmeter-summary | sytester-json | sharedvars-text |
                                  specjbb-text
                                  renaissance-text
                                  prints shell-evalable `key=value` lines
@@ -420,6 +420,47 @@ def _sytester_steps(out, extra, doc, steps):
     return out, extra
 
 
+def parse_sharedvars_text(content):
+    """Parse a sharedvars-suite row. Iterations come from the engine's own
+    counter — `iterations...: N R/s` (perfscale, k6), JMeter's `summary =`
+    total, or the `SV_RESULT iters=` field (locust has no iteration
+    metric for a request-less task). Every engine prints one `SV_RESULT`
+    line with the final counter and the queue length; perfscale prints the
+    queue itself (`queue=[...]`, counted here)."""
+    out = zeroed()
+    extra = {"sv_counter": 0, "sv_queue_len": 0}
+
+    m = re.search(r"iterations[.\s]*:\s*(\d+)\s+([\d.]+)/s", content)
+    if m:
+        out["requests"] = int(m.group(1))
+        out["rps"] = float(m.group(2))
+    else:
+        jm = parse_jmeter_summary(content)
+        if jm["requests"]:
+            out["requests"], out["rps"] = jm["requests"], jm["rps"]
+
+    res = re.findall(r"SV_RESULT ([^\n]*)", content)
+    if res:
+        fields = res[-1]
+        it = re.search(r"\biters=(\d+)", fields)
+        if it and not out["requests"]:
+            out["requests"] = int(it.group(1))
+        c = re.search(r"\bcounter=(\d+)", fields)
+        if c:
+            extra["sv_counter"] = int(c.group(1))
+        ql = re.search(r"\bqueue_len=(\d+)", fields)
+        if ql:
+            extra["sv_queue_len"] = int(ql.group(1))
+        q = re.search(r"\bqueue=(\[.*\])\s*$", fields)
+        if q:
+            try:
+                extra["sv_queue_len"] = len(json.loads(q.group(1)))
+            except ValueError:
+                pass
+    out["parse_ok"] = 1 if out["requests"] and res else 0
+    return out, extra
+
+
 def parse_locust_csv(path):
     """Parse the `Aggregated` row of locust's `--csv` stats output —
     the same source perfscale's locust runner reads."""
@@ -480,6 +521,9 @@ def cmd_parse(kind, path):
         elif kind == "renaissance-text":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics, extra = parse_renaissance_text(f.read())
+        elif kind == "sharedvars-text":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics, extra = parse_sharedvars_text(f.read())
         elif kind == "jmeter-summary":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_jmeter_summary(f.read())

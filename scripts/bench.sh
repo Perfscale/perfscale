@@ -125,10 +125,10 @@ PORT="${PORT:-18999}"
 TLS_PORT="${TLS_PORT:-18998}"
 OUTPUT="${OUTPUT:-bench-report.md}"
 RESULTS="${RESULTS:-bench-results.json}"
-KNOWN_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sourceips renaissance specjbb"
+KNOWN_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sharedvars sourceips renaissance specjbb"
 # specjbb is deliberately excluded from the default: it is opt-in only (a
 # separate commercial benchmark whose kit the caller must supply).
-DEFAULT_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sourceips renaissance"
+DEFAULT_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sharedvars sourceips renaissance"
 SUITES="${SUITES:-$DEFAULT_SUITES}"
 # Competitor engines whose rows join the tables, space-separated (perfscale's
 # own rows always run). k6 also gates its custom xk6-sql / xk6-nats builds.
@@ -182,6 +182,17 @@ K6_SQL_BIN="${K6_SQL_BIN:-}"
 # xk6-nats extension, used ONLY by the pubsub suite's k6 rows
 # (resolved after ROOT below; built by the bench workflow).
 PUBSUB_DURATION="${PUBSUB_DURATION:-10s}"
+# sharedvars suite: per-row length and the drain scenario's queue prefill.
+# K6_KV_BIN mirrors K6_SQL_BIN — a custom k6 with the xk6-kv extension, used
+# ONLY by the sharedvars suite's k6 rows (resolved after ROOT below; built by
+# the bench workflow).
+SV_DURATION="${SV_DURATION:-10s}"
+SV_PREFILL="${SV_PREFILL:-100000}"
+K6_KV_BIN="${K6_KV_BIN:-}"
+# BENCH_STRICT=1 (the CI default): a measured row whose metrics don't parse,
+# or a perfscale correctness check that fails, fails the whole run (exit 1)
+# instead of leaving a "—" row and a warning nobody reads.
+BENCH_STRICT="${BENCH_STRICT:-0}"
 PUBSUB_PAYLOAD_BYTES="${PUBSUB_PAYLOAD_BYTES:-256}"
 BENCH_NATS_URL="${BENCH_NATS_URL:-nats://127.0.0.1:4222}"
 K6_NATS_BIN="${K6_NATS_BIN:-}"
@@ -462,6 +473,18 @@ fi
 # The k6 pubsub rows need a custom binary with the xk6-nats extension (stock
 # k6 has no NATS module). Same convention as K6_SQL_BIN: default path
 # matches the bench workflow's build, K6_NATS_BIN overrides it.
+# sharedvars suite k6 rows: NOT the stock k6 — xk6-kv is the only way k6
+# shares mutable state across VUs. Same convention as K6_SQL_BIN.
+HAS_K6_KV=0
+K6_KV_BIN="${K6_KV_BIN:-$ROOT/target/xk6-kv/k6}"
+if has_suite sharedvars && has_app k6; then
+  if [[ -x "$K6_KV_BIN" ]]; then
+    HAS_K6_KV=1
+  else
+    echo "skipping k6 (xk6-kv) sharedvars rows: no custom binary at $K6_KV_BIN (built by the bench workflow)" >&2
+  fi
+fi
+
 HAS_K6_NATS=0
 K6_NATS_BIN="${K6_NATS_BIN:-$ROOT/target/xk6-nats/k6}"
 if [[ "$HAS_NATS" == 1 ]] && has_app k6; then
@@ -1522,6 +1545,14 @@ settle_ports() {
 # Instrumented run + metric parse into shell vars. $1 label, $2 cmd,
 # $3 parse kind (text|locust-csv), $4 file to parse (defaults to stdout log).
 requests=0 rps=0 avg_ms=0 p50_ms=0 p90_ms=0 p95_ms=0 p99_ms=0 min_ms=0 max_ms=0 err_pct=0 parse_ok=0
+STRICT_FAILURES=()
+# Record a strict-mode failure (always printed; fatal at the end of the run
+# when BENCH_STRICT=1).
+strict_fail() {
+  STRICT_FAILURES+=("$1")
+  echo "warning: $1" >&2
+}
+
 measure() {
   local label="$1" cmd="$2" kind="${3:-text}" parse_file="${4:-}"
   local out="$WORKDIR/out.$$"
@@ -1529,7 +1560,7 @@ measure() {
   run_timed "$out" "$cmd"
   eval "$($METRICS parse "$kind" "${parse_file:-$out}")"
   if [[ "$parse_ok" != 1 ]]; then
-    echo "warning: no metrics parsed for '$label'" >&2
+    strict_fail "no metrics parsed for '$label'"
   fi
 }
 
@@ -2652,6 +2683,326 @@ if has_suite db; then
   } >>"$OUTPUT"
 fi
 
+# --- sharedvars ------------------------------------------------------------------
+#
+# Cross-VU mutable state — the create → update → delete hand-off pattern
+# (one VU produces an object id, another claims it exactly once). Every
+# engine runs the same loop through its own shared-state mechanism, with no
+# network I/O, so the table prices the mechanism itself:
+#
+#   churn  append an item → pop one → increment a counter (queue stays short)
+#   drain  the queue is prefilled with SV_PREFILL items; pop → increment
+#
+# Besides throughput the suite checks correctness — the whole point of
+# shared state. Each engine reports its final counter and queue length;
+# `lost` = iterations − counter, `queue Δ` = left − expected left. Up to VUS
+# of either is in-flight iterations cut by the deadline (an iteration that
+# appended but was stopped before its pop/increment), anything beyond is a
+# race. Mechanisms:
+#   perfscale   shared_variables (memory driver): append / pop / increment,
+#               each one atomic lock acquisition
+#   k6          xk6-kv extension (custom binary, memory backend). Its API has
+#               no atomic pop or increment, so the claim is list(limit:1) +
+#               delete and the counter get + set — the read-modify-write a k6
+#               user must write
+#   locust      a module-level deque + int: every user is a greenlet in one
+#               process, and each op completes without yielding
+#   jmeter      global `props` holding a ConcurrentLinkedQueue + AtomicLong
+#               from JSR223 (Groovy) samplers
+
+if has_suite sharedvars; then
+  echo "suite: sharedvars" >&2
+  section "Shared variables (${VUS} VUs, ${SV_DURATION} per row; drain prefill ${SV_PREFILL})"
+  {
+    echo "| Scenario | Engine | Iterations | Iter/s | Counter | Lost | Queue Δ | CPU per iter | Peak RSS |"
+    echo "|---|---|---:|---:|---:|---:|---:|---:|---|"
+  } >>"$OUTPUT"
+
+  sv_secs="${SV_DURATION%s}"
+
+  # perfscale: steps + per-scenario config; the result line is written by an
+  # `after:` file-write (it must survive --quiet, which drops plain logs).
+  cat >"$WORKDIR/sv-churn.test.yaml" <<'EOF'
+steps:
+  - name: enqueue
+    use: std/set_shared_variable@v1
+    with: { name: sv_queue, op: append, value: { id: "${{ __vu__ }}-${{ __iter__ }}" } }
+  - name: claim
+    use: std/get_shared_variable@v1
+    with: { name: sv_queue, op: pop }
+  - name: count
+    use: std/set_shared_variable@v1
+    with: { name: sv_hits, op: increment, value: 1 }
+EOF
+  cat >"$WORKDIR/sv-drain.test.yaml" <<'EOF'
+steps:
+  - name: claim
+    use: std/get_shared_variable@v1
+    with: { name: sv_queue, op: pop }
+  - name: count
+    use: std/set_shared_variable@v1
+    with: { name: sv_hits, op: increment, value: 1 }
+EOF
+  sv_config() { # $1 scenario, $2 prefill → prints the config path
+    local path="$WORKDIR/sv-$1.config.yaml"
+    {
+      printf 'vus: %s\nduration: %s\nallow_file_actions: true\nshared_variables:\n' "$VUS" "$SV_DURATION"
+      python3 -c "import json,sys; n=int(sys.argv[1]); print('  sv_queue: ' + json.dumps([{'id': f'pre-{i}'} for i in range(n)]))" "$2"
+      printf '  sv_hits: 0\n'
+      cat <<EOF
+after:
+  - name: final hits
+    use: std/get_shared_variable@v1
+    with: { name: sv_hits }
+    outputs: h
+  - name: final queue
+    use: std/get_shared_variable@v1
+    with: { name: sv_queue }
+    outputs: q
+  - name: result
+    use: std/file-write@v1
+    with:
+      path: $WORKDIR/sv-result-$1.txt
+      content: "SV_RESULT counter=\${{ h.value }} queue=\${{ q.value }}"
+EOF
+    } >"$path"
+    echo "$path"
+  }
+
+  cat >"$WORKDIR/sv_k6.js" <<'EOF'
+import { openKv } from "k6/x/kv";
+import exec from "k6/execution";
+
+const kv = openKv({ backend: "memory" });
+const MODE = __ENV.SV_MODE || "churn";
+const PREFILL = Number(__ENV.SV_PREFILL || 0);
+
+export const options = {
+  vus: Number(__ENV.BENCH_VUS || 1),
+  duration: __ENV.BENCH_DURATION || "10s",
+  summaryTrendStats: ["avg", "min", "med", "max", "p(50)", "p(90)", "p(95)", "p(99)"],
+};
+
+export async function setup() {
+  await kv.clear();
+  await kv.set("sv_hits", 0);
+  for (let i = 0; i < PREFILL; i++) {
+    await kv.set(`q:pre-${String(i).padStart(9, "0")}`, { id: i });
+  }
+}
+
+export default async function () {
+  if (MODE !== "drain") {
+    const id = `${exec.vu.idInTest}-${exec.vu.iterationInScenario}`;
+    await kv.set(`q:${id}`, { id });
+  }
+  const head = await kv.list({ prefix: "q:", limit: 1 });
+  if (head.length > 0) {
+    await kv.delete(head[0].key);
+  }
+  const hits = await kv.get("sv_hits");
+  await kv.set("sv_hits", hits + 1);
+}
+
+export async function teardown() {
+  const hits = await kv.get("sv_hits");
+  const left = (await kv.list({ prefix: "q:" })).length;
+  console.log(`SV_RESULT counter=${hits} queue_len=${left}`);
+}
+EOF
+
+  cat >"$WORKDIR/sv_locust.py" <<'EOF'
+import collections
+import itertools
+import os
+
+from locust import User, constant, events, task
+
+QUEUE = collections.deque()
+HITS = [0]
+ITERS = [0]
+SEQ = itertools.count()
+
+
+@events.init.add_listener
+def _prefill(environment, **_kw):
+    for i in range(int(os.environ.get("SV_PREFILL", "0"))):
+        QUEUE.append({"id": f"pre-{i}"})
+
+
+@events.quitting.add_listener
+def _report(environment, **_kw):
+    print(f"SV_RESULT iters={ITERS[0]} counter={HITS[0]} queue_len={len(QUEUE)}", flush=True)
+
+
+class SharedStateUser(User):
+    wait_time = constant(0)
+
+    @task
+    def loop(self):
+        if os.environ.get("SV_MODE") != "drain":
+            QUEUE.append({"id": next(SEQ)})
+        try:
+            QUEUE.popleft()
+        except IndexError:
+            pass
+        HITS[0] += 1
+        ITERS[0] += 1
+EOF
+
+  # JMeter: a setUp group seeds the queue, the main group loops, a tearDown
+  # group prints the result line (println → stdout in non-GUI mode).
+  sv_jmeter_plan() { # $1 scenario, $2 prefill → prints the plan path
+    local path="$WORKDIR/sv-$1.jmx" enqueue="true"
+    [[ "$1" == drain ]] && enqueue="false"
+    cat >"$path" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="sharedvars" enabled="true">
+      <boolProp name="TestPlan.tearDown_on_shutdown">true</boolProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" enabled="true">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+      <SetupThreadGroup guiclass="SetupThreadGroupGui" testclass="SetupThreadGroup" testname="seed" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">1</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">0</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" enabled="true">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <stringProp name="LoopController.loops">1</stringProp>
+        </elementProp>
+      </SetupThreadGroup>
+      <hashTree>
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="seed" enabled="true">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="script">def q = new java.util.concurrent.ConcurrentLinkedQueue()
+for (int i = 0; i &lt; $2; i++) { q.add([id: "pre-" + i]) }
+props.put("sv_queue", q)
+props.put("sv_hits", new java.util.concurrent.atomic.AtomicLong())
+SampleResult.setIgnore()</stringProp>
+        </JSR223Sampler>
+        <hashTree/>
+      </hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="loop" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">$VUS</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">0</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">$sv_secs</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" enabled="true">
+          <boolProp name="LoopController.continue_forever">true</boolProp>
+          <stringProp name="LoopController.loops">-1</stringProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="sv" enabled="true">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="script">def q = props.get("sv_queue")
+if ($enqueue) { q.add([id: ctx.getThreadNum() + "-" + vars.getIteration()]) }
+q.poll()
+props.get("sv_hits").incrementAndGet()</stringProp>
+        </JSR223Sampler>
+        <hashTree/>
+      </hashTree>
+      <PostThreadGroup guiclass="PostThreadGroupGui" testclass="PostThreadGroup" testname="report" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">1</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">0</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" enabled="true">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <stringProp name="LoopController.loops">1</stringProp>
+        </elementProp>
+      </PostThreadGroup>
+      <hashTree>
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="report" enabled="true">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="script">println("SV_RESULT counter=" + props.get("sv_hits").get() + " queue_len=" + props.get("sv_queue").size())
+SampleResult.setIgnore()</stringProp>
+        </JSR223Sampler>
+        <hashTree/>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
+EOF
+    echo "$path"
+  }
+
+  # sv_row $1 scenario, $2 engine label, $3 command, $4 prefill, $5 extra
+  # result file appended to the output before parsing (perfscale).
+  sv_row() {
+    local sc="$1" label="$2" cmd="$3" prefill="$4" extra="${5:-}"
+    echo "  $sc / $label" >&2
+    sv_counter=0 sv_queue_len=0
+    # Hard per-row budget: a wedged engine (e.g. a JMeter plan that never
+    # exits) must cost one "—" row and a strict failure, not the whole job.
+    local guard=""
+    command -v timeout >/dev/null 2>&1 && guard="timeout --kill-after=10 $((sv_secs + 180)) "
+    measure "sv-$sc-$label" "$guard bash -c $(printf '%q' "$cmd")${extra:+; cat $extra}" sharedvars-text
+    if [[ "$parse_ok" != 1 ]]; then
+      echo "| $sc | $label | — | — | — | — | — | — | — |" >>"$OUTPUT"
+      return
+    fi
+    # locust has no iteration-rate metric for a request-less task.
+    [[ "$rps" == 0 || "$rps" == 0.00 ]] && rps=$(awk "BEGIN{printf \"%.2f\", $requests/$sv_secs}")
+    local expected_left=$(( prefill > requests ? prefill - requests : 0 ))
+    [[ "$sc" == churn ]] && expected_left=0
+    local lost=$(( requests - sv_counter ))
+    local qdelta=$(( sv_queue_len - expected_left ))
+    if [[ "$label" == perfscale* ]] && { [[ ${lost#-} -gt $VUS ]] || [[ ${qdelta#-} -gt $VUS ]]; }; then
+      strict_fail "sharedvars $sc/$label: lost=$lost queue Δ=$qdelta beyond the ${VUS} in-flight tolerance"
+    fi
+    $METRICS append "$RESULTS_D/sharedvars.json" "$sc / $label" \
+      requests="$requests" rps="$rps" counter="$sv_counter" lost="$lost" \
+      queue_delta="$qdelta" user_s="${T_USER_S:-0}" sys_s="${T_SYS_S:-0}" rss_mib="$T_RSS_MIB"
+    echo "| $sc | $label | $requests | $rps | $sv_counter | $lost | $qdelta | $(cpu_per_req "$requests") µs | $T_RSS |" >>"$OUTPUT"
+  }
+
+  for sc in churn drain; do
+    prefill=0
+    [[ "$sc" == drain ]] && prefill="$SV_PREFILL"
+    cfg_path="$(sv_config "$sc" "$prefill")"
+    rm -f "$WORKDIR/sv-result-$sc.txt"
+    sv_row "$sc" "perfscale" \
+      "$BIN run -f $WORKDIR/sv-$sc.test.yaml -c $cfg_path --quiet" \
+      "$prefill" "$WORKDIR/sv-result-$sc.txt"
+    if [[ "$HAS_K6_KV" == 1 ]]; then
+      sv_row "$sc" "k6 (xk6-kv)" \
+        "env SV_MODE=$sc SV_PREFILL=$prefill BENCH_VUS=$VUS BENCH_DURATION=$SV_DURATION $K6_KV_BIN run --quiet $WORKDIR/sv_k6.js 2>&1" \
+        "$prefill"
+    fi
+    if [[ "$HAS_LOCUST" == 1 ]]; then
+      sv_row "$sc" "locust" \
+        "env SV_MODE=$sc SV_PREFILL=$prefill locust -f $WORKDIR/sv_locust.py --headless -u $VUS -r $VUS -t $SV_DURATION --only-summary 2>&1" \
+        "$prefill"
+    fi
+    if [[ "$HAS_JMETER" == 1 ]]; then
+      sv_row "$sc" "jmeter" \
+        "cd $WORKDIR && jmeter -n -t $(sv_jmeter_plan "$sc" "$prefill")" \
+        "$prefill"
+    fi
+  done
+
+  {
+    echo
+    echo "_Same loop on every engine, no network I/O — the table prices each"
+    echo "engine's cross-VU shared-state mechanism. **Lost** = iterations −"
+    echo "final counter, **Queue Δ** = items left − expected (0 for churn,"
+    echo "prefill − iterations for drain). Up to ${VUS} of either is an"
+    echo "in-flight iteration cut by the deadline; more is a race. perfscale:"
+    echo "\`shared_variables\` (memory driver, one atomic lock acquisition per"
+    echo "op). **k6 (xk6-kv)** is NOT stock k6 — a custom binary with the xk6-kv"
+    echo "extension (memory backend); its API has no atomic pop or increment,"
+    echo "so the claim is \`list(limit:1)\` + \`delete\` and the counter \`get\` +"
+    echo "\`set\` — the read-modify-write a k6 user has to write, and the races"
+    echo "show up as Lost / Queue Δ. locust: a module-level deque + int (one"
+    echo "process, cooperative greenlets). JMeter: \`props\` holding a"
+    echo "\`ConcurrentLinkedQueue\` + \`AtomicLong\` from JSR223 Groovy samplers._"
+  } >>"$OUTPUT"
+fi
+
 # --- pubsub -------------------------------------------------------------------
 
 if has_suite pubsub; then
@@ -2899,4 +3250,18 @@ if [[ -f "$PREV_RESULTS" ]]; then
     printf '\n## Delta vs previous run\n\n'
     echo "$delta" | tail -n +3
   } >>"$OUTPUT"
+fi
+
+# Strict mode: every recorded failure is listed in the report, and with
+# BENCH_STRICT=1 the run fails after the report and results are written —
+# so CI keeps the artifact but a silently broken row can't pass as green.
+if [[ "${#STRICT_FAILURES[@]}" -gt 0 ]]; then
+  {
+    printf '\n## Strict checks\n\n'
+    for f in "${STRICT_FAILURES[@]}"; do echo "- ❌ $f"; done
+  } >>"$OUTPUT"
+  echo "strict checks: ${#STRICT_FAILURES[@]} failure(s)" >&2
+  if [[ "$BENCH_STRICT" == 1 ]]; then
+    exit 1
+  fi
 fi
