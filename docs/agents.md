@@ -20,8 +20,16 @@ Shipped skills:
 - **perfscale-cli** — the test/config YAML pair, `lint`/`run`/`schema`, plus
   references: YAML, the `std/*` action catalog, load shapes, thresholds,
   metrics, reporters, protocols.
-- **perfscale-library-sdk** — WASM steps, `defineMetric`, config extensions.
+- **perfscale-library-sdk** — extending perfscale with the official SDK
+  (`@perfscale/library-sdk`, `perfscale-library-sdk`): value generators
+  (`${alias.fn()}`), custom steps (`lib/<alias>/<step>`) with their own
+  outputs, checks and metrics, trusted process steps, config extensions,
+  WASM reporters, install/lock/burn.
 - **perfscale-migration-k6** — the k6 → perfscale guide and metric mapping.
+- **perfscale-run-analysis** — reading a run: summary, `[stats]`,
+  `--summary-export` / `report@v1`, open-model latency and dropped
+  iterations, target vs generator bottlenecks, `abort_on_fail` +
+  `http_debug`, threshold verdicts and fair run comparison.
 
 ## `perfscale init-agents`
 

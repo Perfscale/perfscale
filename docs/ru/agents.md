@@ -21,9 +21,17 @@ perfscale init-skills -g              # ~/.claude/skills/<skill> (все про�
 - **perfscale-cli** — пара test/config YAML, `lint`/`run`/`schema`, плюс
   справочники: YAML, каталог действий `std/*`, профили нагрузки, пороги,
   метрики, репортёры, протоколы.
-- **perfscale-library-sdk** — WASM-шаги, `defineMetric`, расширения конфига.
+- **perfscale-library-sdk** — расширение perfscale через официальный SDK
+  (`@perfscale/library-sdk`, `perfscale-library-sdk`): генераторы значений
+  (`${alias.fn()}`), свои шаги (`lib/<alias>/<step>`) со своими outputs,
+  проверками и метриками, доверенные process-шаги, расширения конфига,
+  WASM-репортеры, install/lock/burn.
 - **perfscale-migration-k6** — гид по миграции k6 → perfscale и таблица
   соответствия метрик.
+- **perfscale-run-analysis** — разбор прогона: итог, `[stats]`,
+  `--summary-export` / `report@v1`, латентность в открытой модели и
+  отброшенные итерации, узкое место — цель или генератор, `abort_on_fail` +
+  `http_debug`, вердикты thresholds и честное сравнение прогонов.
 
 ## `perfscale init-agents`
 
