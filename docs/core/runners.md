@@ -121,26 +121,33 @@ Missing binary → `locust not found in PATH — install with pip install locust
 Wraps an existing `jmeter` install in non-GUI mode:
 
 ```text
-jmeter -n -t <plan.jmx>
+jmeter -n -t <plan.jmx> -j <temp>/jmeter.log -l <temp>/results.jtl -J…
 ```
 
-The plan owns the whole load shape (thread groups, timers, throughput) —
-perfscale passes no `-J` properties and no perfscale config applies. While
-running, jmeter's own stdout/stderr stream through. After exit, the final
-console line (`summary = N in HH:MM:SS = R/s Avg: .. Min: .. Max: .. Err: ..
-(E%)`) is translated into the k6-compatible summary block:
+The plan owns the whole load shape (thread groups, timers, throughput);
+`-J key=value` properties parameterize it from the CLI. The run's samples
+land in a private CSV `.jtl` with a forced field set (the runner's
+saveservice properties come last, so user properties can't break it); both
+temp files are cleaned up afterwards. While running, jmeter's own
+stdout/stderr stream through and — with `report.during_run: true` —
+cumulative metric snapshots stream off the `.jtl`. After exit, the `.jtl`
+folds into the shared metrics store for the full k6-compatible summary:
 
 ```text
-http_req_duration......: avg=4.00ms min=1.00ms max=42.00ms
+http_req_duration......: avg=4.00ms p(50)=3.00ms p(90)=6.00ms p(95)=8.00ms p(99)=21.00ms min=1.00ms max=42.00ms
 http_req_failed........: 0.25%
 http_reqs..............: 1200 80.0/s
 ```
 
-What JMeter does **not** get: the console summary carries no percentiles, so
-the translated duration line has `avg`/`min`/`max` only; there are no
-perfscale `std/thresholds@v1` gates over jmeter runs (exit code is the CI
-gate — jmeter exits non-zero on plan/startup errors); and `.jtl` result files
-are not parsed (throughput parsing of `.jtl` is future work).
+Per-JMeter-`label` series (bounded cardinality, overflow bucket
+`__jmeter_other__`), `http_req_latency`/`http_req_connect` and
+`data_received`/`data_sent` ride the same store, so `after:`
+`std/thresholds@v1` gates, `--report json/junit/html` and streaming
+reporters all work for JMeter runs. A zero-sample plan falls back to the
+console `summary =` translation (avg/min/max only); malformed `.jtl` rows are
+skipped with a warning, a `.jtl` with no trustworthy rows (or an invalid
+header) or a violated `fail` gate exits 1. `abort_on_fail` is not supported (rejected
+with a clear error) — jmeter owns the run, gates evaluate afterwards.
 
 Missing binary → `jmeter not found in PATH — install from
 https://jmeter.apache.org/download_jmeter.cgi (requires a JRE)`.

@@ -67,7 +67,8 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Run a load test with k6, locust, JMeter, or the native step engine.
-    Run(RunArgs),
+    /// Boxed: `RunArgs` dwarfs the other variants (`clippy::large_enum_variant`).
+    Run(Box<RunArgs>),
     /// Start a local dev server that receives metrics from `perfscale run --report`.
     Serve(ServeArgs),
     /// Validate test/config YAML files without running them.
@@ -328,9 +329,21 @@ pub struct RunArgs {
     pub locust: Option<PathBuf>,
 
     /// Run a JMeter test plan headless (requires `jmeter` on PATH; the plan
-    /// owns the load shape — no perfscale config applies).
+    /// owns the load shape — `-c` applies only `report:` and `after:`
+    /// `std/thresholds@v1` gates; parameterize the plan with `-J`).
     #[arg(long, value_name = "FILE.jmx")]
     pub jmeter: Option<PathBuf>,
+
+    /// JMeter property for `--jmeter` runs, repeatable:
+    /// `-Jvus=50`, `-J vus=50`, or `--jmeter-property vus=50`. Values may
+    /// contain `=`. The runner's own JTL settings always win over these.
+    #[arg(
+        short = 'J',
+        long = "jmeter-property",
+        value_name = "KEY=VALUE",
+        conflicts_with_all = ["k6", "locust", "file"]
+    )]
+    pub jmeter_property: Vec<String>,
 
     /// Run a native perfscale test definition (YAML with a `steps:` list; requires -c).
     #[arg(
@@ -342,7 +355,9 @@ pub struct RunArgs {
     pub file: Option<PathBuf>,
 
     /// Load config: `vus`, `duration`, optional `report.url`. Required with -f,
-    /// optional load hint for --locust, ignored by --k6 and --jmeter.
+    /// optional load hint for --locust, ignored by --k6. With --jmeter only the
+    /// `report:` block and `after:` `std/thresholds@v1` gates apply — the plan
+    /// owns the load shape.
     #[arg(short = 'c', long = "config", value_name = "CONFIG.yaml")]
     pub config: Option<PathBuf>,
 
@@ -671,9 +686,9 @@ mod tests {
     }
 
     #[test]
-    fn run_jmeter_with_config_is_allowed_and_ignored() {
-        // Like --k6, a jmeter plan owns its load shape — `-c` parses but is
-        // ignored rather than rejected (consistent with --k6).
+    fn run_jmeter_with_config_parses() {
+        // With --jmeter, `-c` carries `report:` and `after:` thresholds
+        // gates; the load shape stays with the plan.
         let cli = parse(&["run", "--jmeter", "plan.jmx", "-c", "cfg.yaml"]).unwrap();
         match cli.command {
             Commands::Run(args) => {
@@ -682,6 +697,43 @@ mod tests {
             }
             _ => panic!("expected Run"),
         }
+    }
+
+    #[test]
+    fn run_jmeter_properties_parse_all_forms() {
+        let cli = parse(&[
+            "run",
+            "--jmeter",
+            "plan.jmx",
+            "-Jvus=50",
+            "-J",
+            "host=example.com",
+            "--jmeter-property",
+            "query=a=b",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(
+                    args.jmeter_property,
+                    vec![
+                        "vus=50".to_string(),
+                        "host=example.com".to_string(),
+                        "query=a=b".to_string()
+                    ]
+                );
+            }
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn jmeter_property_requires_the_jmeter_engine() {
+        // -J without --jmeter would be silently ignored — clap rejects it.
+        assert!(parse(&["run", "--k6", "a.js", "-Jvus=50"]).is_err());
+        assert!(parse(&["run", "--locust", "b.py", "--jmeter-property", "vus=50"]).is_err());
+        assert!(parse(&["run", "-f", "t.yaml", "-c", "cfg.yaml", "-J", "vus=50"]).is_err());
+        assert!(parse(&["run", "--jmeter", "plan.jmx", "-Jvus=50"]).is_ok());
     }
 
     #[test]

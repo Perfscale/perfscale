@@ -11,3 +11,19 @@ Release notes for the next release, written as features land.
 - If this file has no entries at tag time, the release falls back to
   auto-generated notes and the workflow prints a warning.
 -->
+
+## JMeter: JTL metrics, `-J` properties, thresholds gates
+
+`perfscale run --jmeter` now writes each run's samples to a private CSV
+`results.jtl` and parses it incrementally into the shared metrics store:
+the summary gains full `http_req_duration` percentiles (p50/p90/p95/p99),
+per-JMeter-`label` series (bounded cardinality), and
+`http_req_latency`/`http_req_connect`/`data_received`/`data_sent`. Plans are
+parameterizable from the CLI with repeatable `-Jkey=value` /
+`--jmeter-property key=value`, and `-c config.yaml` now applies `report:`
+(end-of-run and during-run reporters) plus `after:` `std/thresholds@v1`
+gates — a violated `severity: fail` gate exits non-zero. A zero-sample plan
+still falls back to the console `summary =` translation; a malformed results
+file fails the run instead of silently passing. Native-only config (load
+shape, `before:`, other `after:` actions, `abort_on_fail`) is rejected with
+a clear error rather than silently ignored.

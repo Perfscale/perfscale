@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use perfscale_core::import::{self, ImportOptions};
+use perfscale_core::runner::jmeter::JMeterOpts;
 use perfscale_core::runner::locust::LocustOpts;
 use perfscale_core::runner::{self, ExecutionPlan, LogLine, LogSource, RunOutput};
 use perfscale_core::step::TestDef;
@@ -175,7 +176,7 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
 fn plan_meta(plan: &ExecutionPlan) -> (&'static str, Option<u32>, Option<String>) {
     match plan {
         ExecutionPlan::K6Script(_) => ("k6", None, None),
-        ExecutionPlan::JMeterScript(_) => ("jmeter", None, None),
+        ExecutionPlan::JMeterScript { .. } => ("jmeter", None, None),
         ExecutionPlan::LocustScript { opts, .. } => {
             ("locust", Some(opts.users), Some(opts.duration.clone()))
         }
@@ -371,9 +372,30 @@ fn resolve_plan(
     }
 
     if let Some(plan) = &args.jmeter {
-        // JMeter plans own their load shape (thread groups, timers) — there
-        // is no perfscale config mapping, same as --k6.
-        return Ok(ExecutionPlan::JMeterScript(plan.clone()));
+        // JMeter plans own their load shape (thread groups, timers); the CLI
+        // contributes `-J` properties, `report:` (streaming + end-of-run
+        // reporters + labels) and `after:` `std/thresholds@v1` gates.
+        let mut opts = JMeterOpts {
+            properties: parse_jmeter_properties(&args.jmeter_property)?,
+            ..Default::default()
+        };
+        if let Some(cfg) = config {
+            opts.thresholds = jmeter_config_gates(cfg)?;
+            if let Some(report) = &cfg.report {
+                opts.report = Some(report.to_run_config());
+            }
+        }
+        if !flag_reporters.is_empty() || !labels.is_empty() {
+            let report = opts.report.get_or_insert_with(Default::default);
+            report.reporters.extend(flag_reporters.iter().cloned());
+            for (k, v) in labels {
+                report.labels.insert(k.clone(), v.clone());
+            }
+        }
+        return Ok(ExecutionPlan::JMeterScript {
+            path: plan.clone(),
+            opts,
+        });
     }
 
     if let Some(script) = &args.locust {
@@ -473,6 +495,104 @@ fn resolve_plan(
     }
 
     unreachable!("clap ArgGroup guarantees exactly one of --k6/--locust/--jmeter/-f")
+}
+
+/// Parse the repeatable `-J`/`--jmeter-property` values. Split on the first
+/// `=` (values may contain `=`); an empty key is a CLI error. Property
+/// values are never logged — they can carry credentials.
+fn parse_jmeter_properties(values: &[String]) -> Result<Vec<(String, String)>, CliError> {
+    let mut out = Vec::new();
+    for v in values {
+        let (k, val) = v.split_once('=').ok_or_else(|| {
+            CliError::new("invalid -J/--jmeter-property value")
+                .hint("expected KEY=VALUE, e.g. `-Jvus=50` or `--jmeter-property host=example.com`")
+        })?;
+        if k.is_empty() {
+            return Err(CliError::new("invalid -J/--jmeter-property value")
+                .hint("the property key must be non-empty, e.g. `-Jvus=50`"));
+        }
+        out.push((k.to_string(), val.to_string()));
+    }
+    Ok(out)
+}
+
+/// What a `-c` config may contribute to a `--jmeter` run: `after:`
+/// `std/thresholds@v1` gates (returned as parameter sets with step-level
+/// `severity`/`message` merged in, like the native runner's step params).
+///
+/// Everything load-shaping or native-engine-only is rejected outright rather
+/// than silently ignored — the plan owns the load shape, and a config that
+/// looks applied but isn't is worse than no config.
+fn jmeter_config_gates(cfg: &ConfigFile) -> Result<Vec<serde_json::Value>, CliError> {
+    let run = &cfg.run;
+    if run.vus != 1 || run.duration != "1m" || !run.stages.is_empty() || run.arrival.is_some() {
+        return Err(
+            CliError::new("the config's load settings (vus/duration/stages/arrival) do not apply to --jmeter — the plan owns the load shape")
+                .hint("parameterize the plan with -J properties (`-Jvus=50` → `${__P(vus,5)}` in the .jmx); vus/duration/stages/arrival need the native engine (-f)")
+                .docs("core/jmeter.md"),
+        );
+    }
+    if run.gpu.is_some() || run.engine_metrics.is_some() {
+        return Err(CliError::new(
+            "`gpu:`/`engine_metrics:` are native-engine only and do not apply to --jmeter",
+        )
+        .hint("drop them from the config for JMeter runs, or use the native engine (-f)")
+        .docs("core/jmeter.md"));
+    }
+    if !cfg.before.is_empty() {
+        return Err(CliError::new("`before:` setup steps do not apply to --jmeter — only `after:` thresholds gates are supported")
+            .hint("move setup into the plan (setUp Thread Group) or use the native engine (-f)")
+            .docs("core/jmeter.md"));
+    }
+    if !cfg.variables.is_empty()
+        || !cfg.shared_variables.is_empty()
+        || cfg.inputs.is_some()
+        || cfg.libraries.is_some()
+        || !cfg.extensions.is_empty()
+        || cfg.webrtc.is_some()
+    {
+        return Err(CliError::new("the config's variables/shared_variables/inputs/libraries/extensions/webrtc blocks are native-engine only and do not apply to --jmeter")
+            .hint("with --jmeter, only `report:` and `after:` `std/thresholds@v1` gates apply; parameterize the plan with -J properties")
+            .docs("core/jmeter.md"));
+    }
+
+    let mut gates = Vec::new();
+    for step in &cfg.after {
+        if !perfscale_core::step::thresholds::is_thresholds_action(&step.action) {
+            return Err(CliError::new(format!(
+                "`after:` action '{}' does not apply to --jmeter — only std/thresholds@v1 gates are supported",
+                step.action
+            ))
+            .hint("other after: actions need the native engine (-f)")
+            .docs("core/jmeter.md"));
+        }
+        if step.abort_on_fail || step.http_debug.is_some() {
+            return Err(CliError::new("`abort_on_fail`/`http_debug` are not supported on --jmeter thresholds gates")
+                .hint("jmeter owns the run, so the gate can only evaluate after it finishes — drop `abort_on_fail` (`severity: fail` still exits non-zero)")
+                .docs("core/jmeter.md"));
+        }
+        let mut obj = step
+            .with
+            .as_ref()
+            .and_then(|w| w.as_object())
+            .cloned()
+            .ok_or_else(|| {
+                CliError::new("a thresholds gate needs a `with:` map of metric → expressions")
+                    .hint("e.g. `with: { http_req_duration: [\"p95<500\"] }`")
+                    .docs("core/actions.md#stdthresholdsv1")
+            })?;
+        if let Some(severity) = &step.severity {
+            obj.insert(
+                "severity".into(),
+                serde_json::Value::String(severity.clone()),
+            );
+        }
+        if let Some(message) = &step.message {
+            obj.insert("message".into(), serde_json::Value::String(message.clone()));
+        }
+        gates.push(serde_json::Value::Object(obj));
+    }
+    Ok(gates)
 }
 
 /// The serve target: a `--report http(s)://…` flag wins over the config
@@ -630,8 +750,9 @@ fn parse_labels(values: &[String]) -> Result<serde_json::Map<String, serde_json:
 }
 
 /// The reporters the resolved plan will deliver: the native run config's
-/// merged list, or the CLI's own specs for the script engines (their
-/// configs never carry a report block).
+/// merged list, the JMeter opts' report block (config + CLI flags, folded at
+/// plan resolution), or the CLI's own specs for k6/locust (their configs
+/// never carry a report block).
 fn plan_reporters(
     plan: &ExecutionPlan,
     flag_reporters: &[perfscale_core::report::ReporterConfig],
@@ -642,9 +763,14 @@ fn plan_reporters(
             .as_ref()
             .map(|r| r.reporters.clone())
             .unwrap_or_default(),
-        // Script engines (k6/locust/JMeter) have no config report block;
-        // their reporters come from the CLI flags alone, and the report is
-        // built from the parsed summary — no per-step section.
+        ExecutionPlan::JMeterScript { opts, .. } => opts
+            .report
+            .as_ref()
+            .map(|r| r.reporters.clone())
+            .unwrap_or_default(),
+        // k6/locust have no config report block; their reporters come from
+        // the CLI flags alone, and the report is built from the parsed
+        // summary — no per-step section.
         _ => flag_reporters.to_vec(),
     }
 }
@@ -662,13 +788,25 @@ fn wire_streaming(
     plan: &mut ExecutionPlan,
     report_url: Option<&String>,
 ) -> Result<StreamingWiring, CliError> {
-    let ExecutionPlan::NativeSteps {
-        config, metrics_tx, ..
-    } = plan
-    else {
-        return Ok(StreamingWiring::default());
+    // Both engines that stream carry the same pieces: a `report` slot, the
+    // snapshot channel to fill, and the interpolation namespace for reporter
+    // labels (typed inputs are native-only).
+    let (report_slot, metrics_tx, inputs) = match plan {
+        ExecutionPlan::NativeSteps {
+            config, metrics_tx, ..
+        } => (
+            &mut config.report,
+            metrics_tx,
+            perfscale_core::inputs::inputs_namespace(&config.input_values),
+        ),
+        ExecutionPlan::JMeterScript { opts, .. } => (
+            &mut opts.report,
+            &mut opts.metrics_tx,
+            serde_json::Value::Null,
+        ),
+        _ => return Ok(StreamingWiring::default()),
     };
-    let Some(report) = config.report.as_ref() else {
+    let Some(report) = report_slot.as_ref() else {
         return Ok(StreamingWiring::default());
     };
 
@@ -712,7 +850,6 @@ fn wire_streaming(
 
     // Reporter labels resolve once, before the run (`${{ inputs.* }}` /
     // `${{ env.* }}`), like step and run labels do engine-side.
-    let inputs = perfscale_core::inputs::inputs_namespace(&config.input_values);
     let run_interval = report.interval();
     let report_cfg = report.clone();
 
@@ -724,13 +861,12 @@ fn wire_streaming(
         .min()
         .unwrap_or(report_cfg.interval_ms);
     {
-        let report = config.report.as_mut().expect("checked above");
+        let report = report_slot.as_mut().expect("checked above");
         report.during_run = true;
         report.interval_ms = min_interval_ms.max(perfscale_core::report::MIN_INTERVAL_MS);
     }
     let (tx, rx) = tokio::sync::mpsc::channel(512);
     *metrics_tx = Some(tx);
-
     let cpu = std::sync::Arc::new(perfscale_core::report::cpu::CpuReader::new());
     let mut queues = Vec::new();
     let mut handles = Vec::new();
@@ -1163,6 +1299,7 @@ mod tests {
             k6: None,
             locust: None,
             jmeter: None,
+            jmeter_property: Vec::new(),
             file: None,
             config: None,
             host: None,
@@ -1345,7 +1482,238 @@ mod tests {
             &serde_json::Map::new(),
         )
         .unwrap();
-        assert!(matches!(plan, ExecutionPlan::JMeterScript(p) if p == Path::new("plan.jmx")));
+        match plan {
+            ExecutionPlan::JMeterScript { path, opts } => {
+                assert_eq!(path, Path::new("plan.jmx"));
+                assert!(opts.properties.is_empty());
+                assert!(opts.thresholds.is_empty());
+                assert!(opts.report.is_none());
+            }
+            _ => panic!("expected JMeterScript plan"),
+        }
+    }
+
+    #[test]
+    fn parse_jmeter_properties_splits_on_first_equals() {
+        let props =
+            parse_jmeter_properties(&["vus=50".into(), "query=a=b".into(), "empty=".into()])
+                .unwrap();
+        assert_eq!(
+            props,
+            vec![
+                ("vus".to_string(), "50".to_string()),
+                ("query".to_string(), "a=b".to_string()),
+                ("empty".to_string(), String::new()),
+            ]
+        );
+        assert!(
+            parse_jmeter_properties(&["=50".into()]).is_err(),
+            "empty key"
+        );
+        assert!(parse_jmeter_properties(&["vus".into()]).is_err(), "no '='");
+    }
+
+    #[test]
+    fn resolve_plan_jmeter_carries_properties_and_threshold_gates() {
+        let args = RunArgs {
+            jmeter: Some(PathBuf::from("plan.jmx")),
+            jmeter_property: vec!["vus=50".into()],
+            ..base_args()
+        };
+        let mut config = sample_config(None);
+        config.run = RunConfig::default();
+        config.after = vec![perfscale_core::step::Step {
+            name: None,
+            action: "std/thresholds@v1".into(),
+            with: Some(serde_json::json!({ "http_req_duration": ["p95<500"] })),
+            check: None,
+            outputs: None,
+            severity: Some("warn".into()),
+            message: Some("SLO".into()),
+            abort_on_fail: false,
+            http_debug: None,
+            condition: None,
+            labels: None,
+        }];
+        let plan = resolve_plan(
+            &args,
+            None,
+            Some(&config),
+            &[],
+            &serde_json::Map::new(),
+            &[],
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+        match plan {
+            ExecutionPlan::JMeterScript { opts, .. } => {
+                assert_eq!(opts.properties, vec![("vus".to_string(), "50".to_string())]);
+                assert_eq!(opts.thresholds.len(), 1);
+                let gate = &opts.thresholds[0];
+                assert_eq!(gate["http_req_duration"], serde_json::json!(["p95<500"]));
+                assert_eq!(gate["severity"], serde_json::json!("warn"));
+                assert_eq!(gate["message"], serde_json::json!("SLO"));
+            }
+            _ => panic!("expected JMeterScript plan"),
+        }
+    }
+
+    #[test]
+    fn resolve_plan_jmeter_rejects_native_only_config() {
+        let args = RunArgs {
+            jmeter: Some(PathBuf::from("plan.jmx")),
+            ..base_args()
+        };
+        let try_resolve = |config: &ConfigFile| {
+            resolve_plan(
+                &args,
+                None,
+                Some(config),
+                &[],
+                &serde_json::Map::new(),
+                &[],
+                &serde_json::Map::new(),
+            )
+        };
+        // Load shape.
+        let mut c = sample_config(None);
+        c.run.vus = 4;
+        let err = try_resolve(&c).err().expect("must fail");
+        assert!(err.to_string().contains("load settings"), "{err}");
+        let mut c = sample_config(None);
+        c.run.stages = vec![perfscale_core::step::VuStage {
+            duration: "30s".into(),
+            target: 10,
+        }];
+        assert!(try_resolve(&c).is_err());
+        // before: steps.
+        let mut c = sample_config(None);
+        c.run = RunConfig::default();
+        c.before = vec![perfscale_core::step::Step {
+            name: None,
+            action: "std/log@v1".into(),
+            with: None,
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+            abort_on_fail: false,
+            http_debug: None,
+            condition: None,
+            labels: None,
+        }];
+        let err = try_resolve(&c).err().expect("must fail");
+        assert!(err.to_string().contains("before:"), "{err}");
+        // Non-thresholds after: actions.
+        let mut c = sample_config(None);
+        c.run = RunConfig::default();
+        c.after = vec![perfscale_core::step::Step {
+            name: None,
+            action: "std/log@v1".into(),
+            with: Some(serde_json::json!({ "message": "hi" })),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+            abort_on_fail: false,
+            http_debug: None,
+            condition: None,
+            labels: None,
+        }];
+        let err = try_resolve(&c).err().expect("must fail");
+        assert!(err.to_string().contains("std/log@v1"), "{err}");
+        // abort_on_fail is rejected, not silently honored.
+        let mut c = sample_config(None);
+        c.run = RunConfig::default();
+        c.after = vec![perfscale_core::step::Step {
+            name: None,
+            action: "std/thresholds@v1".into(),
+            with: Some(serde_json::json!({ "http_req_duration": ["p95<500"] })),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+            abort_on_fail: true,
+            http_debug: None,
+            condition: None,
+            labels: None,
+        }];
+        let err = try_resolve(&c).err().expect("must fail");
+        assert!(err.to_string().contains("abort_on_fail"), "{err}");
+    }
+
+    #[test]
+    fn resolve_plan_jmeter_folds_report_flags_and_labels() {
+        let (flag_url, flag_reporters) = parse_report_flags(&["json:out.json".into()]).unwrap();
+        assert!(flag_url.is_none());
+        let args = RunArgs {
+            jmeter: Some(PathBuf::from("plan.jmx")),
+            ..base_args()
+        };
+        let mut labels = serde_json::Map::new();
+        labels.insert("env".into(), serde_json::json!("staging"));
+        let plan = resolve_plan(
+            &args,
+            None,
+            None,
+            &flag_reporters,
+            &labels,
+            &[],
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+        match &plan {
+            ExecutionPlan::JMeterScript { opts, .. } => {
+                let report = opts.report.as_ref().expect("report config folded");
+                assert_eq!(report.reporters.len(), 1);
+                assert_eq!(report.labels["env"], serde_json::json!("staging"));
+            }
+            _ => panic!("expected JMeterScript plan"),
+        }
+        // End-of-run delivery reads the opts' reporter list, not the flags.
+        assert_eq!(plan_reporters(&plan, &[]).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn wire_during_run_attaches_channel_for_jmeter() {
+        let url = "http://localhost:7999".to_string();
+        let jmeter_plan =
+            |report: Option<perfscale_core::report::ReportRunConfig>| ExecutionPlan::JMeterScript {
+                path: PathBuf::from("plan.jmx"),
+                opts: JMeterOpts {
+                    report,
+                    ..Default::default()
+                },
+            };
+
+        // during_run + URL → channel attached, serve worker + fan-out.
+        let mut plan = jmeter_plan(Some(perfscale_core::report::ReportRunConfig {
+            during_run: true,
+            ..Default::default()
+        }));
+        let wiring = wire_streaming(&mut plan, Some(&url)).unwrap();
+        assert_eq!(wiring.handles.len(), 2);
+        match &plan {
+            ExecutionPlan::JMeterScript { opts, .. } => {
+                assert!(opts.metrics_tx.is_some());
+                assert!(opts.report.as_ref().unwrap().during_run);
+            }
+            _ => panic!("expected JMeterScript plan"),
+        }
+        for h in wiring.handles {
+            h.abort();
+        }
+
+        // during_run off → untouched.
+        let mut plan = jmeter_plan(Some(perfscale_core::report::ReportRunConfig::default()));
+        assert!(wire_streaming(&mut plan, Some(&url))
+            .unwrap()
+            .handles
+            .is_empty());
+        match &plan {
+            ExecutionPlan::JMeterScript { opts, .. } => assert!(opts.metrics_tx.is_none()),
+            _ => panic!("expected JMeterScript plan"),
+        }
     }
 
     #[test]
@@ -1687,7 +2055,10 @@ mod tests {
         let k6 = ExecutionPlan::K6Script(PathBuf::from("a.js"));
         assert_eq!(plan_meta(&k6), ("k6", None, None));
 
-        let jmeter = ExecutionPlan::JMeterScript(PathBuf::from("plan.jmx"));
+        let jmeter = ExecutionPlan::JMeterScript {
+            path: PathBuf::from("plan.jmx"),
+            opts: JMeterOpts::default(),
+        };
         assert_eq!(plan_meta(&jmeter), ("jmeter", None, None));
 
         let locust = ExecutionPlan::LocustScript {

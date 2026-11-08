@@ -48,10 +48,10 @@ is perfscale's wrapping overhead — not the underlying tool. The standalone
 | `specjbb` | **Opt-in** (never in the default suite list): [SPECjbb2015](https://www.spec.org/jbb2015/), a separate commercial Java benchmark — not an HTTP target and not a load-generator competitor. Reports the native max-jOPS / critical-jOPS (Java operations/s — **not** HTTP RPS) plus mode, duration, CPU and peak RSS |
 | `renaissance` | [Renaissance](https://renaissance.dev/) MIT suite (JVM workloads; default `finagle-http`): benchmark operation throughput (ops/s — **not** HTTP RPS) and per-operation time, plus duration, CPU and peak RSS. Runs in the daily CI default from the pinned, checksum-verified release jar |
 
-JMeter joins only the hyperfine suites (`overhead`/`startup`): its non-GUI
-console summary has no percentiles, so it stays out of the `throughput`
-table. Parsing its `.jtl` result files for full throughput metrics is future
-work.
+JMeter joins only the hyperfine suites (`overhead`/`startup`): the bench
+harness still reads its console deltas, so it stays out of the `throughput`
+table even though `perfscale run --jmeter` itself now parses the run's `.jtl`
+into full percentile metrics.
 
 The `graphql` suite runs the same POST four ways so the comparison is fair:
 `perfscale (graphql)` (`std/graphql@v1` — document parse + schema validation,

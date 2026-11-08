@@ -21,9 +21,10 @@ Exactly one engine flag is required: `--k6`, `--locust`, `--jmeter`, or `-f`.
 |---|---|---|
 | `--k6 <FILE>` | `.js` script | Run via the `k6` binary on `PATH` |
 | `--locust <FILE>` | locustfile | Run via the `locust` binary on `PATH`, headless |
-| `--jmeter <FILE>` | `.jmx` test plan | Run via the `jmeter` binary on `PATH`, non-GUI (`jmeter -n -t`). The plan owns the load shape — no perfscale config applies |
+| `--jmeter <FILE>` | `.jmx` test plan | Run via the `jmeter` binary on `PATH`, non-GUI (`jmeter -n -t -l <temp>/results.jtl`). The plan owns the load shape; the `.jtl` is parsed into full percentile metrics, thresholds gates, and reports |
+| `-J, --jmeter-property <KEY=VALUE>` | repeatable | JMeter property for `--jmeter` runs (`-Jvus=50`, `-J vus=50`, `--jmeter-property vus=50`; values may contain `=`). The runner's own JTL settings always win |
 | `-f, --file <FILE>` | `test.yaml` | Run with the built-in native engine (requires `-c`) |
-| `-c, --config <FILE>` | `config.yaml` | Load config: `vus`, `duration`, optional `report.url`. Required with `-f`, optional load hint for `--locust`, ignored by `--k6` and `--jmeter` |
+| `-c, --config <FILE>` | `config.yaml` | Load config: `vus`, `duration`, optional `report.url`. Required with `-f`, optional load hint for `--locust`, ignored by `--k6`. With `--jmeter` only `report:` and `after:` `std/thresholds@v1` gates apply — the plan owns the load shape |
 | `--host <URL>` | base URL | Target host for `--locust` (locust's `--host`) |
 | `--report <SPEC>` | repeatable | Two shapes. `http(s)://URL` — POST the summary (and the report@v1 artifact, when reporters are configured) to a `perfscale serve` instance; overrides `report.url`. `json:PATH` / `junit:PATH` / `html:PATH` — write an end-of-run `report@v1` report: canonical JSON, JUnit XML for CI (testcase per step, failures from threshold verdicts), or a self-contained dark-themed HTML page (opens offline, archives as a CI artifact). Repeat the flag for several reports from one run |
 | `--label <KEY=VALUE>` | repeatable | Run label stamped on the report's run identity (`run.labels`), e.g. `--label testid=smoke` |
@@ -146,10 +147,12 @@ error: locust not found in PATH — install with `pip install locust` (...)
 error: jmeter not found in PATH — install from https://jmeter.apache.org/download_jmeter.cgi (...)
 ```
 
-JMeter runs emit no latency percentiles: after the run, jmeter's final
-console `summary =` line is translated into the k6-compatible summary block
-with `avg`/`min`/`max` only. There is no `std/thresholds@v1` integration for
-`--jmeter` — the jmeter process exit code is the gate.
+JMeter runs derive the summary from the run's private CSV `results.jtl`:
+full `http_req_duration` percentiles (p50/p90/p95/p99), per-`label` series,
+and `std/thresholds@v1` gates from the config's `after:` block — a violated
+`severity: fail` gate exits 1, like the native engine. A zero-sample plan
+falls back to translating jmeter's console `summary =` line
+(`avg`/`min`/`max` only).
 
 ## `perfscale serve`
 
