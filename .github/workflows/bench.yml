@@ -18,13 +18,13 @@ on:
         default: "5"
       suites:
         description: "Suites to run (see scripts/bench.sh; 'renaissance' runs in the default from the pinned CI jar; 'specjbb' is opt-in — needs a caller-supplied SPECjbb2015 kit via SPECJBB_HOME/SPECJBB_JAR and is never in the default)"
-        default: "overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sharedvars sourceips renaissance"
+        default: "overhead throughput startup scaling saturation latency yaml ws boundary tls library grpc graphql db pubsub sharedvars sourceips renaissance"
       graphql_duration:
         description: "Run duration per GraphQL scenario (e.g. 10s, 30s)"
         default: "10s"
       apps:
-        description: "Competitor engines next to perfscale (always on): any of k6 jmeter locust sytester gcannon"
-        default: "k6 jmeter locust sytester gcannon"
+        description: "Competitor engines next to perfscale (always on): any of k6 jmeter locust sytester gcannon zrk"
+        default: "k6 jmeter locust sytester gcannon zrk"
       boundary_duration:
         description: "Ramp duration per boundary ladder rung (e.g. 30s, 5m)"
         default: "30s"
@@ -80,6 +80,10 @@ env:
   # no runtime dependency on the system liburing.
   GCANNON_VERSION: "v0.6.1"
   LIBURING_VERSION: "liburing-2.9"
+  # zrk — HttpArena's open-model, coordinated-omission-corrected generator
+  # (its Latency-1M profile): prebuilt release binary, checked against the
+  # release's SHA256SUMS.txt.
+  ZRK_VERSION: "2.3.0"
   # xk6-sql v1.2.3 / driver v0.3.2 declare `go 1.26.0` / `toolchain go1.26.8`.
   XK6_GO_VERSION: "1.26.8"
   # SyTester Community Edition (a competitor engine, like k6/locust/JMeter —
@@ -355,6 +359,21 @@ jobs:
           sudo install -m 0755 target/gcannon/gcannon /usr/local/bin/gcannon
           gcannon --help 2>&1 | head -3 || true
 
+      - name: Install zrk
+        run: |
+          set -euo pipefail
+          arch=$(uname -m)
+          tarball="zrk-${ZRK_VERSION}-${arch}-linux.tar.gz"
+          base="https://github.com/zoxy-io/zrk/releases/download/v${ZRK_VERSION}"
+          dir="$RUNNER_TEMP/zrk"
+          mkdir -p "$dir"
+          curl -fsSL --retry 3 -o "$dir/$tarball" "$base/$tarball"
+          curl -fsSL --retry 3 -o "$dir/SHA256SUMS.txt" "$base/SHA256SUMS.txt"
+          (cd "$dir" && grep " ${tarball}\$" SHA256SUMS.txt | sha256sum -c -)
+          tar xzf "$dir/$tarball" -C "$dir"
+          sudo install -m 0755 "$dir/zrk" /usr/local/bin/zrk
+          zrk --version 2>&1 | head -1 || true
+
       - name: Install hyperfine
         uses: taiki-e/install-action@v2
         with:
@@ -397,6 +416,7 @@ jobs:
             echo "| k6 | $(k6 version 2>/dev/null || echo 'not installed') |"
             echo "| k6 (xk6-sql custom build) | $(target/xk6-sql/k6 version 2>/dev/null || echo 'not built') — xk6-sql ${XK6_SQL_VERSION} + driver-postgres ${XK6_SQL_PG_VERSION} |"
             echo "| gcannon | ${GCANNON_VERSION} (liburing ${LIBURING_VERSION#liburing-}, static) |"
+            echo "| zrk | ${ZRK_VERSION} (release binary) |"
             echo "| k6 (xk6-kv custom build) | $(target/xk6-kv/k6 version 2>/dev/null || echo 'not built') — oleiade/xk6-kv ${XK6_KV_VERSION} |"
             echo "| k6 (xk6-nats custom build) | $(target/xk6-nats/k6 version 2>/dev/null || echo 'not built') — ydarias/xk6-nats (rongfengliang fork) ${XK6_NATS_VERSION:0:7} |"
             echo "| locust | $(locust --version 2>/dev/null || echo 'not installed') |"
@@ -414,8 +434,8 @@ jobs:
           VUS: ${{ github.event.inputs.vus || '10' }}
           DURATION: ${{ github.event.inputs.duration || '30s' }}
           RUNS: ${{ github.event.inputs.runs || '5' }}
-          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sharedvars sourceips renaissance' }}
-          APPS: ${{ github.event.inputs.apps || 'k6 jmeter locust sytester gcannon' }}
+          SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation latency yaml ws boundary tls library grpc graphql db pubsub sharedvars sourceips renaissance' }}
+          APPS: ${{ github.event.inputs.apps || 'k6 jmeter locust sytester gcannon zrk' }}
           SYTESTER_JAR: ${{ github.workspace }}/target/sytester/SyTester.jar
           SYTESTER_JAVA: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
           RENAISSANCE_JAVA: /usr/lib/jvm/java-21-openjdk-amd64/bin/java

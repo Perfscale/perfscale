@@ -345,6 +345,18 @@ pub struct ArrivalConfig {
     /// Rate profile: ramp the arrival rate linearly to each stage's `rate`
     /// over its `duration`. The first stage ramps from 0 iterations/sec.
     pub stages: Vec<RateStage>,
+
+    /// zrk/wrk2-style coordinated-omission correction (default `false`).
+    /// When `true`, a permit that finds every one of `max_vus` workers busy
+    /// is queued instead of dropped, so a stall shows up as latency in
+    /// `engine_arrival_iteration_ms` (measured from the *scheduled* start)
+    /// rather than vanishing into `dropped_iterations`; the dispatcher also
+    /// paces with sub-millisecond precision (it spins on `yield_now` for
+    /// the last millisecond before each start) so an idle target does not
+    /// read as timer jitter. Permits still queued at the end of the run are
+    /// counted in `dropped_iterations`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub co_correct: bool,
 }
 
 /// One `arrival.stages:` entry — ramp the arrival rate linearly to `rate`
