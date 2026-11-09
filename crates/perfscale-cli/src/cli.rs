@@ -77,6 +77,8 @@ pub enum Commands {
     Install(InstallArgs),
     /// Build a standalone binary with the documents' WASM libraries embedded.
     Burn(BurnArgs),
+    /// Convert an existing load-test script to native perfscale YAML.
+    Convert(ConvertArgs),
     /// List every metric the registered families declare (name, kind, unit, description).
     Metrics,
     /// Print the JSON Schema for test or config YAML files.
@@ -580,6 +582,64 @@ pub struct BurnArgs {
     /// Output path of the derived (burned) binary.
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     pub output: PathBuf,
+}
+
+fn convert_after_help() -> String {
+    format!(
+        "Converts the statically representable part of a k6 script without running it.\n\
+         Unsupported JavaScript and k6 options are hard errors with source locations.\n\n\
+         Examples:\n  \
+         perfscale convert k6 script.js\n  \
+         perfscale convert k6 script.js -t tests/api.yaml -c config.yaml\n  \
+         perfscale convert k6 script.js --force\n\n\
+         Defaults write test.yaml and config.yaml in the current directory. Existing\n\
+         files are never overwritten unless --force is set. Validate and run with:\n  \
+         perfscale lint test.yaml config.yaml\n  \
+         perfscale run -f test.yaml -c config.yaml\n\n\
+         Documentation: {DOCS_BASE}/cli/commands.md#perfscale-convert-k6"
+    )
+}
+
+#[derive(Args)]
+#[command(after_help = convert_after_help())]
+pub struct ConvertArgs {
+    #[command(subcommand)]
+    pub action: ConvertAction,
+}
+
+#[derive(Subcommand)]
+pub enum ConvertAction {
+    /// Convert a k6 JavaScript script to native test/config YAML.
+    K6(ConvertK6Args),
+}
+
+#[derive(Args)]
+pub struct ConvertK6Args {
+    /// Existing k6 JavaScript file.
+    #[arg(value_name = "FILE.js")]
+    pub input: PathBuf,
+
+    /// Native test-definition output.
+    #[arg(
+        short = 't',
+        long = "test",
+        default_value = "test.yaml",
+        value_name = "TEST.yaml"
+    )]
+    pub test: PathBuf,
+
+    /// Native run-config output.
+    #[arg(
+        short = 'c',
+        long = "config",
+        default_value = "config.yaml",
+        value_name = "CONFIG.yaml"
+    )]
+    pub config: PathBuf,
+
+    /// Replace either output file when it already exists.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[cfg(test)]

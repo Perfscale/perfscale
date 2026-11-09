@@ -6,6 +6,7 @@ perfscale serve        Start a local dev server that receives metrics from `run 
 perfscale lint         Validate test/config YAML files without running them
 perfscale install      Fetch remote libraries and pin them in perfscale.lock
 perfscale burn         Build a standalone binary with WASM libraries embedded
+perfscale convert k6   Convert a static k6 script to native test/config YAML
 perfscale schema       Print the JSON Schema for test or config YAML files
 perfscale metrics      List every metric the registered families declare
 perfscale man          Print the bundled man page (or install it for `man perfscale`)
@@ -320,6 +321,45 @@ AOT-предкомпилированные (`.cwasm`) артефакты все�
 
 Код выхода: `0` при успехе, `1`, если документ не загружается, WASM-библиотеки
 не объявлены или библиотека не компилируется как компонент.
+
+## `perfscale convert k6`
+
+Конвертирует статически представимый k6-скрипт в нативный YAML без запуска k6
+и без отправки запросов:
+
+```sh
+perfscale convert k6 script.js                         # test.yaml + config.yaml
+perfscale convert k6 script.js -t tests/api.yaml -c load.yaml
+perfscale convert k6 script.js --force                 # заменить существующие файлы
+```
+
+| Флаг | По умолчанию | Описание |
+|---|---|---|
+| `-t, --test <FILE>` | `test.yaml` | Куда записать определение нативного теста |
+| `-c, --config <FILE>` | `config.yaml` | Куда записать конфигурацию прогона |
+| `--force` | выключен | Заменить существующие файлы; без флага коллизия любого выхода прерывает команду до записи |
+
+Конвертер разбирает настоящий JavaScript AST. Поддерживаются статические
+`const`, строки/конкатенация/templates и `__ENV.NAME` (→ `${{ env.NAME }}`);
+`http.get/post/put/patch/del/delete/head/options/request` со статическими URL,
+телами, headers и timeout; `JSON.stringify`; проверки status и
+`body.includes`; `sleep`; имена `group` как префиксы шагов; фиксированные
+`vus` + `duration`, `stages` и один сценарий `ramping-arrival-rate` с
+`startRate: 0`; `insecureSkipTLSVerify`; thresholds для `http_req_duration`,
+`http_req_failed`, `http_reqs`, `iterations` и `dropped_iterations`.
+Перцентили `p(50/90/95/99)` преобразуются в `p50/p90/p95/p99`;
+`abortOnFail: true` — в отдельный gate `abort_on_fail`.
+
+Динамический JavaScript, вызовы helpers, циклы/условия, setup/teardown,
+произвольные check-функции, xk6-модули и опции без точного нативного аналога —
+**ошибка с номером строки**, а не молчаливое удаление поведения. Скрипты вне
+этого подмножества по-прежнему запускаются через `perfscale run --k6 script.js`.
+Результат валидируется по схемам внутри команды; далее выполните:
+
+```sh
+perfscale lint test.yaml config.yaml
+perfscale run -f test.yaml -c config.yaml   # начните с короткого безопасного прогона
+```
 
 ## `perfscale schema`
 

@@ -23,6 +23,12 @@ perfscale \- run k6, locust, JMeter, or native load tests from one CLI
 .BI \-f " TEST.yaml"
 .BI \-c " CONFIG.yaml"
 .RI [ OPTIONS ]
+.br
+.B perfscale convert k6
+.BI " FILE.js"
+.RI [ \-t " TEST.yaml" ]
+.RI [ \-c " CONFIG.yaml" ]
+.RI [ \-\-force ]
 .SH DESCRIPTION
 .B perfscale
 is a load-testing CLI that runs existing k6 scripts, locustfiles, and JMeter
@@ -157,6 +163,24 @@ built-ins are native code and are skipped. Burn artifacts are tied to this
 build (wasmtime version, target triple, engine configuration) — re-run
 .B burn
 after upgrading perfscale.
+.TP
+.B convert k6 FILE.js
+Convert a statically representable k6 script to native YAML without executing
+it. Writes
+.B test.yaml
+and
+.B config.yaml
+by default; override with
+.BI \-t " TEST.yaml"
+and
+.BI \-c " CONFIG.yaml" .
+Existing files are protected unless
+.B \-\-force
+is set. Supports static HTTP requests, checks, sleep, groups, fixed/staged/
+ramping-arrival load, and thresholds. Dynamic JavaScript and options without
+an exact native equivalent fail with a source line instead of being dropped.
+Validate the result with
+.BR "perfscale lint" .
 .TP
 .B man
 Print this manual as plain text (the Windows path, where no

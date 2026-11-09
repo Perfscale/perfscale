@@ -6,6 +6,7 @@ perfscale serve        Start a local dev server that receives metrics from `run 
 perfscale lint         Validate test/config YAML files without running them
 perfscale install      Fetch remote libraries and pin them in perfscale.lock
 perfscale burn         Build a standalone binary with WASM libraries embedded
+perfscale convert k6   Convert a static k6 script to native test/config YAML
 perfscale schema       Print the JSON Schema for test or config YAML files
 perfscale metrics      List every metric the registered families declare
 perfscale man          Print the bundled man page (or install it for `man perfscale`)
@@ -338,6 +339,44 @@ compilation, not per-call overhead — library call cost is unchanged.
 
 Exit code: `0` on success, `1` when a document fails to load, no WASM
 libraries are declared, or a library does not compile as a component.
+
+## `perfscale convert k6`
+
+Convert a statically representable k6 script into native YAML without running
+k6 or sending requests:
+
+```sh
+perfscale convert k6 script.js                         # test.yaml + config.yaml
+perfscale convert k6 script.js -t tests/api.yaml -c load.yaml
+perfscale convert k6 script.js --force                 # replace existing outputs
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-t, --test <FILE>` | `test.yaml` | Native test-definition output |
+| `-c, --config <FILE>` | `config.yaml` | Native run-config output |
+| `--force` | off | Replace existing output files; without it either collision fails before anything is written |
+
+The converter parses a real JavaScript AST. It supports static `const` values,
+strings/concatenation/templates and `__ENV.NAME` (→ `${{ env.NAME }}`);
+`http.get/post/put/patch/del/delete/head/options/request` with static URLs,
+bodies, headers and timeout; `JSON.stringify`; status and `body.includes`
+checks; `sleep`; named `group` prefixes; fixed `vus` + `duration`, `stages`, and
+one `ramping-arrival-rate` scenario with `startRate: 0`; `insecureSkipTLSVerify`;
+and thresholds over `http_req_duration`, `http_req_failed`, `http_reqs`,
+`iterations`, and `dropped_iterations`. Percentiles `p(50/90/95/99)` become
+`p50/p90/p95/p99`; `abortOnFail: true` becomes a separate `abort_on_fail` gate.
+
+Dynamic JavaScript, helper calls, loops/conditions, setup/teardown, arbitrary
+check functions, xk6 modules, and options without an exact native equivalent
+are **hard errors with a source line**, never silently dropped. Scripts outside
+this subset can still run unchanged with `perfscale run --k6 script.js`.
+Generated files are schema-validated in-process; then run:
+
+```sh
+perfscale lint test.yaml config.yaml
+perfscale run -f test.yaml -c config.yaml   # start with a small target-safe run
+```
 
 ## `perfscale schema`
 

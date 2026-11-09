@@ -12,7 +12,7 @@ SDK shape, three languages:
 |---|---|---|
 | **Rust** | [`perfscale-library-sdk`](../crates/perfscale-library-sdk) (this repo) | Stable, versioned with the engine |
 | **TypeScript / JavaScript** | [`@perfscale/library-sdk`](https://www.npmjs.com/package/@perfscale/library-sdk) ([sdk-libraries](https://github.com/Perfscale/sdk-libraries)) | Stable (v0.3.x) |
-| **Go** | [TinyGo recipe](https://github.com/Perfscale/sdk-libraries/tree/main/go) | Experimental (no SDK package yet) |
+| **Go** | [`github.com/Perfscale/sdk-libraries/go`](https://github.com/Perfscale/sdk-libraries/tree/main/go) | Stable (ABI 0.3, TinyGo) |
 
 ## What every SDK gives you
 
@@ -177,9 +177,12 @@ bindings for `perfscale-library-config`, as in the complete
 
 ## Go
 
-The [sdk-libraries](https://github.com/Perfscale/sdk-libraries) repo
-carries a documented TinyGo recipe (`wasip2` target + generated bindings),
-same shape as the other SDKs. Experimental — no packaged SDK yet.
+The [`github.com/Perfscale/sdk-libraries/go`](https://github.com/Perfscale/sdk-libraries/tree/main/go)
+module is the stable Go SDK for ABI 0.3: `Library`/`Ctx`, deterministic PRNG,
+typed argument helpers, settings, config extensions, and runtime-free tests.
+`component.Export` handles the base world; `component/config.Export` handles
+`perfscale-library-config`. A complete TinyGo example and build pipeline live
+in the same repository.
 
 ## The ABI contract
 

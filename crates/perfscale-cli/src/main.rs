@@ -30,6 +30,7 @@ async fn main() {
         Commands::Lint(args) => commands::lint::run(args).await,
         Commands::Install(args) => commands::install::run(args).await,
         Commands::Burn(args) => commands::burn::run(args).await,
+        Commands::Convert(args) => commands::convert::run(args),
         Commands::Metrics => commands::metrics::run().await,
         Commands::Schema(args) => commands::schema::run(args).await,
         Commands::Man(args) => commands::man::run(args).await,
