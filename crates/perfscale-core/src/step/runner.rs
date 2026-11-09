@@ -1435,7 +1435,7 @@ fn spawn_vu(
     let tx = shared.tx.clone();
     let http_debug_errors = shared.http_debug_errors;
 
-    tokio::spawn(async move {
+    super::vu_pool::spawn_on_shard(ctx.http_client_shard, async move {
         if let Some(active) = &active_vus {
             active.fetch_add(1, Ordering::SeqCst);
         }
@@ -1500,7 +1500,7 @@ fn spawn_arrival_worker(
     let tx = shared.tx.clone();
     let http_debug_errors = shared.http_debug_errors;
 
-    tokio::spawn(async move {
+    super::vu_pool::spawn_on_shard(ctx.http_client_shard, async move {
         if let Some(active) = &active_vus {
             active.fetch_add(1, Ordering::SeqCst);
         }
