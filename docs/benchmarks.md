@@ -19,6 +19,7 @@ is perfscale's wrapping overhead — not the underlying tool. The standalone
 | `k6 (native)` | `k6` invoked directly — baseline |
 | `jmeter (native)` | `jmeter -n -t` invoked directly — baseline (overhead/startup suites only) |
 | `sytester (10000 TPS)` | [SyTester](https://gitverse.ru/sbertech/sytester) Community Edition driven over its REST API — baseline (throughput, saturation, grpc and db tables). It has no VU model, so it offers its maximum fixed rate (`SYT_RATE`) |
+| `gcannon (native)` | [gcannon](https://github.com/MDA2AV/gcannon) — HttpArena's io_uring HTTP/1.1 load generator (Linux only), throughput and saturation tables; one keep-alive connection per VU, no pipelining, threads = cores |
 | `perfscale (k6)` | the same k6 script, via `perfscale run --k6` |
 | `perfscale (locust)` | the same locustfile, via `perfscale run --locust` |
 | `perfscale (jmeter)` | the same `.jmx` plan, via `perfscale run --jmeter` (overhead/startup suites only) |
@@ -278,7 +279,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | Variable | Default | Description |
 |---|---|---|
 | `SUITES` | all but `specjbb` | Space-separated suite list; an unknown name fails the run (see table above) |
-| `APPS` | `k6 jmeter locust sytester` | Competitor engines whose rows join the tables (space-separated; perfscale's own rows always run; `k6` also gates the xk6-sql / xk6-nats builds). An unknown name fails the run |
+| `APPS` | `k6 jmeter locust sytester gcannon` | Competitor engines whose rows join the tables (space-separated; perfscale's own rows always run; `k6` also gates the xk6-sql / xk6-nats builds). An unknown name fails the run |
 | `VUS` | `10` | Virtual users per scenario |
 | `DURATION` | `15s` | Run length for `overhead`/`throughput` |
 | `WARMUP` | `1` | hyperfine warmup runs (discarded, not shown) |
