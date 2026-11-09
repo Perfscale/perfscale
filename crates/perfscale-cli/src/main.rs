@@ -10,6 +10,9 @@ use clap::Parser;
 
 use cli::{Cli, Commands};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()

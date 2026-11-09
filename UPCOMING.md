@@ -23,6 +23,12 @@ fail with a source line instead of being silently dropped. Existing outputs
 are protected unless `--force` is passed; scripts outside the static subset
 continue to run through `perfscale run --k6`.
 
+- Benchmarks: gcannon — HttpArena's io_uring HTTP/1.1 load generator —
+  joins the throughput and saturation tables as a competitor engine (`APPS`
+  default now includes `gcannon`; Linux only, built from pinned tags against
+  liburing 2.9 by the bench workflow). Same fairness rules as the other
+  rows: one keep-alive connection per VU, no pipelining.
+
 ## JMeter: JTL metrics, `-J` properties, thresholds gates
 
 `perfscale run --jmeter` now writes each run's samples to a private CSV

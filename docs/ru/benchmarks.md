@@ -20,6 +20,7 @@ perfscale, а не самого инструмента. Отдельные на�
 | `k6 (native)` | `k6`, вызванный напрямую — базовый уровень |
 | `jmeter (native)` | `jmeter -n -t`, вызванный напрямую — базовый уровень (только наборы overhead/startup) |
 | `sytester (10000 TPS)` | [SyTester](https://gitverse.ru/sbertech/sytester) Community Edition через его REST API — базовая линия (таблицы throughput, saturation, grpc и db). VU-модели у него нет, поэтому он подаёт свою максимальную фиксированную интенсивность (`SYT_RATE`) |
+| `gcannon (native)` | [gcannon](https://github.com/MDA2AV/gcannon) — io_uring-генератор HTTP/1.1 из HttpArena (только Linux), таблицы throughput и saturation; одно keep-alive соединение на VU, без pipelining, потоков = ядер |
 | `perfscale (k6)` | тот же скрипт k6 через `perfscale run --k6` |
 | `perfscale (locust)` | тот же locustfile через `perfscale run --locust` |
 | `perfscale (jmeter)` | тот же `.jmx`-план через `perfscale run --jmeter` (только наборы overhead/startup) |
@@ -286,7 +287,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | Переменная | По умолчанию | Описание |
 |---|---|---|
 | `SUITES` | все, кроме `specjbb` | Список наборов через пробел; неизвестное имя — ошибка запуска (см. таблицу выше) |
-| `APPS` | `k6 jmeter locust sytester` | Движки-конкуренты, чьи строки попадают в таблицы (через пробел; строки perfscale идут всегда; `k6` также включает сборки xk6-sql / xk6-nats). Неизвестное имя — ошибка запуска |
+| `APPS` | `k6 jmeter locust sytester gcannon` | Движки-конкуренты, чьи строки попадают в таблицы (через пробел; строки perfscale идут всегда; `k6` также включает сборки xk6-sql / xk6-nats). Неизвестное имя — ошибка запуска |
 | `VUS` | `10` | Виртуальных пользователей на сценарий |
 | `DURATION` | `15s` | Длительность прогона для `overhead`/`throughput` |
 | `WARMUP` | `1` | Разогревочные прогоны hyperfine (отбрасываются, не показываются) |

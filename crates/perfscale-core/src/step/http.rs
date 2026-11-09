@@ -702,6 +702,34 @@ pub(crate) fn header_map_to_json(
     map
 }
 
+/// Parse `url`, memoized per thread. Most steps hit one static URL (or a
+/// handful), and `Url::parse` + IDNA host processing was ~5% of engine CPU
+/// on a GET loop; a hit is one hash lookup and a `Url` clone (a single
+/// String copy). VUs run on per-shard threads (see `vu_pool`), so each
+/// thread caches only what its own VUs request. Capped so a step that
+/// generates unique URLs (`?id=${uuid}`) cannot grow it without bound —
+/// past the cap the map is reset, costing those steps one parse each, as
+/// before.
+fn parsed_url(url: &str) -> Option<reqwest::Url> {
+    const CAP: usize = 256;
+    thread_local! {
+        static CACHE: std::cell::RefCell<HashMap<String, reqwest::Url>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(u) = cache.get(url) {
+            return Some(u.clone());
+        }
+        let parsed = reqwest::Url::parse(url).ok()?;
+        if cache.len() >= CAP {
+            cache.clear();
+        }
+        cache.insert(url.to_owned(), parsed.clone());
+        Some(parsed)
+    })
+}
+
 /// True for content types whose payload is meant to be read as text; anything
 /// else (octet-stream, protobuf, images, …) is surfaced as `body_base64`.
 fn is_textual_content_type(ct: &str) -> bool {
@@ -835,9 +863,12 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         // both pool paths below.
         _ => client_with_source(pool, insecure, ctx.http_client_shard, source_ip).clone(),
     };
-    let mut req = client
-        .request(reqwest_method, &url)
-        .timeout(Duration::from_millis(timeout_ms));
+    let mut req = match parsed_url(&url) {
+        Some(parsed) => client.request(reqwest_method, parsed),
+        // Unparseable: let reqwest report it in its usual shape.
+        None => client.request(reqwest_method, &url),
+    }
+    .timeout(Duration::from_millis(timeout_ms));
 
     if let Some(headers) = params["headers"].as_object() {
         for (k, v) in headers {

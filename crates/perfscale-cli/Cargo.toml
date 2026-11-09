@@ -11,6 +11,9 @@ name = "perfscale"
 path = "src/main.rs"
 
 [dependencies]
+# Global allocator: the system malloc showed up at ~8% of engine CPU on the
+# HTTP hot path (per-request header maps, URLs, JSON outputs).
+mimalloc = { version = "0.1", default-features = false }
 # `wasm-libs` (RFC 005 phase 2) is enabled unconditionally: the shipped CLI
 # binary always supports WASM libraries, while embedders of the core crate
 # stay lean by default.

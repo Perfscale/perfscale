@@ -5,6 +5,7 @@ Subcommands:
   parse <kind> <file>            kind: text | locust-csv | ws-text |
                                  grpc-text | db-text | pubsub-text |
                                  jmeter-summary | sytester-json | sharedvars-text |
+                                 gcannon-json |
                                  specjbb-text
                                  renaissance-text
                                  prints shell-evalable `key=value` lines
@@ -461,6 +462,34 @@ def parse_sharedvars_text(content):
     return out, extra
 
 
+def parse_gcannon_json(content):
+    """Parse gcannon's `--json` summary (HttpArena's io_uring load generator):
+    `responses` / `rps`, latency in microseconds (`avg`, `p50`, `p90`,
+    `p99`, `p999` — no p95, which stays 0), errors = non-2xx statuses plus
+    connect/read/timeout errors over responses + transport errors."""
+    out = zeroed()
+    start = content.find("{")
+    if start < 0:
+        out["parse_ok"] = 0
+        return out
+    doc = json.loads(content[start:content.rindex("}") + 1])
+    out["requests"] = int(doc.get("responses") or 0)
+    out["rps"] = float(doc.get("rps") or 0)
+    lat = doc.get("latency_us") or {}
+    for key, name in (("avg_ms", "avg"), ("p50_ms", "p50"), ("p90_ms", "p90"),
+                      ("p99_ms", "p99")):
+        out[key] = float(lat.get(name) or 0) / 1000.0
+    status = doc.get("status") or {}
+    errors = doc.get("errors") or {}
+    bad = sum(int(status.get(k) or 0) for k in ("3xx", "4xx", "5xx", "other"))
+    transport = sum(int(errors.get(k) or 0) for k in ("connect", "read", "timeout"))
+    total = out["requests"] + transport
+    if total:
+        out["err_pct"] = (bad + transport) * 100.0 / total
+    out["parse_ok"] = 1 if out["requests"] else 0
+    return out
+
+
 def parse_locust_csv(path):
     """Parse the `Aggregated` row of locust's `--csv` stats output —
     the same source perfscale's locust runner reads."""
@@ -521,6 +550,9 @@ def cmd_parse(kind, path):
         elif kind == "renaissance-text":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics, extra = parse_renaissance_text(f.read())
+        elif kind == "gcannon-json":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics = parse_gcannon_json(f.read())
         elif kind == "sharedvars-text":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics, extra = parse_sharedvars_text(f.read())

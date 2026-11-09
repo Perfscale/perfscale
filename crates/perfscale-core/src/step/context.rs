@@ -265,6 +265,25 @@ impl Context {
         gen.call_library(token, extra_args)
     }
 
+    /// Seed for the `conn_seq`-th generator / library instance of this
+    /// context: `hash(run_seed, vu_id, conn_seq)` when the config sets
+    /// `seed:`, otherwise the same hash over one random base per context
+    /// (one `Uuid::new_v4`, not one per generator — a getrandom syscall per
+    /// query on token-heavy db scenarios). The unseeded path must hash too:
+    /// `base + conn_seq` handed consecutive generators adjacent seeds, which
+    /// `Gen::new`'s `seed | 1` folded pairwise into one stream — step 2 of
+    /// iteration N repeated step 1 of iteration N+1 (`${uuid}` included) —
+    /// and xorshift on near-identical seeds also shares output prefixes.
+    fn generator_seed(&self, conn_seq: u64) -> u64 {
+        let base = match self.run_seed {
+            Some(run_seed) => run_seed,
+            None => *self
+                .unseeded_gen_base
+                .get_or_init(|| uuid::Uuid::new_v4().as_u128() as u64),
+        };
+        crate::library::derive_seed(base, self.vu_id, conn_seq)
+    }
+
     /// A fresh `${…}` generator for a new connection or one-shot action.
     /// Seeded deterministically as `hash(run_seed, vu_id, conn_seq)` when the
     /// config sets `seed:`, randomly otherwise. Libraries whose providers opt
@@ -279,17 +298,7 @@ impl Context {
             .gen_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
-        let seed = match self.run_seed {
-            Some(run_seed) => crate::library::derive_seed(run_seed, self.vu_id, conn_seq),
-            // One random base per context; conn_seq keeps every generator's
-            // stream distinct. (Previously a fresh `Uuid::new_v4` per
-            // generator — a getrandom syscall per query on token-heavy db
-            // scenarios.)
-            None => (*self
-                .unseeded_gen_base
-                .get_or_init(|| uuid::Uuid::new_v4().as_u128() as u64))
-            .wrapping_add(conn_seq),
-        };
+        let seed = self.generator_seed(conn_seq);
         let mut gen = crate::generate::Gen::new(seed)
             .with_vu(self.vu_id, self.iteration_seq)
             .with_settings(Arc::clone(&self.settings_json))
@@ -382,13 +391,7 @@ impl Context {
                 .gen_counter
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 + 1;
-            let seed = match self.run_seed {
-                Some(run_seed) => crate::library::derive_seed(run_seed, self.vu_id, conn_seq),
-                None => (*self
-                    .unseeded_gen_base
-                    .get_or_init(|| uuid::Uuid::new_v4().as_u128() as u64))
-                .wrapping_add(conn_seq),
-            };
+            let seed = self.generator_seed(conn_seq);
             let instance = lib
                 .provider
                 .instantiate(lib.config.clone(), seed)
@@ -407,13 +410,7 @@ impl Context {
                 .gen_counter
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 + 1;
-            let seed = match self.run_seed {
-                Some(run_seed) => crate::library::derive_seed(run_seed, self.vu_id, conn_seq),
-                None => (*self
-                    .unseeded_gen_base
-                    .get_or_init(|| uuid::Uuid::new_v4().as_u128() as u64))
-                .wrapping_add(conn_seq),
-            };
+            let seed = self.generator_seed(conn_seq);
             let instance = lib
                 .provider
                 .instantiate(lib.config.clone(), seed)
@@ -908,6 +905,21 @@ mod tests {
         gen.begin_message();
         let v = gen.expand("${random.nanoid(8)}").unwrap();
         assert_eq!(v.len(), 8, "generated value must be 8 chars");
+    }
+
+    /// Regression: unseeded generators were seeded `base + conn_seq`, and
+    /// `Gen::new`'s `seed | 1` folded each even/odd pair into one stream —
+    /// consecutive generators (step 2 of iteration N, step 1 of N+1) emitted
+    /// the same `${uuid}`, so k8s-style create-by-unique-name tests hit 409s.
+    #[test]
+    fn unseeded_generators_never_repeat_across_messages() {
+        let ctx = Context::new();
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..1000 {
+            let mut gen = ctx.new_generator().unwrap();
+            let fresh = seen.insert(gen.expand("${uuid}").unwrap());
+            assert!(fresh, "generator {i} repeated an earlier ${{uuid}}");
+        }
     }
 
     #[test]

@@ -42,6 +42,7 @@ pub mod runner;
 pub mod schedule;
 pub mod shared_variable;
 pub mod thresholds;
+pub(crate) mod vu_pool;
 pub(crate) mod ws;
 
 pub use crate::report::{DuringRunShipper, MetricSnapshot};
