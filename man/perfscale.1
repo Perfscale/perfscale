@@ -211,12 +211,18 @@ Run a JMeter test plan headless via
 .B "jmeter \-n \-t"
 (requires
 .B jmeter
-on PATH and a JRE). The plan owns the load shape — no perfscale config
-applies. After the run, jmeter's final console
+on PATH and a JRE). The plan owns the load shape. Every run writes samples
+to a private CSV results file (removed afterwards), parsed into the
+k6-compatible summary with full p50/p90/p95/p99 percentiles, per-label
+metrics, and optional timings (latency/connect) and byte counters. A
+zero-sample plan falls back to translating jmeter's console
 .B summary =
-line is translated into the k6-compatible summary (avg/min/max and error
-rate only — the console summary carries no percentiles). JMeter's exit code
-is the CI gate; there is no thresholds integration.
+line (avg/min/max only). JMeter's exit code is the plan-health gate;
+additionally, a violated
+.BR "severity: fail" " thresholds"
+gate (see
+.BR \-c )
+fails the run.
 .TP
 .BI \-f ", " \-\-file " TEST.yaml"
 Run a native perfscale test definition (YAML with a
@@ -241,9 +247,25 @@ Required with
 optional load hint for
 .BR \-\-locust ;
 ignored by
-.BR \-\-k6
-and
-.BR \-\-jmeter .
+.BR \-\-k6 .
+With
+.BR \-\-jmeter ,
+only the
+.B report:
+block (end-of-run and during-run reporters) and
+.B after:
+.B std/thresholds@v1
+gates apply — the plan owns the load shape, and native-only settings are
+rejected rather than silently ignored.
+.TP
+.BI \-J ", " \-\-jmeter\-property " KEY=VALUE"
+JMeter property for
+.B \-\-jmeter
+runs; repeatable
+.RB ( "\-Jvus=50" ,
+or the long form). Values may contain
+.BR = .
+The runner's own JTL settings always win over these properties.
 .TP
 .BI \-\-host " URL"
 Target base URL for

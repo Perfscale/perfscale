@@ -21,9 +21,10 @@ perfscale cache        Manage the local import/library cache (~/.cache/perfscale
 |---|---|---|
 | `--k6 <FILE>` | `.js`-скрипт | Запуск через бинарник `k6` из `PATH` |
 | `--locust <FILE>` | locustfile | Запуск через бинарник `locust` из `PATH`, в headless-режиме |
-| `--jmeter <FILE>` | `.jmx` тест-план | Запуск через бинарник `jmeter` из `PATH`, без GUI (`jmeter -n -t`). План сам определяет профиль нагрузки — конфигурация perfscale не применяется |
+| `--jmeter <FILE>` | `.jmx` тест-план | Запуск через бинарник `jmeter` из `PATH`, без GUI (`jmeter -n -t -l <temp>/results.jtl`). План сам определяет профиль нагрузки; `.jtl` разбирается в полные метрики с перцентилями, гейты thresholds и отчёты |
+| `-J, --jmeter-property <KEY=VALUE>` | повторяемый | Свойство JMeter для прогонов `--jmeter` (`-Jvus=50`, `-J vus=50`, `--jmeter-property vus=50`; значения могут содержать `=`). Собственные настройки JTL раннера всегда побеждают |
 | `-f, --file <FILE>` | `test.yaml` | Запуск со встроенным нативным движком (требует `-c`) |
-| `-c, --config <FILE>` | `config.yaml` | Конфигурация нагрузки: `vus`, `duration`, опционально `report.url`. Обязателен с `-f`, для `--locust` — опциональная подсказка о нагрузке, для `--k6` и `--jmeter` игнорируется |
+| `-c, --config <FILE>` | `config.yaml` | Конфигурация нагрузки: `vus`, `duration`, опционально `report.url`. Обязателен с `-f`, для `--locust` — опциональная подсказка о нагрузке, для `--k6` игнорируется. С `--jmeter` применяются только `report:` и гейты `std/thresholds@v1` из `after:` — профилем нагрузки управляет план |
 | `--host <URL>` | базовый URL | Целевой хост для `--locust` (аналог `--host` у locust) |
 | `--report <SPEC>` | повторяемый | Две формы. `http(s)://URL` — POST сводки (и артефакта report@v1, если настроены репортеры) на экземпляр `perfscale serve`; переопределяет `report.url`. `json:PATH` / `junit:PATH` / `html:PATH` — отчёт `report@v1` в конце запуска: канонический JSON, JUnit XML для CI (testcase на шаг, failures из вердиктов thresholds) или самодостаточная HTML-страница с тёмной темой (открывается офлайн, архивируется как артефакт CI). Флаг повторяем — несколько отчётов за один прогон |
 | `--label <KEY=VALUE>` | повторяемый | Метка запуска в идентичности отчёта (`run.labels`), напр. `--label testid=smoke` |
@@ -131,10 +132,12 @@ error: locust not found in PATH — install with `pip install locust` (...)
 error: jmeter not found in PATH — install from https://jmeter.apache.org/download_jmeter.cgi (...)
 ```
 
-Прогоны JMeter не выдают перцентилей задержки: после прогона финальная
-консольная строка `summary =` jmeter преобразуется в совместимый с k6 блок сводки
-только с `avg`/`min`/`max`. Интеграции `std/thresholds@v1` для
-`--jmeter` нет — код выхода процесса jmeter и есть gate.
+Прогоны JMeter строят сводку из приватного CSV-файла `results.jtl`: полные
+перцентили `http_req_duration` (p50/p90/p95/p99), серии по `label` и гейты
+`std/thresholds@v1` из блока `after:` конфигурации — нарушенный гейт
+`severity: fail` завершает прогон с кодом 1, как в нативном движке. План с
+нулевым числом сэмплов откатывается на трансляцию консольной строки
+`summary =` (только `avg`/`min`/`max`).
 
 ## `perfscale serve`
 

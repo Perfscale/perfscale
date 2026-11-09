@@ -248,9 +248,11 @@ examples here.
 
 - **Runner versions are pinned** — to run a different k6/JMeter/locust
   version, extend the image (above).
-- **JMeter writes `jmeter.log` (and any `.jtl` results) into the working
-  directory** — give it a writable mount (`-v "$PWD:/work" -w /work`, or
-  `--user "$(id -u):$(id -g)"` to keep files owned by you).
+- **JMeter keeps its private `jmeter.log` and `results.jtl` in its temp
+  directory** and removes them after the run — the writable mount
+  (`-v "$PWD:/work" -w /work`, or `--user "$(id -u):$(id -g)"` to keep files
+  owned by you) is for the plan and your scenario artifacts, not for those
+  result files.
 - **`perfscale serve` needs a published port**: add `-p 7999:7999` and POST
   reports to the container's address, not `localhost`.
 - **File actions are container-scoped**: `std/file-read@v1`/`std/file-write@v1`

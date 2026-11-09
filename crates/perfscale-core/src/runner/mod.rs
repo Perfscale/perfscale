@@ -45,7 +45,9 @@ pub struct RunOutput {
     /// Engine process exit code. `None` if the process was killed by a
     /// signal; the native engine reports `Some(1)` when a `severity: fail`
     /// thresholds gate was violated or the load profile (`stages:`/`arrival:`)
-    /// was invalid, `Some(0)` otherwise.
+    /// was invalid, `Some(0)` otherwise. The JMeter runner likewise reports
+    /// `Some(1)` on a violated fail gate or a malformed results file, over
+    /// jmeter's own code.
     pub exit: tokio::sync::oneshot::Receiver<Option<i32>>,
     /// OS process ID of the spawned engine binary, while it's running — lets
     /// callers sample its CPU/memory/IO usage. `None` for the native step
@@ -62,8 +64,13 @@ pub enum ExecutionPlan {
         path: PathBuf,
         opts: locust::LocustOpts,
     },
-    /// `perfscale run --jmeter <plan.jmx>`
-    JMeterScript(PathBuf),
+    /// `perfscale run --jmeter <plan.jmx>` — the plan owns the load shape;
+    /// `opts` carries `-J` properties, `after:` thresholds gates, and the
+    /// report/streaming wiring the CLI resolved for the run.
+    JMeterScript {
+        path: PathBuf,
+        opts: jmeter::JMeterOpts,
+    },
     /// `perfscale run -f <test.yaml> -c <config.yaml>`
     NativeSteps {
         test: TestDef,
@@ -106,7 +113,7 @@ pub async fn execute(plan: ExecutionPlan) -> Result<RunOutput, String> {
             k6::run_streaming(script).await
         }
         ExecutionPlan::LocustScript { path, opts } => locust::run_streaming(path, opts).await,
-        ExecutionPlan::JMeterScript(path) => jmeter::run_streaming(path).await,
+        ExecutionPlan::JMeterScript { path, opts } => jmeter::run_streaming_opts(path, opts).await,
         ExecutionPlan::NativeSteps {
             test,
             config,

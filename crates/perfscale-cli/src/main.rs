@@ -22,7 +22,7 @@ async fn main() {
     let notify_updates = !matches!(cli.command, Commands::SelfUpdate(_));
 
     let result = match cli.command {
-        Commands::Run(args) => commands::run::run(args).await,
+        Commands::Run(args) => commands::run::run(*args).await,
         Commands::Serve(args) => commands::serve::serve(args).await,
         Commands::Lint(args) => commands::lint::run(args).await,
         Commands::Install(args) => commands::install::run(args).await,
