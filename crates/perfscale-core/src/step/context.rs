@@ -915,10 +915,10 @@ mod tests {
     fn unseeded_generators_never_repeat_across_messages() {
         let ctx = Context::new();
         let mut seen = std::collections::HashSet::new();
-        for _ in 0..1000 {
+        for i in 0..1000 {
             let mut gen = ctx.new_generator().unwrap();
-            let id = gen.expand("${uuid}").unwrap();
-            assert!(seen.insert(id.clone()), "duplicate ${{uuid}} {id}");
+            let fresh = seen.insert(gen.expand("${uuid}").unwrap());
+            assert!(fresh, "generator {i} repeated an earlier ${{uuid}}");
         }
     }
 
