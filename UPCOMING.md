@@ -19,9 +19,12 @@ Release notes for the next release, written as features land.
 payloads/headers/environment templates, status/body checks, sleep and groups,
 fixed/staged/ramping-arrival load, and thresholds (including `abortOnFail`).
 Dynamic JavaScript, xk6 modules and options without an exact native equivalent
-fail with a source line instead of being silently dropped. Existing outputs
-are protected unless `--force` is passed; scripts outside the static subset
-continue to run through `perfscale run --k6`.
+fail with a source line instead of being silently dropped. Diagnostics now also
+show the column and source snippet, underline the unsupported construct, and
+suggest a concrete fix (`if:` alternatives, static values, `before:`/`after:`,
+or keeping the script on the k6 runner). Existing outputs are protected unless
+`--force` is passed; scripts outside the static subset continue to run through
+`perfscale run --k6`.
 
 - Benchmarks: gcannon — HttpArena's io_uring HTTP/1.1 load generator —
   joins the throughput and saturation tables as a competitor engine (`APPS`
