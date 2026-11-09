@@ -335,13 +335,15 @@ builds to `wasm32-wasip2` with no extra toolchain. The
 WASM port of `@std/random` — doubles as the reference implementation and
 author template.
 
-### Go — documented recipe (experimental)
+### Go — stable SDK
 
-TinyGo + `wasm32-wasip2` + `wit-bindgen-go` walkthrough in
-[`go/README.md`](https://github.com/Perfscale/sdk-libraries/blob/main/go/README.md)
-of the sdk-libraries repo. No SDK crate yet — the WIT contract is the same,
-so generated bindings work against any perfscale release speaking
-`perfscale:library@0.3.0`.
+The [`github.com/Perfscale/sdk-libraries/go`](https://github.com/Perfscale/sdk-libraries/tree/main/go)
+module provides `Library`, `Ctx`, the cross-SDK deterministic PRNG, typed
+argument helpers, settings and config extensions, plus a runtime-free test
+harness. `component.Export` selects the standard world;
+`component/config.Export` selects `perfscale-library-config`. The included
+TinyGo example builds against `perfscale:library@0.3.0`; generated bindings
+are internal to the SDK rather than author-facing code.
 
 ### Starting from a template
 

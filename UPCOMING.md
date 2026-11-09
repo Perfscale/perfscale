@@ -12,6 +12,17 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+## k6 → native YAML converter
+
+`perfscale convert k6 script.js` writes a schema-validated `test.yaml` +
+`config.yaml` pair from a real JavaScript AST. It converts static HTTP calls,
+payloads/headers/environment templates, status/body checks, sleep and groups,
+fixed/staged/ramping-arrival load, and thresholds (including `abortOnFail`).
+Dynamic JavaScript, xk6 modules and options without an exact native equivalent
+fail with a source line instead of being silently dropped. Existing outputs
+are protected unless `--force` is passed; scripts outside the static subset
+continue to run through `perfscale run --k6`.
+
 ## JMeter: JTL metrics, `-J` properties, thresholds gates
 
 `perfscale run --jmeter` now writes each run's samples to a private CSV

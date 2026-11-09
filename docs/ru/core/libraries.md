@@ -349,13 +349,15 @@ Schema (ABI 0.3), читайте в разделе расширений конф
 `@std/random` — одновременно служит эталонной реализацией и шаблоном для
 авторов.
 
-### Go — документированный рецепт (экспериментальный)
+### Go — стабильный SDK
 
-Пошаговое руководство по TinyGo + `wasm32-wasip2` + `wit-bindgen-go` в
-[`go/README.md`](https://github.com/Perfscale/sdk-libraries/blob/main/go/README.md)
-репозитория sdk-libraries. Готового SDK-пакета пока нет — WIT-контракт тот
-же, поэтому сгенерированные биндинги работают с любым релизом perfscale,
-поддерживающим `perfscale:library@0.3.0`.
+Модуль [`github.com/Perfscale/sdk-libraries/go`](https://github.com/Perfscale/sdk-libraries/tree/main/go)
+предоставляет `Library`, `Ctx`, детерминированный PRNG с поведением как у
+других SDK, типизированные helpers аргументов, settings и расширения конфига,
+а также test harness без WASM-рантайма. `component.Export` выбирает обычный
+мир, `component/config.Export` — `perfscale-library-config`. Входящий пример
+TinyGo собирается против `perfscale:library@0.3.0`; сгенерированные биндинги
+являются внутренней деталью SDK, а не кодом, который пишет автор.
 
 ### Начало с шаблона
 

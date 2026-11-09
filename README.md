@@ -82,6 +82,7 @@ Five flavors: `latest` (perfscale only), `latest-k6`, `latest-jmeter`,
 | `perfscale run ... --report <url>` | Also forward the summary to `perfscale serve` |
 | `perfscale run ... --quiet` | Drop per-request output (errors and the final summary still print) |
 | `perfscale run ... --summary-export <file>` | Write the parsed summary + run metadata as JSON or Markdown (repeatable) |
+| `perfscale convert k6 <file.js>` | Convert a static k6 script to native test/config YAML (fail closed on unsupported behavior) |
 | `perfscale serve [--port 7999]` | Start the local metrics receiver |
 | `perfscale serve --tls` | Same, over self-signed HTTPS — a local TLS load-test target |
 

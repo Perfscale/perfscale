@@ -9,6 +9,23 @@ perfscale can run existing k6 scripts as-is (`perfscale run --k6 script.js`),
 so migration is incremental: keep running scripts with k6 while porting
 scenarios to native YAML one at a time.
 
+## Automated conversion
+
+For static HTTP scenarios, generate the native YAML pair with:
+
+```sh
+perfscale convert k6 script.js -t test.yaml -c config.yaml
+perfscale lint test.yaml config.yaml
+```
+
+The command handles fixed/staged/arrival load shapes, static HTTP requests,
+status/body checks, sleep, group labels, environment interpolation, and
+thresholds including `abortOnFail`. It fails with a source location on dynamic
+JavaScript, xk6 imports, or options with no exact native equivalent; never
+delete unsupported behavior manually just to make conversion pass. Keep those
+scripts on `perfscale run --k6` or port the behavior deliberately. Existing
+output files require an explicit `--force`.
+
 ## Concept mapping
 
 | k6 | perfscale |

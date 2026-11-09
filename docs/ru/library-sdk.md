@@ -13,7 +13,7 @@ SDK для создания **библиотек perfscale** — WASM-компо
 |---|---|---|
 | **Rust** | [`perfscale-library-sdk`](../crates/perfscale-library-sdk) (этот репозиторий) | Стабильный, версионируется вместе с движком |
 | **TypeScript / JavaScript** | [`@perfscale/library-sdk`](https://www.npmjs.com/package/@perfscale/library-sdk) ([sdk-libraries](https://github.com/Perfscale/sdk-libraries)) | Стабильный (v0.3.x) |
-| **Go** | [Рецепт на TinyGo](https://github.com/Perfscale/sdk-libraries/tree/main/go) | Экспериментальный (пакета SDK пока нет) |
+| **Go** | [`github.com/Perfscale/sdk-libraries/go`](https://github.com/Perfscale/sdk-libraries/tree/main/go) | Стабильный (ABI 0.3, TinyGo) |
 
 ## Что даёт каждый SDK
 
@@ -181,10 +181,12 @@ WIT-bindings для `perfscale-library-config`, как в полном
 
 ## Go
 
-Репозиторий [sdk-libraries](https://github.com/Perfscale/sdk-libraries)
-содержит документированный рецепт на TinyGo (таргет `wasip2` +
-сгенерированные биндинги) той же формы, что и остальные SDK.
-Экспериментальный — пакетного SDK пока нет.
+Модуль [`github.com/Perfscale/sdk-libraries/go`](https://github.com/Perfscale/sdk-libraries/tree/main/go)
+— стабильный Go SDK для ABI 0.3: `Library`/`Ctx`, детерминированный PRNG,
+типизированные helpers аргументов, settings, расширения конфига и тесты без
+WASM-рантайма. `component.Export` работает с базовым миром,
+`component/config.Export` — с `perfscale-library-config`. Полный пример на
+TinyGo и pipeline сборки находятся в том же репозитории.
 
 ## ABI-контракт
 
