@@ -21,6 +21,7 @@ perfscale, а не самого инструмента. Отдельные на�
 | `jmeter (native)` | `jmeter -n -t`, вызванный напрямую — базовый уровень (только наборы overhead/startup) |
 | `sytester (10000 TPS)` | [SyTester](https://gitverse.ru/sbertech/sytester) Community Edition через его REST API — базовая линия (таблицы throughput, saturation, grpc и db). VU-модели у него нет, поэтому он подаёт свою максимальную фиксированную интенсивность (`SYT_RATE`) |
 | `gcannon (native)` | [gcannon](https://github.com/MDA2AV/gcannon) — io_uring-генератор HTTP/1.1 из HttpArena (только Linux), таблицы throughput и saturation; одно keep-alive соединение на VU, без pipelining, потоков = ядер |
+| `zrk (native)` | [zrk](https://github.com/zoxy-io/zrk) — генератор HttpArena с открытой моделью и коррекцией coordinated omission: `--closed` в таблицах throughput и saturation (та же модель, что у остальных строк), `-R` с фиксированной частотой в таблице latency |
 | `perfscale (k6)` | тот же скрипт k6 через `perfscale run --k6` |
 | `perfscale (locust)` | тот же locustfile через `perfscale run --locust` |
 | `perfscale (jmeter)` | тот же `.jmx`-план через `perfscale run --jmeter` (только наборы overhead/startup) |
@@ -36,6 +37,7 @@ perfscale, а не самого инструмента. Отдельные на�
 | `startup` | Сколько стоит запуск обёртки? (прогоны по 1 с, где старт не «тонет» в длительности теста) |
 | `scaling` | Как растут RPS / p95 / RSS с ростом числа VU? (стандартная развёртка: 10, 50, 200) |
 | `saturation` | Приблизительный максимум RPS на движок при большом числе VU (по умолчанию 256) |
+| `latency` | Фиксированная частота прихода (`LAT_RATE`, по умолчанию 10000 req/s через `LAT_CONNS` = 256 соединений/VU в течение `LAT_DURATION` = 20s): задержка с коррекцией CO, отсчитанная от запланированного старта запроса — zrk `-R` против perfscale `arrival.co_correct: true` и arrival по умолчанию, отбрасывающего итерации при насыщении (его колонка `Dropped` — это та задержка, которую двое других показывают вместо отбрасывания) |
 | `yaml` | Сколько стоит каждая возможность нативного движка? (базовый GET против `--quiet` против +check против POST-тела против многошаговой подстановки) |
 | `ws` | Пропускная способность WebSocket-сообщений и RTT: эхо-запросы по одному соединению к эндпоинту `/ws` сервера `serve` (`perfscale (yaml)`, `k6 (native)`, `perfscale (k6)` — у locust нет встроенной поддержки WebSocket, он пропускается) |
 | `boundary` | Где движок ломается? Лестница потолков VU (`BOUNDARY_LADDER`, по умолчанию `5000 15000 30000`): на каждой ступени разгон 0→потолок за `BOUNDARY_DURATION`; граница — уровень VU / время / RPS, при которых накопленная доля ошибок впервые достигает `BOUNDARY_ERR_PCT` процентов (по умолчанию 1%), либо ступень, на которой процесс умирает (OOM/краш считается границей). Пересёкший движок дальше не поднимается. Таблица также показывает **достигнутую нагрузку** на последней ступени: фактически заспавненные VU, RPS, p95, пиковый RSS и CPU — чтобы `never crossed` было оценено в цифрах, а не просто констатировано |
@@ -287,7 +289,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | Переменная | По умолчанию | Описание |
 |---|---|---|
 | `SUITES` | все, кроме `specjbb` | Список наборов через пробел; неизвестное имя — ошибка запуска (см. таблицу выше) |
-| `APPS` | `k6 jmeter locust sytester gcannon` | Движки-конкуренты, чьи строки попадают в таблицы (через пробел; строки perfscale идут всегда; `k6` также включает сборки xk6-sql / xk6-nats). Неизвестное имя — ошибка запуска |
+| `APPS` | `k6 jmeter locust sytester gcannon zrk` | Движки-конкуренты, чьи строки попадают в таблицы (через пробел; строки perfscale идут всегда; `k6` также включает сборки xk6-sql / xk6-nats). Неизвестное имя — ошибка запуска |
 | `VUS` | `10` | Виртуальных пользователей на сценарий |
 | `DURATION` | `15s` | Длительность прогона для `overhead`/`throughput` |
 | `WARMUP` | `1` | Разогревочные прогоны hyperfine (отбрасываются, не показываются) |
@@ -295,6 +297,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `STARTUP_DURATION` / `STARTUP_RUNS` | `1s` / `5` | Длительность прогона / число замеров набора startup |
 | `SCALING_VUS` / `SCALING_DURATION` | `10 50 200` / `10s` | Точки развёртки VU / длительность на точку |
 | `SAT_VUS` / `SAT_DURATION` | `256` / `15s` | VU насыщения / длительность прогона |
+| `LAT_RATE` / `LAT_CONNS` / `LAT_DURATION` | `10000` / `256` / `20s` | Suite latency: фиксированная частота (req/s), соединения = VU perfscale, длительность удержания (perfscale добавляет 1s разгона) |
 | `YAML_DURATION` / `TLS_DURATION` | `10s` / `10s` | Длительность на сценарий в этих наборах |
 | `LIB_DURATION` / `GRPC_DURATION` / `GQL_DURATION` | по `10s` | Длительность на сценарий в наборах library / grpc / graphql |
 | `WS_DURATION` / `WS_ROUNDS` | `10s` / `10` | Длительность прогона набора ws / эхо-циклов на соединение |

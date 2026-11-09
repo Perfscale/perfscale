@@ -236,7 +236,7 @@ gpu:             # optional — GPU metrics during the run (native engine)
 | `vus` | `1` | Concurrent virtual users (fixed profile) |
 | `duration` | `1m` | Wall-clock run length; bare numbers are seconds; sub-second values (`"500ms"`, `"1.5s"`) are honored by the native engine |
 | `stages` | — | Ramping-VU profile (k6-style): list of `{ duration, target }` stages. Overrides `vus`/`duration`; mutually exclusive with `arrival`. Native engine only |
-| `arrival` | — | Arrival-rate profile (open model): `{ max_vus, pre_allocated_vus?, stages: [{ duration, rate }] }` — hold an iterations/sec rate. Mutually exclusive with `stages`. Native engine only |
+| `arrival` | — | Arrival-rate profile (open model): `{ max_vus, pre_allocated_vus?, co_correct?, stages: [{ duration, rate }] }` — hold an iterations/sec rate. Mutually exclusive with `stages`. Native engine only |
 | `report.url` | — | A `perfscale serve` base URL; the CLI `--report` flag overrides it |
 | `report.during_run` | `false` | Also stream cumulative metric snapshots during the run (batched POSTs to `<url>/api/v1/metrics`), not just the summary at the end — see [During-run metrics](core/metrics.md#during-run-metrics-reportduring_run). Native engine only |
 | `report.interval_ms` | `5000` | During-run snapshot/flush interval, milliseconds (min 100) |
@@ -377,6 +377,25 @@ arrival:
 A permit that arrives while all `max_vus` workers are busy is dropped and
 counted in the `dropped_iterations` summary metric (plus a warning logged at
 most once per 5s) — raise `max_vus` or lower the rate when it grows.
+
+Set `co_correct: true` for zrk/wrk2-style coordinated-omission correction:
+saturated permits are queued instead of dropped, so a stall shows up as
+latency in `engine_arrival_iteration_ms` / `engine_arrival_queue_wait_ms`
+(both measured from the *scheduled* start) instead of disappearing into
+`dropped_iterations`, and the dispatcher paces with sub-millisecond precision
+(it spins cooperatively for the last millisecond before each start). Only the
+backlog still queued at the deadline counts as dropped. Use it when the
+question is "what latency would a user arriving at this rate see"; leave it
+off for k6-compatible drop semantics.
+
+```yaml
+arrival:
+  max_vus: 1024
+  co_correct: true
+  stages:
+    - { duration: 1s,  rate: 10000 }
+    - { duration: 20s, rate: 10000 }
+```
 
 For `stages`/`arrival` runs the summary's `vus` line reports the observed
 concurrency (`vus....................: <last> min=<min> max=<max>`), the

@@ -16,6 +16,13 @@ set -euo pipefail
 #                 visible instead of drowned by the test duration.
 #   scaling     – VU sweep per engine: RPS / p95 / RSS / CPU as VUs grow.
 #   saturation  – high-VU short run per engine: approximate max RPS.
+#   latency     – fixed arrival rate (LAT_RATE req/s over LAT_CONNS
+#                 connections/VUs for LAT_DURATION): coordinated-omission-
+#                 corrected latency, i.e. measured from each request's
+#                 *scheduled* start. zrk (-R, open model) vs perfscale
+#                 `arrival.co_correct: true` vs perfscale's default
+#                 drop-on-saturation arrival (whose dropped column is the
+#                 latency the other two report instead).
 #   yaml        – native engine step scenarios: GET, GET+check, POST JSON,
 #                 multi-step with interpolation.
 #   ws          – WebSocket echo: same-connection round-trips against the
@@ -108,7 +115,7 @@ set -euo pipefail
 # warm-up → measured plan → report → kill); CPU/RSS cover the JVM lifetime.
 #
 # APPS selects the competitor engines (default: all of "k6 jmeter locust
-# sytester"; perfscale's own rows always run). An unknown suite or app name
+# sytester gcannon zrk"; perfscale's own rows always run). An unknown suite or app name
 # is an error (exit 2).
 # Scenarios whose engine isn't selected or isn't on PATH are skipped, not
 # failed. hyperfine is
@@ -125,14 +132,14 @@ PORT="${PORT:-18999}"
 TLS_PORT="${TLS_PORT:-18998}"
 OUTPUT="${OUTPUT:-bench-report.md}"
 RESULTS="${RESULTS:-bench-results.json}"
-KNOWN_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sharedvars sourceips renaissance specjbb"
+KNOWN_SUITES="overhead throughput startup scaling saturation latency yaml ws boundary tls library grpc graphql db pubsub sharedvars sourceips renaissance specjbb"
 # specjbb is deliberately excluded from the default: it is opt-in only (a
 # separate commercial benchmark whose kit the caller must supply).
-DEFAULT_SUITES="overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sharedvars sourceips renaissance"
+DEFAULT_SUITES="overhead throughput startup scaling saturation latency yaml ws boundary tls library grpc graphql db pubsub sharedvars sourceips renaissance"
 SUITES="${SUITES:-$DEFAULT_SUITES}"
 # Competitor engines whose rows join the tables, space-separated (perfscale's
 # own rows always run). k6 also gates its custom xk6-sql / xk6-nats builds.
-KNOWN_APPS="k6 jmeter locust sytester gcannon"
+KNOWN_APPS="k6 jmeter locust sytester gcannon zrk"
 APPS="${APPS:-$KNOWN_APPS}"
 
 STARTUP_DURATION="${STARTUP_DURATION:-1s}"
@@ -141,6 +148,9 @@ SCALING_VUS="${SCALING_VUS:-10 50 200}"
 SCALING_DURATION="${SCALING_DURATION:-10s}"
 SAT_VUS="${SAT_VUS:-256}"
 SAT_DURATION="${SAT_DURATION:-15s}"
+LAT_RATE="${LAT_RATE:-10000}"
+LAT_CONNS="${LAT_CONNS:-256}"
+LAT_DURATION="${LAT_DURATION:-20s}"
 YAML_DURATION="${YAML_DURATION:-10s}"
 TLS_DURATION="${TLS_DURATION:-10s}"
 WS_DURATION="${WS_DURATION:-10s}"
@@ -274,6 +284,10 @@ HAS_JMETER=$(probe_app jmeter)
 # gcannon (github.com/MDA2AV/gcannon): HttpArena's io_uring HTTP/1.1 load
 # generator — Linux only, built by the bench workflow.
 HAS_GCANNON=$(probe_app gcannon)
+# zrk (github.com/zoxy-io/zrk): HttpArena's open-model, CO-corrected HTTP
+# generator (its Latency-1M profile) — runs --closed in throughput/saturation
+# and -R (fixed rate) in the latency suite.
+HAS_ZRK=$(probe_app zrk)
 command -v hyperfine >/dev/null 2>&1 && HAS_HYPERFINE=1
 
 # ---------------------------------------------------------------------------
@@ -1626,6 +1640,20 @@ if [[ "$HAS_GCANNON" == 1 ]]; then
   scenario_names+=("gcannon (native)")
   scenario_builders+=("cmd_gcannon_native")
 fi
+# zrk joins the same way. Closed loop (--closed: each connection sends its
+# next request when the previous one returns — the model every other row
+# uses); the latency suite runs it open-model instead. Threads as gcannon.
+cmd_zrk_native() { # $1 connections, $2 duration, $3 rate (optional → closed)
+  local t="$GCANNON_THREADS"
+  [[ "$1" -lt "$t" ]] && t="$1"
+  local mode="--closed"
+  [[ -n "${3:-}" ]] && mode="-R $3"
+  echo "zrk -t $t -c $1 -d $2 $mode --format json --plain $TARGET/health"
+}
+if [[ "$HAS_ZRK" == 1 ]]; then
+  scenario_names+=("zrk (native)")
+  scenario_builders+=("cmd_zrk_native")
+fi
 if [[ "$HAS_JMETER" == 1 ]]; then
   hf_names+=("jmeter (native)" "perfscale (jmeter)")
   hf_builders+=("cmd_jmeter_native" "cmd_jmeter_wrapped")
@@ -1642,6 +1670,7 @@ build_cmd() { # $1 builder, $2 vus, $3 duration, $4 csv prefix (locust native)
     cmd_jmeter_native) cmd_jmeter_native "$2" "$3" ;;
     cmd_jmeter_wrapped) cmd_jmeter_wrapped "$2" "$3" ;;
     cmd_gcannon_native) cmd_gcannon_native "$2" "$3" ;;
+    cmd_zrk_native) cmd_zrk_native "$2" "$3" ;;
   esac
 }
 
@@ -1864,6 +1893,7 @@ if has_suite throughput; then
     kind="text"
     [[ "${scenario_builders[$i]}" == "cmd_locust_native" ]] && kind="locust-csv"
     [[ "${scenario_builders[$i]}" == "cmd_gcannon_native" ]] && kind="gcannon-json"
+    [[ "${scenario_builders[$i]}" == "cmd_zrk_native" ]] && kind="zrk-json"
     measure "$name" \
       "$(build_cmd "${scenario_builders[$i]}" "$VUS" "$DURATION" "$csv_prefix")" \
       "$kind" "$([[ "$kind" == locust-csv ]] && echo "${csv_prefix}_stats.csv")"
@@ -1897,6 +1927,13 @@ if has_suite throughput; then
       echo "keep-alive connection per VU, no pipelining (\`-p 1\` — no other engine"
       echo "pipelines), worker threads = cores (capped at connections). Its JSON"
       echo "summary has no p95 (shown as 0); latency is µs-resolution, client-side._"
+    fi
+    if [[ "$HAS_ZRK" == 1 ]]; then
+      echo
+      echo "_**zrk** (HttpArena's open-model generator) runs \`--closed\` here —"
+      echo "one keep-alive connection per VU, next request on response, the same"
+      echo "model as the other rows; threads as gcannon. Open-model numbers are in"
+      echo "the fixed-rate latency section._"
     fi
     [[ "$SYT_ON" == 1 ]] && { echo; echo "$SYT_NOTE"; }
   } >>"$OUTPUT"
@@ -1976,13 +2013,15 @@ if has_suite saturation; then
     echo "| Engine | Requests | RPS | p95 ms | p99 ms | Err | CPU (u+s) |"
     echo "|---|---:|---:|---:|---:|---:|---:|"
   } >>"$OUTPUT"
-  for engine in k6 locust yaml yaml-quiet gcannon; do
+  for engine in k6 locust yaml yaml-quiet gcannon zrk; do
     [[ "$engine" == k6 && "$HAS_K6" != 1 ]] && continue
     [[ "$engine" == locust && "$HAS_LOCUST" != 1 ]] && continue
     [[ "$engine" == yaml-quiet && "$HAS_QUIET" != 1 ]] && continue
     [[ "$engine" == gcannon && "$HAS_GCANNON" != 1 ]] && continue
+    [[ "$engine" == zrk && "$HAS_ZRK" != 1 ]] && continue
     echo "  $engine" >&2
     case "$engine" in
+      zrk) measure "zrk-sat" "$(cmd_zrk_native "$SAT_VUS" "$SAT_DURATION")" zrk-json ;;
       gcannon) measure "gcannon-sat" "$(cmd_gcannon_native "$SAT_VUS" "$SAT_DURATION")" gcannon-json ;;
       k6) measure "k6-sat" "$(cmd_k6_native "$SAT_VUS" "$SAT_DURATION" "$TARGET" 0)" ;;
       locust)
@@ -2015,7 +2054,58 @@ if has_suite saturation; then
       echo "pipelines), worker threads = cores (capped at connections). Its JSON"
       echo "summary has no p95 (shown as 0); latency is µs-resolution, client-side._"
     fi
+    if [[ "$HAS_ZRK" == 1 ]]; then
+      echo
+      echo "_**zrk** (HttpArena's open-model generator) runs \`--closed\` here —"
+      echo "one keep-alive connection per VU, next request on response, the same"
+      echo "model as the other rows; threads as gcannon. Open-model numbers are in"
+      echo "the fixed-rate latency section._"
+    fi
     [[ "$SYT_ON" == 1 ]] && { echo; echo "$SYT_NOTE"; }
+  } >>"$OUTPUT"
+fi
+
+# --- latency (fixed rate, CO-corrected) --------------------------------------
+
+if has_suite latency; then
+  echo "suite: latency" >&2
+  # perfscale arrival configs: a 1s ramp to LAT_RATE, then LAT_DURATION at it.
+  # The pool is LAT_CONNS VUs, all pre-allocated — the same concurrency zrk
+  # gets as connections.
+  lat_cfg() { # $1 file, $2 co_correct (true|false)
+    printf 'arrival:\n  max_vus: %s\n  pre_allocated_vus: %s\n  co_correct: %s\n  stages:\n    - { duration: 1s, rate: %s }\n    - { duration: %s, rate: %s }\n' \
+      "$LAT_CONNS" "$LAT_CONNS" "$2" "$LAT_RATE" "$LAT_DURATION" "$LAT_RATE" >"$1"
+  }
+  lat_cfg "$WORKDIR/lat-co.yaml" true
+  lat_cfg "$WORKDIR/lat-drop.yaml" false
+  section "Fixed-rate latency (${LAT_RATE} req/s, ${LAT_CONNS} conns, ${LAT_DURATION})"
+  {
+    echo "| Engine | Achieved RPS | p50 ms | p90 ms | p99 ms | max ms | Dropped | CPU (u+s) |"
+    echo "|---|---:|---:|---:|---:|---:|---:|---:|"
+  } >>"$OUTPUT"
+  for engine in zrk perfscale-co perfscale-drop; do
+    [[ "$engine" == zrk && "$HAS_ZRK" != 1 ]] && continue
+    echo "  $engine" >&2
+    dropped=0
+    case "$engine" in
+      zrk) measure "zrk-lat" "$(cmd_zrk_native "$LAT_CONNS" "$LAT_DURATION" "$LAT_RATE")" zrk-json ;;
+      perfscale-co) measure "perfscale-co-lat" "$BIN run -f $WORKDIR/yaml-get.yaml -c $WORKDIR/lat-co.yaml --quiet" arrival-text ;;
+      perfscale-drop) measure "perfscale-drop-lat" "$BIN run -f $WORKDIR/yaml-get.yaml -c $WORKDIR/lat-drop.yaml --quiet" arrival-text ;;
+    esac
+    json_row latency.json "$engine"
+    cpu_total=$(awk "BEGIN{printf \"%.1fs\", ${T_USER_S:-0}+${T_SYS_S:-0}}")
+    echo "| $engine | $rps | $p50_ms | $p90_ms | $p99_ms | $max_ms | $dropped | $cpu_total |" >>"$OUTPUT"
+  done
+  {
+    echo
+    echo "_Latency is measured from each request's **scheduled** start"
+    echo "(coordinated-omission-corrected): zrk natively, perfscale via"
+    echo "\`engine_arrival_iteration_ms\`. **perfscale-co** is"
+    echo "\`arrival.co_correct: true\` (queue on saturation, sub-ms pacing);"
+    echo "**perfscale-drop** is the default k6-style arrival, which drops permits"
+    echo "a saturated pool cannot take — its tail looks shorter by exactly the"
+    echo "requests in the Dropped column. Achieved RPS includes the 1s ramp for"
+    echo "the perfscale rows._"
   } >>"$OUTPUT"
 fi
 

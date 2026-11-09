@@ -382,6 +382,7 @@ None,Aggregated,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
         let cfg = RunConfig {
             arrival: Some(Box::new(crate::step::ArrivalConfig {
                 max_vus: 10,
+                co_correct: false,
                 pre_allocated_vus: None,
                 stages: vec![crate::step::RateStage {
                     duration: "30s".into(),

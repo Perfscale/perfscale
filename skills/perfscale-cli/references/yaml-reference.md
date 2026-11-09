@@ -38,7 +38,7 @@ Interpolation: `${{ outputs.* }}`, `${{ variables.* }}`, `${{ inputs.* }}`,
 | `vus` | Number of concurrent virtual users (closed model) |
 | `duration` | Run length, e.g. `30s`, `10m` |
 | `stages` | Ramping VU profile: `- { duration: 30s, target: 20 }` |
-| `arrival` | Open model: `max_vus`, `pre_allocated_vus`, `stages: [{ duration, rate }]` (iterations/sec) |
+| `arrival` | Open model: `max_vus`, `pre_allocated_vus`, `co_correct` (queue instead of drop — CO-corrected latency), `stages: [{ duration, rate }]` (iterations/sec) |
 | `report` | `url` (perfscale serve) and/or `reporters` (streaming sinks) |
 | `iterations` | Cap total iterations instead of/alongside duration |
 
