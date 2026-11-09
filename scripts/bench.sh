@@ -132,7 +132,7 @@ DEFAULT_SUITES="overhead throughput startup scaling saturation yaml ws boundary 
 SUITES="${SUITES:-$DEFAULT_SUITES}"
 # Competitor engines whose rows join the tables, space-separated (perfscale's
 # own rows always run). k6 also gates its custom xk6-sql / xk6-nats builds.
-KNOWN_APPS="k6 jmeter locust sytester"
+KNOWN_APPS="k6 jmeter locust sytester gcannon"
 APPS="${APPS:-$KNOWN_APPS}"
 
 STARTUP_DURATION="${STARTUP_DURATION:-1s}"
@@ -271,6 +271,9 @@ probe_app() {
 HAS_K6=$(probe_app k6)
 HAS_LOCUST=$(probe_app locust)
 HAS_JMETER=$(probe_app jmeter)
+# gcannon (github.com/MDA2AV/gcannon): HttpArena's io_uring HTTP/1.1 load
+# generator — Linux only, built by the bench workflow.
+HAS_GCANNON=$(probe_app gcannon)
 command -v hyperfine >/dev/null 2>&1 && HAS_HYPERFINE=1
 
 # ---------------------------------------------------------------------------
@@ -1607,6 +1610,22 @@ fi
 # throughput table.
 hf_names=("${scenario_names[@]}")
 hf_builders=("${scenario_builders[@]}")
+
+# gcannon joins throughput (and saturation below) after the hyperfine lists
+# are copied: it has no wrapper twin, so the startup suite's native-vs-
+# wrapped pairing doesn't apply. One connection per VU, keep-alive, no
+# pipelining (-p 1 — no other engine pipelines), worker threads = cores but
+# never more than connections. --json is its machine-readable summary.
+GCANNON_THREADS="${GCANNON_THREADS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+cmd_gcannon_native() { # $1 connections, $2 duration
+  local t="$GCANNON_THREADS"
+  [[ "$1" -lt "$t" ]] && t="$1"
+  echo "gcannon $TARGET/health -c $1 -t $t -d $2 -p 1 --json"
+}
+if [[ "$HAS_GCANNON" == 1 ]]; then
+  scenario_names+=("gcannon (native)")
+  scenario_builders+=("cmd_gcannon_native")
+fi
 if [[ "$HAS_JMETER" == 1 ]]; then
   hf_names+=("jmeter (native)" "perfscale (jmeter)")
   hf_builders+=("cmd_jmeter_native" "cmd_jmeter_wrapped")
@@ -1622,6 +1641,7 @@ build_cmd() { # $1 builder, $2 vus, $3 duration, $4 csv prefix (locust native)
     cmd_yaml_get_quiet) cmd_yaml_get_quiet "$2" "$3" ;;
     cmd_jmeter_native) cmd_jmeter_native "$2" "$3" ;;
     cmd_jmeter_wrapped) cmd_jmeter_wrapped "$2" "$3" ;;
+    cmd_gcannon_native) cmd_gcannon_native "$2" "$3" ;;
   esac
 }
 
@@ -1843,6 +1863,7 @@ if has_suite throughput; then
     csv_prefix="$WORKDIR/loc-tput"
     kind="text"
     [[ "${scenario_builders[$i]}" == "cmd_locust_native" ]] && kind="locust-csv"
+    [[ "${scenario_builders[$i]}" == "cmd_gcannon_native" ]] && kind="gcannon-json"
     measure "$name" \
       "$(build_cmd "${scenario_builders[$i]}" "$VUS" "$DURATION" "$csv_prefix")" \
       "$kind" "$([[ "$kind" == locust-csv ]] && echo "${csv_prefix}_stats.csv")"
@@ -1870,6 +1891,13 @@ if has_suite throughput; then
     printf '%s' "$tputs_rows"
     echo
     echo "_Same fixed duration for every scenario — compare RPS, not wall time._"
+    if [[ "$HAS_GCANNON" == 1 ]]; then
+      echo
+      echo "_**gcannon** (HttpArena's io_uring HTTP/1.1 generator, Linux only): one"
+      echo "keep-alive connection per VU, no pipelining (\`-p 1\` — no other engine"
+      echo "pipelines), worker threads = cores (capped at connections). Its JSON"
+      echo "summary has no p95 (shown as 0); latency is µs-resolution, client-side._"
+    fi
     [[ "$SYT_ON" == 1 ]] && { echo; echo "$SYT_NOTE"; }
   } >>"$OUTPUT"
 
@@ -1948,12 +1976,14 @@ if has_suite saturation; then
     echo "| Engine | Requests | RPS | p95 ms | p99 ms | Err | CPU (u+s) |"
     echo "|---|---:|---:|---:|---:|---:|---:|"
   } >>"$OUTPUT"
-  for engine in k6 locust yaml yaml-quiet; do
+  for engine in k6 locust yaml yaml-quiet gcannon; do
     [[ "$engine" == k6 && "$HAS_K6" != 1 ]] && continue
     [[ "$engine" == locust && "$HAS_LOCUST" != 1 ]] && continue
     [[ "$engine" == yaml-quiet && "$HAS_QUIET" != 1 ]] && continue
+    [[ "$engine" == gcannon && "$HAS_GCANNON" != 1 ]] && continue
     echo "  $engine" >&2
     case "$engine" in
+      gcannon) measure "gcannon-sat" "$(cmd_gcannon_native "$SAT_VUS" "$SAT_DURATION")" gcannon-json ;;
       k6) measure "k6-sat" "$(cmd_k6_native "$SAT_VUS" "$SAT_DURATION" "$TARGET" 0)" ;;
       locust)
         measure "locust-sat" \
@@ -1978,6 +2008,13 @@ if has_suite saturation; then
     echo "_Load generator and \`perfscale serve\` share this machine's CPU, so these"
     echo "ceilings include the target's cost. If two engines plateau at a similar"
     echo "RPS, the serve target (or the CPU) is likely the bottleneck, not the engine._"
+    if [[ "$HAS_GCANNON" == 1 ]]; then
+      echo
+      echo "_**gcannon** (HttpArena's io_uring HTTP/1.1 generator, Linux only): one"
+      echo "keep-alive connection per VU, no pipelining (\`-p 1\` — no other engine"
+      echo "pipelines), worker threads = cores (capped at connections). Its JSON"
+      echo "summary has no p95 (shown as 0); latency is µs-resolution, client-side._"
+    fi
     [[ "$SYT_ON" == 1 ]] && { echo; echo "$SYT_NOTE"; }
   } >>"$OUTPUT"
 fi

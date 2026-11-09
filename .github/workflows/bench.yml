@@ -23,8 +23,8 @@ on:
         description: "Run duration per GraphQL scenario (e.g. 10s, 30s)"
         default: "10s"
       apps:
-        description: "Competitor engines next to perfscale (always on): any of k6 jmeter locust sytester"
-        default: "k6 jmeter locust sytester"
+        description: "Competitor engines next to perfscale (always on): any of k6 jmeter locust sytester gcannon"
+        default: "k6 jmeter locust sytester gcannon"
       boundary_duration:
         description: "Ramp duration per boundary ladder rung (e.g. 30s, 5m)"
         default: "30s"
@@ -74,6 +74,12 @@ env:
   # target/xk6-kv/k6 so the db suite's xk6-sql build stays untouched.
   XK6_KV_VERSION: "1.5.1"
   XK6_KV_K6_VERSION: "2.3.0"
+  # gcannon — HttpArena's io_uring HTTP/1.1 load generator, a throughput /
+  # saturation competitor. Built from pinned tags against liburing 2.9
+  # (Ubuntu 24.04 ships 2.5), linked statically so the cached binary carries
+  # no runtime dependency on the system liburing.
+  GCANNON_VERSION: "v0.6.1"
+  LIBURING_VERSION: "liburing-2.9"
   # xk6-sql v1.2.3 / driver v0.3.2 declare `go 1.26.0` / `toolchain go1.26.8`.
   XK6_GO_VERSION: "1.26.8"
   # SyTester Community Edition (a competitor engine, like k6/locust/JMeter —
@@ -322,6 +328,33 @@ jobs:
       # source (minutes). Pinned: bench numbers must stay comparable between
       # runs, and 1.22 changed the command-string rules (env-prefixed
       # commands are refused — bench.sh routes those through `env` anyway).
+      - name: Cache gcannon binary
+        id: gcannon-cache
+        uses: actions/cache@v4
+        with:
+          path: target/gcannon/gcannon
+          key: gcannon-${{ env.GCANNON_VERSION }}-${{ env.LIBURING_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build gcannon
+        if: steps.gcannon-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          build="$RUNNER_TEMP/gcannon-build"
+          mkdir -p "$build" target/gcannon
+          git clone -q --depth 1 --branch "$LIBURING_VERSION" https://github.com/axboe/liburing.git "$build/liburing"
+          (cd "$build/liburing" && ./configure --prefix="$build/prefix" >/dev/null && make -j"$(nproc)" -C src >/dev/null && make install >/dev/null)
+          # Static link: drop the shared objects so -luring resolves to the .a.
+          rm -f "$build"/prefix/lib/liburing*.so*
+          git clone -q --depth 1 --branch "$GCANNON_VERSION" https://github.com/MDA2AV/gcannon.git "$build/gcannon"
+          C_INCLUDE_PATH="$build/prefix/include" LIBRARY_PATH="$build/prefix/lib" \
+            make -C "$build/gcannon" -j"$(nproc)" >/dev/null
+          cp "$build/gcannon/gcannon" target/gcannon/gcannon
+
+      - name: gcannon on PATH
+        run: |
+          sudo install -m 0755 target/gcannon/gcannon /usr/local/bin/gcannon
+          gcannon --help 2>&1 | head -3 || true
+
       - name: Install hyperfine
         uses: taiki-e/install-action@v2
         with:
@@ -363,6 +396,7 @@ jobs:
             echo "| perfscale | $(./target/release/perfscale --version) |"
             echo "| k6 | $(k6 version 2>/dev/null || echo 'not installed') |"
             echo "| k6 (xk6-sql custom build) | $(target/xk6-sql/k6 version 2>/dev/null || echo 'not built') — xk6-sql ${XK6_SQL_VERSION} + driver-postgres ${XK6_SQL_PG_VERSION} |"
+            echo "| gcannon | ${GCANNON_VERSION} (liburing ${LIBURING_VERSION#liburing-}, static) |"
             echo "| k6 (xk6-kv custom build) | $(target/xk6-kv/k6 version 2>/dev/null || echo 'not built') — oleiade/xk6-kv ${XK6_KV_VERSION} |"
             echo "| k6 (xk6-nats custom build) | $(target/xk6-nats/k6 version 2>/dev/null || echo 'not built') — ydarias/xk6-nats (rongfengliang fork) ${XK6_NATS_VERSION:0:7} |"
             echo "| locust | $(locust --version 2>/dev/null || echo 'not installed') |"
@@ -381,7 +415,7 @@ jobs:
           DURATION: ${{ github.event.inputs.duration || '30s' }}
           RUNS: ${{ github.event.inputs.runs || '5' }}
           SUITES: ${{ github.event.inputs.suites || 'overhead throughput startup scaling saturation yaml ws boundary tls library grpc graphql db pubsub sharedvars sourceips renaissance' }}
-          APPS: ${{ github.event.inputs.apps || 'k6 jmeter locust sytester' }}
+          APPS: ${{ github.event.inputs.apps || 'k6 jmeter locust sytester gcannon' }}
           SYTESTER_JAR: ${{ github.workspace }}/target/sytester/SyTester.jar
           SYTESTER_JAVA: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
           RENAISSANCE_JAVA: /usr/lib/jvm/java-21-openjdk-amd64/bin/java

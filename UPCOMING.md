@@ -12,6 +12,12 @@ Release notes for the next release, written as features land.
   auto-generated notes and the workflow prints a warning.
 -->
 
+- Benchmarks: gcannon — HttpArena's io_uring HTTP/1.1 load generator —
+  joins the throughput and saturation tables as a competitor engine (`APPS`
+  default now includes `gcannon`; Linux only, built from pinned tags against
+  liburing 2.9 by the bench workflow). Same fairness rules as the other
+  rows: one keep-alive connection per VU, no pipelining.
+
 ## JMeter: JTL metrics, `-J` properties, thresholds gates
 
 `perfscale run --jmeter` now writes each run's samples to a private CSV
