@@ -878,12 +878,14 @@ pub async fn run_native(
             segments,
             max_vus,
             pre_allocated_vus,
+            co_correct,
         } => SummaryShape::Observed(
             supervise_arrival(
                 &shared,
                 segments,
                 *max_vus,
                 *pre_allocated_vus,
+                *co_correct,
                 started,
                 &tx,
             )
@@ -1486,7 +1488,7 @@ fn spawn_vu(
 fn spawn_arrival_worker(
     vu_id: u32,
     shared: &VuShared,
-    permits: Arc<tokio::sync::Mutex<mpsc::Receiver<Instant>>>,
+    permits: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Instant>>>,
     in_flight: Arc<AtomicU32>,
     deadline: Instant,
 ) -> tokio::task::JoinHandle<()> {
@@ -1661,6 +1663,7 @@ async fn supervise_arrival(
     segments: &[Segment<f64>],
     max_vus: u32,
     pre_allocated_vus: u32,
+    co_correct: bool,
     started: Instant,
     tx: &mpsc::Sender<LogLine>,
 ) -> (u64, u64, u64) {
@@ -1694,8 +1697,11 @@ async fn supervise_arrival(
     // waiting permit once the pool is saturated (the old 1-deep slot, so
     // queue wait still surfaces saturation). Each permit carries its scheduled
     // start instant, so the worker can measure the scheduled→actual delay
-    // (coordinated omission, see the engine family).
-    let (permit_tx, permit_rx) = mpsc::channel::<Instant>(max_vus.max(1) as usize + 1);
+    // (coordinated omission, see the engine family). The channel itself is
+    // unbounded: `in_flight` is the admission gate in drop mode, and with
+    // `co_correct` the backlog is meant to grow — a stall then reads as
+    // queue wait instead of dropped iterations.
+    let (permit_tx, permit_rx) = mpsc::unbounded_channel::<Instant>();
     let permit_rx = Arc::new(tokio::sync::Mutex::new(permit_rx));
     let in_flight = Arc::new(AtomicU32::new(0));
     let mut workers = Vec::new();
@@ -1722,7 +1728,18 @@ async fn supervise_arrival(
                 break 'dispatch;
             }
             let remaining = at - Instant::now();
-            tokio::time::sleep(remaining.min(Duration::from_millis(50))).await;
+            if co_correct && remaining <= Duration::from_millis(1) {
+                // tokio timers have ~1ms granularity: spin cooperatively for
+                // the last millisecond so a permit starts on schedule.
+                tokio::task::yield_now().await;
+                continue;
+            }
+            let slack = if co_correct {
+                Duration::from_millis(1)
+            } else {
+                Duration::ZERO
+            };
+            tokio::time::sleep((remaining - slack).min(Duration::from_millis(50))).await;
         }
         if Instant::now() >= deadline || shared.stop.load(Ordering::Relaxed) {
             break;
@@ -1747,9 +1764,9 @@ async fn supervise_arrival(
                 next_vu_id += 1;
             }
         }
-        if (in_flight.load(Ordering::Acquire) as usize) <= workers.len() {
+        if co_correct || (in_flight.load(Ordering::Acquire) as usize) <= workers.len() {
             in_flight.fetch_add(1, Ordering::AcqRel);
-            if permit_tx.try_send(at).is_ok() {
+            if permit_tx.send(at).is_ok() {
                 accepted = true;
             } else {
                 in_flight.fetch_sub(1, Ordering::AcqRel);
@@ -1778,6 +1795,10 @@ async fn supervise_arrival(
     for w in workers {
         let _ = w.await;
     }
+    // Permits still queued when the workers stopped (deadline/stop) were
+    // never served: each worker releases only the permit it took, so what is
+    // left in `in_flight` is exactly the unserved backlog.
+    dropped += u64::from(in_flight.load(Ordering::Acquire));
     // Always emit the counter — even at 0 — so `std/thresholds@v1` gates like
     // `dropped_iterations: ["count==0"]` resolve on clean runs instead of
     // erroring on an unknown metric (same convention as `db_errors`).
@@ -3255,6 +3276,7 @@ mod tests {
         RunConfig {
             arrival: Some(Box::new(ArrivalConfig {
                 max_vus,
+                co_correct: false,
                 pre_allocated_vus: None,
                 stages: stages
                     .iter()
@@ -3397,6 +3419,46 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.text.contains("dropped iteration")),
             "throttled drop warning: {lines:?}"
+        );
+    }
+
+    /// `co_correct: true` (zrk semantics): a saturated pool queues permits
+    /// instead of dropping them, so the stall surfaces as queue wait measured
+    /// from the scheduled start — no throttled drop warning mid-run, and only
+    /// the backlog left at the deadline lands in `dropped_iterations`.
+    #[tokio::test]
+    async fn arrival_co_correct_queues_instead_of_dropping() {
+        let mut config = arrival(1, &[("1ms", 20.0), ("800ms", 20.0)]);
+        config.arrival.as_mut().unwrap().co_correct = true;
+        let lines = run_and_collect(vec![sleep_step(100)], config, false).await;
+        assert!(
+            !lines.iter().any(|l| l.text.contains("dropped iteration:")),
+            "co_correct never drops mid-run: {lines:?}"
+        );
+        let wait = lines
+            .iter()
+            .find(|l| l.text.starts_with("engine_arrival_queue_wait_ms"))
+            .unwrap_or_else(|| panic!("queue wait in summary: {lines:?}"));
+        let max_ms: f64 = wait
+            .text
+            .split("max=")
+            .nth(1)
+            .and_then(|v| {
+                v.trim_end_matches(|c: char| !c.is_ascii_digit())
+                    .split("ms")
+                    .next()
+            })
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(max_ms >= 300.0, "backlog must read as queue wait: {wait:?}");
+        let dropped = lines
+            .iter()
+            .find(|l| l.text.starts_with("dropped_iterations"))
+            .unwrap_or_else(|| panic!("dropped_iterations in summary: {lines:?}"));
+        assert!(
+            !dropped.text.contains(": 0 "),
+            "unserved backlog at the deadline is counted: {dropped:?}"
         );
     }
 
@@ -5724,6 +5786,7 @@ mod tests {
         let config = RunConfig {
             arrival: Some(Box::new(crate::step::ArrivalConfig {
                 max_vus: 20,
+                co_correct: false,
                 pre_allocated_vus: Some(2),
                 stages: vec![crate::step::RateStage {
                     duration: "90s".into(),

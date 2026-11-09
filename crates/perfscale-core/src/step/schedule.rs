@@ -37,6 +37,8 @@ pub enum Schedule {
         segments: Vec<Segment<f64>>,
         max_vus: u32,
         pre_allocated_vus: u32,
+        /// `arrival.co_correct`: queue instead of drop, precise pacing.
+        co_correct: bool,
     },
 }
 
@@ -110,6 +112,7 @@ impl RunConfig {
                     .pre_allocated_vus
                     .unwrap_or(1)
                     .clamp(1, arrival.max_vus),
+                co_correct: arrival.co_correct,
             });
         }
         Ok(Schedule::Fixed {
@@ -262,6 +265,7 @@ mod tests {
         RunConfig {
             arrival: Some(Box::new(ArrivalConfig {
                 max_vus,
+                co_correct: false,
                 pre_allocated_vus: None,
                 stages: stages
                     .iter()
@@ -329,6 +333,7 @@ mod tests {
         let mut cfg = staged_config(&[("10s", 5)]);
         cfg.arrival = Some(Box::new(ArrivalConfig {
             max_vus: 5,
+            co_correct: false,
             pre_allocated_vus: None,
             stages: vec![RateStage {
                 duration: "10s".into(),
@@ -379,7 +384,9 @@ mod tests {
                 segments,
                 max_vus,
                 pre_allocated_vus,
+                co_correct,
             } => {
+                assert!(!co_correct, "co_correct is opt-in");
                 assert_eq!(max_vus, 10);
                 assert_eq!(pre_allocated_vus, 1, "default is one pre-allocated VU");
                 assert_eq!(segments.len(), 1);
