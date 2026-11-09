@@ -6,6 +6,10 @@
       "additionalProperties": false,
       "description": "Arrival-rate configuration (`arrival:`) — an open load model: the engine holds an iterations-per-second profile and scales a worker pool to keep up, instead of looping a fixed set of VUs.",
       "properties": {
+        "co_correct": {
+          "description": "zrk/wrk2-style coordinated-omission correction (default `false`). When `true`, a permit that finds every one of `max_vus` workers busy is queued instead of dropped, so a stall shows up as latency in `engine_arrival_iteration_ms` (measured from the *scheduled* start) rather than vanishing into `dropped_iterations`; the dispatcher also paces with sub-millisecond precision (it spins on `yield_now` for the last millisecond before each start) so an idle target does not read as timer jitter. Permits still queued at the end of the run are counted in `dropped_iterations`.",
+          "type": "boolean"
+        },
         "max_vus": {
           "default": 0,
           "description": "Hard cap on the worker pool — must be ≥ 1. A permit that arrives while all `max_vus` workers are busy is dropped and counted in the `dropped_iterations` metric. Effectively required: the default (0) is rejected at validation time.",

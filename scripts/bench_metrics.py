@@ -5,7 +5,7 @@ Subcommands:
   parse <kind> <file>            kind: text | locust-csv | ws-text |
                                  grpc-text | db-text | pubsub-text |
                                  jmeter-summary | sytester-json | sharedvars-text |
-                                 gcannon-json |
+                                 gcannon-json | zrk-json | arrival-text |
                                  specjbb-text
                                  renaissance-text
                                  prints shell-evalable `key=value` lines
@@ -490,6 +490,43 @@ def parse_gcannon_json(content):
     return out
 
 
+def parse_zrk_json(content):
+    """Parse zrk's `--format json` summary (HttpArena's open-model generator):
+    `requests` / `achieved_rate`, latency in microseconds (`mean`, `p50`,
+    `p90`, `p99`, `max` — CO-corrected in rate mode; no p95, which stays 0),
+    `error_rate` as a 0..1 fraction. zrk never drops, so `dropped` is 0."""
+    out = zeroed()
+    start = content.find("{")
+    if start < 0:
+        out["parse_ok"] = 0
+        return out, {}
+    doc = json.loads(content[start:content.rindex("}") + 1])
+    out["requests"] = int(doc.get("requests") or 0)
+    out["rps"] = float(doc.get("achieved_rate") or 0)
+    lat = doc.get("latency_us") or {}
+    for key, name in (("avg_ms", "mean"), ("p50_ms", "p50"), ("p90_ms", "p90"),
+                      ("p99_ms", "p99"), ("min_ms", "min"), ("max_ms", "max")):
+        out[key] = float(lat.get(name) or 0) / 1000.0
+    out["err_pct"] = float(doc.get("error_rate") or 0) * 100.0
+    out["parse_ok"] = 1 if out["requests"] else 0
+    return out, {"dropped": 0}
+
+
+def parse_arrival_text(content):
+    """Parse a perfscale arrival-rate summary for the latency suite: counts
+    and errors as `parse_text`, but the latency fields come from the
+    CO-corrected `engine_arrival_iteration_ms` trend (measured from each
+    iteration's scheduled start), plus `dropped_iterations` as `dropped`."""
+    out = parse_text(content)
+    m = re.search(r"engine_arrival_iteration_ms[.\s]*:(.*)", content)
+    if m:
+        _trend_stats(out, m.group(1))
+    else:
+        out["parse_ok"] = 0
+    m = re.search(r"dropped_iterations[.\s]*:\s*(\d+)", content)
+    return out, {"dropped": int(m.group(1)) if m else 0}
+
+
 def parse_locust_csv(path):
     """Parse the `Aggregated` row of locust's `--csv` stats output —
     the same source perfscale's locust runner reads."""
@@ -550,6 +587,12 @@ def cmd_parse(kind, path):
         elif kind == "renaissance-text":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics, extra = parse_renaissance_text(f.read())
+        elif kind == "zrk-json":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics, extra = parse_zrk_json(f.read())
+        elif kind == "arrival-text":
+            with open(path, encoding="utf-8", errors="replace") as f:
+                metrics, extra = parse_arrival_text(f.read())
         elif kind == "gcannon-json":
             with open(path, encoding="utf-8", errors="replace") as f:
                 metrics = parse_gcannon_json(f.read())

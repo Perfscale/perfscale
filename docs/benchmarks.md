@@ -20,6 +20,7 @@ is perfscale's wrapping overhead — not the underlying tool. The standalone
 | `jmeter (native)` | `jmeter -n -t` invoked directly — baseline (overhead/startup suites only) |
 | `sytester (10000 TPS)` | [SyTester](https://gitverse.ru/sbertech/sytester) Community Edition driven over its REST API — baseline (throughput, saturation, grpc and db tables). It has no VU model, so it offers its maximum fixed rate (`SYT_RATE`) |
 | `gcannon (native)` | [gcannon](https://github.com/MDA2AV/gcannon) — HttpArena's io_uring HTTP/1.1 load generator (Linux only), throughput and saturation tables; one keep-alive connection per VU, no pipelining, threads = cores |
+| `zrk (native)` | [zrk](https://github.com/zoxy-io/zrk) — HttpArena's open-model, coordinated-omission-corrected generator: `--closed` in the throughput and saturation tables (same model as the other rows), `-R` fixed rate in the latency table |
 | `perfscale (k6)` | the same k6 script, via `perfscale run --k6` |
 | `perfscale (locust)` | the same locustfile, via `perfscale run --locust` |
 | `perfscale (jmeter)` | the same `.jmx` plan, via `perfscale run --jmeter` (overhead/startup suites only) |
@@ -35,6 +36,7 @@ is perfscale's wrapping overhead — not the underlying tool. The standalone
 | `startup` | What does the wrapper cost at startup? (1s runs, where startup isn't drowned by the test duration) |
 | `scaling` | How do RPS / p95 / RSS grow with VUs? (default sweep: 10, 50, 200) |
 | `saturation` | Approximate max RPS per engine at high VUs (default 256) |
+| `latency` | Fixed arrival rate (`LAT_RATE`, default 10000 req/s over `LAT_CONNS` = 256 connections/VUs for `LAT_DURATION` = 20s): CO-corrected latency measured from each request's scheduled start — zrk `-R` vs perfscale `arrival.co_correct: true` vs the default drop-on-saturation arrival (its `Dropped` column is the latency the other two report instead) |
 | `yaml` | What does each native-engine feature cost? (GET baseline vs `--quiet` vs +check vs POST body vs multi-step interpolation) |
 | `ws` | WebSocket message throughput and RTT: same-connection echo round-trips against `serve`'s `/ws` endpoint (`perfscale (yaml)`, `k6 (native)`, `perfscale (k6)` — locust has no built-in WebSocket support and is skipped) |
 | `boundary` | Where does the engine break? Climbs a ladder of VU ceilings (`BOUNDARY_LADDER`, default `5000 15000 30000`): each rung ramps 0→ceiling over `BOUNDARY_DURATION`; the boundary is the VU level / time / RPS where the cumulative error rate first reaches `BOUNDARY_ERR_PCT` percent (default 1%) — or the rung where the process dies (OOM/crash counts as the boundary). An engine that crossed stops climbing. The table also reports the **achieved load** on the last rung the engine ran: actually spawned VUs, RPS, p95, peak RSS and CPU — so `never crossed` is priced, not just asserted |
@@ -279,7 +281,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | Variable | Default | Description |
 |---|---|---|
 | `SUITES` | all but `specjbb` | Space-separated suite list; an unknown name fails the run (see table above) |
-| `APPS` | `k6 jmeter locust sytester gcannon` | Competitor engines whose rows join the tables (space-separated; perfscale's own rows always run; `k6` also gates the xk6-sql / xk6-nats builds). An unknown name fails the run |
+| `APPS` | `k6 jmeter locust sytester gcannon zrk` | Competitor engines whose rows join the tables (space-separated; perfscale's own rows always run; `k6` also gates the xk6-sql / xk6-nats builds). An unknown name fails the run |
 | `VUS` | `10` | Virtual users per scenario |
 | `DURATION` | `15s` | Run length for `overhead`/`throughput` |
 | `WARMUP` | `1` | hyperfine warmup runs (discarded, not shown) |
@@ -287,6 +289,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `STARTUP_DURATION` / `STARTUP_RUNS` | `1s` / `5` | Startup-suite run length / samples |
 | `SCALING_VUS` / `SCALING_DURATION` | `10 50 200` / `10s` | VU sweep points / per-point length |
 | `SAT_VUS` / `SAT_DURATION` | `256` / `15s` | Saturation VUs / run length |
+| `LAT_RATE` / `LAT_CONNS` / `LAT_DURATION` | `10000` / `256` / `20s` | Latency suite: fixed rate (req/s), connections = perfscale VUs, hold length (perfscale adds a 1s ramp) |
 | `YAML_DURATION` / `TLS_DURATION` | `10s` / `10s` | Per-scenario length in those suites |
 | `LIB_DURATION` / `GRPC_DURATION` / `GQL_DURATION` | `10s` each | Per-scenario length in the library / grpc / graphql suites |
 | `WS_DURATION` / `WS_ROUNDS` | `10s` / `10` | ws-suite run length / echo round-trips per connection |

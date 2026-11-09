@@ -27,7 +27,9 @@ list under one of three load profiles, resolved from the config by
   `dropped_iterations` summary metric, and logged at most once per 5s. The
   counter is emitted even at 0, so `std/thresholds@v1` gates like
   `dropped_iterations: ["count==0"]` resolve on clean runs instead of
-  erroring on an unknown metric.
+  erroring on an unknown metric. With `arrival.co_correct: true` the pool
+  queues instead of dropping (zrk/wrk2 semantics): a stall becomes latency in
+  `engine_arrival_iteration_ms`, measured from the scheduled start.
 
 For staged/arrival runs the summary's `vus` line reports the *observed*
 concurrency — `vus....................: <last> min=<min> max=<max>` — and the
