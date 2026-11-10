@@ -343,7 +343,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target/gcannon/gcannon
-          key: gcannon-${{ env.GCANNON_VERSION }}-${{ env.LIBURING_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+          # `-portable`: binaries cached before this suffix were built with
+          # gcannon's default -march=native and SIGILL'd (exit 132) on runners
+          # with an older CPU than the one that filled the cache.
+          key: gcannon-${{ env.GCANNON_VERSION }}-${{ env.LIBURING_VERSION }}-${{ runner.os }}-${{ runner.arch }}-portable
 
       - name: Build gcannon
         if: steps.gcannon-cache.outputs.cache-hit != 'true'
@@ -356,8 +359,12 @@ jobs:
           # Static link: drop the shared objects so -luring resolves to the .a.
           rm -f "$build"/prefix/lib/liburing*.so*
           git clone -q --depth 1 --branch "$GCANNON_VERSION" https://github.com/MDA2AV/gcannon.git "$build/gcannon"
+          # gcannon's Makefile defaults to -march=native; the binary is cached
+          # across runners of different CPU generations, so build for the
+          # x86-64-v2 baseline every GitHub-hosted runner supports.
           C_INCLUDE_PATH="$build/prefix/include" LIBRARY_PATH="$build/prefix/lib" \
-            make -C "$build/gcannon" -j"$(nproc)" >/dev/null
+            make -C "$build/gcannon" -j"$(nproc)" \
+            CFLAGS="-O2 -Wall -Wextra -march=x86-64-v2 -Iinclude -DUSE_PICO -Iexternal/picohttpparser" >/dev/null
           cp "$build/gcannon/gcannon" target/gcannon/gcannon
 
       - name: gcannon on PATH
