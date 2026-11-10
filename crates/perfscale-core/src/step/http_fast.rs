@@ -104,8 +104,6 @@ pub(crate) struct Request<'a> {
     /// `(content-type, body)`.
     pub body: Option<(&'static str, &'a [u8])>,
     pub timeout: Duration,
-    pub max_body_bytes: u64,
-    pub body_kind: BodyKind,
 }
 
 /// Fast-path failure, mapped by the caller like a reqwest transport error.
@@ -130,38 +128,110 @@ pub(crate) enum Exchange {
     },
 }
 
+/// A request assembled for the wire, reusable as-is by a static step (see
+/// [`cached`]).
+#[derive(Debug)]
+pub(crate) struct Prepared {
+    key: String,
+    host: String,
+    port: u16,
+    wire: Vec<u8>,
+    head: bool,
+    pub timeout: Duration,
+    /// For the request log line.
+    pub method: String,
+    pub url: String,
+}
+
+/// Assemble `req` (host key, wire bytes) once.
+pub(crate) fn prepare(req: &Request<'_>) -> Prepared {
+    let host = req.url.host_str().unwrap_or_default();
+    let port = req.url.port_or_known_default().unwrap_or(80);
+    Prepared {
+        key: format!("{host}:{port}"),
+        host: host.to_owned(),
+        port,
+        wire: encode(req, host, req.url.port()),
+        head: req.method == "HEAD",
+        timeout: req.timeout,
+        method: req.method.to_owned(),
+        url: req.url.as_str().to_owned(),
+    }
+}
+
+/// Prepared requests of static steps on this thread, tagged with the run
+/// epoch (a step's address is only stable within one run).
+type PreparedCache = (u64, std::collections::HashMap<usize, Arc<Prepared>>);
+
+thread_local! {
+    static PREPARED: std::cell::RefCell<PreparedCache> =
+        std::cell::RefCell::new((0, std::collections::HashMap::new()));
+}
+
+/// The cached request of static step `step_key` in run `epoch`.
+pub(crate) fn cached(epoch: u64, step_key: usize) -> Option<Arc<Prepared>> {
+    PREPARED.with(|c| {
+        let c = c.borrow();
+        if c.0 == epoch {
+            c.1.get(&step_key).cloned()
+        } else {
+            None
+        }
+    })
+}
+
+/// Remember a static step's request for the rest of run `epoch`.
+pub(crate) fn remember(epoch: u64, step_key: usize, p: Arc<Prepared>) {
+    PREPARED.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.0 != epoch {
+            *c = (epoch, std::collections::HashMap::new());
+        }
+        c.1.insert(step_key, p);
+    });
+}
+
+/// How the response is read.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReadOpts {
+    pub max_body_bytes: u64,
+    pub body_kind: BodyKind,
+}
+
 /// Run one exchange on a pooled (or new) connection of `pool`.
 pub(crate) async fn exchange(
     pool: &ConnPool,
-    req: &Request<'_>,
+    p: &Prepared,
+    opts: ReadOpts,
 ) -> (f64, Result<Exchange, FastError>) {
     let t0 = Instant::now();
-    let res = match tokio::time::timeout(req.timeout, exchange_inner(pool, req)).await {
+    let res = match tokio::time::timeout(p.timeout, exchange_inner(pool, p, opts)).await {
         Ok(r) => r,
         Err(_) => Err(FastError::Timeout),
     };
     (t0.elapsed().as_secs_f64() * 1000.0, res)
 }
 
-async fn exchange_inner(pool: &ConnPool, req: &Request<'_>) -> Result<Exchange, FastError> {
-    let host = req.url.host_str().unwrap_or_default();
-    let port = req.url.port_or_known_default().unwrap_or(80);
-    let key = format!("{host}:{port}");
-    let wire = encode(req, host, req.url.port());
+async fn exchange_inner(
+    pool: &ConnPool,
+    p: &Prepared,
+    opts: ReadOpts,
+) -> Result<Exchange, FastError> {
+    let (key, host, port, wire) = (p.key.as_str(), p.host.as_str(), p.port, &p.wire);
 
     // A pooled connection may have been closed by the server while idle;
     // that surfaces as a write error or EOF before the first response byte.
     // Retry exactly once, on a fresh connection.
-    let pooled = take(pool, &key);
+    let pooled = take(pool, key);
     let reused = pooled.is_some();
     let mut conn = match pooled {
         Some(c) => c,
-        None => connect(&key, host, port).await?,
+        None => connect(key, host, port).await?,
     };
-    let mut attempt = round_trip(&mut conn, &wire, req).await;
+    let mut attempt = round_trip(&mut conn, wire, p.head, opts).await;
     if reused && matches!(attempt, Err(RoundTripError::Stale(_))) {
-        conn = connect(&key, host, port).await?;
-        attempt = round_trip(&mut conn, &wire, req).await;
+        conn = connect(key, host, port).await?;
+        attempt = round_trip(&mut conn, wire, p.head, opts).await;
     }
     match attempt {
         Ok((ex, keep_alive)) => {
@@ -274,7 +344,8 @@ enum RoundTripError {
 async fn round_trip(
     conn: &mut Conn,
     wire: &[u8],
-    req: &Request<'_>,
+    head: bool,
+    req: ReadOpts,
 ) -> Result<(Exchange, bool), RoundTripError> {
     let io = |e: std::io::Error| FastError::Io(format!("connection error: {e}"));
     if let Err(e) = conn.stream.write_all(wire).await {
@@ -338,7 +409,7 @@ async fn round_trip(
     let chunked =
         header("transfer-encoding").is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
     let content_length = header("content-length").and_then(|v| v.trim().parse::<u64>().ok());
-    let no_body = req.method == "HEAD" || status == 204 || status == 304;
+    let no_body = head || status == 204 || status == 304;
     let limit = req.max_body_bytes;
     if !no_body && content_length.is_some_and(|n| n > limit) {
         return Err(fatal(FastError::BodyTooLarge { limit, status }));
@@ -572,10 +643,13 @@ mod tests {
             headers,
             body,
             timeout: Duration::from_secs(5),
-            max_body_bytes: 1 << 20,
-            body_kind: BodyKind::Auto,
         }
     }
+
+    const AUTO: ReadOpts = ReadOpts {
+        max_body_bytes: 1 << 20,
+        body_kind: BodyKind::Auto,
+    };
 
     #[test]
     fn encode_matches_the_reqwest_header_set() {
@@ -644,9 +718,12 @@ mod tests {
 
     async fn run(pool: &ConnPool, url: &str, kind: BodyKind) -> HttpOutcome {
         let url = reqwest::Url::parse(url).unwrap();
-        let mut r = req("GET", &url, &[], None);
-        r.body_kind = kind;
-        match exchange(pool, &r).await.1 {
+        let p = prepare(&req("GET", &url, &[], None));
+        let opts = ReadOpts {
+            body_kind: kind,
+            ..AUTO
+        };
+        match exchange(pool, &p, opts).await.1 {
             Ok(Exchange::Done(o)) => o,
             Ok(Exchange::Redirect { .. }) => panic!("unexpected redirect"),
             Err(e) => panic!("exchange failed: {e:?}"),
@@ -725,7 +802,10 @@ mod tests {
         assert_eq!((lean.status, lean.body.as_str()), (200, ""));
         assert!(lean.headers.is_empty());
         let url = reqwest::Url::parse(&base).unwrap();
-        match exchange(&pool, &req("GET", &url, &[], None)).await.1 {
+        match exchange(&pool, &prepare(&req("GET", &url, &[], None)), AUTO)
+            .await
+            .1
+        {
             Ok(Exchange::Redirect { status, location }) => {
                 assert_eq!((status, location.as_str()), (302, "/next"));
             }
@@ -741,10 +821,13 @@ mod tests {
         )
         .await;
         let url = reqwest::Url::parse(&base).unwrap();
-        let mut r = req("GET", &url, &[], None);
-        r.max_body_bytes = 10;
+        let small = ReadOpts {
+            max_body_bytes: 10,
+            ..AUTO
+        };
+        let p = prepare(&req("GET", &url, &[], None));
         assert!(matches!(
-            exchange(&ConnPool::default(), &r).await.1,
+            exchange(&ConnPool::default(), &p, small).await.1,
             Err(FastError::BodyTooLarge {
                 limit: 10,
                 status: 200
@@ -755,9 +838,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let url = reqwest::Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
-        match exchange(&ConnPool::default(), &req("GET", &url, &[], None))
-            .await
-            .1
+        match exchange(
+            &ConnPool::default(),
+            &prepare(&req("GET", &url, &[], None)),
+            AUTO,
+        )
+        .await
+        .1
         {
             Err(FastError::Io(msg)) => assert!(msg.contains("tcp connect error"), "{msg}"),
             other => panic!("expected connect error, got {:?}", other.is_ok()),

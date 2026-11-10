@@ -694,8 +694,10 @@ pub async fn run_native(
         _ => Some(Arc::new(AtomicU64::new(0))),
     };
     let test_reads_last = steps_read_last(&steps);
+    static RUN_EPOCH: AtomicU64 = AtomicU64::new(1);
     let shared = VuShared {
         steps,
+        run_epoch: RUN_EPOCH.fetch_add(1, Ordering::Relaxed),
         test_reads_last,
         metrics: Arc::clone(&metrics),
         iter_count: Arc::clone(&iter_count),
@@ -1301,6 +1303,8 @@ impl StreamProgress {
 /// per spawn.
 struct VuShared {
     steps: Arc<Vec<Step>>,
+    /// See [`Context::run_epoch`].
+    run_epoch: u64,
     /// See [`Context::test_reads_last`] — computed once per run.
     test_reads_last: bool,
     metrics: Arc<ShardedMetrics>,
@@ -1346,6 +1350,7 @@ impl VuShared {
     fn base_context(&self, vu_id: u32) -> Context {
         let mut ctx = Context::new();
         ctx.test_reads_last = self.test_reads_last;
+        ctx.run_epoch = self.run_epoch;
         ctx.http_client_shard = (vu_id as usize - 1) % crate::step::actions::client_shard_count();
         ctx.allow_file_actions = self.allow_file_actions;
         ctx.allow_process_actions = self.allow_process_actions;
@@ -2273,6 +2278,11 @@ async fn execute_step(
         }
     }
     let params = step_params(step);
+    ctx.step_key = step as *const Step as usize;
+    ctx.step_static = ctx.run_epoch != 0
+        && step.severity.is_none()
+        && step.message.is_none()
+        && step.with.as_ref().is_none_or(|w| !has_dollar_brace(w));
     ctx.lean_output = !ctx.test_reads_last
         && step.outputs.is_none()
         && step.check.is_none()
@@ -2453,6 +2463,17 @@ async fn execute_step(
 /// step-level `severity`/`message` fields (used by `std/thresholds@v1`)
 /// merged in so actions read one flat parameter set. Borrows unless a merge
 /// is actually needed, keeping the per-iteration hot path allocation-free.
+/// Any `${` in a string of `v` — interpolation (`${{ }}`) or a generator
+/// token (`${uuid}`), either of which makes a step's request vary.
+fn has_dollar_brace(v: &Value) -> bool {
+    match v {
+        Value::String(s) => memchr::memmem::find(s.as_bytes(), b"${").is_some(),
+        Value::Object(m) => m.values().any(has_dollar_brace),
+        Value::Array(a) => a.iter().any(has_dollar_brace),
+        _ => false,
+    }
+}
+
 /// Whether any step can read another step's full output through
 /// `__last__`: an explicit `__last__` reference anywhere in the step
 /// definitions (params, conditions, checks), or a standalone `std/check`

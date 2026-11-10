@@ -897,6 +897,37 @@ pub fn error_chain(e: &dyn std::error::Error) -> String {
 //   can flow into a grpc step via `${{ fetch.body_base64 }}`.
 
 pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
+    let body_kind = if ctx.lean_output {
+        BodyKind::Discard
+    } else {
+        BodyKind::Auto
+    };
+    // A static step (no `${…}` in its raw `with:`) that already went out on
+    // the fast path: resend the assembled request — no parameter parsing,
+    // token expansion, URL parsing or encoding.
+    if ctx.step_static && super::http_fast::enabled() {
+        if let Some(p) = super::http_fast::cached(ctx.run_epoch, ctx.step_key) {
+            let opts = super::http_fast::ReadOpts {
+                max_body_bytes: ctx.max_response_body_bytes,
+                body_kind,
+            };
+            let pool = super::http_fast::shard_pool(ctx.http_client_shard);
+            let (ms, res) = super::http_fast::exchange(pool, &p, opts).await;
+            match res {
+                Ok(super::http_fast::Exchange::Done(mut o)) => {
+                    o.duration_ms = ms;
+                    return http_output(Ok(o), body_kind, &p.method, &p.url, ctx, step_name);
+                }
+                Err(e) => {
+                    let err = Err((ms, ExchangeError::Fast(e)));
+                    return http_output(err, body_kind, &p.method, &p.url, ctx, step_name);
+                }
+                // A redirect: take the full path below (it re-issues the
+                // request and continues the chain through reqwest).
+                Ok(super::http_fast::Exchange::Redirect { .. }) => {}
+            }
+        }
+    }
     let method = params["method"].as_str().unwrap_or("GET").to_uppercase();
     let url = match params["url"].as_str() {
         Some(u) => u.to_string(),
@@ -972,11 +1003,6 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         }
     }
 
-    let body_kind = if ctx.lean_output {
-        BodyKind::Discard
-    } else {
-        BodyKind::Auto
-    };
     let timeout = Duration::from_millis(timeout_ms);
     let parsed = parsed_url(&url);
 
@@ -998,18 +1024,26 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
     let mut redirect: Option<(f64, u16, String)> = None;
     let mut result = None;
     if let Some(u) = fast {
-        let req = super::http_fast::Request {
+        let prepared = std::sync::Arc::new(super::http_fast::prepare(&super::http_fast::Request {
             method: &method,
             url: u,
             headers: &headers,
             body: body.as_ref().map(|(ct, b)| (*ct, b.as_bytes())),
             timeout,
+        }));
+        if ctx.step_static && announce.is_none() {
+            super::http_fast::remember(
+                ctx.run_epoch,
+                ctx.step_key,
+                std::sync::Arc::clone(&prepared),
+            );
+        }
+        let opts = super::http_fast::ReadOpts {
             max_body_bytes: ctx.max_response_body_bytes,
             body_kind,
         };
-        let (ms, res) =
-            super::http_fast::exchange(super::http_fast::shard_pool(ctx.http_client_shard), &req)
-                .await;
+        let pool = super::http_fast::shard_pool(ctx.http_client_shard);
+        let (ms, res) = super::http_fast::exchange(pool, &prepared, opts).await;
         match res {
             Ok(super::http_fast::Exchange::Done(mut o)) => {
                 o.duration_ms = ms;
@@ -1094,7 +1128,23 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
             }
         }
     };
-    let mut out = match result {
+    let mut out = http_output(result, body_kind, &method, &url, ctx, step_name);
+    if let Some(line) = announce {
+        out.logs.insert(0, (LogTag::Out, line));
+    }
+    out
+}
+
+/// The `std/http@v1` action output for an exchange result.
+fn http_output(
+    result: Result<HttpOutcome, (f64, ExchangeError)>,
+    body_kind: BodyKind,
+    method: &str,
+    url: &str,
+    ctx: &Context,
+    step_name: &str,
+) -> ActionOutput {
+    match result {
         Ok(out) => {
             let failed = out.status >= 400;
             let mut value = if body_kind == BodyKind::Discard {
@@ -1116,7 +1166,7 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
             let logs = if failed || !ctx.quiet {
                 vec![(
                     if failed { LogTag::Err } else { LogTag::Out },
-                    request_line(&method, &url, out.status, out.reason, out.duration_ms, ""),
+                    request_line(method, url, out.status, out.reason, out.duration_ms, ""),
                 )]
             } else {
                 Vec::new()
@@ -1132,12 +1182,8 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
                 }),
             }
         }
-        Err((duration_ms, e)) => exchange_error(step_name, &method, &url, &e, duration_ms),
-    };
-    if let Some(line) = announce {
-        out.logs.insert(0, (LogTag::Out, line));
+        Err((duration_ms, e)) => exchange_error(step_name, method, url, &e, duration_ms),
     }
-    out
 }
 
 /// Map an exchange failure to the action output: transport errors report

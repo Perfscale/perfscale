@@ -104,6 +104,15 @@ pub struct Context {
     /// `__last__` reader, no `http_debug`). HTTP actions then skip header
     /// snapshots and body decoding — the response is still read in full.
     pub(crate) lean_output: bool,
+    /// Identity of the step being executed (its address — stable for the
+    /// run) and whether its raw `with:` is free of `${…}`: such a step sends
+    /// the same request every time, so `std/http@v1` can reuse the
+    /// assembled fast-path request. 0 / false outside the VU runner.
+    pub(crate) step_key: usize,
+    pub(crate) step_static: bool,
+    /// Run identity for [`Self::step_key`] (addresses are reused across
+    /// runs of a long-lived agent).
+    pub(crate) run_epoch: u64,
     /// Counts generators minted by this context — the `conn_seq` input of the
     /// per-instance seed derivation.
     gen_counter: Arc<std::sync::atomic::AtomicU64>,
@@ -148,6 +157,9 @@ impl Default for Context {
             iteration_seq: 0,
             test_reads_last: true,
             lean_output: false,
+            step_key: 0,
+            step_static: false,
+            run_epoch: 0,
             gen_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             unseeded_gen_base: Arc::new(std::sync::OnceLock::new()),
             rate_names: HashMap::new(),
