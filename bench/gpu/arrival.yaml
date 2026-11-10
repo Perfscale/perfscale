@@ -16,6 +16,10 @@ variables:
 arrival:
   max_vus: 64
   pre_allocated_vus: 2 # workers spawned at start; pool grows lazily to max_vus
+  # co_correct: true   # zrk-style CO correction: queue instead of drop, so the
+  #                    # knee shows as engine_arrival_iteration_ms growth (from
+  #                    # the scheduled start) rather than dropped_iterations —
+  #                    # then drop the `dropped_iterations` gate below.
   stages:
     - { duration: 1m, rate: 1 }   # 1 completion/sec
     - { duration: 1m, rate: 2 }

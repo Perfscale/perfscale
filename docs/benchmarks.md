@@ -289,7 +289,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `STARTUP_DURATION` / `STARTUP_RUNS` | `1s` / `5` | Startup-suite run length / samples |
 | `SCALING_VUS` / `SCALING_DURATION` | `10 50 200` / `10s` | VU sweep points / per-point length |
 | `SAT_VUS` / `SAT_DURATION` | `256` / `15s` | Saturation VUs / run length |
-| `LAT_RATE` / `LAT_CONNS` / `LAT_DURATION` | `10000` / `256` / `20s` | Latency suite: fixed rate (req/s), connections = perfscale VUs, hold length (perfscale adds a 1s ramp) |
+| `LAT_RATE` / `LAT_CONNS` / `LAT_DURATION` | `10000` / `256` / `20s` | Latency suite: fixed rate (req/s), connections = perfscale VUs, hold length (perfscale adds a 1s ramp). In CI: the `latency_rate` / `latency_duration` workflow inputs |
 | `YAML_DURATION` / `TLS_DURATION` | `10s` / `10s` | Per-scenario length in those suites |
 | `LIB_DURATION` / `GRPC_DURATION` / `GQL_DURATION` | `10s` each | Per-scenario length in the library / grpc / graphql suites |
 | `WS_DURATION` / `WS_ROUNDS` | `10s` / `10` | ws-suite run length / echo round-trips per connection |
