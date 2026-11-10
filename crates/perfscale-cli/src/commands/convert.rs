@@ -23,8 +23,7 @@ fn run_k6(args: ConvertK6Args) -> Result<(), CliError> {
     })?;
     let converted = k6::convert(&source).map_err(|e| {
         CliError::new(format!("cannot convert '{}'", args.input.display()))
-            .cause(e)
-            .hint("keep dynamic scenarios on `perfscale run --k6`, or simplify them to the documented static subset")
+            .cause(render_error(&source, &args.input, &e))
             .docs("cli/commands.md#perfscale-convert-k6")
     })?;
     if args.test == args.config {
@@ -79,4 +78,115 @@ fn write_output(path: &Path, contents: &str, force: bool) -> Result<(), CliError
     write().map_err(|e| {
         CliError::new(format!("failed to write '{}'", path.display())).cause(e.to_string())
     })
+}
+
+fn render_error(source: &str, path: &Path, error: &str) -> String {
+    let (line, column, message) = parse_location(error);
+    let source_line = source
+        .lines()
+        .nth(line.saturating_sub(1))
+        .unwrap_or("")
+        .trim_end_matches('\r');
+    let column = column.max(1);
+    let start = column.saturating_sub(1).min(source_line.len());
+    let highlight = source_line.len().saturating_sub(start).clamp(1, 80);
+    let gutter = line.to_string().len();
+    let mut rendered = format!(" --> {}:{line}:{column}\n", path.display());
+    rendered.push_str(&format!(
+        "{empty:>width$} |\n",
+        empty = "",
+        width = gutter + 1
+    ));
+    rendered.push_str(&format!("{line:>gutter$} | {source_line}\n"));
+    rendered.push_str(&format!(
+        "{empty:>width$} | {padding}{carets} {message}\n",
+        empty = "",
+        width = gutter + 1,
+        padding = " ".repeat(start),
+        carets = "^".repeat(highlight),
+    ));
+    rendered.push_str(&format!(
+        "{empty:>width$} = help: {hint}",
+        empty = "",
+        width = gutter + 1,
+        hint = diagnostic_hint(message),
+    ));
+    rendered
+}
+
+fn parse_location(error: &str) -> (usize, usize, &str) {
+    let Some(rest) = error.strip_prefix("line ") else {
+        return (1, 1, error);
+    };
+    let Some((line, rest)) = rest.split_once(':') else {
+        return (1, 1, error);
+    };
+    let Ok(line) = line.parse::<usize>() else {
+        return (1, 1, error);
+    };
+    if let Some((column, message)) = rest.split_once(": ") {
+        if let Ok(column) = column.parse::<usize>() {
+            return (line, column, message);
+        }
+    }
+    (line, 1, rest)
+}
+
+fn diagnostic_hint(message: &str) -> &'static str {
+    let message = message.to_ascii_lowercase();
+    if message.contains("invalid javascript syntax") {
+        "fix the JavaScript syntax at this location, then rerun the converter — it parses but never executes the script"
+    } else if message.contains("setup/teardown") {
+        "move initialization to `before:` and cleanup to `after:` in config.yaml, then run `perfscale lint`"
+    } else if message.contains("if_statement")
+        || message.contains("conditions")
+        || message.contains("loops")
+    {
+        "conditional or repeated execution is not a linear YAML step list; use step-level `if:` where possible, split the flow into explicit steps, or keep this script on `perfscale run --k6`"
+    } else if message.contains("xk6") || message.contains("module `") {
+        "this module has no native equivalent; keep xk6/custom-module scenarios on `perfscale run --k6`"
+    } else if message.contains("dynamic identifier") || message.contains("dynamic expression") {
+        "replace the dynamic value with a static literal or `${{ env.NAME }}`, then run `perfscale lint`"
+    } else if message.contains("iterations") {
+        "use an explicit `duration` or arrival `stages:`; a fixed iteration count is not converted into a misleading time estimate"
+    } else if message.contains("both vus and duration") {
+        "set both `vus` and `duration`, or choose `stages:` / one supported ramping-arrival-rate scenario"
+    } else if message.contains("http param") {
+        "keep only static URL/body/headers/timeout; dynamic request parameters need the k6 runner"
+    } else if message.contains("check") {
+        "use `r.status === N` or `r.body.includes(\"text\")`; arbitrary JavaScript predicates need the k6 runner"
+    } else if message.contains("threshold") || message.contains("percentile") {
+        "use supported native metrics and p50/p90/p95/p99 expressions such as `p95<500`; other gates need the k6 runner"
+    } else {
+        "rewrite this expression using the documented static subset, or keep the original script on `perfscale run --k6`"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagnostic_renders_source_location_and_specific_fix() {
+        let rendered = render_error(
+            "export default function () {\n  if (true) {}\n}",
+            Path::new("scenario.js"),
+            "line 2:3: unsupported statement `if_statement`; conditions are not supported",
+        );
+        assert!(rendered.contains("--> scenario.js:2:3"), "{rendered}");
+        assert!(rendered.contains("if (true) {}"), "{rendered}");
+        assert!(
+            rendered.contains("conditional or repeated execution"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("step-level `if:`"), "{rendered}");
+    }
+
+    #[test]
+    fn diagnostic_handles_missing_locations_and_long_lines() {
+        let rendered = render_error("x".repeat(500).as_str(), Path::new("x.js"), "other error");
+        assert!(rendered.contains("--> x.js:1:1"), "{rendered}");
+        assert!(rendered.contains(&"^".repeat(80)), "{rendered}");
+        assert!(rendered.contains("documented static subset"), "{rendered}");
+    }
 }

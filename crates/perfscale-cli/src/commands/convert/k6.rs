@@ -130,8 +130,9 @@ impl<'tree, 'source> Converter<'tree, 'source> {
 
     fn err(&self, node: Node<'tree>, message: impl AsRef<str>) -> String {
         format!(
-            "line {}: {}",
+            "line {}:{}: {}",
             node.start_position().row + 1,
+            node.start_position().column + 1,
             message.as_ref()
         )
     }

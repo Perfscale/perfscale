@@ -369,8 +369,16 @@ and thresholds over `http_req_duration`, `http_req_failed`, `http_reqs`,
 
 Dynamic JavaScript, helper calls, loops/conditions, setup/teardown, arbitrary
 check functions, xk6 modules, and options without an exact native equivalent
-are **hard errors with a source line**, never silently dropped. Scripts outside
-this subset can still run unchanged with `perfscale run --k6 script.js`.
+are **hard errors with a source line, column, highlighted source, and a fix hint**, never silently dropped. Scripts outside
+this subset can still run unchanged with `perfscale run --k6 script.js`. For example:
+
+```text
+ --> script.js:4:3
+  |
+4 |   if (true) {
+  |   ^^^^^^^^^^^ unsupported statement `if_statement`; conditions, loops, helper calls, and assignments must be rewritten explicitly
+  = help: conditional or repeated execution is not a linear YAML step list; use step-level `if:` where possible, split the flow into explicit steps, or keep this script on `perfscale run --k6`
+```
 Generated files are schema-validated in-process; then run:
 
 ```sh

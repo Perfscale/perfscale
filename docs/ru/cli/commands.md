@@ -352,8 +352,16 @@ perfscale convert k6 script.js --force                 # заменить сущ
 
 Динамический JavaScript, вызовы helpers, циклы/условия, setup/teardown,
 произвольные check-функции, xk6-модули и опции без точного нативного аналога —
-**ошибка с номером строки**, а не молчаливое удаление поведения. Скрипты вне
-этого подмножества по-прежнему запускаются через `perfscale run --k6 script.js`.
+**ошибка с номером строки и колонки, подсветкой исходника и подсказкой по исправлению**, а не молчаливое удаление поведения. Скрипты вне
+этого подмножества по-прежнему запускаются через `perfscale run --k6 script.js`. Например:
+
+```text
+ --> script.js:4:3
+  |
+4 |   if (true) {
+  |   ^^^^^^^^^^^ unsupported statement `if_statement`; conditions, loops, helper calls, and assignments must be rewritten explicitly
+  = help: conditional or repeated execution is not a linear YAML step list; use step-level `if:` where possible, split the flow into explicit steps, or keep this script on `perfscale run --k6`
+```
 Результат валидируется по схемам внутри команды; далее выполните:
 
 ```sh

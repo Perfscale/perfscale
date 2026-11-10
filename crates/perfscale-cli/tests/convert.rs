@@ -94,8 +94,12 @@ fn convert_k6_failure_does_not_create_outputs() {
         .arg(&config)
         .assert()
         .failure()
-        .stderr(predicate::str::contains("line 1"))
-        .stderr(predicate::str::contains("unsupported statement"));
+        .stderr(predicate::str::contains(":1:"))
+        .stderr(predicate::str::contains("if (true)"))
+        .stderr(predicate::str::contains("unsupported statement"))
+        .stderr(predicate::str::contains(
+            "conditional or repeated execution",
+        ));
     assert!(!test.exists());
     assert!(!config.exists());
 }

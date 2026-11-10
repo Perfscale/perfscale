@@ -1,0 +1,45 @@
+name: Update site OSS docs
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  update-site-oss:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout site (no submodules — gitlink bump only)
+        uses: actions/checkout@v4
+        with:
+          repository: Perfscale/site
+          token: ${{ secrets.GH_PAT }}
+          submodules: false
+
+      - name: Configure git
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Point OSS docs at ${{ github.sha }}
+        id: changes
+        run: |
+          old=$(git ls-tree HEAD -- oss | awk '{print $3}')
+          if [ "$old" = "${{ github.sha }}" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            git update-index --cacheinfo 160000,${{ github.sha }},oss
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git commit -m "chore: update OSS submodule (${{ github.ref_name }})"
+          git push
+
+      - name: No changes detected
+        if: steps.changes.outputs.has_changes == 'false'
+        run: echo "OSS is already at ${{ github.sha }}"
