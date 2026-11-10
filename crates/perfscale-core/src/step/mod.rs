@@ -31,6 +31,8 @@ pub(crate) mod db;
 pub mod graphql;
 pub(crate) mod grpc;
 pub mod http;
+#[doc(hidden)]
+pub mod http_fast;
 pub(crate) mod json_doc;
 pub(crate) mod json_path;
 pub(crate) mod libstep;
