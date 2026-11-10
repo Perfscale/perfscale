@@ -351,8 +351,8 @@ pub struct ArrivalConfig {
     /// is queued instead of dropped, so a stall shows up as latency in
     /// `engine_arrival_iteration_ms` (measured from the *scheduled* start)
     /// rather than vanishing into `dropped_iterations`; the dispatcher also
-    /// paces with sub-millisecond precision (it spins on `yield_now` for
-    /// the last millisecond before each start) so an idle target does not
+    /// paces with sub-millisecond precision (a dedicated pacer thread
+    /// sleeps until ~20µs before each start, then busy-waits) so an idle target does not
     /// read as timer jitter. Permits still queued at the end of the run are
     /// counted in `dropped_iterations`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

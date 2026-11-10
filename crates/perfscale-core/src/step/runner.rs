@@ -1653,6 +1653,72 @@ async fn supervise_ramping(
     sampler.observed()
 }
 
+/// Pacer for `arrival.co_correct`: a dedicated OS thread walks the dispatch
+/// schedule and emits each start instant on time. tokio timers have ~1ms
+/// granularity, and the earlier fix — spinning on `yield_now` for the last
+/// millisecond — held start precision but burned a core (CPU 5x zrk's at
+/// 10k req/s). Here the thread sleeps with `nanosleep` until shortly before
+/// each instant (on Linux with a 1µs timer slack, so the kernel does not
+/// batch the wake-up 50µs late) and spins only the final [`PACER_SPIN`].
+/// Instants already due go out back to back. The channel closes when the
+/// schedule ends, the deadline passes, or the run is stopped.
+fn spawn_pacer(
+    segments: Vec<Segment<f64>>,
+    started: Instant,
+    deadline: Instant,
+    stop: Arc<AtomicBool>,
+) -> mpsc::UnboundedReceiver<Instant> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let spawned = std::thread::Builder::new()
+        .name("perfscale-pacer".into())
+        .spawn(move || {
+            #[cfg(target_os = "linux")]
+            // SAFETY: PR_SET_TIMERSLACK only adjusts this thread's timer
+            // slack; no pointers involved.
+            unsafe {
+                libc::prctl(libc::PR_SET_TIMERSLACK, 1000 as libc::c_ulong, 0, 0, 0);
+            }
+            let mut cursor = DispatchCursor::new();
+            while let Some(offset) = cursor.next(&segments) {
+                let at = started + Duration::from_secs_f64(offset);
+                if at >= deadline {
+                    break;
+                }
+                loop {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let now = Instant::now();
+                    if now >= at {
+                        break;
+                    }
+                    let remaining = at - now;
+                    if remaining > PACER_SPIN {
+                        // Cap the sleep so a stop is noticed promptly.
+                        std::thread::sleep((remaining - PACER_SPIN).min(Duration::from_millis(50)));
+                    } else {
+                        std::hint::spin_loop();
+                    }
+                }
+                if tx.send(at).is_err() {
+                    return; // dispatcher gone
+                }
+            }
+        });
+    if spawned.is_err() {
+        // Thread limit hit: an empty, closed schedule ends the run with
+        // nothing dispatched rather than panicking.
+        drop(rx);
+        let (_, rx) = mpsc::unbounded_channel();
+        return rx;
+    }
+    rx
+}
+
+/// Final stretch before a dispatch instant the pacer busy-waits instead of
+/// sleeping — enough to absorb `nanosleep` wake-up latency.
+const PACER_SPIN: Duration = Duration::from_micros(20);
+
 /// Drive an arrival-rate schedule: the dispatch cursor yields absolute start
 /// instants (inverting the rate integral); each becomes a permit for a worker
 /// pool that starts at `pre_allocated_vus` and grows lazily to `max_vus`. A
@@ -1720,27 +1786,38 @@ async fn supervise_arrival(
     let mut dropped = 0u64;
     let mut last_drop_warn: Option<Instant> = None;
     let mut cursor = DispatchCursor::new();
-    'dispatch: while let Some(offset) = cursor.next(segments) {
-        // Sleep until the dispatch instant, waking regularly to notice a stop.
-        let at = started + Duration::from_secs_f64(offset);
-        while Instant::now() < at {
-            if shared.stop.load(Ordering::Relaxed) {
-                break 'dispatch;
+    // `co_correct` paces on a dedicated OS thread (sub-ms precision without
+    // burning a core); the default mode keeps the tokio-timer loop below.
+    let mut pacer = co_correct.then(|| {
+        spawn_pacer(
+            segments.to_vec(),
+            started,
+            deadline,
+            Arc::clone(&shared.stop),
+        )
+    });
+    'dispatch: loop {
+        let at = if let Some(rx) = pacer.as_mut() {
+            match rx.recv().await {
+                Some(at) => at,
+                None => break,
             }
-            let remaining = at - Instant::now();
-            if co_correct && remaining <= Duration::from_millis(1) {
-                // tokio timers have ~1ms granularity: spin cooperatively for
-                // the last millisecond so a permit starts on schedule.
-                tokio::task::yield_now().await;
-                continue;
-            }
-            let slack = if co_correct {
-                Duration::from_millis(1)
-            } else {
-                Duration::ZERO
+        } else {
+            let Some(offset) = cursor.next(segments) else {
+                break;
             };
-            tokio::time::sleep((remaining - slack).min(Duration::from_millis(50))).await;
-        }
+            // Sleep until the dispatch instant, waking regularly to notice a
+            // stop.
+            let at = started + Duration::from_secs_f64(offset);
+            while Instant::now() < at {
+                if shared.stop.load(Ordering::Relaxed) {
+                    break 'dispatch;
+                }
+                let remaining = at - Instant::now();
+                tokio::time::sleep(remaining.min(Duration::from_millis(50))).await;
+            }
+            at
+        };
         if Instant::now() >= deadline || shared.stop.load(Ordering::Relaxed) {
             break;
         }

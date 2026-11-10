@@ -383,7 +383,8 @@ saturated permits are queued instead of dropped, so a stall shows up as
 latency in `engine_arrival_iteration_ms` / `engine_arrival_queue_wait_ms`
 (both measured from the *scheduled* start) instead of disappearing into
 `dropped_iterations`, and the dispatcher paces with sub-millisecond precision
-(it spins cooperatively for the last millisecond before each start). Only the
+(a dedicated pacer thread sleeps until just before each start and
+busy-waits only the last ~20µs). Only the
 backlog still queued at the deadline counts as dropped. Use it when the
 question is "what latency would a user arriving at this rate see"; leave it
 off for k6-compatible drop semantics.
