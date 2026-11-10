@@ -47,6 +47,19 @@ CI: +9–10% RPS at 200–256 VUs and −13% CPU at saturation (2.14× k6).
 `PERFSCALE_VU_RUNTIME=shared` restores the old executor. Peak RSS is higher
 (~60 MiB vs ~29 MiB at 10 VUs) — mimalloc keeps per-thread segments.
 
+## Native HTTP/1.1 fast path
+
+`std/http@v1` requests to `http://` and `https://` on the default pool now go
+through a native HTTP/1.1 client: one buffer out and the response parsed in
+the VU's own task. There is no hyper connection task, no channel hop and no
+tower layers. Static steps reuse their assembled request, lean outputs skip
+body decoding when nothing reads the response, and labeled metrics are
+recorded without allocations. On Linux CI at 10 VUs, perfscale (quiet) now
+does 144k req/s at 10.5 µs CPU per request (zrk: 142k at 13.0 µs). At 256 VUs
+it reaches 205k req/s (0.94× zrk), and HTTPS does 117k req/s (k6: 62k).
+`co_correct` pacing moved to a dedicated thread (CPU 39.9 s → 11.8 s at
+10k req/s). `PERFSCALE_HTTP_CLIENT=reqwest` turns the fast path off.
+
 ## Fix: generated values repeated across iterations
 
 Without `seed:`, consecutive generators could share one random stream, so
