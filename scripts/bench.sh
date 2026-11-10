@@ -1577,6 +1577,15 @@ measure() {
   run_timed "$out" "$cmd"
   eval "$($METRICS parse "$kind" "${parse_file:-$out}")"
   if [[ "$parse_ok" != 1 ]]; then
+    # Show why: exit code plus the tail of the tool's stdout and of its
+    # stderr (which shares the file with /usr/bin/time's statistics).
+    {
+      echo "  ↳ '$label' exited $T_RC (wall ${T_WALL:-?}); stdout tail:"
+      tail -n 8 "$out" 2>/dev/null | sed 's/^/      /'
+      echo "  ↳ stderr tail:"
+      grep -vE '^\s*(Command being timed|User time|System time|Percent of CPU|Elapsed|Average|Maximum resident|Major|Minor|Voluntary|Involuntary|Swaps|File system|Socket|Signals|Page size|Exit status|[0-9.]+ +(real|user|sys))' \
+        "$WORKDIR/time.$$" 2>/dev/null | tail -n 8 | sed 's/^/      /'
+    } >&2
     strict_fail "no metrics parsed for '$label'"
   fi
 }
