@@ -2925,6 +2925,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "httparse",
  "jsonschema",
  "libc",
  "memchr",

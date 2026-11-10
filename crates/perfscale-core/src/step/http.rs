@@ -496,6 +496,10 @@ pub enum BodyKind {
     /// Always decode as text — for JSON APIs whose bodies are UTF-8 by
     /// contract (GraphQL).
     Text,
+    /// Nobody reads the output beyond the status (see
+    /// [`Context::lean_output`]): read the body to completion (keep-alive,
+    /// the size cap) but keep neither it nor a header snapshot.
+    Discard,
 }
 
 /// Default response body cap for HTTP-family steps (the
@@ -525,7 +529,12 @@ pub struct HttpOutcome {
 /// config key and a truncated body can never silently feed a `check:`.
 pub enum ExchangeError {
     Transport(reqwest::Error),
-    BodyTooLarge { limit: u64, status: u16 },
+    BodyTooLarge {
+        limit: u64,
+        status: u16,
+    },
+    /// Native fast-path failure (see `http_fast`).
+    Fast(super::http_fast::FastError),
 }
 
 /// Read the whole response body, rejecting anything over `limit` bytes. A
@@ -552,6 +561,25 @@ async fn read_body_capped(
     Ok(buf)
 }
 
+/// [`read_body_capped`] without keeping the bytes.
+async fn drain_body_capped(
+    resp: &mut reqwest::Response,
+    limit: u64,
+    status: u16,
+) -> Result<(), ExchangeError> {
+    if resp.content_length().is_some_and(|len| len > limit) {
+        return Err(ExchangeError::BodyTooLarge { limit, status });
+    }
+    let mut seen = 0usize;
+    while let Some(chunk) = resp.chunk().await.map_err(ExchangeError::Transport)? {
+        seen += chunk.len();
+        if seen > limit as usize {
+            return Err(ExchangeError::BodyTooLarge { limit, status });
+        }
+    }
+    Ok(())
+}
+
 /// Send `req`, timing the whole exchange (connect → body read). A transport
 /// error returns `(elapsed_ms, error)` so the caller reports timing and the
 /// failure from one code path. Bodies over `max_body_bytes` fail with
@@ -573,6 +601,19 @@ pub async fn timed_exchange(
     };
     let status = resp.status().as_u16();
     let reason = resp.status().canonical_reason().unwrap_or("");
+    if body_kind == BodyKind::Discard {
+        if let Err(e) = drain_body_capped(&mut resp, max_body_bytes, status).await {
+            return Err((t0.elapsed().as_secs_f64() * 1000.0, e));
+        }
+        return Ok(HttpOutcome {
+            status,
+            reason,
+            headers: serde_json::Map::new(),
+            duration_ms: t0.elapsed().as_secs_f64() * 1000.0,
+            body: String::new(),
+            body_base64: None,
+        });
+    }
     let headers = header_map_to_json(resp.headers());
 
     let bytes = match read_body_capped(&mut resp, max_body_bytes, status).await {
@@ -584,30 +625,11 @@ pub async fn timed_exchange(
     // byte-identical decode.
     // The capped buffer is moved into the String when it is valid UTF-8 (one
     // validation, no copy); only an invalid buffer pays the lossy re-encode.
-    let (body, body_base64) = match body_kind {
-        BodyKind::Text => (utf8_or_lossy(bytes), None),
-        BodyKind::Auto => {
-            // Textual payloads keep the historic `body` string; binary
-            // payloads surface as `body_base64` so protobuf descriptor sets,
-            // images etc. can flow into later steps
-            // (`descriptor_set: "${{ fetch.body_base64 }}"`).
-            let textual = resp
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(is_textual_content_type);
-            // Headers were snapshotted above; the body is already read, so
-            // decide from the snapshot + the buffer itself.
-            match textual {
-                Some(true) => (utf8_or_lossy(bytes), None),
-                Some(false) => (String::new(), Some(base64_encode(&bytes))),
-                None => match String::from_utf8(bytes) {
-                    Ok(text) => (text, None),
-                    Err(e) => (String::new(), Some(base64_encode(e.as_bytes()))),
-                },
-            }
-        }
-    };
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok());
+    let (body, body_base64) = decode_body(bytes, body_kind, content_type);
     let duration_ms = t0.elapsed().as_secs_f64() * 1000.0;
     Ok(HttpOutcome {
         status,
@@ -617,6 +639,29 @@ pub async fn timed_exchange(
         body,
         body_base64,
     })
+}
+
+/// Response body → `(body, body_base64)` per [`BodyKind`]. Textual payloads
+/// keep the historic `body` string; binary payloads surface as
+/// `body_base64` so protobuf descriptor sets, images etc. can flow into
+/// later steps (`descriptor_set: "${{ fetch.body_base64 }}"`). A missing
+/// content type is sniffed (valid UTF-8 → text).
+pub(crate) fn decode_body(
+    bytes: Vec<u8>,
+    body_kind: BodyKind,
+    content_type: Option<&str>,
+) -> (String, Option<String>) {
+    match body_kind {
+        BodyKind::Text | BodyKind::Discard => (utf8_or_lossy(bytes), None),
+        BodyKind::Auto => match content_type.map(is_textual_content_type) {
+            Some(true) => (utf8_or_lossy(bytes), None),
+            Some(false) => (String::new(), Some(base64_encode(&bytes))),
+            None => match String::from_utf8(bytes) {
+                Ok(text) => (text, None),
+                Err(e) => (String::new(), Some(base64_encode(e.as_bytes()))),
+            },
+        },
+    }
 }
 
 /// `bytes` as a String without copying when it is valid UTF-8; otherwise the
@@ -661,6 +706,41 @@ pub fn transport_error(
         format!("{method} {url} → TIMEOUT after {duration_ms:.2}ms")
     } else {
         format!("{method} {url} → ERROR: {detail}")
+    };
+    ActionOutput {
+        value: json!({ "error": detail, "duration_ms": duration_ms }),
+        logs: vec![(LogTag::Err, msg)],
+        success: false,
+        http_sample: Some(HttpSample {
+            duration_ms,
+            status: 0,
+            failed: true,
+        }),
+    }
+}
+
+/// [`transport_error`] for the native fast path — same message and output
+/// shapes (`TIMEOUT after …` / `ERROR: error sending request for url …`).
+fn fast_transport_error(
+    method: &str,
+    url: &str,
+    e: &super::http_fast::FastError,
+    duration_ms: f64,
+) -> ActionOutput {
+    let (msg, detail) = match e {
+        super::http_fast::FastError::Timeout => (
+            format!("{method} {url} → TIMEOUT after {duration_ms:.2}ms"),
+            format!("error sending request for url ({url}): operation timed out"),
+        ),
+        super::http_fast::FastError::Io(cause) => {
+            let detail = format!("error sending request for url ({url}): {cause}");
+            (format!("{method} {url} → ERROR: {detail}"), detail)
+        }
+        // Mapped to the canonical over-cap output by `exchange_error`.
+        super::http_fast::FastError::BodyTooLarge { .. } => {
+            let detail = format!("error sending request for url ({url}): body too large");
+            (format!("{method} {url} → ERROR: {detail}"), detail)
+        }
     };
     ActionOutput {
         value: json!({ "error": detail, "duration_ms": duration_ms }),
@@ -817,6 +897,37 @@ pub fn error_chain(e: &dyn std::error::Error) -> String {
 //   can flow into a grpc step via `${{ fetch.body_base64 }}`.
 
 pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) -> ActionOutput {
+    let body_kind = if ctx.lean_output {
+        BodyKind::Discard
+    } else {
+        BodyKind::Auto
+    };
+    // A static step (no `${…}` in its raw `with:`) that already went out on
+    // the fast path: resend the assembled request — no parameter parsing,
+    // token expansion, URL parsing or encoding.
+    if ctx.step_static && super::http_fast::enabled() {
+        if let Some(p) = super::http_fast::cached(ctx.run_epoch, ctx.step_key) {
+            let opts = super::http_fast::ReadOpts {
+                max_body_bytes: ctx.max_response_body_bytes,
+                body_kind,
+            };
+            let pool = super::http_fast::shard_pool(ctx.http_client_shard);
+            let (ms, res) = super::http_fast::exchange(pool, &p, opts).await;
+            match res {
+                Ok(super::http_fast::Exchange::Done(mut o)) => {
+                    o.duration_ms = ms;
+                    return http_output(Ok(o), body_kind, &p.method, &p.url, ctx, step_name);
+                }
+                Err(e) => {
+                    let err = Err((ms, ExchangeError::Fast(e)));
+                    return http_output(err, body_kind, &p.method, &p.url, ctx, step_name);
+                }
+                // A redirect: take the full path below (it re-issues the
+                // request and continues the chain through reqwest).
+                Ok(super::http_fast::Exchange::Redirect { .. }) => {}
+            }
+        }
+    }
     let method = params["method"].as_str().unwrap_or("GET").to_uppercase();
     let url = match params["url"].as_str() {
         Some(u) => u.to_string(),
@@ -857,69 +968,196 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         Err(_) => return err(step_name, &format!("invalid HTTP method '{method}'")),
     };
 
-    let client = match pool {
-        ClientPool::Dedicated => dedicated_client(ctx.vu_id, insecure, source_ip),
-        // Cheap Arc clone of a 'static shard/global client — one type for
-        // both pool paths below.
-        _ => client_with_source(pool, insecure, ctx.http_client_shard, source_ip).clone(),
-    };
-    let mut req = match parsed_url(&url) {
-        Some(parsed) => client.request(reqwest_method, parsed),
-        // Unparseable: let reqwest report it in its usual shape.
-        None => client.request(reqwest_method, &url),
-    }
-    .timeout(Duration::from_millis(timeout_ms));
-
-    if let Some(headers) = params["headers"].as_object() {
-        for (k, v) in headers {
+    // Expand headers and body once; both clients take them from here.
+    let mut headers: Vec<(String, String)> = Vec::new();
+    if let Some(obj) = params["headers"].as_object() {
+        for (k, v) in obj {
             if let Some(val) = v.as_str() {
-                let val = match expander.expand(val) {
-                    Ok(val) => val,
+                match expander.expand(val) {
+                    Ok(val) => headers.push((k.clone(), val)),
                     Err(msg) => return err(step_name, &msg),
-                };
-                req = req.header(k.as_str(), val);
+                }
             }
         }
     }
-
+    let mut multipart = None;
+    let mut body: Option<(&'static str, String)> = None;
     if !params["multipart"].is_null() {
         if !params["body"].is_null() {
             return err(step_name, "'body' and 'multipart' are mutually exclusive");
         }
         match build_multipart(&params["multipart"], step_name, ctx).await {
-            Ok(form) => req = req.multipart(form),
+            Ok(form) => multipart = Some(form),
             Err(out) => return out,
         }
     } else if !params["body"].is_null() {
         match &params["body"] {
-            Value::String(s) => {
-                let body = match expander.expand(s) {
-                    Ok(b) => b,
-                    Err(msg) => return err(step_name, &msg),
-                };
-                req = req.header("content-type", "text/plain").body(body);
-            }
-            other => {
-                let body = match expander.expand_value(other) {
-                    Ok(b) => b,
-                    Err(msg) => return err(step_name, &msg),
-                };
-                req = req
-                    .header("content-type", "application/json")
-                    .body(body.to_string());
-            }
+            Value::String(s) => match expander.expand(s) {
+                Ok(b) => body = Some(("text/plain", b)),
+                Err(msg) => return err(step_name, &msg),
+            },
+            other => match expander.expand_value(other) {
+                Ok(b) => body = Some(("application/json", b.to_string())),
+                Err(msg) => return err(step_name, &msg),
+            },
         }
     }
 
-    let mut out = match timed_exchange(req, BodyKind::Auto, ctx.max_response_body_bytes).await {
+    let timeout = Duration::from_millis(timeout_ms);
+    let parsed = parsed_url(&url);
+
+    // Native HTTP/1.1 fast path (see `http_fast`): http/https on the default
+    // shard pool, no multipart, no source-IP binding, valid header
+    // names/values. Everything else —
+    // and a redirect's continuation — goes through reqwest.
+    let fast = parsed.as_ref().filter(|u| {
+        super::http_fast::enabled()
+            && pool == ClientPool::PerVu
+            && source_ip.is_none()
+            && multipart.is_none()
+            && super::http_fast::eligible(u)
+            && headers.iter().all(|(k, v)| {
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()).is_ok()
+                    && reqwest::header::HeaderValue::from_str(v).is_ok()
+            })
+    });
+    let mut redirect: Option<(f64, u16, String)> = None;
+    let mut result = None;
+    if let Some(u) = fast {
+        let prepared = std::sync::Arc::new(super::http_fast::prepare(&super::http_fast::Request {
+            method: &method,
+            url: u,
+            headers: &headers,
+            body: body.as_ref().map(|(ct, b)| (*ct, b.as_bytes())),
+            timeout,
+            insecure,
+        }));
+        if ctx.step_static && announce.is_none() {
+            super::http_fast::remember(
+                ctx.run_epoch,
+                ctx.step_key,
+                std::sync::Arc::clone(&prepared),
+            );
+        }
+        let opts = super::http_fast::ReadOpts {
+            max_body_bytes: ctx.max_response_body_bytes,
+            body_kind,
+        };
+        let pool = super::http_fast::shard_pool(ctx.http_client_shard);
+        let (ms, res) = super::http_fast::exchange(pool, &prepared, opts).await;
+        match res {
+            Ok(super::http_fast::Exchange::Done(mut o)) => {
+                o.duration_ms = ms;
+                result = Some(Ok(o));
+            }
+            Ok(super::http_fast::Exchange::Redirect { status, location }) => {
+                redirect = Some((ms, status, location));
+            }
+            Err(e) => result = Some(Err((ms, ExchangeError::Fast(e)))),
+        }
+    }
+
+    let result = match result {
+        Some(r) => r,
+        None => {
+            let client = match pool {
+                ClientPool::Dedicated => dedicated_client(ctx.vu_id, insecure, source_ip),
+                // Cheap Arc clone of a 'static shard/global client — one type
+                // for both pool paths below.
+                _ => client_with_source(pool, insecure, ctx.http_client_shard, source_ip).clone(),
+            };
+            // A fast-path 3xx continues here with reqwest's redirect rules:
+            // 303 (and 301/302 for POST) become a body-less GET, 307/308
+            // keep method and body; credentials are dropped cross-host.
+            let (offset_ms, target, method_now, keep_body, cross_host) = match &redirect {
+                Some((ms, status, location)) => {
+                    let next = parsed.as_ref().and_then(|base| base.join(location).ok());
+                    let Some(next) = next else {
+                        return err(
+                            step_name,
+                            &format!("invalid redirect location '{location}'"),
+                        );
+                    };
+                    let to_get = *status == 303 && method != "HEAD"
+                        || matches!(*status, 301 | 302) && method == "POST";
+                    let cross = parsed
+                        .as_ref()
+                        .map(|b| (b.host_str(), b.port_or_known_default()))
+                        != Some((next.host_str(), next.port_or_known_default()));
+                    let m = if to_get {
+                        reqwest::Method::GET
+                    } else {
+                        reqwest_method.clone()
+                    };
+                    (*ms, Some(next), m, !to_get, cross)
+                }
+                None => (0.0, None, reqwest_method.clone(), true, false),
+            };
+            let mut req = match (target, &parsed) {
+                (Some(next), _) => client.request(method_now, next),
+                (None, Some(p)) => client.request(method_now, p.clone()),
+                // Unparseable: let reqwest report it in its usual shape.
+                (None, None) => client.request(method_now, &url),
+            }
+            .timeout(timeout);
+            for (k, v) in &headers {
+                if cross_host
+                    && [
+                        "authorization",
+                        "cookie",
+                        "proxy-authorization",
+                        "www-authenticate",
+                    ]
+                    .iter()
+                    .any(|h| k.eq_ignore_ascii_case(h))
+                {
+                    continue;
+                }
+                req = req.header(k.as_str(), v.as_str());
+            }
+            if let Some(form) = multipart {
+                req = req.multipart(form);
+            } else if let Some((ct, b)) = body.filter(|_| keep_body) {
+                req = req.header("content-type", ct).body(b);
+            }
+            match timed_exchange(req, body_kind, ctx.max_response_body_bytes).await {
+                Ok(mut o) => {
+                    o.duration_ms += offset_ms;
+                    Ok(o)
+                }
+                Err((ms, e)) => Err((ms + offset_ms, e)),
+            }
+        }
+    };
+    let mut out = http_output(result, body_kind, &method, &url, ctx, step_name);
+    if let Some(line) = announce {
+        out.logs.insert(0, (LogTag::Out, line));
+    }
+    out
+}
+
+/// The `std/http@v1` action output for an exchange result.
+fn http_output(
+    result: Result<HttpOutcome, (f64, ExchangeError)>,
+    body_kind: BodyKind,
+    method: &str,
+    url: &str,
+    ctx: &Context,
+    step_name: &str,
+) -> ActionOutput {
+    match result {
         Ok(out) => {
             let failed = out.status >= 400;
-            let mut value = json!({
-                "status": out.status,
-                "body": out.body,
-                "duration_ms": out.duration_ms,
-                "headers": out.headers,
-            });
+            let mut value = if body_kind == BodyKind::Discard {
+                json!({ "status": out.status, "duration_ms": out.duration_ms })
+            } else {
+                json!({
+                    "status": out.status,
+                    "body": out.body,
+                    "duration_ms": out.duration_ms,
+                    "headers": out.headers,
+                })
+            };
             if let Some(b64) = out.body_base64 {
                 value["body_base64"] = Value::String(b64);
             }
@@ -929,7 +1167,7 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
             let logs = if failed || !ctx.quiet {
                 vec![(
                     if failed { LogTag::Err } else { LogTag::Out },
-                    request_line(&method, &url, out.status, out.reason, out.duration_ms, ""),
+                    request_line(method, url, out.status, out.reason, out.duration_ms, ""),
                 )]
             } else {
                 Vec::new()
@@ -945,12 +1183,8 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
                 }),
             }
         }
-        Err((duration_ms, e)) => exchange_error(step_name, &method, &url, &e, duration_ms),
-    };
-    if let Some(line) = announce {
-        out.logs.insert(0, (LogTag::Out, line));
+        Err((duration_ms, e)) => exchange_error(step_name, method, url, &e, duration_ms),
     }
-    out
 }
 
 /// Map an exchange failure to the action output: transport errors report
@@ -967,6 +1201,20 @@ pub fn exchange_error(
 ) -> ActionOutput {
     match e {
         ExchangeError::Transport(e) => transport_error(step_name, method, url, e, duration_ms),
+        ExchangeError::Fast(super::http_fast::FastError::BodyTooLarge { limit, status }) => {
+            exchange_error(
+                step_name,
+                method,
+                url,
+                &ExchangeError::BodyTooLarge {
+                    limit: *limit,
+                    status: *status,
+                },
+                duration_ms,
+            )
+        }
+        ExchangeError::Fast(fe) => fast_transport_error(method, url, fe, duration_ms),
+
         ExchangeError::BodyTooLarge { limit, status } => {
             let msg = format!(
                 "{method} {url} → response body exceeds max_response_body_bytes ({limit} bytes) after {duration_ms:.2}ms"

@@ -177,9 +177,65 @@ impl LabeledSeries {
     }
 }
 
+/// The label set of engine-internal series (no step).
+static EMPTY_LABELS: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+
 /// The `(name, labels)` key of a label-aware series. Labels are the step's
 /// own labels (reporter/run labels merge at export time).
 pub type SeriesKey = (String, std::collections::BTreeMap<String, String>);
+
+/// Borrowed view of a [`SeriesKey`], so the per-request hot path can look a
+/// series up by `(&str, &labels)` without allocating the owned key (a
+/// `String` plus a label-map clone per lookup — twice per HTTP request).
+/// Ordering matches the tuple's derived `Ord` (name, then labels), which is
+/// what makes `BTreeMap::get_mut(&dyn SeriesKeyRef)` sound.
+pub(crate) trait SeriesKeyRef {
+    fn name(&self) -> &str;
+    fn labels(&self) -> &std::collections::BTreeMap<String, String>;
+}
+
+impl SeriesKeyRef for SeriesKey {
+    fn name(&self) -> &str {
+        &self.0
+    }
+    fn labels(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.1
+    }
+}
+
+impl SeriesKeyRef for (&str, &std::collections::BTreeMap<String, String>) {
+    fn name(&self) -> &str {
+        self.0
+    }
+    fn labels(&self) -> &std::collections::BTreeMap<String, String> {
+        self.1
+    }
+}
+
+impl<'a> std::borrow::Borrow<dyn SeriesKeyRef + 'a> for SeriesKey {
+    fn borrow(&self) -> &(dyn SeriesKeyRef + 'a) {
+        self
+    }
+}
+
+impl PartialEq for dyn SeriesKeyRef + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.name() == other.name() && self.labels() == other.labels()
+    }
+}
+impl Eq for dyn SeriesKeyRef + '_ {}
+impl PartialOrd for dyn SeriesKeyRef + '_ {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for dyn SeriesKeyRef + '_ {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.name()
+            .cmp(other.name())
+            .then_with(|| self.labels().cmp(other.labels()))
+    }
+}
 
 /// Per-run HTTP metrics accumulator.
 ///
@@ -278,15 +334,29 @@ impl Metrics {
         s: &crate::step::actions::HttpSample,
         labels: &std::collections::BTreeMap<String, String>,
     ) {
-        let key = ("http_req_duration".to_string(), labels.clone());
-        self.labeled
-            .entry(key)
-            .or_insert_with(LabeledSeries::sample)
+        self.series_mut("http_req_duration", labels, LabeledSeries::sample)
             .record_sample(s.duration_ms);
-        let key = ("http_req_failed".to_string(), labels.clone());
-        let e = self.labeled.entry(key).or_insert_with(LabeledSeries::rate);
+        let e = self.series_mut("http_req_failed", labels, LabeledSeries::rate);
         e.rate.0 += 1;
         e.rate.1 += s.failed as u64;
+    }
+
+    /// The `(name, labels)` series, created by `make` on first use. The
+    /// lookup borrows (see [`SeriesKeyRef`]); only a first insert allocates
+    /// the owned key.
+    fn series_mut(
+        &mut self,
+        name: &str,
+        labels: &std::collections::BTreeMap<String, String>,
+        make: fn() -> LabeledSeries,
+    ) -> &mut LabeledSeries {
+        let probe = (name, labels);
+        let key: &dyn SeriesKeyRef = &probe;
+        if !self.labeled.contains_key(key) {
+            self.labeled
+                .insert((name.to_string(), labels.clone()), make());
+        }
+        self.labeled.get_mut(key).expect("inserted above")
     }
 
     /// Fold a step's custom `metrics` object into the run aggregates. A
@@ -378,21 +448,14 @@ impl Metrics {
         for (name, v) in obj {
             match v {
                 Value::Array(samples) => {
-                    let key = (name.clone(), labels.clone());
-                    let series = self
-                        .labeled
-                        .entry(key)
-                        .or_insert_with(LabeledSeries::sample);
+                    let series = self.series_mut(name, labels, LabeledSeries::sample);
                     for s in samples.iter().filter_map(|s| s.as_f64()) {
                         series.record_sample(s);
                     }
                 }
                 _ => {
                     if let Some(x) = v.as_f64() {
-                        let key = (name.clone(), labels.clone());
-                        self.labeled
-                            .entry(key)
-                            .or_insert_with(LabeledSeries::counter)
+                        self.series_mut(name, labels, LabeledSeries::counter)
                             .counter += x;
                     }
                 }
@@ -400,8 +463,7 @@ impl Metrics {
         }
         for name in rates {
             self.record_rate(name, failed);
-            let key = (name.to_string(), labels.clone());
-            let series = self.labeled.entry(key).or_insert_with(LabeledSeries::rate);
+            let series = self.series_mut(name, labels, LabeledSeries::rate);
             series.rate.0 += 1;
             series.rate.1 += failed as u64;
         }
@@ -431,10 +493,7 @@ impl Metrics {
             .record(micros.clamp(HIST_LOW_MICROS, HIST_HIGH_MICROS));
         // Label-aware series too (engine-internal producers have no step —
         // empty labels), so the streaming exporters see the probe's metrics.
-        let key = (name.to_string(), std::collections::BTreeMap::new());
-        self.labeled
-            .entry(key)
-            .or_insert_with(LabeledSeries::sample)
+        self.series_mut(name, &EMPTY_LABELS, LabeledSeries::sample)
             .record_sample(ms);
     }
 
@@ -450,10 +509,7 @@ impl Metrics {
         // Gauges surface as counter-like series for the streaming exporters
         // (same as `metric_snapshot`'s gauge-as-counter view); last write
         // wins, matching the aggregate store.
-        let key = (name.to_string(), std::collections::BTreeMap::new());
-        self.labeled
-            .entry(key)
-            .or_insert_with(LabeledSeries::gauge)
+        self.series_mut(name, &EMPTY_LABELS, LabeledSeries::gauge)
             .counter = value;
     }
 
@@ -748,5 +804,53 @@ impl Metrics {
             line.push_str(&family.stats_extras(self));
         }
         line
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn l(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// The borrowed key orders exactly like the owned tuple, so lookups by
+    /// `(&str, &labels)` find what owned inserts stored.
+    #[test]
+    fn series_key_ref_matches_tuple_order() {
+        let keys: Vec<SeriesKey> = vec![
+            ("a".into(), l(&[])),
+            ("a".into(), l(&[("x", "1")])),
+            ("a".into(), l(&[("x", "2")])),
+            ("a".into(), l(&[("x", "1"), ("y", "0")])),
+            ("b".into(), l(&[])),
+        ];
+        for a in &keys {
+            for b in &keys {
+                let (ra, rb): (&dyn SeriesKeyRef, &dyn SeriesKeyRef) = (a, b);
+                assert_eq!(a.cmp(b), ra.cmp(rb), "{a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn record_labeled_reuses_series() {
+        let mut m = Metrics::default();
+        let labels = l(&[("step", "login")]);
+        let s = crate::step::actions::HttpSample {
+            duration_ms: 2.0,
+            status: 200,
+            failed: false,
+        };
+        m.record_labeled(&s, &labels);
+        m.record_labeled(&s, &labels);
+        assert_eq!(m.labeled.len(), 2, "duration + failed, no duplicates");
+        let rate = &m.labeled[&("http_req_failed".to_string(), labels)];
+        assert_eq!(rate.rate, (2, 0));
     }
 }

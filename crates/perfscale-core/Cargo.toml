@@ -95,6 +95,9 @@ snap = "1"
 # Codec buffers for the hand-written OTLP gRPC codec (already in the tree
 # via tonic; made direct because report/otel.rs names the types).
 bytes = "1"
+# Native HTTP/1.1 fast path (step/http_fast.rs): response parsing and gzip.
+httparse = "1"
+flate2 = "1"
 # Client-only (server reflection protocol for `reflection: true`); the test
 # server pulls the default `server` feature back in as a dev-dependency.
 tonic-reflection = { version = "0.14.6", default-features = false }
