@@ -496,6 +496,10 @@ pub enum BodyKind {
     /// Always decode as text — for JSON APIs whose bodies are UTF-8 by
     /// contract (GraphQL).
     Text,
+    /// Nobody reads the output beyond the status (see
+    /// [`Context::lean_output`]): read the body to completion (keep-alive,
+    /// the size cap) but keep neither it nor a header snapshot.
+    Discard,
 }
 
 /// Default response body cap for HTTP-family steps (the
@@ -552,6 +556,25 @@ async fn read_body_capped(
     Ok(buf)
 }
 
+/// [`read_body_capped`] without keeping the bytes.
+async fn drain_body_capped(
+    resp: &mut reqwest::Response,
+    limit: u64,
+    status: u16,
+) -> Result<(), ExchangeError> {
+    if resp.content_length().is_some_and(|len| len > limit) {
+        return Err(ExchangeError::BodyTooLarge { limit, status });
+    }
+    let mut seen = 0usize;
+    while let Some(chunk) = resp.chunk().await.map_err(ExchangeError::Transport)? {
+        seen += chunk.len();
+        if seen > limit as usize {
+            return Err(ExchangeError::BodyTooLarge { limit, status });
+        }
+    }
+    Ok(())
+}
+
 /// Send `req`, timing the whole exchange (connect → body read). A transport
 /// error returns `(elapsed_ms, error)` so the caller reports timing and the
 /// failure from one code path. Bodies over `max_body_bytes` fail with
@@ -573,6 +596,19 @@ pub async fn timed_exchange(
     };
     let status = resp.status().as_u16();
     let reason = resp.status().canonical_reason().unwrap_or("");
+    if body_kind == BodyKind::Discard {
+        if let Err(e) = drain_body_capped(&mut resp, max_body_bytes, status).await {
+            return Err((t0.elapsed().as_secs_f64() * 1000.0, e));
+        }
+        return Ok(HttpOutcome {
+            status,
+            reason,
+            headers: serde_json::Map::new(),
+            duration_ms: t0.elapsed().as_secs_f64() * 1000.0,
+            body: String::new(),
+            body_base64: None,
+        });
+    }
     let headers = header_map_to_json(resp.headers());
 
     let bytes = match read_body_capped(&mut resp, max_body_bytes, status).await {
@@ -585,7 +621,7 @@ pub async fn timed_exchange(
     // The capped buffer is moved into the String when it is valid UTF-8 (one
     // validation, no copy); only an invalid buffer pays the lossy re-encode.
     let (body, body_base64) = match body_kind {
-        BodyKind::Text => (utf8_or_lossy(bytes), None),
+        BodyKind::Text | BodyKind::Discard => (utf8_or_lossy(bytes), None),
         BodyKind::Auto => {
             // Textual payloads keep the historic `body` string; binary
             // payloads surface as `body_base64` so protobuf descriptor sets,
@@ -911,15 +947,24 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
         }
     }
 
-    let mut out = match timed_exchange(req, BodyKind::Auto, ctx.max_response_body_bytes).await {
+    let body_kind = if ctx.lean_output {
+        BodyKind::Discard
+    } else {
+        BodyKind::Auto
+    };
+    let mut out = match timed_exchange(req, body_kind, ctx.max_response_body_bytes).await {
         Ok(out) => {
             let failed = out.status >= 400;
-            let mut value = json!({
-                "status": out.status,
-                "body": out.body,
-                "duration_ms": out.duration_ms,
-                "headers": out.headers,
-            });
+            let mut value = if body_kind == BodyKind::Discard {
+                json!({ "status": out.status, "duration_ms": out.duration_ms })
+            } else {
+                json!({
+                    "status": out.status,
+                    "body": out.body,
+                    "duration_ms": out.duration_ms,
+                    "headers": out.headers,
+                })
+            };
             if let Some(b64) = out.body_base64 {
                 value["body_base64"] = Value::String(b64);
             }

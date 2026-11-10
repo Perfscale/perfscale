@@ -94,6 +94,16 @@ pub struct Context {
     /// library call contexts. 0 in hand-built contexts.
     pub(crate) vu_id: u64,
     pub(crate) iteration_seq: u64,
+    /// The test may read a step's full output via `__last__` (a reference
+    /// anywhere in the steps, or a standalone `std/check` step, which reads
+    /// `__last__` by default). `true` — the conservative default — in every
+    /// hand-built context; the VU runner clears it after scanning the test.
+    pub(crate) test_reads_last: bool,
+    /// Set per step by the runner: nothing will read this step's output
+    /// beyond `status`/`duration_ms` (no `outputs:`, no `check:`, no
+    /// `__last__` reader, no `http_debug`). HTTP actions then skip header
+    /// snapshots and body decoding — the response is still read in full.
+    pub(crate) lean_output: bool,
     /// Counts generators minted by this context — the `conn_seq` input of the
     /// per-instance seed derivation.
     gen_counter: Arc<std::sync::atomic::AtomicU64>,
@@ -136,6 +146,8 @@ impl Default for Context {
             settings_json: Arc::from("{}"),
             vu_id: 0,
             iteration_seq: 0,
+            test_reads_last: true,
+            lean_output: false,
             gen_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             unseeded_gen_base: Arc::new(std::sync::OnceLock::new()),
             rate_names: HashMap::new(),

@@ -693,8 +693,10 @@ pub async fn run_native(
         Schedule::Fixed { .. } => None,
         _ => Some(Arc::new(AtomicU64::new(0))),
     };
+    let test_reads_last = steps_read_last(&steps);
     let shared = VuShared {
         steps,
+        test_reads_last,
         metrics: Arc::clone(&metrics),
         iter_count: Arc::clone(&iter_count),
         config_seed: Arc::clone(&config_seed),
@@ -1299,6 +1301,8 @@ impl StreamProgress {
 /// per spawn.
 struct VuShared {
     steps: Arc<Vec<Step>>,
+    /// See [`Context::test_reads_last`] — computed once per run.
+    test_reads_last: bool,
     metrics: Arc<ShardedMetrics>,
     iter_count: Arc<AtomicU64>,
     config_seed: Arc<Value>,
@@ -1341,6 +1345,7 @@ impl VuShared {
     /// file/process gates, and the VU's HTTP client shard.
     fn base_context(&self, vu_id: u32) -> Context {
         let mut ctx = Context::new();
+        ctx.test_reads_last = self.test_reads_last;
         ctx.http_client_shard = (vu_id as usize - 1) % crate::step::actions::client_shard_count();
         ctx.allow_file_actions = self.allow_file_actions;
         ctx.allow_process_actions = self.allow_process_actions;
@@ -2268,6 +2273,10 @@ async fn execute_step(
         }
     }
     let params = step_params(step);
+    ctx.lean_output = !ctx.test_reads_last
+        && step.outputs.is_none()
+        && step.check.is_none()
+        && !http_debug_errors;
 
     let step_start = Instant::now();
     let output = execute_action(action, &params, ctx, step_name).await;
@@ -2444,6 +2453,18 @@ async fn execute_step(
 /// step-level `severity`/`message` fields (used by `std/thresholds@v1`)
 /// merged in so actions read one flat parameter set. Borrows unless a merge
 /// is actually needed, keeping the per-iteration hot path allocation-free.
+/// Whether any step can read another step's full output through
+/// `__last__`: an explicit `__last__` reference anywhere in the step
+/// definitions (params, conditions, checks), or a standalone `std/check`
+/// step (it inspects `__last__` by default). Conservative: a false positive
+/// only costs the lean-output optimisation.
+fn steps_read_last(steps: &[Step]) -> bool {
+    steps.iter().any(|s| {
+        matches!(s.action.as_str(), "std/check@v1" | "check")
+            || serde_json::to_string(s).is_ok_and(|j| j.contains("__last__"))
+    })
+}
+
 fn step_params(step: &Step) -> std::borrow::Cow<'_, Value> {
     if step.severity.is_none() && step.message.is_none() {
         return match &step.with {
@@ -3497,6 +3518,21 @@ mod tests {
             lines.iter().any(|l| l.text.contains("dropped iteration")),
             "throttled drop warning: {lines:?}"
         );
+    }
+
+    /// Lean output is only legal when nothing reads `__last__`: a reference
+    /// anywhere (here a later step's URL) or a standalone `std/check` step
+    /// keeps full outputs.
+    #[test]
+    fn steps_read_last_detects_readers() {
+        let step = |v: serde_json::Value| -> Step { serde_json::from_value(v).unwrap() };
+        let plain = step(json!({"use": "std/http@v1", "with": {"url": "http://x/a"}}));
+        let reader =
+            step(json!({"use": "std/http@v1", "with": {"url": "http://x/${{ __last__.body }}"}}));
+        let check = step(json!({"use": "std/check@v1", "with": {"status": 200}}));
+        assert!(!steps_read_last(std::slice::from_ref(&plain)));
+        assert!(steps_read_last(&[plain.clone(), reader]));
+        assert!(steps_read_last(&[plain, check]));
     }
 
     /// `co_correct: true` (zrk semantics): a saturated pool queues permits
