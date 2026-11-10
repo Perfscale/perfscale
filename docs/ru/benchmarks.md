@@ -297,7 +297,7 @@ OUTPUT=report.md RESULTS=results.json ./scripts/bench.sh
 | `STARTUP_DURATION` / `STARTUP_RUNS` | `1s` / `5` | Длительность прогона / число замеров набора startup |
 | `SCALING_VUS` / `SCALING_DURATION` | `10 50 200` / `10s` | Точки развёртки VU / длительность на точку |
 | `SAT_VUS` / `SAT_DURATION` | `256` / `15s` | VU насыщения / длительность прогона |
-| `LAT_RATE` / `LAT_CONNS` / `LAT_DURATION` | `10000` / `256` / `20s` | Suite latency: фиксированная частота (req/s), соединения = VU perfscale, длительность удержания (perfscale добавляет 1s разгона) |
+| `LAT_RATE` / `LAT_CONNS` / `LAT_DURATION` | `10000` / `256` / `20s` | Suite latency: фиксированная частота (req/s), соединения = VU perfscale, длительность удержания (perfscale добавляет 1s разгона). В CI: входы workflow `latency_rate` / `latency_duration` |
 | `YAML_DURATION` / `TLS_DURATION` | `10s` / `10s` | Длительность на сценарий в этих наборах |
 | `LIB_DURATION` / `GRPC_DURATION` / `GQL_DURATION` | по `10s` | Длительность на сценарий в наборах library / grpc / graphql |
 | `WS_DURATION` / `WS_ROUNDS` | `10s` / `10` | Длительность прогона набора ws / эхо-циклов на соединение |

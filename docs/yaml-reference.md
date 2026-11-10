@@ -378,7 +378,8 @@ A permit that arrives while all `max_vus` workers are busy is dropped and
 counted in the `dropped_iterations` summary metric (plus a warning logged at
 most once per 5s) — raise `max_vus` or lower the rate when it grows.
 
-Set `co_correct: true` for zrk/wrk2-style coordinated-omission correction:
+`co_correct` defaults to `false`. Set `co_correct: true` for zrk/wrk2-style
+coordinated-omission correction:
 saturated permits are queued instead of dropped, so a stall shows up as
 latency in `engine_arrival_iteration_ms` / `engine_arrival_queue_wait_ms`
 (both measured from the *scheduled* start) instead of disappearing into
@@ -392,7 +393,7 @@ off for k6-compatible drop semantics.
 ```yaml
 arrival:
   max_vus: 1024
-  co_correct: true
+  co_correct: true          # default false (k6-style drop on saturation)
   stages:
     - { duration: 1s,  rate: 10000 }
     - { duration: 20s, rate: 10000 }

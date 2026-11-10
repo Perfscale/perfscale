@@ -384,7 +384,8 @@ arrival:
 лог не чаще раза в 5 с) — увеличьте `max_vus` или снизьте частоту, если она
 растёт.
 
-`co_correct: true` включает коррекцию coordinated omission в стиле zrk/wrk2:
+По умолчанию `co_correct: false`. `co_correct: true` включает коррекцию
+coordinated omission в стиле zrk/wrk2:
 разрешения при насыщенном пуле ставятся в очередь, а не отбрасываются, поэтому
 подвисание видно как задержка в `engine_arrival_iteration_ms` /
 `engine_arrival_queue_wait_ms` (обе считаются от *запланированного* старта), а
@@ -397,7 +398,7 @@ arrival:
 ```yaml
 arrival:
   max_vus: 1024
-  co_correct: true
+  co_correct: true          # по умолчанию false (отбрасывание при насыщении, как в k6)
   stages:
     - { duration: 1s,  rate: 10000 }
     - { duration: 20s, rate: 10000 }

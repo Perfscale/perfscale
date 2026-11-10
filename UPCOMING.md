@@ -26,6 +26,53 @@ or keeping the script on the k6 runner). Existing outputs are protected unless
 `--force` is passed; scripts outside the static subset continue to run through
 `perfscale run --k6`.
 
+## Arrival: coordinated-omission correction (`co_correct`)
+
+`arrival.co_correct: true` gives zrk/wrk2-style latency for open-model runs:
+a permit that finds the pool saturated is queued instead of dropped, so a
+stall shows up as latency in `engine_arrival_iteration_ms` (measured from the
+scheduled start) rather than vanishing into `dropped_iterations`, and the
+dispatcher paces with sub-millisecond precision. Against HttpArena's actix at
+10k req/s the p50 matches zrk (0.43 ms vs 1.69 ms in the default mode). The
+default stays k6-compatible drop-on-saturation; permits still queued at the
+deadline now count as dropped in both modes.
+
+## Faster engine on multi-core machines
+
+VUs now run on one single-threaded event loop per HTTP client shard (the
+gcannon/zrk model) instead of the work-stealing runtime, which kept a VU and
+its connection on different threads and paid a cross-thread wakeup per
+request. The CLI also switches to mimalloc and caches parsed URLs. On Linux
+CI: +9–10% RPS at 200–256 VUs and −13% CPU at saturation (2.14× k6).
+`PERFSCALE_VU_RUNTIME=shared` restores the old executor. Peak RSS is higher
+(~60 MiB vs ~29 MiB at 10 VUs) — mimalloc keeps per-thread segments.
+
+## Native HTTP/1.1 fast path
+
+`std/http@v1` requests to `http://` and `https://` on the default pool now go
+through a native HTTP/1.1 client: one buffer out and the response parsed in
+the VU's own task. There is no hyper connection task, no channel hop and no
+tower layers. Static steps reuse their assembled request, lean outputs skip
+body decoding when nothing reads the response, and labeled metrics are
+recorded without allocations. On Linux CI at 10 VUs, perfscale (quiet) now
+does 144k req/s at 10.5 µs CPU per request (zrk: 142k at 13.0 µs). At 256 VUs
+it reaches 205k req/s (0.94× zrk), and HTTPS does 117k req/s (k6: 62k).
+`co_correct` pacing moved to a dedicated thread (CPU 39.9 s → 11.8 s at
+10k req/s). `PERFSCALE_HTTP_CLIENT=reqwest` turns the fast path off.
+
+## Fix: generated values repeated across iterations
+
+Without `seed:`, consecutive generators could share one random stream, so
+`${uuid}` and `@std/random` values repeated between steps of consecutive
+iterations — a create-by-unique-name test (e.g. Kubernetes resources) hit
+409 Conflict from the second iteration on. Unseeded runs now hash their
+seeds like seeded ones.
+
+- Benchmarks: zrk (HttpArena's open-model, CO-corrected generator) joins
+  the throughput/saturation tables in `--closed` mode, and a new `latency`
+  suite compares fixed-rate, CO-corrected latency: zrk `-R` vs perfscale
+  `co_correct` vs the default drop-on-saturation arrival (`LAT_RATE`,
+  `LAT_CONNS`, `LAT_DURATION`).
 - Benchmarks: gcannon — HttpArena's io_uring HTTP/1.1 load generator —
   joins the throughput and saturation tables as a competitor engine (`APPS`
   default now includes `gcannon`; Linux only, built from pinned tags against

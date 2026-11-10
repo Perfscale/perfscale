@@ -39,6 +39,40 @@ runs keep the historical formats unchanged.
 - Per-VU `Context` — step outputs and `${{ }}` interpolation are isolated
   between VUs, persistent across iterations of the same VU
 
+### HTTP engine
+
+`std/http@v1` has two clients behind one action:
+
+- **Native HTTP/1.1 fast path** (default for `http://` and `https://` on the
+  default `pool`). Each VU writes the request as one buffer and parses the
+  response in its own task. Keep-alive connections live in a per-shard idle
+  pool: up to 64 idle per host, closed after 60s idle. TLS is rustls on ring
+  with the webpki roots, or accepts any certificate for `insecure: true`.
+  The wire format and outputs match the reqwest path: `accept`,
+  `accept-encoding: gzip` with transparent decoding, `host`,
+  `content-length`, chunked and EOF bodies, the step `timeout` and
+  `max_response_body_bytes`.
+- **reqwest** handles everything else: `multipart`, `source_ips`,
+  credentials in the URL, `pool: shared` / `pool: dedicated`, and the
+  continuation of a redirect (from the first 3xx on).
+
+Two further optimisations apply automatically:
+
+- **Static steps.** A step whose raw `with:` has no `${…}` (no
+  interpolation, no generator tokens) reuses its assembled request.
+- **Lean outputs.** When no step reads `__last__` and there is no standalone
+  `std/check` step, a step without `outputs:` / `check:` records only
+  `status` and `duration_ms`. The body is still read in full, just not
+  decoded.
+
+VUs run on one single-threaded event loop per HTTP client shard (the
+gcannon/zrk model) instead of the work-stealing runtime.
+
+| Environment variable | Effect |
+|---|---|
+| `PERFSCALE_HTTP_CLIENT=reqwest` | Disable the fast path; every request goes through reqwest |
+| `PERFSCALE_VU_RUNTIME=shared` | Run VUs on the ambient multi-thread runtime (the pre-0.32 executor) |
+
 ### Exit marker on agent streams
 
 When a run executes through the machine agent (`perfscaled`), every engine's
