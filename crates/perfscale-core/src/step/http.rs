@@ -1006,7 +1006,7 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
     let timeout = Duration::from_millis(timeout_ms);
     let parsed = parsed_url(&url);
 
-    // Native HTTP/1.1 fast path (see `http_fast`): plain http on the default
+    // Native HTTP/1.1 fast path (see `http_fast`): http/https on the default
     // shard pool, no multipart, no source-IP binding, valid header
     // names/values. Everything else —
     // and a redirect's continuation — goes through reqwest.
@@ -1030,6 +1030,7 @@ pub(crate) async fn http_action(params: &Value, step_name: &str, ctx: &Context) 
             headers: &headers,
             body: body.as_ref().map(|(ct, b)| (*ct, b.as_bytes())),
             timeout,
+            insecure,
         }));
         if ctx.step_static && announce.is_none() {
             super::http_fast::remember(

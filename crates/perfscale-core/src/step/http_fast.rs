@@ -7,7 +7,8 @@
 //! generators (zrk, gcannon) do none of that — one connection, one loop,
 //! bytes in and out.
 //!
-//! This module is that loop for plain `http://` requests on the default
+//! This module is that loop for `http://` and `https://` (rustls, ring,
+//! webpki roots, ALPN `http/1.1` — reqwest's TLS stack) requests on the default
 //! (`per-vu`, sharded) pool: keep-alive connections live in a per-shard idle
 //! pool — the same sharing as the shard's `reqwest::Client`, and with the
 //! thread-per-core executor one shard is one thread, so the pool lock is
@@ -30,8 +31,9 @@
 //!   redirect chain through reqwest (method rewriting, the 10-hop cap,
 //!   cross-host header stripping all stay reqwest's).
 //!
-//! Everything else — `https://`, `multipart`, `source_ips`, credentials in
-//! the URL — stays on reqwest (see [`eligible`]). `PERFSCALE_HTTP_CLIENT=
+//! Everything else — `multipart`, `source_ips`, credentials in the URL, the
+//! shared/dedicated pools — stays on reqwest (see [`eligible`]). Verified
+//! and `insecure` connections never share a pool entry. `PERFSCALE_HTTP_CLIENT=
 //! reqwest` disables the fast path entirely.
 
 use std::io::Read as _;
@@ -56,11 +58,98 @@ const MAX_IDLE_PER_HOST: usize = 64;
 /// reqwest's `pool_idle_timeout`.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// A connection's transport: plain TCP or TLS over TCP.
+enum Stream {
+    Plain(TcpStream),
+    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+}
+
+impl std::fmt::Debug for Stream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Stream::Plain(_) => "Stream::Plain",
+            Stream::Tls(_) => "Stream::Tls",
+        })
+    }
+}
+
+impl tokio::io::AsyncRead for Stream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Stream::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            Stream::Tls(s) => std::pin::Pin::new(s.as_mut()).poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for Stream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Stream::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            Stream::Tls(s) => std::pin::Pin::new(s.as_mut()).poll_write(cx, buf),
+        }
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Stream::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
+            Stream::Tls(s) => std::pin::Pin::new(s.as_mut()).poll_flush(cx),
+        }
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Stream::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            Stream::Tls(s) => std::pin::Pin::new(s.as_mut()).poll_shutdown(cx),
+        }
+    }
+}
+
+/// rustls client configs (ring, ALPN `http/1.1`): `[verified, insecure]`.
+/// Verified uses the webpki roots — reqwest's `rustls-tls` trust store.
+fn tls_config(insecure: bool) -> Result<Arc<rustls::ClientConfig>, FastError> {
+    static CONFIGS: OnceLock<Result<[Arc<rustls::ClientConfig>; 2], String>> = OnceLock::new();
+    let configs = CONFIGS.get_or_init(|| {
+        let alpn = |mut c: rustls::ClientConfig| {
+            c.alpn_protocols = vec![b"http/1.1".to_vec()];
+            Arc::new(c)
+        };
+        let roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        let verified = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let insecure = super::ws::no_verify_tls_config()?;
+        Ok([alpn(verified), alpn(insecure)])
+    });
+    match configs {
+        Ok(c) => Ok(Arc::clone(&c[insecure as usize])),
+        Err(e) => Err(FastError::Io(format!("tls config error: {e}"))),
+    }
+}
+
 /// One keep-alive connection owned by a VU.
 #[derive(Debug)]
 pub(crate) struct Conn {
     key: String,
-    stream: TcpStream,
+    stream: Stream,
     /// Bytes read past the previous response (never expected without
     /// pipelining, kept for correctness).
     buf: Vec<u8>,
@@ -87,9 +176,9 @@ pub(crate) fn enabled() -> bool {
     *ON.get_or_init(|| std::env::var("PERFSCALE_HTTP_CLIENT").as_deref() != Ok("reqwest"))
 }
 
-/// The fast path handles plain `http://` URLs without credentials.
+/// The fast path handles `http://` and `https://` URLs without credentials.
 pub(crate) fn eligible(url: &reqwest::Url) -> bool {
-    url.scheme() == "http"
+    matches!(url.scheme(), "http" | "https")
         && url.username().is_empty()
         && url.password().is_none()
         && url.host_str().is_some()
@@ -104,6 +193,8 @@ pub(crate) struct Request<'a> {
     /// `(content-type, body)`.
     pub body: Option<(&'static str, &'a [u8])>,
     pub timeout: Duration,
+    /// Skip TLS certificate verification (`insecure: true`).
+    pub insecure: bool,
 }
 
 /// Fast-path failure, mapped by the caller like a reqwest transport error.
@@ -135,6 +226,8 @@ pub(crate) struct Prepared {
     key: String,
     host: String,
     port: u16,
+    /// `Some(insecure)` for https.
+    tls: Option<bool>,
     wire: Vec<u8>,
     head: bool,
     pub timeout: Duration,
@@ -147,10 +240,17 @@ pub(crate) struct Prepared {
 pub(crate) fn prepare(req: &Request<'_>) -> Prepared {
     let host = req.url.host_str().unwrap_or_default();
     let port = req.url.port_or_known_default().unwrap_or(80);
+    let tls = (req.url.scheme() == "https").then_some(req.insecure);
+    let mode = match tls {
+        None => "http",
+        Some(false) => "https",
+        Some(true) => "https+insecure",
+    };
     Prepared {
-        key: format!("{host}:{port}"),
+        key: format!("{mode}://{host}:{port}"),
         host: host.to_owned(),
         port,
+        tls,
         wire: encode(req, host, req.url.port()),
         head: req.method == "HEAD",
         timeout: req.timeout,
@@ -218,6 +318,7 @@ async fn exchange_inner(
     opts: ReadOpts,
 ) -> Result<Exchange, FastError> {
     let (key, host, port, wire) = (p.key.as_str(), p.host.as_str(), p.port, &p.wire);
+    let tls = p.tls;
 
     // A pooled connection may have been closed by the server while idle;
     // that surfaces as a write error or EOF before the first response byte.
@@ -226,11 +327,11 @@ async fn exchange_inner(
     let reused = pooled.is_some();
     let mut conn = match pooled {
         Some(c) => c,
-        None => connect(key, host, port).await?,
+        None => connect(key, host, port, tls).await?,
     };
     let mut attempt = round_trip(&mut conn, wire, p.head, opts).await;
     if reused && matches!(attempt, Err(RoundTripError::Stale(_))) {
-        conn = connect(key, host, port).await?;
+        conn = connect(key, host, port, tls).await?;
         attempt = round_trip(&mut conn, wire, p.head, opts).await;
     }
     match attempt {
@@ -266,13 +367,25 @@ fn give_back(pool: &ConnPool, mut conn: Conn) {
     idle.push(conn);
 }
 
-async fn connect(key: &str, host: &str, port: u16) -> Result<Conn, FastError> {
+async fn connect(key: &str, host: &str, port: u16, tls: Option<bool>) -> Result<Conn, FastError> {
     // `host_str` brackets IPv6 literals; the resolver wants them bare.
     let bare = host.trim_start_matches('[').trim_end_matches(']');
-    let stream = TcpStream::connect((bare, port))
+    let tcp = TcpStream::connect((bare, port))
         .await
         .map_err(|e| FastError::Io(format!("tcp connect error: {e}")))?;
-    let _ = stream.set_nodelay(true);
+    let _ = tcp.set_nodelay(true);
+    let stream = match tls {
+        None => Stream::Plain(tcp),
+        Some(insecure) => {
+            let name = rustls::pki_types::ServerName::try_from(bare.to_owned())
+                .map_err(|e| FastError::Io(format!("invalid TLS server name: {e}")))?;
+            let tls = tokio_rustls::TlsConnector::from(tls_config(insecure)?)
+                .connect(name, tcp)
+                .await
+                .map_err(|e| FastError::Io(format!("tls handshake error: {e}")))?;
+            Stream::Tls(Box::new(tls))
+        }
+    };
     Ok(Conn {
         key: key.to_owned(),
         stream,
@@ -643,6 +756,7 @@ mod tests {
             headers,
             body,
             timeout: Duration::from_secs(5),
+            insecure: false,
         }
     }
 
@@ -687,7 +801,8 @@ mod tests {
     fn eligibility() {
         let ok = |u: &str| eligible(&reqwest::Url::parse(u).unwrap());
         assert!(ok("http://127.0.0.1:1/x"));
-        assert!(!ok("https://h/"));
+        assert!(ok("https://h/"));
+        assert!(!ok("ftp://h/"));
         assert!(!ok("http://user:pw@h/"));
     }
 
@@ -810,6 +925,73 @@ mod tests {
                 assert_eq!((status, location.as_str()), (302, "/next"));
             }
             _ => panic!("expected a redirect"),
+        }
+    }
+
+    /// HTTPS over the fast path: `insecure` accepts a self-signed server and
+    /// keeps the TLS connection alive across requests; the verifying config
+    /// rejects it at the handshake.
+    #[tokio::test]
+    async fn https_insecure_reuses_and_verified_rejects_self_signed() {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])
+            .unwrap();
+        let der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.key_pair.serialize_der().into());
+        let server_cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![der], key)
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&accepted);
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let Ok(mut s) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    let mut buf = [0u8; 4096];
+                    while let Ok(n) = s.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        let _ = s
+                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                            .await;
+                    }
+                });
+            }
+        });
+
+        let url = reqwest::Url::parse(&format!("https://localhost:{port}/")).unwrap();
+        let pool = ConnPool::default();
+        let mut insecure = req("GET", &url, &[], None);
+        insecure.insecure = true;
+        let p = prepare(&insecure);
+        for _ in 0..3 {
+            match exchange(&pool, &p, AUTO).await.1 {
+                Ok(Exchange::Done(o)) => assert_eq!((o.status, o.body.as_str()), (200, "ok")),
+                other => panic!("insecure https failed: {:?}", other.err()),
+            }
+        }
+        assert_eq!(
+            accepted.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "one TLS connection for three requests"
+        );
+
+        let verified = prepare(&req("GET", &url, &[], None));
+        match exchange(&pool, &verified, AUTO).await.1 {
+            Err(FastError::Io(msg)) => assert!(msg.contains("tls handshake error"), "{msg}"),
+            other => panic!("self-signed must be rejected, got ok={}", other.is_ok()),
         }
     }
 

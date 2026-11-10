@@ -242,7 +242,7 @@ pub(crate) async fn ws_handshake(profile: &Profile) -> Result<(WsStream, Option<
 /// Signature checks still run (the handshake stays well-formed); the chain
 /// and hostname are not validated. Opt-in via `skipTLSVerify: true` only —
 /// never point it at production you don't control.
-fn no_verify_tls_config() -> Result<rustls::ClientConfig, String> {
+pub(crate) fn no_verify_tls_config() -> Result<rustls::ClientConfig, String> {
     use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::crypto::{ring, verify_tls12_signature, verify_tls13_signature, CryptoProvider};
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
