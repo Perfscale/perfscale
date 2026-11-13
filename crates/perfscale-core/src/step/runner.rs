@@ -6043,8 +6043,9 @@ mod tests {
                 "llm_prompt_tokens: 24 12.00/s",
                 "llm_tokens_per_sec_failed: 0.00%",
                 "llm_ttft_ms_failed: 0.00%",
-                "llm_tokens_per_sec: avg=44.93ms p(50)=45.05ms p(90)=45.05ms p(95)=45.05ms p(99)=45.05ms min=44.80ms max=45.05ms count=2",
+                "llm_tokens_per_sec: avg=44.93tok/s p(50)=45.05tok/s p(90)=45.05tok/s p(95)=45.05tok/s p(99)=45.05tok/s min=44.80tok/s max=45.05tok/s count=2",
                 "llm_ttft_ms: avg=120.06ms p(50)=120.32ms p(90)=120.32ms p(95)=120.32ms p(99)=120.32ms min=119.81ms max=120.32ms count=2",
+                "llm....................: reqs=2 1.00/s failed=0 ttft_p50=120ms ttft_p95=120ms tok_s_avg=44.9 tok_s_p50=45.1 tokens_in=24 tokens_out=192",
             ]
         );
     }
@@ -6063,7 +6064,7 @@ mod tests {
         let line = golden_llm_metrics().stats_line(1_720_000_000_000, 0, 5.0, 2);
         assert_eq!(
             line,
-            "[stats] ts=1720000000000 rps=0.00 reqs=0 iters=2 llm_reqs=2 llm_tok_s=44.9"
+            "[stats] ts=1720000000000 rps=0.00 reqs=0 iters=2 llm_reqs=2 llm_tok_s=44.9 llm_ttft_p95=120.3"
         );
     }
 

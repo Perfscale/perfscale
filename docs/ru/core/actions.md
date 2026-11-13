@@ -550,8 +550,9 @@ shared_variables:
 | `endpoint` | string | `openai` | `openai`, `anthropic` или `generic` |
 | `url` | string | **обязателен** | URL эндпоинта completion |
 | `model` | string | — | Имя модели; обязательно для `openai` / `anthropic` |
-| `prompt` | string | одно из prompt/messages | Сахар для одного сообщения `user` (взаимоисключающий с `messages`) |
-| `messages` | array | одно из prompt/messages | `[{ role, content }]` — сообщения чата |
+| `prompt` | string | одно из prompt/prompts/messages | Сахар для одного сообщения `user` (взаимоисключающий с `messages`) |
+| `prompts` | array of strings | одно из prompt/prompts/messages | Пул промптов: каждый запрос отправляет одну случайную запись как единственное сообщение `user` |
+| `messages` | array | одно из prompt/prompts/messages | `[{ role, content }]` — сообщения чата |
 | `max_tokens` | integer | `256` | Ограничение на токены ответа |
 | `stream` | boolean | `true` (`openai`/`anthropic`), `false` (`generic`) | Стримить ответ как SSE |
 | `api_key` | string | — | `Authorization: Bearer` (`openai`/`generic`) или `x-api-key` (`anthropic`) |
@@ -1515,7 +1516,8 @@ after:
 **Выражения** имеют вид `<agg><op><number>`: agg ∈ `avg`, `min`, `max`, `p50`,
 `p90`, `p95`, `p99`, `count`, `rate`; op ∈ `<`, `<=`, `>`, `>=`, `==`, `!=`;
 число — обычный float (целое или десятичное, без единиц). Пробелы вокруг частей
-допустимы (`p95 < 500` парсится).
+допустимы (`p95 < 500` парсится), а k6-запись `p(95)` — тот же агрегат, что
+`p95`.
 
 **Какие агрегаты применимы** — зависит от вида метрики:
 

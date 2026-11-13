@@ -20,6 +20,21 @@ This page is the guide. Per-step parameters and outputs live in the
 | `anthropic` | Anthropic messages API (`POST /v1/messages`). Sends `anthropic-version: 2023-06-01`; usage comes from the `message_start` / `message_delta` SSE events |
 | `generic` | Bring-your-own format: the request body is the step's `params` object verbatim, and the response fields are pulled out with `extract` rules (dotted paths or regexes) — for endpoints that match neither API |
 
+## No model yet: the bundled mock
+
+`examples/llm-mock.py` (Python standard library only) speaks both the
+OpenAI and the Anthropic wire format, streamed or not, with model-like
+timing — build and debug the test before pointing it at a GPU or a paid API:
+
+```bash
+python3 examples/llm-mock.py                 # :8088, ttft 150 ms, 40 tok/s
+perfscale run -f examples/llm.test.yaml -c examples/llm.config.yaml
+```
+
+`TTFT_MS`, `TOK_S` and `FAIL_PCT` (injected 503s) shape the latency and the
+error rate; `--port` moves it. Switching to a real server is a change of
+`vars.host` / `vars.model` in `examples/llm.config.yaml`.
+
 ## Local model: Ollama (OpenAI-compatible)
 
 The fastest way to build the test logic — no API key, no cloud bill. Ollama
@@ -42,6 +57,40 @@ steps:
 conversation (a `system` prompt, few-shot examples, …). Prompts interpolate
 like any other step — `${{ vars.* }}`, outputs of previous steps, `${uuid}` —
 so every iteration can send a fresh prompt.
+
+## Prompt pools
+
+One fixed prompt lets the server's prefix/KV cache answer from memory and
+flatters TTFT. `prompts` sends one entry per request, chosen at random, as
+the single `user` message:
+
+```yaml
+    with:
+      url: http://127.0.0.1:11434/v1/chat/completions
+      model: llama3.1
+      prompts:
+        - "Summarize the CAP theorem in two sentences."
+        - "Ticket ${uuid}: why does p95 matter more than the average?"
+        - "List three causes of tail latency in an inference server."
+```
+
+`prompts` excludes `prompt` and `messages`. For a large pool — or one with a
+system prompt per entry — keep it in a JSON file and pick per iteration with
+[`std/pick@v1`](actions.md#stdpickv1) (needs `allow_file_actions: true`):
+
+```yaml
+steps:
+  - use: std/pick@v1
+    with: { file: ./prompts.json }     # ["prompt one", "prompt two", …]
+    outputs: p
+  - use: std/llm@v1
+    with:
+      url: http://127.0.0.1:11434/v1/chat/completions
+      model: llama3.1
+      messages:
+        - { role: system, content: "You are a concise support assistant." }
+        - { role: user, content: "${{ p }}" }
+```
 
 ## OpenAI with a key from the environment
 
@@ -135,9 +184,12 @@ Every request folds into the run summary as custom metrics:
   sample (1 = the step failed — non-2xx, timeout, transport error). See
   [metrics.md](metrics.md#failure-rate-metrics-family_failed).
 
-Gate a run on them with `std/thresholds@v1`:
+Gate a run on them with `std/thresholds@v1` in the config's `after:` block
+— it is evaluated once, after every VU has stopped (inside `steps:` it would
+re-run on every iteration). `p(95)` and `p95` are the same aggregate:
 
 ```yaml
+after:
   - use: std/thresholds@v1
     with:
       llm_ttft_ms:
@@ -152,6 +204,40 @@ Step-level assertions work too — the output exposes `ttft_ms`,
 `duration_ms`, `tokens_per_sec`, `prompt_tokens`, `completion_tokens`,
 `text`, and more, so `check: { duration_ms_lt: 2000 }` or a `std/check@v1`
 step over `outputs` covers per-iteration SLOs.
+
+## Reading the output
+
+The live `[stats]` line every 5 s carries the LLM signal even on runs with no
+HTTP traffic (`reqs`/`rps` stay 0 there):
+
+```text
+[stats] ts=1794553711570 rps=0.00 reqs=0 iters=20 llm_reqs=20 llm_tok_s=35.7 llm_ttft_p95=159.0
+```
+
+The end-of-run summary closes with one digest line:
+
+```text
+llm....................: reqs=20 2.05/s failed=0 ttft_p50=156ms ttft_p95=159ms tok_s_avg=35.8 tok_s_p50=35.8 tokens_in=196 tokens_out=1280
+```
+
+`--summary-export run.md` / `run.json` carry the same numbers (`LLM
+requests`, `TTFT p50 / p95`, `tok/s avg / p50`, `Tokens in / out`; JSON key
+`llm`). `--quiet` drops the per-request `LLM openai … → 200` lines under
+load.
+
+## When a request fails
+
+A non-2xx status, a refused connection, or a timeout fails the step with the
+server's message and, for the usual first-test mistakes, a `hint:`:
+
+| Symptom | Hint |
+|---|---|
+| 404/405 and the url lacks `/v1/chat/completions` (`/v1/messages` for anthropic) | the path to add |
+| 404/400 `model … not found` | the model is not on this server (`ollama pull <model>`) |
+| 401/403 without `api_key` | `api_key: ${{ env.OPENAI_API_KEY }}` (or `ANTHROPIC_API_KEY`) |
+| 429 | rate limited — the `Retry-After` value, lower VUs / arrival rate |
+| 503 | server overloaded or the model is still loading |
+| connection refused / timeout | nothing listening at `url` / raise `timeout_ms` |
 
 ## Connection posture
 
