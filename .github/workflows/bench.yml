@@ -219,7 +219,12 @@ jobs:
           echo "${RENAISSANCE_SHA256}  $jar" | sha256sum -c -
 
       - name: JMeter on PATH
-        run: echo "/opt/apache-jmeter-${JMETER_VERSION}/bin" >> "$GITHUB_PATH"
+        # Pin JAVA_HOME to 17: ubuntu-latest (26.04) ships a newer default JDK
+        # whose class files (major 69) JMeter 5.6.3's bundled Groovy cannot
+        # parse — every JSR223 sampler then errors at 100%.
+        run: |
+          echo "/opt/apache-jmeter-${JMETER_VERSION}/bin" >> "$GITHUB_PATH"
+          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> "$GITHUB_ENV"
 
       # PostgreSQL JDBC driver for the db-suite JMeter scenario. Pinned
       # version + sha256-verified; cached separately from the JMeter install.
@@ -437,7 +442,7 @@ jobs:
             echo "| sytester | ${SYTESTER_VERSION} (Community Edition) |"
             echo "| pgjdbc | ${PGJDBC_VERSION} |"
             echo "| psycopg2 | ${PSYCOPG2_VERSION} |"
-            echo "| java | $(java -version 2>&1 | head -n1) |"
+            echo "| java | $("${JAVA_HOME:-/usr}/bin/java" -version 2>&1 | head -n1) |"
             echo "| hyperfine | $(hyperfine --version) |"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
