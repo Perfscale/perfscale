@@ -19,3 +19,7 @@ Release notes for the next release, written as features land.
 - **Error hints.** Failed LLM requests explain the usual first-test mistakes: missing `/v1/chat/completions` path, unknown model (`ollama pull`), missing/rejected `api_key`, 429 with `Retry-After`, 503, connection refused, timeout.
 - **Mock server and examples.** `examples/llm-mock.py` (stdlib-only OpenAI + Anthropic SSE mock with `TTFT_MS`/`TOK_S`/`FAIL_PCT`) plus `examples/llm.test.yaml`, `llm-anthropic.test.yaml` and `llm.config.yaml` with an SLO gate.
 - **Thresholds accept k6's `p(95)`** as an alias of `p95` — the spelling the LLM guide used to show now works.
+
+### Quiet console by default
+
+- **Native runs (`-f`) print only what matters**: `std/log@v1` messages, errors, failing checks, `[stats]`, `[system]` markers and the summary. Per-request lines and passing checks are off — and not even formatted, so the default is also cheaper under load. `-v` / `--verbose` brings them back for debugging. `std/log@v1` output now survives `--quiet` too (it used to be dropped with the request lines). `--quiet` keeps filtering k6/locust/jmeter output.

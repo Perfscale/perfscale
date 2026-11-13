@@ -226,7 +226,8 @@ llm....................: reqs=20 2.05/s failed=0 ttft_p50=156ms ttft_p95=159ms t
 
 `--summary-export run.md` / `run.json` содержат те же числа (`LLM requests`,
 `TTFT p50 / p95`, `tok/s avg / p50`, `Tokens in / out`; JSON-ключ `llm`).
-`--quiet` убирает построчные `LLM openai … → 200` под нагрузкой.
+Построчные `LLM openai … → 200` по умолчанию выключены; `-v` включает их для
+отладки.
 
 ## Когда запрос падает
 

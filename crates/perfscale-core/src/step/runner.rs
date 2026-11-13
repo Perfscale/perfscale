@@ -66,7 +66,7 @@ use crate::step::{
 impl From<LogTag> for LogSource {
     fn from(t: LogTag) -> Self {
         match t {
-            LogTag::Out => LogSource::Stdout,
+            LogTag::Out | LogTag::User => LogSource::Stdout,
             LogTag::Err => LogSource::Stderr,
             LogTag::Sys => LogSource::System,
         }
@@ -2104,7 +2104,7 @@ async fn run_before(
         let output = execute_action(action, &params, &ctx, step_name).await;
 
         for (tag, text) in &output.logs {
-            if quiet && *tag != LogTag::Err {
+            if quiet && !matches!(tag, LogTag::Err | LogTag::User) {
                 continue;
             }
             emit(tx, LogSource::from(*tag), text, secrets).await;
@@ -2214,7 +2214,7 @@ async fn run_after(
         let output = execute_action(action, &params, &ctx, step_name).await;
 
         for (tag, text) in &output.logs {
-            if quiet && *tag != LogTag::Err {
+            if quiet && !matches!(tag, LogTag::Err | LogTag::User) {
                 continue;
             }
             emit(tx, LogSource::from(*tag), text, &shared.secrets).await;
@@ -2356,7 +2356,7 @@ async fn execute_step(
     // are counted and folded into `engine_log_lines_dropped` below.
     let mut dropped_logs = 0u64;
     for (tag, text) in &output.logs {
-        if quiet && *tag != LogTag::Err {
+        if quiet && !matches!(tag, LogTag::Err | LogTag::User) {
             continue;
         }
         emit_lossy(
@@ -2407,7 +2407,7 @@ async fn execute_step(
     if let Some(checks) = &step.check {
         let check_out = execute_action("std/check@v1", checks, ctx, step_name).await;
         for (tag, text) in &check_out.logs {
-            if quiet && *tag != LogTag::Err {
+            if quiet && !matches!(tag, LogTag::Err | LogTag::User) {
                 continue;
             }
             emit_lossy(
@@ -3138,6 +3138,42 @@ mod tests {
             .expect("failing check must survive quiet mode");
         assert_eq!(check_line.source, LogSource::Stderr);
         assert!(check_line.text.contains("FAIL"));
+    }
+
+    #[tokio::test]
+    async fn run_steps_quiet_keeps_std_log_output() {
+        let step = |action: &str, with: Value| Step {
+            name: None,
+            action: action.into(),
+            with: Some(with),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+            abort_on_fail: false,
+            http_debug: None,
+            condition: None,
+            labels: None,
+        };
+        let steps = vec![
+            step("std/sleep@v1", json!({ "ms": 10 })),
+            step("std/log@v1", json!({ "message": "user said this" })),
+        ];
+        let config = RunConfig {
+            vus: 1,
+            duration: "100ms".into(),
+            ..Default::default()
+        };
+        let lines = run_and_collect(steps, config, true).await;
+        let log = lines
+            .iter()
+            .find(|l| l.text == "user said this")
+            .expect("std/log@v1 output must survive quiet mode");
+        assert_eq!(log.source, LogSource::Stdout);
+        assert!(
+            !lines.iter().any(|l| l.text.contains("sleep")),
+            "sleep markers stay suppressed: {lines:?}"
+        );
     }
 
     #[tokio::test]

@@ -109,7 +109,7 @@ Every 5 seconds while VUs run, one machine-readable line:
   requests) and `llm_tok_s` (mean completion tok/s):
   `[stats] ts=… rps=0.00 reqs=0 iters=12 llm_reqs=9 llm_tok_s=38.7`.
 - These lines exist for streaming consumers (the controlplane parses them
-  out of the log stream); see [`--quiet`](#quiet) for console behavior.
+  out of the log stream); see [console output](#console-output---verbose----quiet) for console behavior.
 
 ## Custom metrics (`value.metrics`)
 
@@ -359,18 +359,21 @@ What the registry buys:
 
 See RFC 010 (`rfcs/010-metrics-module.md`) for the full design.
 
-## `--quiet`
+## Console output (`--verbose` / `--quiet`)
 
-Two independent layers:
+**Native engine (`-f`) is quiet by default.** A run prints what you asked
+for and what went wrong: `std/log@v1` messages, errors, failing checks,
+`[stats]` lines, `[system]` markers, and the final summary. Per-iteration
+success output — request lines, sleep markers, passing checks — is not even
+formatted or sent, so the default also skips its cost under load.
 
-- **At the source** (native engine): per-iteration success output — request
-  lines, sleep markers, passing checks — is not even formatted or sent.
-  Errors, failing checks, `[stats]` lines, and the final summary are always
-  emitted into the stream.
-- **At the CLI printer**: under `--quiet`, stdout lines print only if they
-  are k6-shaped summary lines (`vus`, `iterations`, `http_req_*`); stderr and
-  system lines always print. Custom metric lines and `[stats]` stay in the
-  stream for log consumers but are hidden from the console.
+`-v` / `--verbose` brings the per-iteration lines back — for debugging a
+scenario at 1 VU, not for measuring.
+
+**External engines (k6, locust, jmeter)** print their own stdout unchanged;
+`-q` / `--quiet` filters it at the CLI printer down to k6-shaped summary lines
+(`vus`, `iterations`, `http_req_*`, …); stderr and system lines always print.
+On a native run `--quiet` is the default and changes nothing.
 
 ## Forwarding the summary (`report`)
 

@@ -108,10 +108,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"0\r\n\r\n")
 
 
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # A client that hangs up mid-stream (run stopped, timeout) is normal
+        # under load — not worth a traceback.
+        import sys
+        if not isinstance(sys.exc_info()[1], ConnectionError):
+            super().handle_error(request, client_address)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8088")))
     port = ap.parse_args().port
     print(f"mock LLM on http://127.0.0.1:{port} (ttft {TTFT_MS:.0f}ms, {TOK_S:.0f} tok/s, fail {FAIL_PCT:.0f}%)",
           flush=True)
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    Server(("127.0.0.1", port), Handler).serve_forever()

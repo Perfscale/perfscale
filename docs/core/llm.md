@@ -222,8 +222,8 @@ llm....................: reqs=20 2.05/s failed=0 ttft_p50=156ms ttft_p95=159ms t
 
 `--summary-export run.md` / `run.json` carry the same numbers (`LLM
 requests`, `TTFT p50 / p95`, `tok/s avg / p50`, `Tokens in / out`; JSON key
-`llm`). `--quiet` drops the per-request `LLM openai … → 200` lines under
-load.
+`llm`). Per-request `LLM openai … → 200` lines are off by default; `-v`
+turns them on for debugging.
 
 ## When a request fails
 

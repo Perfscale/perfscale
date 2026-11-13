@@ -227,6 +227,13 @@ if [[ ! -x "$BIN" ]]; then
   cargo build --release --manifest-path "$ROOT/Cargo.toml"
 fi
 
+# Native runs are quiet by default since `run --verbose` exists; the rows
+# below that historically measured per-request logging pass it explicitly
+# so their numbers stay comparable across versions.
+LOUD=""
+if "$BIN" run --help 2>/dev/null | grep -q -- '--verbose'; then
+  LOUD="--verbose"
+fi
 WORKDIR="$(mktemp -d)"
 RESULTS_D="$WORKDIR/results"
 mkdir -p "$RESULTS_D"
@@ -765,7 +772,9 @@ cmd_locust_wrapped() {
   echo "env BENCH_INSECURE=$4 $BIN run --locust $WORKDIR/locustfile.py --host $3 -c $(cfg "$1" "$2")"
 }
 cmd_yaml() { # $1 vus, $2 duration, $3 test file, $4 extra flags (optional)
-  echo "$BIN run -f $3 -c $(cfg "$1" "$2")${4:+ $4}"
+  local flags="${4:-}"
+  [[ "$flags" == *--quiet* ]] || flags="${LOUD}${flags:+ $flags}"
+  echo "$BIN run -f $3 -c $(cfg "$1" "$2")${flags:+ $flags}"
 }
 # JMeter runs from $WORKDIR so its jmeter.log doesn't land in the repo root.
 cmd_jmeter_native() { echo "cd $WORKDIR && jmeter -n -t $(jmeter_plan "$1" "$2")"; }
@@ -2236,7 +2245,7 @@ if has_suite boundary; then
     echo "cd $WORKDIR && HEAP='$BOUNDARY_JMETER_HEAP' jmeter -n -t $WORKDIR/plan-boundary-$1.jmx -Jsummariser.interval=2"
   }
   b_cmd_native() {
-    echo "$BIN run -f $WORKDIR/boundary.yaml -c $(boundary_native_cfg "$1")"
+    echo "$BIN run -f $WORKDIR/boundary.yaml -c $(boundary_native_cfg "$1")${LOUD:+ $LOUD}"
   }
 
   # boundary_ladder $1 label, $2 parse kind, $3 command builder
@@ -2419,7 +2428,7 @@ if has_suite library && [[ "$HAS_LIB" == 1 ]]; then
   fi
 
   lib_run() { # $1 test file, $2 config file, $3 cache env assignment
-    echo "${3:+$3 }$BIN run -f $1 -c $2"
+    echo "${3:+$3 }$BIN run -f $1 -c $2${LOUD:+ $LOUD}"
   }
   lib_base_cmd() { # $1 duration
     lib_run "$WORKDIR/yaml-get.yaml" "$(cfg "$VUS" "$1")" ""

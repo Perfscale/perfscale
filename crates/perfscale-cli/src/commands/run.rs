@@ -71,7 +71,10 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
             report_line = Some(line.text.clone());
             continue;
         }
-        if should_print(&line, args.quiet) {
+        // The native engine filters at the source (std/log@v1 lines are
+        // plain stdout and must survive); only external engines need the
+        // print-time filter.
+        if should_print(&line, args.quiet && args.file.is_none()) {
             print_line(&line);
         }
         if matches!(line.source, LogSource::Stdout) && is_summary_line(&line.text) {
@@ -490,7 +493,7 @@ fn resolve_plan(
             variables: cfg.variables.clone(),
             shared_variables: cfg.shared_variables.clone(),
             libraries,
-            quiet: args.quiet,
+            quiet: !args.verbose,
             // Set later by the caller once the report URL is resolved.
             metrics_tx: None,
         });
@@ -1308,6 +1311,7 @@ mod tests {
             report: Vec::new(),
             label: Vec::new(),
             quiet: false,
+            verbose: false,
             summary_export: Vec::new(),
             summary_format: None,
             input: Vec::new(),
