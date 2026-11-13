@@ -536,8 +536,9 @@ Three endpoint wire formats:
 | `endpoint` | string | `openai` | `openai`, `anthropic`, or `generic` |
 | `url` | string | **required** | Completion endpoint URL |
 | `model` | string | — | Model name; required for `openai` / `anthropic` |
-| `prompt` | string | one of prompt/messages | Sugar for a single `user` message (mutually exclusive with `messages`) |
-| `messages` | array | one of prompt/messages | `[{ role, content }]` chat messages |
+| `prompt` | string | one of prompt/prompts/messages | Sugar for a single `user` message (mutually exclusive with `messages`) |
+| `prompts` | array of strings | one of prompt/prompts/messages | Prompt pool: each request sends one entry, chosen at random, as its single `user` message |
+| `messages` | array | one of prompt/prompts/messages | `[{ role, content }]` chat messages |
 | `max_tokens` | integer | `256` | Completion token cap |
 | `stream` | boolean | `true` (`openai`/`anthropic`), `false` (`generic`) | Stream the response as SSE |
 | `api_key` | string | — | `Authorization: Bearer` (`openai`/`generic`) or `x-api-key` (`anthropic`) |
@@ -1491,7 +1492,8 @@ after:
 **Expressions** are `<agg><op><number>`: agg ∈ `avg`, `min`, `max`, `p50`,
 `p90`, `p95`, `p99`, `count`, `rate`; op ∈ `<`, `<=`, `>`, `>=`, `==`, `!=`;
 the number is a plain float (int or decimal, no units). Whitespace around the
-parts is tolerated (`p95 < 500` parses).
+parts is tolerated (`p95 < 500` parses), and k6's `p(95)` spelling is the
+same aggregate as `p95`.
 
 **Which aggregates apply** depends on the metric kind:
 

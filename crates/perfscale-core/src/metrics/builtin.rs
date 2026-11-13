@@ -79,8 +79,9 @@ impl MetricsFamily for HttpFamily {
 
 /// The LLM family: what `std/llm@v1` reports. Owns the `[stats]` extras
 /// (`llm_reqs`/`llm_tok_s`) — LLM steps never produce `HttpSample`s, so this
-/// is the live signal on pure-LLM runs. Summary rendering stays generic
-/// (default hook), matching the historical output.
+/// is the live signal on pure-LLM runs — and a one-line `llm....` digest
+/// after the generic lines, so the TTFT / tok/s / token picture reads at a
+/// glance without scanning the per-metric histograms.
 pub(crate) struct LlmFamily;
 
 impl MetricsFamily for LlmFamily {
@@ -124,7 +125,7 @@ impl MetricsFamily for LlmFamily {
     }
 
     fn stats_extras(&self, store: &Metrics) -> String {
-        match store.hists.get("llm_tokens_per_sec") {
+        let mut out = match store.hists.get("llm_tokens_per_sec") {
             // Samples are stored in microseconds (ms * 1000) like every
             // custom histogram; tok/s means are read back in plain units.
             Some(tps) if !tps.is_empty() => {
@@ -135,7 +136,59 @@ impl MetricsFamily for LlmFamily {
                 )
             }
             _ => String::new(),
+        };
+        // Cumulative TTFT p95 — the number an LLM SLO is usually written
+        // against; absent on non-streamed runs.
+        if let Some(ttft) = store.hists.get("llm_ttft_ms").filter(|h| !h.is_empty()) {
+            let p95 = ttft.value_at_quantile(0.95) as f64 / 1000.0;
+            out.push_str(&format!(" llm_ttft_p95={p95:.1}"));
         }
+        out
+    }
+
+    fn summary_lines(&self, store: &Metrics, wall_secs: f64) -> Vec<String> {
+        let ttft = store.hists.get("llm_ttft_ms").filter(|h| !h.is_empty());
+        let tps = store
+            .hists
+            .get("llm_tokens_per_sec")
+            .filter(|h| !h.is_empty());
+        // One `_failed` sample per invocation that produced the histogram
+        // sample — the larger of the two is the request count.
+        let rate = |name: &str| store.rates.get(name).copied().unwrap_or((0, 0));
+        let (reqs, failed) = [
+            rate("llm_ttft_ms_failed"),
+            rate("llm_tokens_per_sec_failed"),
+        ]
+        .into_iter()
+        .max_by_key(|(total, _)| *total)
+        .unwrap_or((0, 0));
+        if reqs == 0 && ttft.is_none() && tps.is_none() {
+            return Vec::new();
+        }
+        let q = |h: &hdrhistogram::Histogram<u64>, p: f64| h.value_at_quantile(p) as f64 / 1000.0;
+        let mut line = format!(
+            "llm....................: reqs={reqs} {rps:.2}/s failed={failed}",
+            rps = reqs as f64 / wall_secs.max(0.001),
+        );
+        if let Some(h) = ttft {
+            line.push_str(&format!(
+                " ttft_p50={:.0}ms ttft_p95={:.0}ms",
+                q(h, 0.50),
+                q(h, 0.95)
+            ));
+        }
+        if let Some(h) = tps {
+            line.push_str(&format!(
+                " tok_s_avg={:.1} tok_s_p50={:.1}",
+                h.mean() / 1000.0,
+                q(h, 0.50)
+            ));
+        }
+        let tokens = |name: &str| store.counters.get(name).copied();
+        if let (Some(i), Some(o)) = (tokens("llm_prompt_tokens"), tokens("llm_completion_tokens")) {
+            line.push_str(&format!(" tokens_in={i:.0} tokens_out={o:.0}"));
+        }
+        vec![line]
     }
 }
 

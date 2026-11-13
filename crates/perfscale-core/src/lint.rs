@@ -613,12 +613,13 @@ const WS_CLOSE_WITH_FIELDS: [&str; 4] = ["id", "code", "reason", "timeout"];
 const PUBSUB_WITH_FIELDS: [&str; 5] = ["driver", "subject", "url", "publish", "subscribe"];
 const SET_SHARED_VARIABLE_WITH_FIELDS: [&str; 4] = ["driver", "name", "op", "value"];
 const GET_SHARED_VARIABLE_WITH_FIELDS: [&str; 5] = ["driver", "name", "op", "wait_for", "extract"];
-const LLM_WITH_FIELDS: [&str; 12] = [
+const LLM_WITH_FIELDS: [&str; 13] = [
     "endpoint",
     "url",
     "model",
     "messages",
     "prompt",
+    "prompts",
     "max_tokens",
     "stream",
     "api_key",

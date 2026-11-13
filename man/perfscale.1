@@ -308,8 +308,14 @@ from the config file.
 .TP
 .BR \-q ", " \-\-quiet
 Suppress per-request output; errors and the final metric summary still
-print. For the native engine the lines are dropped at the source, which also
-removes their formatting/IO cost under high load.
+print. The native engine is quiet by default \(em this flag filters the
+stdout of k6, locust and jmeter runs.
+.TP
+.BR \-v ", " \-\-verbose
+Native engine: also print per-request lines and passing checks. By default a
+native run prints only std/log@v1 output, errors, failing checks, the [stats]
+line and the final summary; the other lines are dropped at the source, which
+also removes their formatting/IO cost under high load.
 .TP
 .BI \-\-summary\-export " FILE"
 After the run, write the parsed metric summary plus run metadata (engine,

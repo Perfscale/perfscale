@@ -99,6 +99,10 @@ pub enum LogTag {
     Out, // "[out]" → stdout
     Err, // "[err]" → stderr
     Sys, // "[sys]" → system
+    /// `std/log@v1` output → stdout. Unlike `Out` (per-request lines,
+    /// passing checks) it is printed even in quiet mode — the user asked
+    /// for it.
+    User,
 }
 
 /// Raw timing from one HTTP request.
@@ -1799,7 +1803,7 @@ fn log_action(params: &Value, _step_name: &str) -> ActionOutput {
     let msg = params["message"].as_str().unwrap_or("").to_string();
     ActionOutput {
         value: Value::Null,
-        logs: vec![(LogTag::Out, msg)],
+        logs: vec![(LogTag::User, msg)],
         success: true,
         http_sample: None,
     }

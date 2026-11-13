@@ -23,6 +23,7 @@
 //! | `url`        | string          | required   | Completion endpoint URL |
 //! | `model`      | string          | —          | Model name; required for `openai` / `anthropic` |
 //! | `prompt`     | string          | —          | Sugar for a single `user` message (mutually exclusive with `messages`); `${…}` generator tokens expand per execution |
+//! | `prompts`    | array           | —          | Pool of prompts; each request sends one, chosen at random, as its single `user` message (exclusive with `prompt` / `messages`) |
 //! | `messages`   | array           | —          | `[{ role, content }]` chat messages; `content` strings expand |
 //! | `max_tokens` | integer         | `256`      | Completion token cap |
 //! | `stream`     | bool            | `true` (`openai`/`anthropic`), `false` (`generic`) | Stream the response as SSE |
@@ -130,6 +131,9 @@ pub struct LlmParams {
     /// Chat messages (`prompt` was already desugared into one user message).
     /// Empty for `generic` steps that carry their payload in `params`.
     pub messages: Vec<ChatMessage>,
+    /// `prompts` pool: one entry becomes the single `user` message of each
+    /// request, chosen uniformly at random at execution time.
+    pub prompt_pool: Vec<String>,
     /// Completion token cap (default 256).
     pub max_tokens: u64,
     /// Stream the response as SSE (default true for `openai` / `anthropic`,
@@ -176,7 +180,24 @@ impl LlmParams {
 
         let prompt = params["prompt"].as_str();
         let messages_v = params.get("messages").filter(|v| !v.is_null());
+        let prompt_pool = match params.get("prompts").filter(|v| !v.is_null()) {
+            None => Vec::new(),
+            Some(_) if prompt.is_some() || messages_v.is_some() => {
+                return Err("'prompts' is mutually exclusive with 'prompt' and 'messages'".into());
+            }
+            Some(Value::Array(a)) if !a.is_empty() => a
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| format!("'prompts[{i}]' must be a string"))
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+            Some(_) => return Err("'prompts' must be a non-empty array of strings".into()),
+        };
         let messages = match (prompt, messages_v) {
+            (None, None) if !prompt_pool.is_empty() => Vec::new(),
             (Some(_), Some(_)) => {
                 return Err("'prompt' and 'messages' are mutually exclusive".into());
             }
@@ -207,7 +228,7 @@ impl LlmParams {
                 if endpoint == Endpoint::Generic {
                     Vec::new()
                 } else {
-                    return Err("one of 'prompt' or 'messages' is required".into());
+                    return Err("one of 'prompt', 'prompts' or 'messages' is required".into());
                 }
             }
         };
@@ -238,6 +259,7 @@ impl LlmParams {
             url,
             model,
             messages,
+            prompt_pool,
             max_tokens: u64_param(&params["max_tokens"], 256),
             stream: params
                 .get("stream")
@@ -675,6 +697,54 @@ fn build_body(p: &LlmParams) -> Value {
 
 /// Run one completion request. Errors are hard failures: transport error,
 /// non-2xx status, or a broken stream.
+/// A one-line next step for the common non-2xx failures of a first LLM
+/// test: wrong path, missing/bad key, unknown model, rate limits, an
+/// overloaded server. `None` when there is nothing better than the body.
+fn error_hint(p: &LlmParams, status: u16, retry_after: Option<&str>, body: &str) -> Option<String> {
+    let expected_path = match p.endpoint {
+        Endpoint::OpenAi => Some("/v1/chat/completions"),
+        Endpoint::Anthropic => Some("/v1/messages"),
+        Endpoint::Generic => None,
+    };
+    let path_ok = expected_path.is_none_or(|e| {
+        p.url
+            .split(['?', '#'])
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('/')
+            .ends_with(e)
+    });
+    let body_lc = body.to_ascii_lowercase();
+    let key_field = match p.endpoint {
+        Endpoint::Anthropic => "ANTHROPIC_API_KEY",
+        _ => "OPENAI_API_KEY",
+    };
+    match status {
+        401 | 403 if p.api_key.is_none() => Some(format!(
+            "no api_key is set — add `api_key: ${{{{ env.{key_field} }}}}`"
+        )),
+        401 | 403 => Some("the server rejected api_key — check its value and scope".into()),
+        404 | 405 if !path_ok => Some(format!(
+            "url should end with {} for endpoint: {}",
+            expected_path.unwrap_or_default(),
+            p.endpoint.as_str()
+        )),
+        404 | 400 if body_lc.contains("model") && body_lc.contains("not found") => Some(format!(
+            "model '{}' is not available on this server (Ollama: `ollama pull {0}`)",
+            p.model.as_deref().unwrap_or_default()
+        )),
+        400 if body_lc.contains("stream_options") => Some(
+            "this server rejects stream_options — use `stream: false` or endpoint: generic".into(),
+        ),
+        429 => Some(match retry_after {
+            Some(ra) => format!("rate limited (Retry-After: {ra}) — lower vus / arrival rate"),
+            None => "rate limited — lower vus / arrival rate or raise the provider quota".into(),
+        }),
+        503 => Some("server overloaded or the model is still loading — warm it up first".into()),
+        _ => None,
+    }
+}
+
 async fn run_exchange(p: &LlmParams, ctx: &Context, t0: Instant) -> Result<Exchange, String> {
     let client = client(ClientPool::PerVu, false, ctx.http_client_shard());
     let mut req = client
@@ -698,19 +768,34 @@ async fn run_exchange(p: &LlmParams, ctx: &Context, t0: Instant) -> Result<Excha
         }
     }
 
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("POST {}: {}", p.url, error_chain(&e)))?;
+    let resp = req.send().await.map_err(|e| {
+        let chain = error_chain(&e);
+        let hint = if e.is_connect() {
+            "; hint: nothing is listening — is the model server running at this url?"
+        } else if e.is_timeout() {
+            "; hint: no response within timeout_ms — raise it for slow/cold models"
+        } else {
+            ""
+        };
+        format!("POST {}: {chain}{hint}", p.url)
+    })?;
     let status = resp.status();
     let mut ex = Exchange {
         status: status.as_u16(),
         ..Default::default()
     };
     if !status.is_success() {
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         let body = resp.text().await.unwrap_or_default();
         let snippet: String = body.chars().take(ERROR_BODY_CAP).collect();
-        return Err(format!("HTTP {}: {snippet}", status.as_u16()));
+        let hint = error_hint(p, status.as_u16(), retry_after.as_deref(), &body)
+            .map(|h| format!("; hint: {h}"))
+            .unwrap_or_default();
+        return Err(format!("HTTP {}: {snippet}{hint}", status.as_u16()));
     }
 
     if p.stream {
@@ -856,6 +941,17 @@ pub(crate) async fn llm_action(params: &Value, ctx: &Context, step_name: &str) -
     // before any network call, like ws/grpc.
     {
         let mut expander = ctx.token_expander();
+        if !parsed.prompt_pool.is_empty() {
+            let token = format!("${{rand(0,{})}}", parsed.prompt_pool.len() - 1);
+            let i = match expander.expand(&token).map(|s| s.parse::<usize>()) {
+                Ok(Ok(i)) => i.min(parsed.prompt_pool.len() - 1),
+                _ => return err(step_name, "random prompt selection failed"),
+            };
+            parsed.messages = vec![ChatMessage {
+                role: "user".into(),
+                content: parsed.prompt_pool[i].clone(),
+            }];
+        }
         for m in &mut parsed.messages {
             m.content = match expander.expand(&m.content) {
                 Ok(c) => c,
@@ -1107,7 +1203,9 @@ mod tests {
         .await;
         assert!(!out.success);
         assert!(
-            out.logs[0].1.contains("one of 'prompt' or 'messages'"),
+            out.logs[0]
+                .1
+                .contains("one of 'prompt', 'prompts' or 'messages'"),
             "{:?}",
             out.logs
         );
@@ -1258,6 +1356,39 @@ mod tests {
         assert!(openai_chunk_events(r#"{"choices":[{"delta":{}}],"usage":null}"#).is_empty());
         // Non-JSON payloads are ignored, never fatal.
         assert!(openai_chunk_events("not json").is_empty());
+    }
+
+    #[test]
+    fn error_hints_cover_first_test_mistakes() {
+        let p = |v: Value| LlmParams::from_params(&v).unwrap();
+        let ollama = p(json!({ "url": "http://h:11434", "model": "llama3", "prompt": "hi" }));
+        let hint = error_hint(&ollama, 404, None, "404 page not found").unwrap();
+        assert!(hint.contains("/v1/chat/completions"), "{hint}");
+
+        let ok_path =
+            p(json!({ "url": "http://h/v1/chat/completions/", "model": "qwen", "prompt": "hi" }));
+        let hint = error_hint(
+            &ok_path,
+            404,
+            None,
+            r#"{"error":"model \"qwen\" not found, try pulling it first"}"#,
+        )
+        .unwrap();
+        assert!(hint.contains("ollama pull qwen"), "{hint}");
+        assert!(error_hint(&ok_path, 404, None, "nope").is_none());
+
+        let hint = error_hint(&ok_path, 401, None, "").unwrap();
+        assert!(hint.contains("env.OPENAI_API_KEY"), "{hint}");
+        let claude = p(
+            json!({ "endpoint": "anthropic", "url": "http://h/v1/messages", "model": "m", "prompt": "hi", "api_key": "k" }),
+        );
+        assert!(error_hint(&claude, 401, None, "")
+            .unwrap()
+            .contains("rejected"));
+
+        let hint = error_hint(&ok_path, 429, Some("7"), "").unwrap();
+        assert!(hint.contains("Retry-After: 7"), "{hint}");
+        assert!(error_hint(&ok_path, 500, None, "boom").is_none());
     }
 
     #[test]
@@ -1549,6 +1680,65 @@ mod tests {
         // No TTFT → throughput is computed over the whole request time.
         assert!(out.value["tokens_per_sec"].as_f64().unwrap() > 0.0);
         assert!(out.value["metrics"].get("llm_ttft_ms").is_none());
+    }
+
+    #[tokio::test]
+    async fn prompts_pool_sends_one_entry_per_request() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+        let state = seen.clone();
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                let state = state.clone();
+                async move {
+                    let msgs = body["messages"].as_array().unwrap();
+                    assert_eq!(msgs.len(), 1);
+                    assert_eq!(msgs[0]["role"], "user");
+                    state
+                        .lock()
+                        .unwrap()
+                        .insert(msgs[0]["content"].as_str().unwrap().to_string());
+                    axum::Json(json!({ "choices": [{ "message": { "content": "ok" } }] }))
+                }
+            }),
+        );
+        let base = serve(app).await;
+        let params = json!({
+            "url": format!("{base}/v1/chat/completions"),
+            "model": "m",
+            "prompts": ["alpha", "beta", "gamma"],
+            "stream": false,
+        });
+        for _ in 0..60 {
+            let out = execute_action("std/llm@v1", &params, &Context::new(), "chat").await;
+            assert!(out.success, "{:?}", out.logs);
+        }
+        // 60 uniform draws over 3 entries miss one with p ≈ 3·(2/3)^60 ≈ 1e-10.
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3, "{seen:?}");
+    }
+
+    #[test]
+    fn prompts_pool_validation() {
+        let parse = |v: Value| LlmParams::from_params(&v);
+        let base = json!({ "url": "http://x/", "model": "m" });
+        let with = |k: &str, v: Value| {
+            let mut b = base.clone();
+            b[k] = v;
+            b
+        };
+        let p = parse(with("prompts", json!(["a", "b"]))).unwrap();
+        assert_eq!(p.prompt_pool, vec!["a", "b"]);
+        assert!(p.messages.is_empty());
+        assert!(parse(with("prompts", json!([])))
+            .unwrap_err()
+            .contains("non-empty"));
+        assert!(parse(with("prompts", json!([1])))
+            .unwrap_err()
+            .contains("prompts[0]"));
+        let mut both = with("prompts", json!(["a"]));
+        both["prompt"] = json!("b");
+        assert!(parse(both).unwrap_err().contains("mutually exclusive"));
     }
 
     #[tokio::test]

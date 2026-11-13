@@ -20,6 +20,21 @@ perfscale нагружает **эндпоинты LLM-инференса** с п
 | `anthropic` | Anthropic messages API (`POST /v1/messages`). Отправляет `anthropic-version: 2023-06-01`; usage берётся из SSE-событий `message_start` / `message_delta` |
 | `generic` | Свой собственный формат: тело запроса — это объект `params` шага как есть, а поля ответа извлекаются правилами `extract` (пути через точку или регулярные выражения) — для эндпоинтов, не соответствующих ни одному из API |
 
+## Модели ещё нет: встроенный mock
+
+`examples/llm-mock.py` (только стандартная библиотека Python) говорит на
+формате OpenAI и Anthropic, со стримингом и без, с таймингами как у модели —
+соберите и отладьте тест до того, как направить его на GPU или платный API:
+
+```bash
+python3 examples/llm-mock.py                 # :8088, ttft 150 мс, 40 tok/s
+perfscale run -f examples/llm.test.yaml -c examples/llm.config.yaml
+```
+
+`TTFT_MS`, `TOK_S` и `FAIL_PCT` (доля 503) задают задержку и долю ошибок;
+`--port` меняет порт. Переход на реальный сервер — смена `vars.host` /
+`vars.model` в `examples/llm.config.yaml`.
+
 ## Локальная модель: Ollama (OpenAI-совместимая)
 
 Самый быстрый способ собрать логику теста — без API-ключа и счетов за облако.
@@ -43,6 +58,40 @@ steps:
 Промпты интерполируются, как и любой другой шаг — `${{ vars.* }}`, выходные
 данные предыдущих шагов, `${uuid}` — так что каждая итерация может отправлять
 свежий промпт.
+
+## Пулы промптов
+
+С одним фиксированным промптом prefix/KV-кеш сервера отвечает из памяти и
+приукрашивает TTFT. `prompts` отправляет на каждый запрос одну случайную
+запись как единственное сообщение `user`:
+
+```yaml
+    with:
+      url: http://127.0.0.1:11434/v1/chat/completions
+      model: llama3.1
+      prompts:
+        - "Summarize the CAP theorem in two sentences."
+        - "Ticket ${uuid}: why does p95 matter more than the average?"
+        - "List three causes of tail latency in an inference server."
+```
+
+`prompts` исключает `prompt` и `messages`. Для большого пула — или с
+system-промптом — держите его в JSON-файле и выбирайте на каждой итерации
+через [`std/pick@v1`](actions.md#stdpickv1) (нужен `allow_file_actions: true`):
+
+```yaml
+steps:
+  - use: std/pick@v1
+    with: { file: ./prompts.json }     # ["prompt one", "prompt two", …]
+    outputs: p
+  - use: std/llm@v1
+    with:
+      url: http://127.0.0.1:11434/v1/chat/completions
+      model: llama3.1
+      messages:
+        - { role: system, content: "You are a concise support assistant." }
+        - { role: user, content: "${{ p }}" }
+```
 
 ## OpenAI с ключом из окружения
 
@@ -138,9 +187,13 @@ steps:
   (1 = шаг упал — не-2xx, таймаут, транспортная ошибка). См.
   [metrics.md](metrics.md#метрики-доли-ошибок-family_failed).
 
-Ограничьте прогон по ним с помощью `std/thresholds@v1`:
+Ограничьте прогон по ним с помощью `std/thresholds@v1` в блоке `after:`
+конфига — он вычисляется один раз, после остановки всех VU (внутри `steps:`
+он перезапускался бы на каждой итерации). `p(95)` и `p95` — один и тот же
+агрегат:
 
 ```yaml
+after:
   - use: std/thresholds@v1
     with:
       llm_ttft_ms:
@@ -155,6 +208,40 @@ steps:
 `duration_ms`, `tokens_per_sec`, `prompt_tokens`, `completion_tokens`, `text`
 и другое, так что `check: { duration_ms_lt: 2000 }` или шаг `std/check@v1`
 по `outputs` покрывают SLO на каждую итерацию.
+
+## Как читать вывод
+
+Живая строка `[stats]` раз в 5 с несёт LLM-сигнал даже без HTTP-трафика
+(`reqs`/`rps` там остаются 0):
+
+```text
+[stats] ts=1794553711570 rps=0.00 reqs=0 iters=20 llm_reqs=20 llm_tok_s=35.7 llm_ttft_p95=159.0
+```
+
+Итоговая сводка завершается одной строкой-дайджестом:
+
+```text
+llm....................: reqs=20 2.05/s failed=0 ttft_p50=156ms ttft_p95=159ms tok_s_avg=35.8 tok_s_p50=35.8 tokens_in=196 tokens_out=1280
+```
+
+`--summary-export run.md` / `run.json` содержат те же числа (`LLM requests`,
+`TTFT p50 / p95`, `tok/s avg / p50`, `Tokens in / out`; JSON-ключ `llm`).
+Построчные `LLM openai … → 200` по умолчанию выключены; `-v` включает их для
+отладки.
+
+## Когда запрос падает
+
+Не-2xx статус, отказ соединения или таймаут роняют шаг с сообщением сервера
+и, для типичных ошибок первого теста, с `hint:`:
+
+| Симптом | Подсказка |
+|---|---|
+| 404/405, в url нет `/v1/chat/completions` (`/v1/messages` для anthropic) | какой путь дописать |
+| 404/400 `model … not found` | модели нет на сервере (`ollama pull <model>`) |
+| 401/403 без `api_key` | `api_key: ${{ env.OPENAI_API_KEY }}` (или `ANTHROPIC_API_KEY`) |
+| 429 | rate limit — значение `Retry-After`, снизить VU / arrival rate |
+| 503 | сервер перегружен или модель ещё загружается |
+| отказ соединения / таймаут | по `url` никто не слушает / поднять `timeout_ms` |
 
 ## Работа с соединениями
 

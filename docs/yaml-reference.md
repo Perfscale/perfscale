@@ -847,7 +847,7 @@ steps:
         x-region: "${{ vars.region }}"                      # from variables
 ```
 
-- `before` runs regardless of `--quiet` (its failures always print). If any
+- `before` runs regardless of `--verbose`/`--quiet` (its failures always print). If any
   setup step fails, the run **aborts before spawning VUs** — a broken setup
   would make every iteration fail identically.
 - `before` steps see `${{ vars.* }}` and earlier setup outputs (under their own
