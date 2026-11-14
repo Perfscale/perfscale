@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=../schema/config.schema.json
+#
+# LLM load test config. Defaults target the bundled mock server:
+#   python3 examples/llm-mock.py
+#   perfscale run -f examples/llm.test.yaml -c examples/llm.config.yaml
+#
+# Real servers — override the variables, the test stays the same:
+#   Ollama:  host: http://127.0.0.1:11434   model: llama3.1
+#   vLLM:    host: http://127.0.0.1:8000    model: <served model name>
+#   OpenAI:  host: https://api.openai.com   model: gpt-4o-mini
+#            (and export OPENAI_API_KEY; see the api_key line in the test)
+vus: 4
+duration: 30s
+
+variables:
+  host: http://127.0.0.1:8088
+  model: mock
+
+# SLO gate — evaluated once, after every VU has stopped.
+after:
+  - name: llm slo
+    use: std/thresholds@v1
+    with:
+      llm_ttft_ms: ["p(95)<1000"]        # k6 spelling; p95<1000 works too
+      llm_tokens_per_sec: ["avg>10"]
+      llm_ttft_ms_failed: ["rate<0.01"]

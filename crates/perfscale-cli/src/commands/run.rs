@@ -71,7 +71,10 @@ pub async fn run(args: RunArgs) -> Result<(), CliError> {
             report_line = Some(line.text.clone());
             continue;
         }
-        if should_print(&line, args.quiet) {
+        // The native engine filters at the source (std/log@v1 lines are
+        // plain stdout and must survive); only external engines need the
+        // print-time filter.
+        if should_print(&line, args.quiet && args.file.is_none()) {
             print_line(&line);
         }
         if matches!(line.source, LogSource::Stdout) && is_summary_line(&line.text) {
@@ -219,6 +222,7 @@ fn build_export(
         thresholds: perfscale_core::summary::parse_thresholds(&summary_lines.join("\n")),
         gpu: perfscale_core::summary::parse_gpu_summary(&summary_lines.join("\n")),
         libraries: perfscale_core::summary::parse_libraries_summary(&summary_lines.join("\n")),
+        llm: perfscale_core::summary::parse_llm_summary(&summary_lines.join("\n")),
     }
 }
 
@@ -262,7 +266,7 @@ fn write_summary_export(
 /// to hundreds of thousands of lines and would blow past any collector's
 /// request-size limit.
 fn is_summary_line(text: &str) -> bool {
-    const MARKERS: [&str; 11] = [
+    const MARKERS: [&str; 12] = [
         "vus",
         "iterations",
         "iteration_duration",
@@ -274,6 +278,7 @@ fn is_summary_line(text: &str) -> bool {
         "thresholds",
         "gpu",
         "libraries",
+        "llm....",
     ];
     let trimmed = text.trim_start();
     if MARKERS.iter().any(|m| trimmed.starts_with(m)) {
@@ -488,7 +493,7 @@ fn resolve_plan(
             variables: cfg.variables.clone(),
             shared_variables: cfg.shared_variables.clone(),
             libraries,
-            quiet: args.quiet,
+            quiet: !args.verbose,
             // Set later by the caller once the report URL is resolved.
             metrics_tx: None,
         });
@@ -1306,6 +1311,7 @@ mod tests {
             report: Vec::new(),
             label: Vec::new(),
             quiet: false,
+            verbose: false,
             summary_export: Vec::new(),
             summary_format: None,
             input: Vec::new(),
@@ -2203,6 +2209,15 @@ mod tests {
         let g = export.gpu.expect("gpu parsed from summary lines");
         assert_eq!(g.source, "nvidia-smi");
         assert_eq!(g.devices[0].max_utilization_pct, Some(42.0));
+    }
+
+    #[test]
+    fn is_summary_line_accepts_llm_digest() {
+        assert!(is_summary_line(
+            "llm....................: reqs=2 1.00/s failed=0 ttft_p50=120ms ttft_p95=120ms"
+        ));
+        // The per-request step log is not a summary line.
+        assert!(!is_summary_line("LLM openai llama3 → 200, 8 chunks"));
     }
 
     #[test]

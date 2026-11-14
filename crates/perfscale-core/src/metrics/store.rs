@@ -732,10 +732,18 @@ impl Metrics {
         // Custom action histograms (e.g. `ws_msg_rtt`) — same shape as
         // `http_req_duration` plus a sample count, so downstream percentile
         // parsers can reuse one grammar.
+        // The suffix is the registered display unit (`tok/s` for
+        // `llm_tokens_per_sec`); unregistered histograms keep `ms`.
+        let units: std::collections::HashMap<&str, &str> = super::registry::catalog()
+            .into_iter()
+            .filter(|(_, d)| d.kind == super::registry::MetricKind::Histogram)
+            .map(|(_, d)| (d.name, d.unit))
+            .collect();
         for (name, h) in &self.hists {
             let pct = |q: f64| -> f64 { h.value_at_quantile(q) as f64 / 1000.0 };
+            let u = units.get(name.as_str()).copied().unwrap_or("ms");
             lines.push(format!(
-                "{name}: avg={avg:.2}ms p(50)={p50:.2}ms p(90)={p90:.2}ms p(95)={p95:.2}ms p(99)={p99:.2}ms min={min:.2}ms max={max:.2}ms count={count}",
+                "{name}: avg={avg:.2}{u} p(50)={p50:.2}{u} p(90)={p90:.2}{u} p(95)={p95:.2}{u} p(99)={p99:.2}{u} min={min:.2}{u} max={max:.2}{u} count={count}",
                 avg = h.mean() / 1000.0,
                 p50 = pct(0.50),
                 p90 = pct(0.90),
@@ -773,15 +781,15 @@ impl Metrics {
     ///
     /// Families append their own fields via
     /// [`MetricsFamily::stats_extras`](super::MetricsFamily::stats_extras) —
-    /// the built-in `llm` family adds `llm_reqs` (completed LLM requests) and
-    /// `llm_tok_s` (mean completion throughput) when any LLM throughput
+    /// the built-in `llm` family adds `llm_reqs` (completed LLM requests),
+    /// `llm_tok_s` (mean completion throughput) and `llm_ttft_p95` when any LLM
     /// samples were recorded, so LLM load tests still get a live signal even
     /// though `std/llm@v1` never produces `HttpSample`s (`reqs`/`rps` stay 0
     /// on pure-LLM runs).
     ///
     /// ```text
     /// [stats] ts=1720000000000 rps=246.80 err_pct=0.00 p50=1.20 p90=3.40 p95=4.10 p99=8.20 reqs=1234 iters=456
-    /// [stats] ts=1720000000000 rps=0.00 reqs=0 iters=12 llm_reqs=9 llm_tok_s=38.7
+    /// [stats] ts=1720000000000 rps=0.00 reqs=0 iters=12 llm_reqs=9 llm_tok_s=38.7 llm_ttft_p95=412.0
     /// ```
     pub fn stats_line(&self, ts_ms: u64, window_reqs: u64, window_secs: f64, iters: u64) -> String {
         let rps = window_reqs as f64 / window_secs.max(0.001);

@@ -80,7 +80,8 @@ Five flavors: `latest` (perfscale only), `latest-k6`, `latest-jmeter`,
 | `perfscale run --jmeter <plan.jmx>` | Run a JMeter test plan headless (`jmeter -n -t`) |
 | `perfscale run -f <test.yaml> -c <config.yaml>` | Run a native step-engine test |
 | `perfscale run ... --report <url>` | Also forward the summary to `perfscale serve` |
-| `perfscale run ... --quiet` | Drop per-request output (errors and the final summary still print) |
+| `perfscale run -f ... -v` | Print per-request lines and passing checks (native runs are quiet by default: only `std/log@v1`, errors, `[stats]` and the summary) |
+| `perfscale run ... --quiet` | k6/locust/jmeter: drop the engine's per-request output (errors and the final summary still print) |
 | `perfscale run ... --summary-export <file>` | Write the parsed summary + run metadata as JSON or Markdown (repeatable) |
 | `perfscale convert k6 <file.js>` | Convert a static k6 script to native test/config YAML (fail closed on unsupported behavior) |
 | `perfscale serve [--port 7999]` | Start the local metrics receiver |

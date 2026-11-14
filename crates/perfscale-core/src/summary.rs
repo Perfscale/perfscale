@@ -296,6 +296,56 @@ pub struct SummaryExport {
     /// run declared no libraries or no library call happened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub libraries: Option<std::collections::BTreeMap<String, crate::library::LibraryAliasSummary>>,
+    /// `std/llm@v1` digest, parsed from the `llm....: reqs=…` line the
+    /// native engine emits after the metric summary. `None` for runs with no
+    /// LLM requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm: Option<LlmSummary>,
+}
+
+/// Run-level LLM numbers (see [`parse_llm_summary`]). Fields the run did not
+/// produce — TTFT on non-streamed requests, tok/s and tokens when the server
+/// reports no usage — stay `None`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LlmSummary {
+    pub requests: u64,
+    pub failed: u64,
+    pub ttft_p50_ms: Option<f64>,
+    pub ttft_p95_ms: Option<f64>,
+    pub tokens_per_sec_avg: Option<f64>,
+    pub tokens_per_sec_p50: Option<f64>,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+}
+
+/// Extract the `llm....................: reqs=…` digest line the native
+/// engine's `llm` metrics family emits (see `metrics::builtin`). Returns
+/// `None` when the run made no LLM requests.
+pub fn parse_llm_summary(output: &str) -> Option<LlmSummary> {
+    let rest = output
+        .lines()
+        .map(str::trim)
+        .find_map(|t| t.strip_prefix("llm...."))?
+        .trim_start_matches('.')
+        .trim_start_matches(':');
+    let kv: BTreeMap<&str, &str> = rest
+        .split_whitespace()
+        .filter_map(|tok| tok.split_once('='))
+        .collect();
+    let num = |k: &str| {
+        kv.get(k)
+            .and_then(|v| v.trim_end_matches("ms").parse::<f64>().ok())
+    };
+    Some(LlmSummary {
+        requests: num("reqs")? as u64,
+        failed: num("failed").unwrap_or(0.0) as u64,
+        ttft_p50_ms: num("ttft_p50"),
+        ttft_p95_ms: num("ttft_p95"),
+        tokens_per_sec_avg: num("tok_s_avg"),
+        tokens_per_sec_p50: num("tok_s_p50"),
+        prompt_tokens: num("tokens_in").map(|v| v as u64),
+        completion_tokens: num("tokens_out").map(|v| v as u64),
+    })
 }
 
 /// Extract the `thresholds: {...}` line the native engine emits at the end of
@@ -384,7 +434,38 @@ impl SummaryExport {
                 row("p99", ms(s.p99_ms));
                 row("min / max", format!("{} / {}", ms(s.min_ms), ms(s.max_ms)));
             }
+            None if self.llm.is_some() => {}
             None => row("Requests", "0 (no HTTP metrics)".into()),
+        }
+
+        if let Some(ref l) = self.llm {
+            let opt = |v: Option<f64>, unit: &str| {
+                v.map(|x| format!("{x:.1}{unit}"))
+                    .unwrap_or_else(|| "—".into())
+            };
+            row(
+                "LLM requests",
+                format!("{} ({} failed)", l.requests, l.failed),
+            );
+            row(
+                "TTFT p50 / p95",
+                format!(
+                    "{} / {}",
+                    opt(l.ttft_p50_ms, " ms"),
+                    opt(l.ttft_p95_ms, " ms")
+                ),
+            );
+            row(
+                "tok/s avg / p50",
+                format!(
+                    "{} / {}",
+                    opt(l.tokens_per_sec_avg, ""),
+                    opt(l.tokens_per_sec_p50, "")
+                ),
+            );
+            if let (Some(i), Some(o)) = (l.prompt_tokens, l.completion_tokens) {
+                row("Tokens in / out", format!("{i} / {o}"));
+            }
         }
 
         if let Some(ref t) = self.thresholds {
@@ -709,6 +790,7 @@ grpc_req_failed: 1 0.10/s
             thresholds: None,
             gpu: None,
             libraries: None,
+            llm: None,
         }
     }
 
@@ -906,5 +988,36 @@ grpc_req_failed: 1 0.10/s
         let export: SummaryExport = serde_json::from_str(old).unwrap();
         assert!(export.libraries.is_none());
         assert!(export.thresholds.is_none() && export.gpu.is_none());
+    }
+
+    #[test]
+    fn llm_digest_parses_and_renders_in_markdown() {
+        let out = "iterations..............: 2 1.00/s\nllm....................: reqs=2 1.00/s failed=1 ttft_p50=120ms ttft_p95=180ms tok_s_avg=44.9 tok_s_p50=45.1 tokens_in=24 tokens_out=192\n";
+        let l = parse_llm_summary(out).unwrap();
+        assert_eq!(l.requests, 2);
+        assert_eq!(l.failed, 1);
+        assert_eq!(l.ttft_p95_ms, Some(180.0));
+        assert_eq!(l.tokens_per_sec_avg, Some(44.9));
+        assert_eq!(l.completion_tokens, Some(192));
+        assert!(parse_llm_summary("llm_chunks: 68 34.00/s").is_none());
+
+        let mut export = sample_export(false);
+        export.llm = Some(l);
+        let md = export.to_markdown();
+        assert!(md.contains("| LLM requests | 2 (1 failed) |"), "{md}");
+        assert!(
+            md.contains("| TTFT p50 / p95 | 120.0 ms / 180.0 ms |"),
+            "{md}"
+        );
+        assert!(md.contains("| Tokens in / out | 24 / 192 |"), "{md}");
+        assert!(!md.contains("no HTTP metrics"), "{md}");
+    }
+
+    #[test]
+    fn llm_digest_without_streaming_or_usage() {
+        let l = parse_llm_summary("llm....................: reqs=3 0.10/s failed=0").unwrap();
+        assert_eq!(l.requests, 3);
+        assert_eq!(l.ttft_p50_ms, None);
+        assert_eq!(l.prompt_tokens, None);
     }
 }

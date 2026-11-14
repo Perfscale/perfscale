@@ -1,0 +1,21 @@
+# Anthropic messages API, streamed. Works against the bundled mock as-is:
+#   python3 examples/llm-mock.py
+#   ANTHROPIC_API_KEY=mock perfscale run -f examples/llm-anthropic.test.yaml -c examples/llm.config.yaml
+#
+# Against the real API set vars.host: https://api.anthropic.com, a real
+# model name, and export ANTHROPIC_API_KEY.
+
+steps:
+  - name: claude
+    use: std/llm@v1
+    with:
+      endpoint: anthropic
+      url: ${{ vars.host }}/v1/messages
+      model: ${{ vars.model }}
+      api_key: ${{ env.ANTHROPIC_API_KEY }}
+      prompts:
+        - "Explain backpressure in one paragraph."
+        - "Why do queues grow without bound when arrival rate exceeds service rate?"
+      max_tokens: 64
+    check:
+      status: 200

@@ -1,0 +1,29 @@
+# OpenAI-compatible LLM load test: streamed chat completions with TTFT,
+# tokens/sec and token usage. The SLO gate lives in llm.config.yaml (`after:`).
+#
+#   python3 examples/llm-mock.py      # or point vars.host at Ollama / vLLM
+#   perfscale run -f examples/llm.test.yaml -c examples/llm.config.yaml
+#
+# Each request sends one prompt from the pool, chosen at random, so the
+# server's prefix cache does not flatter TTFT. For a large pool keep it in a
+# JSON file and pick with std/pick@v1 (see docs/core/llm.md).
+
+steps:
+  - name: chat
+    use: std/llm@v1
+    with:
+      url: ${{ vars.host }}/v1/chat/completions
+      model: ${{ vars.model }}
+      # api_key: ${{ env.OPENAI_API_KEY }}
+      prompts:
+        - "Explain time to first token in two sentences."
+        - "Ticket ${uuid}: summarize why p95 matters more than the average."
+        - "List three causes of tail latency in an inference server."
+        - "What is the difference between open and closed load models?"
+      max_tokens: 64
+      params:
+        temperature: 0.2
+      timeout_ms: 60000
+    check:
+      status: 200
+

@@ -167,6 +167,17 @@ pub fn parse_expr(input: &str) -> Result<ThresholdExpr, String> {
         return Err("empty threshold expression — expected e.g. \"p95<500\"".into());
     }
 
+    // k6 spelling: `p(95)<500` is `p95<500`. `raw` below keeps the original.
+    let raw = s;
+    let k6;
+    let s = match s.strip_prefix("p(").and_then(|r| r.split_once(')')) {
+        Some((n, rest)) => {
+            k6 = format!("p{}{rest}", n.trim());
+            k6.as_str()
+        }
+        None => s,
+    };
+
     let agg_name = AGG_NAMES.iter().find(|a| s.starts_with(**a));
     let agg = match agg_name {
         Some(name) => match *name {
@@ -186,7 +197,7 @@ pub fn parse_expr(input: &str) -> Result<ThresholdExpr, String> {
                 .take_while(|c| c.is_ascii_alphanumeric())
                 .collect();
             return Err(format!(
-                "unknown aggregate '{token}' in \"{s}\" — expected one of: {}",
+                "unknown aggregate '{token}' in \"{raw}\" — expected one of: {}",
                 AGG_NAMES.join(", ")
             ));
         }
@@ -205,7 +216,7 @@ pub fn parse_expr(input: &str) -> Result<ThresholdExpr, String> {
         },
         None => {
             return Err(format!(
-                "unknown or missing operator in \"{s}\" — expected one of: <, <=, >, >=, ==, !="
+                "unknown or missing operator in \"{raw}\" — expected one of: <, <=, >, >=, ==, !="
             ));
         }
     };
@@ -213,15 +224,15 @@ pub fn parse_expr(input: &str) -> Result<ThresholdExpr, String> {
     let value_str = rest[op_name.unwrap().len()..].trim();
     if value_str.is_empty() {
         return Err(format!(
-            "missing value in \"{s}\" — expected e.g. \"p95<500\""
+            "missing value in \"{raw}\" — expected e.g. \"p95<500\""
         ));
     }
     let value: f64 = value_str.parse().map_err(|_| {
-        format!("invalid value '{value_str}' in \"{s}\" — expected a plain number, no units")
+        format!("invalid value '{value_str}' in \"{raw}\" — expected a plain number, no units")
     })?;
     if !value.is_finite() {
         return Err(format!(
-            "invalid value '{value_str}' in \"{s}\" — expected a finite number"
+            "invalid value '{value_str}' in \"{raw}\" — expected a finite number"
         ));
     }
 
@@ -229,7 +240,7 @@ pub fn parse_expr(input: &str) -> Result<ThresholdExpr, String> {
         agg,
         op,
         value,
-        raw: s.to_string(),
+        raw: raw.to_string(),
     })
 }
 
@@ -872,6 +883,20 @@ mod tests {
         assert_eq!(parse_expr("avg>-1.5").unwrap().value, -1.5);
         assert_eq!(parse_expr("max<1000000").unwrap().value, 1_000_000.0);
         assert_eq!(parse_expr("p99<1e6").unwrap().value, 1e6);
+    }
+
+    #[test]
+    fn accepts_k6_percentile_spelling() {
+        let e = parse_expr("p(95)<500").unwrap();
+        assert_eq!(e.agg, Agg::P95);
+        assert_eq!(e.value, 500.0);
+        assert_eq!(e.raw, "p(95)<500");
+        assert_eq!(parse_expr("p( 99 ) <= 2").unwrap().agg, Agg::P99);
+        let err = parse_expr("p(97)<1").unwrap_err();
+        assert!(
+            err.contains("unknown aggregate 'p97'") && err.contains("\"p(97)<1\""),
+            "{err}"
+        );
     }
 
     #[test]

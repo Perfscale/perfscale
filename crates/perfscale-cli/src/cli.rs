@@ -386,10 +386,17 @@ pub struct RunArgs {
     pub label: Vec<String>,
 
     /// Suppress per-request output; errors and the final metric summary still
-    /// print. For the native engine the lines are dropped at the source, which
-    /// also removes their formatting/IO cost under high load.
-    #[arg(short = 'q', long)]
+    /// print. The native engine (`-f`) is quiet by default — this flag matters
+    /// for k6/locust/jmeter, whose own stdout it filters.
+    #[arg(short = 'q', long, conflicts_with = "verbose")]
     pub quiet: bool,
+
+    /// Native engine: print per-request lines and passing checks too. By
+    /// default a native run prints only `std/log@v1` output, errors, failing
+    /// checks, the `[stats]` line and the final summary — the lines are
+    /// dropped at the source, which also removes their cost under load.
+    #[arg(short = 'v', long)]
+    pub verbose: bool,
 
     /// After the run, write the parsed metric summary plus run metadata
     /// (engine, VUs, duration, timestamp) to this file. Repeatable — one run

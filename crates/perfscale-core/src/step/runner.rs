@@ -66,7 +66,7 @@ use crate::step::{
 impl From<LogTag> for LogSource {
     fn from(t: LogTag) -> Self {
         match t {
-            LogTag::Out => LogSource::Stdout,
+            LogTag::Out | LogTag::User => LogSource::Stdout,
             LogTag::Err => LogSource::Stderr,
             LogTag::Sys => LogSource::System,
         }
@@ -2104,7 +2104,7 @@ async fn run_before(
         let output = execute_action(action, &params, &ctx, step_name).await;
 
         for (tag, text) in &output.logs {
-            if quiet && *tag != LogTag::Err {
+            if quiet && !matches!(tag, LogTag::Err | LogTag::User) {
                 continue;
             }
             emit(tx, LogSource::from(*tag), text, secrets).await;
@@ -2214,7 +2214,7 @@ async fn run_after(
         let output = execute_action(action, &params, &ctx, step_name).await;
 
         for (tag, text) in &output.logs {
-            if quiet && *tag != LogTag::Err {
+            if quiet && !matches!(tag, LogTag::Err | LogTag::User) {
                 continue;
             }
             emit(tx, LogSource::from(*tag), text, &shared.secrets).await;
@@ -2356,7 +2356,7 @@ async fn execute_step(
     // are counted and folded into `engine_log_lines_dropped` below.
     let mut dropped_logs = 0u64;
     for (tag, text) in &output.logs {
-        if quiet && *tag != LogTag::Err {
+        if quiet && !matches!(tag, LogTag::Err | LogTag::User) {
             continue;
         }
         emit_lossy(
@@ -2407,7 +2407,7 @@ async fn execute_step(
     if let Some(checks) = &step.check {
         let check_out = execute_action("std/check@v1", checks, ctx, step_name).await;
         for (tag, text) in &check_out.logs {
-            if quiet && *tag != LogTag::Err {
+            if quiet && !matches!(tag, LogTag::Err | LogTag::User) {
                 continue;
             }
             emit_lossy(
@@ -3138,6 +3138,42 @@ mod tests {
             .expect("failing check must survive quiet mode");
         assert_eq!(check_line.source, LogSource::Stderr);
         assert!(check_line.text.contains("FAIL"));
+    }
+
+    #[tokio::test]
+    async fn run_steps_quiet_keeps_std_log_output() {
+        let step = |action: &str, with: Value| Step {
+            name: None,
+            action: action.into(),
+            with: Some(with),
+            check: None,
+            outputs: None,
+            severity: None,
+            message: None,
+            abort_on_fail: false,
+            http_debug: None,
+            condition: None,
+            labels: None,
+        };
+        let steps = vec![
+            step("std/sleep@v1", json!({ "ms": 10 })),
+            step("std/log@v1", json!({ "message": "user said this" })),
+        ];
+        let config = RunConfig {
+            vus: 1,
+            duration: "100ms".into(),
+            ..Default::default()
+        };
+        let lines = run_and_collect(steps, config, true).await;
+        let log = lines
+            .iter()
+            .find(|l| l.text == "user said this")
+            .expect("std/log@v1 output must survive quiet mode");
+        assert_eq!(log.source, LogSource::Stdout);
+        assert!(
+            !lines.iter().any(|l| l.text.contains("sleep")),
+            "sleep markers stay suppressed: {lines:?}"
+        );
     }
 
     #[tokio::test]
@@ -6043,8 +6079,9 @@ mod tests {
                 "llm_prompt_tokens: 24 12.00/s",
                 "llm_tokens_per_sec_failed: 0.00%",
                 "llm_ttft_ms_failed: 0.00%",
-                "llm_tokens_per_sec: avg=44.93ms p(50)=45.05ms p(90)=45.05ms p(95)=45.05ms p(99)=45.05ms min=44.80ms max=45.05ms count=2",
+                "llm_tokens_per_sec: avg=44.93tok/s p(50)=45.05tok/s p(90)=45.05tok/s p(95)=45.05tok/s p(99)=45.05tok/s min=44.80tok/s max=45.05tok/s count=2",
                 "llm_ttft_ms: avg=120.06ms p(50)=120.32ms p(90)=120.32ms p(95)=120.32ms p(99)=120.32ms min=119.81ms max=120.32ms count=2",
+                "llm....................: reqs=2 1.00/s failed=0 ttft_p50=120ms ttft_p95=120ms tok_s_avg=44.9 tok_s_p50=45.1 tokens_in=24 tokens_out=192",
             ]
         );
     }
@@ -6063,7 +6100,7 @@ mod tests {
         let line = golden_llm_metrics().stats_line(1_720_000_000_000, 0, 5.0, 2);
         assert_eq!(
             line,
-            "[stats] ts=1720000000000 rps=0.00 reqs=0 iters=2 llm_reqs=2 llm_tok_s=44.9"
+            "[stats] ts=1720000000000 rps=0.00 reqs=0 iters=2 llm_reqs=2 llm_tok_s=44.9 llm_ttft_p95=120.3"
         );
     }
 
