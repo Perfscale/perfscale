@@ -784,17 +784,17 @@ impl Metrics {
     /// the built-in `llm` family adds `llm_reqs` (completed LLM requests),
     /// `llm_tok_s` (mean completion throughput) and `llm_ttft_p95` when any LLM
     /// samples were recorded, so LLM load tests still get a live signal even
-    /// though `std/llm@v1` never produces `HttpSample`s (`reqs`/`rps` stay 0
-    /// on pure-LLM runs).
+    /// though `std/llm@v1` never produces `HttpSample`s. HTTP-only fields are
+    /// omitted until the first HTTP sample is recorded.
     ///
     /// ```text
     /// [stats] ts=1720000000000 rps=246.80 err_pct=0.00 p50=1.20 p90=3.40 p95=4.10 p99=8.20 reqs=1234 iters=456
-    /// [stats] ts=1720000000000 rps=0.00 reqs=0 iters=12 llm_reqs=9 llm_tok_s=38.7 llm_ttft_p95=412.0
+    /// [stats] ts=1720000000000 iters=12 llm_reqs=9 llm_tok_s=38.7 llm_ttft_p95=412.0
     /// ```
     pub fn stats_line(&self, ts_ms: u64, window_reqs: u64, window_secs: f64, iters: u64) -> String {
         let rps = window_reqs as f64 / window_secs.max(0.001);
         let mut line = if self.total == 0 {
-            format!("[stats] ts={ts_ms} rps={rps:.2} reqs=0 iters={iters}")
+            format!("[stats] ts={ts_ms} iters={iters}")
         } else {
             let h = &self.durations_micros;
             let pct = |q: f64| -> f64 { h.value_at_quantile(q) as f64 / 1000.0 };
