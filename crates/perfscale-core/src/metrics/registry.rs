@@ -305,6 +305,6 @@ mod tests {
         assert_eq!(lines.len(), 4, "vus + iterations + 2 generic: {lines:?}");
 
         let stats = m.stats_line(1, 0, 5.0, 1);
-        assert_eq!(stats, "[stats] ts=1 rps=0.00 reqs=0 iters=1");
+        assert_eq!(stats, "[stats] ts=1 iters=1");
     }
 }

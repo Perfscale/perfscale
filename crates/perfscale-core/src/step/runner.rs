@@ -2844,16 +2844,17 @@ mod tests {
     }
 
     #[test]
-    fn metrics_stats_line_without_requests_omits_percentiles() {
+    fn metrics_stats_line_without_requests_omits_http_fields() {
         let m = Metrics::default();
         let line = m.stats_line(1, 0, 5.0, 3);
-        assert!(line.contains("reqs=0"), "{line}");
+        assert!(!line.contains("rps="), "{line}");
+        assert!(!line.contains("reqs="), "{line}");
         assert!(!line.contains("p50="), "{line}");
         assert!(!line.contains("llm_reqs="), "{line}");
     }
 
-    /// Pure-LLM runs record no `HttpSample`s, so `reqs`/`rps` stay 0 — the
-    /// line must still surface the LLM signal via `llm_reqs`/`llm_tok_s`.
+    /// Pure-LLM runs record no `HttpSample`s, so HTTP fields are omitted —
+    /// the line must still surface the LLM signal via `llm_reqs`/`llm_tok_s`.
     #[test]
     fn metrics_stats_line_reports_llm_fields_without_http_requests() {
         let mut m = Metrics::default();
@@ -2865,7 +2866,8 @@ mod tests {
         m.add_counters(json!({ "llm_tokens_per_sec": [32.0] }).as_object().unwrap());
 
         let line = m.stats_line(1_720_000_000_000, 0, 5.0, 2);
-        assert!(line.contains("reqs=0"), "{line}");
+        assert!(!line.contains("rps="), "{line}");
+        assert!(!line.contains(" reqs="), "{line}");
         assert!(line.contains("llm_reqs=2"), "{line}");
         let tok_s: f64 = line
             .split_whitespace()
@@ -6100,7 +6102,7 @@ mod tests {
         let line = golden_llm_metrics().stats_line(1_720_000_000_000, 0, 5.0, 2);
         assert_eq!(
             line,
-            "[stats] ts=1720000000000 rps=0.00 reqs=0 iters=2 llm_reqs=2 llm_tok_s=44.9 llm_ttft_p95=120.3"
+            "[stats] ts=1720000000000 iters=2 llm_reqs=2 llm_tok_s=44.9 llm_ttft_p95=120.3"
         );
     }
 
