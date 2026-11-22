@@ -5,7 +5,7 @@
 #   dist/perfscale-linux-amd64
 #   dist/perfscale-linux-arm64
 
-FROM rust:1.88-alpine AS builder
+FROM rust:1.94-alpine AS builder
 
 # TARGETARCH is injected by buildx: amd64 | arm64 — used to key the cache
 # mounts below so amd64/arm64 builds don't clobber each other's cache.

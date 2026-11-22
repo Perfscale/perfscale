@@ -1,4 +1,4 @@
-FROM rust:1.88-slim-bookworm
+FROM rust:1.94-slim-bookworm
 
 # k6 + locust — the two external engines `perfscale run` can shell out to.
 RUN apt-get update && apt-get install -y --no-install-recommends \
