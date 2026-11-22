@@ -92,7 +92,7 @@ http = "1"
 # MySQL/MariaDB, SQLite). Runtime is tokio and TLS stays on rustls/ring with
 # webpki roots, matching the WebSocket/gRPC families; no chrono/time/decimal
 # extras — unmapped column types decode as null (see step/db.rs).
-sqlx = { version = "0.8", default-features = false, features = ["postgres", "mysql", "sqlite", "runtime-tokio", "tls-rustls-ring-webpki", "json"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "mysql", "sqlite", "runtime-tokio", "tls-rustls-ring-webpki", "json"] }
 
 # NATS client for the `std/pubsub@v1` action's `nats` driver. Core NATS only —
 # no JetStream; the in-process `memory` driver needs no client at all.

@@ -547,11 +547,11 @@ struct QueryOutcome {
 /// trip (see the module doc).
 fn step_query<'q, DB>(
     sql: &'q str,
-) -> sqlx::query::Query<'q, DB, <DB as sqlx::Database>::Arguments<'q>>
+) -> sqlx::query::Query<'q, DB, <DB as sqlx::Database>::Arguments>
 where
     DB: sqlx::Database + sqlx::database::HasStatementCache,
 {
-    sqlx::query::<DB>(sql).persistent(false)
+    sqlx::query::<DB>(sqlx::AssertSqlSafe(sql)).persistent(false)
 }
 
 /// Bind `params`, run `sql`, and collect rows up to `max_rows`. Works on
@@ -588,9 +588,9 @@ where
     for<'q> &'q str: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
     for<'q> String: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
     for<'q> Option<String>: sqlx::Encode<'q, DB> + sqlx::Type<DB>,
-    for<'q> <DB as sqlx::Database>::Arguments<'q>: sqlx::IntoArguments<'q, DB>,
+    <DB as sqlx::Database>::Arguments: sqlx::IntoArguments<DB>,
 {
-    let mut q = sqlx::query::<DB>(sql).persistent(persistent);
+    let mut q = sqlx::query::<DB>(sqlx::AssertSqlSafe(sql)).persistent(persistent);
     for (i, p) in params.iter().enumerate() {
         q = match p {
             // A typed NULL (text on PostgreSQL — see the module doc).
@@ -3309,7 +3309,7 @@ mod tests {
         fn is_persistent<DB>(sql: &str) -> bool
         where
             DB: sqlx::Database + sqlx::database::HasStatementCache,
-            for<'q> <DB as sqlx::Database>::Arguments<'q>: sqlx::IntoArguments<'q, DB>,
+            <DB as sqlx::Database>::Arguments: sqlx::IntoArguments<DB>,
         {
             sqlx::Execute::persistent(&step_query::<DB>(sql))
         }
